@@ -10,11 +10,11 @@ pub fn create() clap.ext.audio_ports.Plugin {
 }
 
 /// number of ports for either input or output
-fn count(_: *const clap.Plugin, is_input: bool) callconv(.C) u32 {
+fn count(_: *const clap.Plugin, is_input: bool) callconv(.c) u32 {
     return if (is_input) 0 else 1;
 }
 /// get info about an audio port. returns true on success and stores the result into `info`.
-fn get(_: *const clap.Plugin, index: u32, is_input: bool, info: *clap.ext.audio_ports.Info) callconv(.C) bool {
+fn get(_: *const clap.Plugin, index: u32, is_input: bool, info: *clap.ext.audio_ports.Info) callconv(.c) bool {
     var name_buf: [clap.name_capacity]u8 = undefined;
     if (is_input) {
         return false;

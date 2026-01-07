@@ -29,17 +29,19 @@ const VoiceRenderPayload = struct {
 };
 
 voices: std.ArrayList(Voice),
+allocator: std.mem.Allocator,
 render_payload: ?VoiceRenderPayload = null,
 render_mutex: std.Thread.Mutex = .{},
 
 pub fn init(allocator: std.mem.Allocator) Voices {
     return .{
-        .voices = .init(allocator),
+        .voices = .empty,
+        .allocator = allocator,
     };
 }
 
 pub fn deinit(self: *Voices) void {
-    self.voices.deinit();
+    self.voices.deinit(self.allocator);
 }
 
 pub const Voice = struct {
@@ -85,7 +87,7 @@ pub fn getVoiceCapacity(self: *const Voices) usize {
 }
 
 pub fn addVoice(self: *Voices, voice: Voice) !void {
-    try self.voices.append(voice);
+    try self.voices.append(self.allocator, voice);
 }
 
 pub fn getVoices(self: *Voices) []Voice {

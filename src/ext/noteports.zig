@@ -9,11 +9,11 @@ pub fn create() clap.ext.note_ports.Plugin {
 }
 
 /// number of ports for either input or output
-fn count(_: *const clap.Plugin, is_input: bool) callconv(.C) u32 {
+fn count(_: *const clap.Plugin, is_input: bool) callconv(.c) u32 {
     return if (is_input) 1 else 0;
 }
 /// get info about a note port. returns true on success and stores the result into `info`.
-fn get(_: *const clap.Plugin, index: u32, is_input: bool, info: *clap.ext.note_ports.Info) callconv(.C) bool {
+fn get(_: *const clap.Plugin, index: u32, is_input: bool, info: *clap.ext.note_ports.Info) callconv(.c) bool {
     if (!is_input or index != 0) {
         return false;
     }

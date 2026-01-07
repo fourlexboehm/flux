@@ -54,23 +54,27 @@ pub fn build(b: *std.Build) void {
         .on_demand = true,
     });
 
-    const lib = b.addSharedLibrary(
-        .{
-            .name = "zsynth",
-            .target = target,
-            .optimize = optimize,
-            .root_source_file = .{ .cwd_relative = "src/main.zig" },
-        },
-    );
+    const lib_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const exe_module = b.createModule(.{
+        .root_source_file = b.path("src/diag.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
-    const exe = b.addExecutable(
-        .{
-            .name = "zsynth",
-            .target = target,
-            .optimize = optimize,
-            .root_source_file = .{ .cwd_relative = "src/diag.zig" },
-        },
-    );
+    const lib = b.addLibrary(.{
+        .name = "zsynth",
+        .root_module = lib_module,
+        .linkage = .dynamic,
+    });
+
+    const exe = b.addExecutable(.{
+        .name = "zsynth",
+        .root_module = exe_module,
+    });
 
     // Allow options to be passed in to source files
     var options = Step.Options.create(b);
@@ -89,27 +93,27 @@ pub fn build(b: *std.Build) void {
 
         // GUI Related libraries
         pkg.root_module.addImport("zgui", zgui.module("root"));
-        pkg.linkLibrary(zgui.artifact("imgui"));
+        pkg.root_module.linkLibrary(zgui.artifact("imgui"));
         pkg.root_module.addImport("zglfw", zglfw.module("root"));
-        pkg.linkLibrary(zglfw.artifact("glfw"));
+        pkg.root_module.linkLibrary(zglfw.artifact("glfw"));
         pkg.root_module.addImport("zopengl", zopengl.module("root"));
-        pkg.linkLibrary(zopengl.artifact("zopengl"));
+        pkg.root_module.linkLibrary(zopengl.artifact("zopengl"));
 
         // Profiling
         pkg.root_module.addImport("tracy", ztracy.module("root"));
-        pkg.linkLibrary(ztracy.artifact("tracy"));
+        pkg.root_module.linkLibrary(ztracy.artifact("tracy"));
 
         pkg.root_module.addOptions("options", options);
         pkg.root_module.addOptions("static_data", static_data);
 
         if (builtin.os.tag == .macos) {
             pkg.root_module.addImport("objc", objc.module("mach-objc"));
-            pkg.linkFramework("AppKit");
-            pkg.linkFramework("Cocoa");
-            pkg.linkFramework("CoreGraphics");
-            pkg.linkFramework("Foundation");
-            pkg.linkFramework("Metal");
-            pkg.linkFramework("QuartzCore");
+            pkg.root_module.linkFramework("AppKit", .{});
+            pkg.root_module.linkFramework("Cocoa", .{});
+            pkg.root_module.linkFramework("CoreGraphics", .{});
+            pkg.root_module.linkFramework("Foundation", .{});
+            pkg.root_module.linkFramework("Metal", .{});
+            pkg.root_module.linkFramework("QuartzCore", .{});
         }
     }
 
@@ -161,25 +165,27 @@ pub const CreateClapPluginStep = struct {
 
         const self: *Self = @fieldParentPtr("step", step);
         if (self.build.build_root.path) |path| {
-            var dir = try std.fs.openDirAbsolute(path, .{});
+            const io = self.build.graph.io;
+            var dir = try std.Io.Dir.openDirAbsolute(io, path, .{});
+            defer dir.close(io);
             switch (builtin.os.tag) {
                 .macos => {
-                    _ = try dir.updateFile("zig-out/lib/libzsynth.dylib", dir, "zig-out/lib/ZSynth.clap/Contents/MacOS/ZSynth", .{});
-                    _ = try dir.updateFile("macos/info.plist", dir, "zig-out/lib/ZSynth.clap/Contents/info.plist", .{});
-                    _ = try dir.updateFile("macos/PkgInfo", dir, "zig-out/lib/ZSynth.clap/Contents/PkgInfo", .{});
+                    _ = try dir.updateFile(io, "zig-out/lib/libzsynth.dylib", dir, "zig-out/lib/ZSynth.clap/Contents/MacOS/ZSynth", .{});
+                    _ = try dir.updateFile(io, "macos/info.plist", dir, "zig-out/lib/ZSynth.clap/Contents/info.plist", .{});
+                    _ = try dir.updateFile(io, "macos/PkgInfo", dir, "zig-out/lib/ZSynth.clap/Contents/PkgInfo", .{});
                     if (builtin.mode == .Debug) {
                         // Also generate dynamic symbols for Tracy
                         var child = std.process.Child.init(&.{ "dsymutil", "zig-out/lib/ZSynth.clap/Contents/MacOS/ZSynth" }, allocator);
-                        _ = try child.spawnAndWait();
+                        _ = try child.spawnAndWait(io);
                     }
                     // Copy the CLAP plugin to the library folder
-                    try copyDirRecursiveToHome(allocator, "zig-out/lib/ZSynth.clap/", "Library/Audio/Plug-Ins/CLAP/ZSynth.clap");
+                    try copyDirRecursiveToHome(allocator, io, "zig-out/lib/ZSynth.clap/", "Library/Audio/Presets/ZSynth.clap");
                 },
                 .linux => {
-                    _ = try dir.updateFile("zig-out/lib/libzsynth.so", dir, "zig-out/lib/zsynth.clap", .{});
+                    _ = try dir.updateFile(io, "zig-out/lib/libzsynth.so", dir, "zig-out/lib/zsynth.clap", .{});
                 },
                 .windows => {
-                    _ = try dir.updateFile("zig-out\\lib\\libzsynth.dll", dir, "zig-out\\lib\\zsynth.clap", .{});
+                    _ = try dir.updateFile(io, "zig-out\\lib\\libzsynth.dll", dir, "zig-out\\lib\\zsynth.clap", .{});
                 },
                 else => {},
             }
@@ -187,7 +193,7 @@ pub const CreateClapPluginStep = struct {
     }
 };
 
-fn copyDirRecursiveToHome(allocator: std.mem.Allocator, source_dir: []const u8, dest_path_from_home: []const u8) !void {
+fn copyDirRecursiveToHome(allocator: std.mem.Allocator, io: std.Io, source_dir: []const u8, dest_path_from_home: []const u8) !void {
     const home = try std.process.getEnvVarOwned(allocator, "HOME");
     defer allocator.free(home);
     const dest_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ home, dest_path_from_home });
@@ -198,5 +204,5 @@ fn copyDirRecursiveToHome(allocator: std.mem.Allocator, source_dir: []const u8, 
         source_dir,
         dest_path,
     }, allocator);
-    _ = try cp.spawnAndWait();
+    _ = try cp.spawnAndWait(io);
 }

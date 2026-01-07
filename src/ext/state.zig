@@ -13,7 +13,7 @@ pub fn create() clap.ext.state.Plugin {
 }
 
 // Frankly shocking how nice Zig makes this
-fn _save(clap_plugin: *const clap.Plugin, stream: *const clap.OStream) callconv(.C) bool {
+fn _save(clap_plugin: *const clap.Plugin, stream: *const clap.OStream) callconv(.c) bool {
     const zone = tracy.ZoneN(@src(), "State saving");
     defer zone.End();
 
@@ -27,7 +27,7 @@ fn _save(clap_plugin: *const clap.Plugin, stream: *const clap.OStream) callconv(
     }
 
     defer plugin.params.mutex.unlock();
-    const str = std.json.stringifyAlloc(plugin.allocator, plugin.params.values.values, .{}) catch return false;
+    const str = std.json.Stringify.valueAlloc(plugin.allocator, plugin.params.values.values, .{}) catch return false;
     std.log.debug("Plugin data saved: {s}", .{str});
     defer plugin.allocator.free(str);
 
@@ -46,15 +46,15 @@ fn _save(clap_plugin: *const clap.Plugin, stream: *const clap.OStream) callconv(
     return total_bytes_written == str.len;
 }
 
-fn _load(clap_plugin: *const clap.Plugin, stream: *const clap.IStream) callconv(.C) bool {
+fn _load(clap_plugin: *const clap.Plugin, stream: *const clap.IStream) callconv(.c) bool {
     const zone = tracy.ZoneN(@src(), "State loading");
     defer zone.End();
 
     std.log.debug("State._load called from plugin host", .{});
     const plugin = Plugin.fromClapPlugin(clap_plugin);
 
-    var param_data_buf = std.ArrayList(u8).init(plugin.allocator);
-    defer param_data_buf.deinit();
+    var param_data_buf = std.ArrayList(u8).empty;
+    defer param_data_buf.deinit(plugin.allocator);
 
     const MAX_BUF_SIZE = 1024; // this is entirely arbitrary.
     var buf: [MAX_BUF_SIZE]u8 = undefined;
@@ -68,7 +68,7 @@ fn _load(clap_plugin: *const clap.Plugin, stream: *const clap.IStream) callconv(
     while (bytes_read > 0) {
         // Append to the current working buffer
         const bytes: usize = @intCast(bytes_read);
-        param_data_buf.appendSlice(buf[0..bytes]) catch {
+        param_data_buf.appendSlice(plugin.allocator, buf[0..bytes]) catch {
             std.log.err("Unable to append state data from plugin host to param data buffer.", .{});
             return false;
         };
@@ -111,8 +111,8 @@ fn createParamsFromBuffer(allocator: std.mem.Allocator, buffer: []u8) ?Params.Pa
     }
     for (params_data.value, 0..) |param, i| {
         if (i >= Params.param_count) break;
-        const param_type = std.meta.intToEnum(Params.Parameter, i) catch |err| {
-            std.log.err("Error creating parameter: {}", .{err});
+        const param_type = std.enums.fromInt(Params.Parameter, i) orelse {
+            std.log.err("Error creating parameter: invalid index {d}", .{i});
             return null;
         };
         params.set(param_type, param);
