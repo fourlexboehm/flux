@@ -101,17 +101,18 @@ pub const param_count = std.meta.fields(Parameter).len;
 values: ParameterArray = .init(param_defaults),
 mutex: std.Thread.Mutex,
 events: std.ArrayList(clap.events.ParamValue),
+allocator: std.mem.Allocator,
 
 pub fn init(allocator: std.mem.Allocator) Params {
-    const events = std.ArrayList(clap.events.ParamValue).init(allocator);
     return .{
-        .events = events,
+        .events = .empty,
         .mutex = .{},
+        .allocator = allocator,
     };
 }
 
 pub fn deinit(self: *Params) void {
-    self.events.deinit();
+    self.events.deinit(self.allocator);
 }
 
 /// Thread-safe getter for parameter values
@@ -151,7 +152,7 @@ pub fn set(self: *Params, param: Parameter, val: ParameterValue, flags: ParamSet
             .cookie = null,
         };
 
-        try self.events.append(event);
+        try self.events.append(self.allocator, event);
     }
 
     std.log.debug("Changed param value of {} to {}", .{ param, val });
@@ -168,11 +169,11 @@ pub inline fn create() clap.ext.params.Plugin {
     };
 }
 
-fn _count(_: *const clap.Plugin) callconv(.C) u32 {
+fn _count(_: *const clap.Plugin) callconv(.c) u32 {
     return @intCast(param_count);
 }
 
-pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callconv(.C) bool {
+pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callconv(.c) bool {
     if (index > _count(clap_plugin)) {
         return false;
     }
@@ -499,7 +500,7 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
     return true;
 }
 
-fn _getValue(clap_plugin: *const clap.Plugin, id: clap.Id, out_value: *f64) callconv(.C) bool {
+fn _getValue(clap_plugin: *const clap.Plugin, id: clap.Id, out_value: *f64) callconv(.c) bool {
     const plugin = Plugin.fromClapPlugin(clap_plugin);
     const index: usize = @intFromEnum(id);
     if (index > _count(clap_plugin)) {
@@ -516,7 +517,7 @@ pub fn _valueToText(
     value: f64,
     out_buffer: [*]u8,
     out_buffer_capacity: u32,
-) callconv(.C) bool {
+) callconv(.c) bool {
     const zone = tracy.ZoneN(@src(), "Value to Text");
     defer zone.End();
 
@@ -557,13 +558,13 @@ pub fn _valueToText(
         // Wave shapes
         Parameter.WaveShape1, Parameter.WaveShape2 => {
             const intValue: u32 = @intFromFloat(value);
-            const wave = std.meta.intToEnum(Wave, intValue) catch return false;
+            const wave = std.enums.fromInt(Wave, intValue) orelse return false;
             bufSlice = std.fmt.bufPrint(out_buf, "{s}", .{@tagName(wave)}) catch return false;
         },
         // Filter
         Parameter.FilterType => {
             const intValue: u32 = @intFromFloat(value);
-            const filter = std.meta.intToEnum(FilterType, intValue) catch return false;
+            const filter = std.enums.fromInt(FilterType, intValue) orelse return false;
             bufSlice = std.fmt.bufPrint(out_buf, "{s}", .{@tagName(filter)}) catch return false;
         },
         // Boolean parameters
@@ -593,7 +594,7 @@ fn _textToValue(
     id: clap.Id,
     value_text: [*:0]const u8,
     out_value: *f64,
-) callconv(.C) bool {
+) callconv(.c) bool {
     const zone = tracy.ZoneN(@src(), "Text To Value");
     defer zone.End();
 
@@ -733,7 +734,7 @@ pub fn _flush(
     clap_plugin: *const clap.Plugin,
     input_events: *const clap.events.InputEvents,
     output_events: *const clap.events.OutputEvents,
-) callconv(.C) void {
+) callconv(.c) void {
     const zone = tracy.ZoneN(@src(), "Flush parameters");
     defer zone.End();
 
@@ -753,7 +754,8 @@ pub fn _flush(
         if (plugin.params.events.items.len > 0) {
             params_did_change = true;
         }
-        while (plugin.params.events.popOrNull()) |*event| {
+        while (plugin.params.events.pop()) |event_value| {
+            var event = event_value;
             if (!output_events.tryPush(output_events, &event.header)) {
                 std.debug.panic("Unable to notify DAW of parameter event changes!", .{});
             }

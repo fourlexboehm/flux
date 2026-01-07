@@ -47,19 +47,19 @@ const MockHost = struct {
 
     /// query an extension. the returned pointer is owned by the host. it is forbidden to
     /// call it before `Plugin.init`. you may call in within `Plugin.init` call and after.
-    fn _getExtension(_: *const clap.Host, _: [*:0]const u8) callconv(.C) ?*const anyopaque {
+    fn _getExtension(_: *const clap.Host, _: [*:0]const u8) callconv(.c) ?*const anyopaque {
         return null;
     }
 
     /// request the host to deactivate then reactivate
     /// the plugin. the host may delay this operation.
-    fn _requestRestart(_: *const clap.Host) callconv(.C) void {}
+    fn _requestRestart(_: *const clap.Host) callconv(.c) void {}
     /// request the host to start processing the plugin. this is useful
     /// if you have external IO and need to wake the plugin up from "sleep"
-    fn _requestProcess(_: *const clap.Host) callconv(.C) void {}
+    fn _requestProcess(_: *const clap.Host) callconv(.c) void {}
 
     /// request the host to schedule a call to `Plugin.onMainThread`, on the main thread.
-    fn _requestCallback(clap_host: *const clap.Host) callconv(.C) void {
+    fn _requestCallback(clap_host: *const clap.Host) callconv(.c) void {
         const host = MockHost.fromClapHost(clap_host);
         if (host.plugin) |plugin| {
             plugin.plugin.onMainThread(&plugin.plugin);

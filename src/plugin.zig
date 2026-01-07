@@ -123,12 +123,12 @@ pub fn notifyHostParamsChanged(self: *Plugin) bool {
 }
 
 // Plugin callbacks
-fn _init(_: *const clap.Plugin) callconv(.C) bool {
+fn _init(_: *const clap.Plugin) callconv(.c) bool {
     std.log.debug("Plugin initialized!", .{});
     return true;
 }
 
-fn _destroy(clap_plugin: *const clap.Plugin) callconv(.C) void {
+fn _destroy(clap_plugin: *const clap.Plugin) callconv(.c) void {
     std.log.debug("Plugin destroyed!", .{});
     const plugin = fromClapPlugin(clap_plugin);
     plugin.deinit();
@@ -145,7 +145,7 @@ fn _activate(
     sample_rate: f64,
     _: u32,
     _: u32,
-) callconv(.C) bool {
+) callconv(.c) bool {
     std.log.debug("Activate", .{});
     const plugin = fromClapPlugin(clap_plugin);
     plugin.sample_rate = sample_rate;
@@ -161,20 +161,20 @@ fn _activate(
     return true;
 }
 
-fn _deactivate(_: *const clap.Plugin) callconv(.C) void {
+fn _deactivate(_: *const clap.Plugin) callconv(.c) void {
     std.log.debug("Deactivate", .{});
 }
 
-fn _startProcessing(_: *const clap.Plugin) callconv(.C) bool {
+fn _startProcessing(_: *const clap.Plugin) callconv(.c) bool {
     std.log.debug("Start processing", .{});
     return true;
 }
 
-fn _stopProcessing(_: *const clap.Plugin) callconv(.C) void {
+fn _stopProcessing(_: *const clap.Plugin) callconv(.c) void {
     std.log.debug("Stop processing", .{});
 }
 
-fn _reset(clap_plugin: *const clap.Plugin) callconv(.C) void {
+fn _reset(clap_plugin: *const clap.Plugin) callconv(.c) void {
     std.log.debug("Reset", .{});
 
     // Tell the host to rescan the parameters
@@ -183,7 +183,7 @@ fn _reset(clap_plugin: *const clap.Plugin) callconv(.C) void {
 }
 
 // This occurs on the audio thread
-fn _process(clap_plugin: *const clap.Plugin, clap_process: *const clap.Process) callconv(.C) clap.Process.Status {
+fn _process(clap_plugin: *const clap.Plugin, clap_process: *const clap.Process) callconv(.c) clap.Process.Status {
     const zone = tracy.ZoneN(@src(), "Process");
     defer zone.End();
 
@@ -309,7 +309,7 @@ const ext_gui = extensions.GUI.create();
 const ext_voice_info = extensions.VoiceInfo.create();
 const ext_thread_pool = extensions.ThreadPool.create();
 
-fn _getExtension(_: *const clap.Plugin, id: [*:0]const u8) callconv(.C) ?*const anyopaque {
+fn _getExtension(_: *const clap.Plugin, id: [*:0]const u8) callconv(.c) ?*const anyopaque {
     std.log.debug("Get extension called {s}!", .{id});
     if (std.mem.eql(u8, std.mem.span(id), clap.ext.audio_ports.id)) {
         return &ext_audio_ports;
@@ -336,7 +336,7 @@ fn _getExtension(_: *const clap.Plugin, id: [*:0]const u8) callconv(.C) ?*const 
     return null;
 }
 
-fn _onMainThread(clap_plugin: *const clap.Plugin) callconv(.C) void {
+fn _onMainThread(clap_plugin: *const clap.Plugin) callconv(.c) void {
     const plugin = fromClapPlugin(clap_plugin);
 
     if (plugin.jobs.notify_host_params_changed) {

@@ -192,7 +192,7 @@ pub fn create() clap.ext.gui.Plugin {
     };
 }
 
-fn _isApiSupported(_: *const clap.Plugin, _: [*:0]const u8, is_floating: bool) callconv(.C) bool {
+fn _isApiSupported(_: *const clap.Plugin, _: [*:0]const u8, is_floating: bool) callconv(.c) bool {
     if (is_floating) return builtin.os.tag == .linux;
     return true;
 }
@@ -200,7 +200,7 @@ fn _isApiSupported(_: *const clap.Plugin, _: [*:0]const u8, is_floating: bool) c
 /// returns true if the plugin has a preferred api. the host has no obligation to honor the plugin's preference,
 /// this is just a hint. `api` should be explicitly assigned as a pinter to one of the `window_api.*` constants,
 /// not copied.
-fn _getPreferredApi(_: *const clap.Plugin, _: *[*:0]const u8, is_floating: *bool) callconv(.C) bool {
+fn _getPreferredApi(_: *const clap.Plugin, _: *[*:0]const u8, is_floating: *bool) callconv(.c) bool {
     // We only support floating windows on Linux for the time being
     // I don't see how this can change given we can only have 1 ImGui backend at a time with ZGui
     // I could make a PR to change that but I am fine with this for now
@@ -214,7 +214,7 @@ fn _getPreferredApi(_: *const clap.Plugin, _: *[*:0]const u8, is_floating: *bool
 /// if `is_floating` is false then the plugin has to embed its window into the parent window (see `setParent`).
 /// after this call the gui may not be visible yet, don't forget to call `show`.
 /// returns true if the gui is successfully created.
-fn _create(clap_plugin: *const clap.Plugin, api: ?[*:0]const u8, is_floating: bool) callconv(.C) bool {
+fn _create(clap_plugin: *const clap.Plugin, api: ?[*:0]const u8, is_floating: bool) callconv(.c) bool {
     _ = api;
 
     std.log.debug("Host called GUI create!", .{});
@@ -230,7 +230,7 @@ fn _create(clap_plugin: *const clap.Plugin, api: ?[*:0]const u8, is_floating: bo
 }
 
 /// free all resources associated with the gui
-fn _destroy(clap_plugin: *const clap.Plugin) callconv(.C) void {
+fn _destroy(clap_plugin: *const clap.Plugin) callconv(.c) void {
     std.log.debug("Host called GUI destroy!", .{});
     const plugin: *Plugin = Plugin.fromClapPlugin(clap_plugin);
 
@@ -245,7 +245,7 @@ fn _destroy(clap_plugin: *const clap.Plugin) callconv(.C) void {
 /// to work out the saling factor itself by quering the os directly, then ignore
 /// the call. scale of 2 means 200% scaling. returns true when scaling could be
 /// applied. returns false when the call was ignored or scaling was not applied.
-fn _setScale(clap_plugin: *const clap.Plugin, scale_factor: f64) callconv(.C) bool {
+fn _setScale(clap_plugin: *const clap.Plugin, scale_factor: f64) callconv(.c) bool {
     _ = clap_plugin;
     _ = scale_factor;
     // const plugin: *Plugin = Plugin.fromClapPlugin(clap_plugin);
@@ -260,7 +260,7 @@ fn _setScale(clap_plugin: *const clap.Plugin, scale_factor: f64) callconv(.C) bo
 /// get the current size of the plugin gui. `Plugin.create` must have been called prior to
 /// asking for the size. returns true and populates `width.*` and `height.*` if the plugin
 /// successfully got the size.
-fn _getSize(clap_plugin: *const clap.Plugin, width: *u32, height: *u32) callconv(.C) bool {
+fn _getSize(clap_plugin: *const clap.Plugin, width: *u32, height: *u32) callconv(.c) bool {
     const plugin: *Plugin = Plugin.fromClapPlugin(clap_plugin);
     if (plugin.gui) |gui| {
         const window_size = gui.getSize();
@@ -272,12 +272,12 @@ fn _getSize(clap_plugin: *const clap.Plugin, width: *u32, height: *u32) callconv
 }
 
 /// returns true if the window is resizable (mouse drag)
-fn _canResize(_: *const clap.Plugin) callconv(.C) bool {
+fn _canResize(_: *const clap.Plugin) callconv(.c) bool {
     return false;
 }
 
 /// returns true and populates `hints.*` if the plugin can provide hints on how to resize the window.
-fn _getResizeHints(_: *const clap.Plugin, hints: *clap.ext.gui.ResizeHints) callconv(.C) bool {
+fn _getResizeHints(_: *const clap.Plugin, hints: *clap.ext.gui.ResizeHints) callconv(.c) bool {
     _ = hints;
     return false;
 }
@@ -285,7 +285,7 @@ fn _getResizeHints(_: *const clap.Plugin, hints: *clap.ext.gui.ResizeHints) call
 /// if the plugin gui is resizable, then the plugin will calculate the closest usable size which
 /// fits the given size. this method does not resize the gui. returns true and adjusts `width.*`
 /// and `height.*` if the plugin could adjust the given size.
-fn _adjustSize(_: *const clap.Plugin, width: *u32, height: *u32) callconv(.C) bool {
+fn _adjustSize(_: *const clap.Plugin, width: *u32, height: *u32) callconv(.c) bool {
     _ = width;
     _ = height;
     return false;
@@ -293,14 +293,14 @@ fn _adjustSize(_: *const clap.Plugin, width: *u32, height: *u32) callconv(.C) bo
 
 /// sets the plugin's window size. returns true if the
 /// plugin successfully resized its window to the given size.
-fn _setSize(_: *const clap.Plugin, width: u32, height: u32) callconv(.C) bool {
+fn _setSize(_: *const clap.Plugin, width: u32, height: u32) callconv(.c) bool {
     _ = width;
     _ = height;
     return false;
 }
 
 /// embeds the plugin window into the given window. returns true on success.
-fn _setParent(clap_plugin: *const clap.Plugin, plugin_window: *const clap.ext.gui.Window) callconv(.C) bool {
+fn _setParent(clap_plugin: *const clap.Plugin, plugin_window: *const clap.ext.gui.Window) callconv(.c) bool {
     const plugin: *Plugin = Plugin.fromClapPlugin(clap_plugin);
     if (plugin.gui) |gui| {
         switch (builtin.os.tag) {
@@ -321,12 +321,12 @@ fn _setParent(clap_plugin: *const clap.Plugin, plugin_window: *const clap.ext.gu
 }
 
 /// sets the plugin window to stay above the given window. returns true on success.
-fn _setTransient(_: *const clap.Plugin, _: *const clap.ext.gui.Window) callconv(.C) bool {
+fn _setTransient(_: *const clap.Plugin, _: *const clap.ext.gui.Window) callconv(.c) bool {
     return true;
 }
 
 /// suggests a window title. only for floating windows.
-fn _suggestTitle(clap_plugin: *const clap.Plugin, title: [*:0]const u8) callconv(.C) bool {
+fn _suggestTitle(clap_plugin: *const clap.Plugin, title: [*:0]const u8) callconv(.c) bool {
     const plugin: *Plugin = Plugin.fromClapPlugin(clap_plugin);
     if (plugin.gui) |gui| {
         gui.setTitle(std.mem.span(title));
@@ -336,7 +336,7 @@ fn _suggestTitle(clap_plugin: *const clap.Plugin, title: [*:0]const u8) callconv
 }
 
 /// show the plugin window. returns true on success.
-fn _show(clap_plugin: *const clap.Plugin) callconv(.C) bool {
+fn _show(clap_plugin: *const clap.Plugin) callconv(.c) bool {
     std.log.debug("GUI show() called", .{});
     const plugin: *Plugin = Plugin.fromClapPlugin(clap_plugin);
     if (plugin.gui) |gui| {
@@ -350,7 +350,7 @@ fn _show(clap_plugin: *const clap.Plugin) callconv(.C) bool {
 /// hide the plugin window. this method does not free the
 /// resources, just hides the window content, yet it may be
 /// a good idea to stop painting timers. returns true on success.
-fn _hide(clap_plugin: *const clap.Plugin) callconv(.C) bool {
+fn _hide(clap_plugin: *const clap.Plugin) callconv(.c) bool {
     std.log.debug("GUI hide() called", .{});
     const plugin: *Plugin = Plugin.fromClapPlugin(clap_plugin);
     if (plugin.gui) |gui| {

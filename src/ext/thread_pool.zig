@@ -12,7 +12,7 @@ pub fn create() clap.ext.thread_pool.Plugin {
 }
 
 /// function to be called by the host's thread pool.
-pub fn _exec(clap_plugin: *const clap.Plugin, task_index: u32) callconv(.C) void {
+pub fn _exec(clap_plugin: *const clap.Plugin, task_index: u32) callconv(.c) void {
     const plugin = Plugin.fromClapPlugin(clap_plugin);
     audio.processVoice(plugin, task_index) catch |err| {
         std.log.err("Unable to process voice data at index {d}: {}", .{ task_index, err });

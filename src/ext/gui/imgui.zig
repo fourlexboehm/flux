@@ -224,7 +224,7 @@ fn renderParam(gui: *GUI, param: Params.Parameter) void {
         return;
     }
 
-    const param_type = std.meta.intToEnum(Params.Parameter, index) catch {
+    const param_type = std.enums.fromInt(Params.Parameter, index) orelse {
         std.debug.panic("Unable to cast index to parameter enum! {d}", .{index});
         return;
     };

@@ -60,11 +60,11 @@ const ClapFactory = struct {
     }
 
     /// get the number of available plugins.
-    fn _getPluginCount(_: *const clap.PluginFactory) callconv(.C) u32 {
+    fn _getPluginCount(_: *const clap.PluginFactory) callconv(.c) u32 {
         return 1;
     }
     /// retrieve a plugin descriptor by its index. returns null in case of error. the descriptor must not be freed.
-    fn _getPluginDescriptor(_: *const clap.PluginFactory, index: u32) callconv(.C) ?*const clap.Plugin.Descriptor {
+    fn _getPluginDescriptor(_: *const clap.PluginFactory, index: u32) callconv(.c) ?*const clap.Plugin.Descriptor {
         std.log.debug("getPluginDescriptor invoked", .{});
         if (index == 0) {
             return &Plugin.desc;
@@ -78,7 +78,7 @@ const ClapFactory = struct {
         _: *const clap.PluginFactory,
         host: *const clap.Host,
         plugin_id: [*:0]const u8,
-    ) callconv(.C) ?*const clap.Plugin {
+    ) callconv(.c) ?*const clap.Plugin {
         if (!host.clap_version.isCompatible()) {
             return null;
         }

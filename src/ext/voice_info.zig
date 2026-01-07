@@ -11,7 +11,7 @@ pub fn create() clap.ext.voice_info.Plugin {
 }
 
 /// returns true on success and populates `info.*` with the voice info.
-fn _get(clap_plugin: *const clap.Plugin, info: *clap.ext.voice_info.Info) callconv(.C) bool {
+fn _get(clap_plugin: *const clap.Plugin, info: *clap.ext.voice_info.Info) callconv(.c) bool {
     const plugin = Plugin.fromClapPlugin(clap_plugin);
 
     const voice_count = plugin.voices.getVoiceCount();

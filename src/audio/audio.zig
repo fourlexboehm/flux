@@ -166,9 +166,9 @@ pub fn processVoice(plugin: *Plugin, voice_index: u32) !void {
     const voice: *Voice = voices.getVoice(@intCast(voice_index)).?;
 
     const osc1_wave_value: u32 = @intFromEnum(plugin.params.get(.WaveShape1).Wave);
-    const osc1_wave_shape: Wave = try std.meta.intToEnum(Wave, osc1_wave_value);
+    const osc1_wave_shape: Wave = std.enums.fromInt(Wave, osc1_wave_value) orelse return error.InvalidEnumTag;
     const osc2_wave_value: u32 = @intFromEnum(plugin.params.get(.WaveShape2).Wave);
-    const osc2_wave_shape: Wave = try std.meta.intToEnum(Wave, osc2_wave_value);
+    const osc2_wave_shape: Wave = std.enums.fromInt(Wave, osc2_wave_value) orelse return error.InvalidEnumTag;
     const osc1_detune: f64 = plugin.params.get(.Pitch1).Float;
     const osc2_detune: f64 = plugin.params.get(.Pitch2).Float;
     const osc1_octave: f64 = plugin.params.get(.Octave1).Float;
