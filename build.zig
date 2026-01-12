@@ -175,11 +175,16 @@ pub const CreateClapPluginStep = struct {
                     _ = try dir.updateFile(io, "macos/PkgInfo", dir, "zig-out/lib/ZSynth.clap/Contents/PkgInfo", .{});
                     if (builtin.mode == .Debug) {
                         // Also generate dynamic symbols for Tracy
-                        var child = std.process.Child.init(&.{ "dsymutil", "zig-out/lib/ZSynth.clap/Contents/MacOS/ZSynth" }, allocator);
-                        _ = try child.spawnAndWait(io);
+                        var child = try std.process.spawn(io, .{
+                            .argv = &.{ "dsymutil", "zig-out/lib/ZSynth.clap/Contents/MacOS/ZSynth" },
+                            .stdin = .ignore,
+                            .stdout = .ignore,
+                            .stderr = .ignore,
+                        });
+                        _ = try child.wait(io);
                     }
                     // Copy the CLAP plugin to the library folder
-                    try copyDirRecursiveToHome(allocator, io, "zig-out/lib/ZSynth.clap/", "Library/Audio/Presets/ZSynth.clap");
+                    try copyDirRecursiveToHome(allocator, io, &self.build.graph.environ_map, "zig-out/lib/ZSynth.clap/", "Library/Audio/Presets/ZSynth.clap");
                 },
                 .linux => {
                     _ = try dir.updateFile(io, "zig-out/lib/libzsynth.so", dir, "zig-out/lib/zsynth.clap", .{});
@@ -193,16 +198,21 @@ pub const CreateClapPluginStep = struct {
     }
 };
 
-fn copyDirRecursiveToHome(allocator: std.mem.Allocator, io: std.Io, source_dir: []const u8, dest_path_from_home: []const u8) !void {
-    const home = try std.process.getEnvVarOwned(allocator, "HOME");
-    defer allocator.free(home);
+fn copyDirRecursiveToHome(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    source_dir: []const u8,
+    dest_path_from_home: []const u8,
+) !void {
+    const home = environ_map.get("HOME") orelse return error.HomeNotFound;
     const dest_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ home, dest_path_from_home });
     defer allocator.free(dest_path);
-    var cp = std.process.Child.init(&.{
-        "cp",
-        "-R",
-        source_dir,
-        dest_path,
-    }, allocator);
-    _ = try cp.spawnAndWait(io);
+    var cp = try std.process.spawn(io, .{
+        .argv = &.{ "cp", "-R", source_dir, dest_path },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    _ = try cp.wait(io);
 }

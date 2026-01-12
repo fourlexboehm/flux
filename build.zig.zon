@@ -16,7 +16,7 @@
     // This field is optional.
     // This is currently advisory only; Zig does not yet do anything
     // with this value.
-    .minimum_zig_version = "0.16.0-dev.1912+0cbaaa5eb",
+    .minimum_zig_version = "0.16.0-dev.2145+ec25b1384",
 
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
@@ -25,16 +25,19 @@
     // internet connectivity.
     .dependencies = .{
         .regex = .{
-            .path = "deps/regex",
+            .url = "git+https://github.com/fourlexboehm/zig-regex#update-for-zig-0-16",
+            .hash = "regex-0.1.3-axC357zaAQB6PgR8IHCrbW3C_0Z8nkId-j9PZgOiJeEl",
         },
         .@"clap-bindings" = .{
             .path = "deps/clap-bindings",
         },
         .zopengl = .{
-            .path = "deps/zopengl",
+            .url = "git+https://github.com/fourlexboehm/zopengl#update-for-zig-0-16",
+            .hash = "zopengl-0.6.0-dev-5-tnz1S4CwAgYCQeg_9QQ3z9-zDAQcSH-L6DkTHzOlcG",
         },
         .@"mach-objc" = .{
-            .path = "deps/mach-objc",
+            .url = "git+https://github.com/fourlexboehm/mach-objc#update-for-zig-0-16",
+            .hash = "mach_objc-0.0.0-1EgmOfUyDQBeSL49Pd92V0r3CQpL4KIkiGqh5MsDt8ns",
         },
         .zglfw = .{
             .url = "git+https://github.com/zig-gamedev/zglfw#main",
