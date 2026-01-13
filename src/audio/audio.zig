@@ -10,24 +10,20 @@ const ADSR = @import("adsr.zig");
 const Voices = @import("voices.zig");
 
 const waves = @import("waves.zig");
+const polyblep = @import("polyblep.zig");
 
 const Wave = waves.Wave;
 const Parameter = Params.Parameter;
 const Voice = Voices.Voice;
 const Expression = Voices.Expression;
 
-fn calculatePhaseOffsetForSecondVoice(voice: *const Voice, previous_voice: ?*const Voice, sample_rate: f64) u64 {
-    if (previous_voice) |prev| {
-        const original_key = prev.getTunedKey(0, 0);
-        const original_frequency = waves.getFrequency(original_key);
-        const original_phase = (original_frequency / sample_rate) * @as(f64, @floatFromInt(prev.elapsed_frames));
-
-        const new_key = voice.getTunedKey(0, 0);
-        const new_frequency = waves.getFrequency(new_key);
-        // (new_frequency / sample_rate) * frames = original_phase
-        return @intFromFloat(original_phase * (sample_rate / new_frequency));
-    }
-    return 0;
+fn polyblepWaveform(wave: Wave) polyblep.Waveform {
+    return switch (wave) {
+        .Sine => .Sine,
+        .Saw => .Saw,
+        .Triangle => .Triangle,
+        .Square => .Square,
+    };
 }
 
 // Processing logic
@@ -56,19 +52,26 @@ pub fn processNoteChanges(plugin: *Plugin, event: *const clap.events.Header) voi
                 plugin.params.get(Parameter.Release).Float,
             );
 
-            var new_voice = Voice{};
-            new_voice = .{
-                .noteId = note_event.note_id,
-                .channel = note_event.channel,
-                .key = note_event.key,
-                .velocity = note_event.velocity,
-                .adsr = adsr,
-            };
+            var new_voice = Voice.init(plugin.sample_rate.?);
+            new_voice.noteId = note_event.note_id;
+            new_voice.channel = note_event.channel;
+            new_voice.key = note_event.key;
+            new_voice.velocity = note_event.velocity;
+            new_voice.adsr = adsr;
 
-            // Calculate phase offset based on previous voice
-            // if (plugin.voices.voices.getLastOrNull()) |previous_voice| {
-            //     new_voice.elapsed_frames = calculatePhaseOffsetForSecondVoice(&new_voice, &previous_voice, plugin.sample_rate.?);
-            // }
+            const osc1_wave_value: u32 = @intFromEnum(plugin.params.get(.WaveShape1).Wave);
+            const osc1_wave_shape: Wave = std.enums.fromInt(Wave, osc1_wave_value) orelse return;
+            const osc2_wave_value: u32 = @intFromEnum(plugin.params.get(.WaveShape2).Wave);
+            const osc2_wave_shape: Wave = std.enums.fromInt(Wave, osc2_wave_value) orelse return;
+            const osc1_detune: f64 = plugin.params.get(.Pitch1).Float;
+            const osc2_detune: f64 = plugin.params.get(.Pitch2).Float;
+            const osc1_octave: f64 = plugin.params.get(.Octave1).Float;
+            const osc2_octave: f64 = plugin.params.get(.Octave2).Float;
+
+            const osc1_key = new_voice.getTunedKey(osc1_detune, osc1_octave);
+            const osc2_key = new_voice.getTunedKey(osc2_detune, osc2_octave);
+            new_voice.osc1 = polyblep.PolyBLEP.init(plugin.sample_rate.?, polyblepWaveform(osc1_wave_shape), waves.getFrequency(osc1_key), 0.0);
+            new_voice.osc2 = polyblep.PolyBLEP.init(plugin.sample_rate.?, polyblepWaveform(osc2_wave_shape), waves.getFrequency(osc2_key), 0.0);
 
             plugin.voices.addVoice(new_voice) catch unreachable;
         },
@@ -100,15 +103,7 @@ pub fn processNoteChanges(plugin: *Plugin, event: *const clap.events.Header) voi
         .note_expression => {
             const note_expression_event: *const clap.events.NoteExpression = @ptrCast(@alignCast(event));
             if (Voices.getVoiceByKey(plugin.voices.voices.items, note_expression_event.key)) |voice| {
-                // When we detune, shift the phase appropriately to match the phase of the previous tuning
-                if (note_expression_event.expression_id == .tuning) {
-                    const voice_before_tuning = voice.*;
-
-                    voice.expression_values.set(note_expression_event.expression_id, note_expression_event.value);
-                    voice.elapsed_frames = calculatePhaseOffsetForSecondVoice(voice, &voice_before_tuning, plugin.sample_rate.?);
-                } else {
-                    voice.expression_values.set(note_expression_event.expression_id, note_expression_event.value);
-                }
+                voice.expression_values.set(note_expression_event.expression_id, note_expression_event.value);
             }
         },
         else => {},
@@ -181,26 +176,21 @@ pub fn processVoice(plugin: *Plugin, voice_index: u32) !void {
         var voice_sum_r: f64 = 0;
         var voice_sum_mono: f64 = 0;
         var wave: f64 = undefined;
-        const t: f64 = @floatFromInt(voice.elapsed_frames);
 
-        // retrieve the wave data from the pre-calculated table
         var osc1_wave: f64 = 0;
         var osc2_wave: f64 = 0;
-        if (oscillator_mix < 1) {
-            // Retrieve oscillator 1
-            osc1_wave = waves.get(&plugin.wave_table, osc1_wave_shape, plugin.sample_rate.?, voice.getTunedKey(osc1_detune, osc1_octave), t);
-        }
-        if (oscillator_mix > 0) {
-            // Retrieve oscillator 2
-            osc2_wave = waves.get(&plugin.wave_table, osc2_wave_shape, plugin.sample_rate.?, voice.getTunedKey(osc2_detune, osc2_octave), t);
-        }
+        const osc1_key = voice.getTunedKey(osc1_detune, osc1_octave);
+        const osc2_key = voice.getTunedKey(osc2_detune, osc2_octave);
+        voice.osc1.setWaveform(polyblepWaveform(osc1_wave_shape));
+        voice.osc2.setWaveform(polyblepWaveform(osc2_wave_shape));
+        voice.osc1.setFrequency(waves.getFrequency(osc1_key));
+        voice.osc2.setFrequency(waves.getFrequency(osc2_key));
+        osc1_wave = voice.osc1.getAndInc();
+        osc2_wave = voice.osc2.getAndInc();
 
         const zone_postprocess = tracy.ZoneN(@src(), "Wave post-process");
         defer zone_postprocess.End();
         wave = (osc1_wave * (1 - oscillator_mix)) + (osc2_wave * oscillator_mix);
-
-        // Elapse the voice time by a frame and update envelope
-        voice.elapsed_frames += 1;
 
         const pan = voice.expression_values.get(Expression.pan);
         voice_sum_mono += wave * voice.adsr.value * 0.5;

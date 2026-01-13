@@ -7,12 +7,21 @@ const static_data = @import("static_data");
 const GUI = @import("gui.zig");
 const Params = @import("../params.zig");
 
-const audio = @import("../../audio/audio.zig");
+const polyblep = @import("../../audio/polyblep.zig");
 const waves = @import("../../audio/waves.zig");
 const voices = @import("../../audio/voices.zig");
 const Voice = voices.Voice;
 const Wave = waves.Wave;
 const Filter = @import("../../audio/filter.zig").FilterType;
+
+fn polyblepWaveform(wave: Wave) polyblep.Waveform {
+    return switch (wave) {
+        .Sine => .Sine,
+        .Saw => .Saw,
+        .Triangle => .Triangle,
+        .Square => .Square,
+    };
+}
 
 pub fn init(gui: *GUI) !void {
     if (gui.imgui_initialized) {
@@ -158,7 +167,8 @@ pub fn draw(gui: *GUI) void {
                     // Calculate an example of what the audio engine is actually outputting for visualization purposes
                     const resolution = 256;
                     const sample_rate = gui.plugin.sample_rate.?;
-                    const diag_voice: Voice = .{ .key = @enumFromInt(57) };
+                    var diag_voice = Voice.init(sample_rate);
+                    diag_voice.key = @enumFromInt(57);
 
                     const osc1_wave_shape = gui.plugin.params.get(.WaveShape1).Wave;
                     const osc1_octave = gui.plugin.params.get(.Octave1).Float;
@@ -172,10 +182,14 @@ pub fn draw(gui: *GUI) void {
                     var osc1_yv: [resolution]f32 = [_]f32{0} ** resolution;
                     var osc2_yv: [resolution]f32 = [_]f32{0} ** resolution;
                     var sum_yv: [resolution]f32 = [_]f32{0} ** resolution;
+                    const osc1_key = diag_voice.getTunedKey(osc1_detune, osc1_octave);
+                    const osc2_key = diag_voice.getTunedKey(osc2_detune, osc2_octave);
+                    var osc1 = polyblep.PolyBLEP.init(sample_rate, polyblepWaveform(osc1_wave_shape), waves.getFrequency(osc1_key), 0.0);
+                    var osc2 = polyblep.PolyBLEP.init(sample_rate, polyblepWaveform(osc2_wave_shape), waves.getFrequency(osc2_key), 0.0);
                     for (0..resolution) |i| {
                         xv[i] = @floatFromInt(i);
-                        osc1_yv[i] = @floatCast(waves.get(&gui.plugin.wave_table, osc1_wave_shape, sample_rate, diag_voice.getTunedKey(osc1_detune, osc1_octave), @as(f64, @floatFromInt(i))));
-                        osc2_yv[i] = @floatCast(waves.get(&gui.plugin.wave_table, osc2_wave_shape, sample_rate, diag_voice.getTunedKey(osc2_detune, osc2_octave), @as(f64, @floatFromInt(i))));
+                        osc1_yv[i] = @floatCast(osc1.getAndInc());
+                        osc2_yv[i] = @floatCast(osc2.getAndInc());
                         sum_yv[i] = osc1_yv[i] + osc2_yv[i];
                         sum_yv[i] = (osc1_yv[i] * (1 - oscillator_mix)) + (osc2_yv[i] * oscillator_mix);
                     }

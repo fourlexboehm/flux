@@ -3,10 +3,7 @@ const Voices = @This();
 const std = @import("std");
 const clap = @import("clap-bindings");
 const ADSR = @import("adsr.zig");
-const Plugin = @import("../plugin.zig");
-
-const waves = @import("waves.zig");
-const Wave = waves.Wave;
+const polyblep = @import("polyblep.zig");
 
 pub const Expression = clap.events.NoteExpression.Id;
 pub const ExpressionValues = std.EnumArray(Expression, f64);
@@ -51,7 +48,8 @@ pub const Voice = struct {
     velocity: f64 = 0,
     expression_values: ExpressionValues = ExpressionValues.init(expression_values_default),
     adsr: ADSR = ADSR.init(0, 0, 1, 0),
-    elapsed_frames: u64 = 0,
+    osc1: polyblep.PolyBLEP = polyblep.PolyBLEP.init(1.0, .Sine, 0.0, 0.0),
+    osc2: polyblep.PolyBLEP = polyblep.PolyBLEP.init(1.0, .Sine, 0.0, 0.0),
 
     pub fn getTunedKey(self: *const Voice, oscillator_detune: f64, oscillator_octave: f64) f64 {
         const base_key: f64 = @floatFromInt(@intFromEnum(self.key));
@@ -59,6 +57,13 @@ pub const Voice = struct {
         // the base value of 440Hz is at 8', or an integer value of 0
         const octave_offset = oscillator_octave * 12;
         return base_key + self.expression_values.get(.tuning) + oscillator_detune + octave_offset;
+    }
+
+    pub fn init(sample_rate: f64) Voice {
+        return .{
+            .osc1 = polyblep.PolyBLEP.init(sample_rate, .Sine, 0.0, 0.0),
+            .osc2 = polyblep.PolyBLEP.init(sample_rate, .Sine, 0.0, 0.0),
+        };
     }
 };
 
