@@ -4,7 +4,6 @@ const std = @import("std");
 const clap = @import("clap-bindings");
 const tracy = @import("tracy");
 
-const options = @import("options");
 const extensions = @import("extensions.zig");
 
 const Params = @import("ext/params.zig");
@@ -13,12 +12,8 @@ const Voices = @import("audio/voices.zig");
 const Filter = @import("audio/filter.zig");
 
 const audio = @import("audio/audio.zig");
-const waves = @import("audio/waves.zig");
 
 const Parameter = Params.Parameter;
-const Voice = Voices.Voice;
-const WaveTable = waves.WaveTable;
-
 sample_rate: ?f64 = null,
 allocator: std.mem.Allocator,
 plugin: clap.Plugin,
@@ -28,7 +23,6 @@ params: Params,
 filter_left: Filter,
 filter_right: Filter,
 gui: ?*GUI,
-wave_table: WaveTable,
 
 jobs: Jobs = .{},
 job_mutex: std.Thread.Mutex,
@@ -62,11 +56,6 @@ pub fn init(allocator: std.mem.Allocator, host: *const clap.Host) !*Plugin {
     const params = Params.init(allocator);
 
     // Stack objects
-    const wave_table = if (options.generate_wavetables_comptime)
-        comptime waves.generateWaveTable()
-    else
-        waves.generateWaveTable();
-
     plugin.* = .{
         .allocator = allocator,
         .plugin = .{
@@ -86,7 +75,6 @@ pub fn init(allocator: std.mem.Allocator, host: *const clap.Host) !*Plugin {
         .host = host,
         .voices = voices,
         .params = params,
-        .wave_table = wave_table,
         .gui = null,
         .job_mutex = .{},
         .filter_left = undefined,
