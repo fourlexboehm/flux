@@ -3,12 +3,6 @@ const std = @import("std");
 const Step = std.Build.Step;
 
 pub fn build(b: *std.Build) void {
-    const generate_wavetables_comptime = b.option(
-        bool,
-        "generate_wavetables_comptime",
-        "Generate and embed the wavetables at compile time. Will significantly impact compile times, but will reduce initial plugin start time.",
-    ) orelse false;
-
     const wait_for_debugger = b.option(
         bool,
         "wait_for_debugger",
@@ -78,7 +72,6 @@ pub fn build(b: *std.Build) void {
 
     // Allow options to be passed in to source files
     var options = Step.Options.create(b);
-    options.addOption(bool, "generate_wavetables_comptime", generate_wavetables_comptime);
     options.addOption(bool, "wait_for_debugger", wait_for_debugger);
 
     // Something about this is very wrong...
@@ -184,7 +177,7 @@ pub const CreateClapPluginStep = struct {
                         _ = try child.wait(io);
                     }
                     // Copy the CLAP plugin to the library folder
-                    try copyDirRecursiveToHome(allocator, io, &self.build.graph.environ_map, "zig-out/lib/ZSynth.clap/", "Library/Audio/Presets/ZSynth.clap");
+                    try copyDirRecursiveToHome(allocator, io, &self.build.graph.environ_map, "zig-out/lib/ZSynth.clap/", "Library/Audio/Plug-Ins/CLAP/ZSynth.clap");
                 },
                 .linux => {
                     _ = try dir.updateFile(io, "zig-out/lib/libzsynth.so", dir, "zig-out/lib/zsynth.clap", .{});
