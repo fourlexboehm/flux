@@ -764,22 +764,6 @@ pub fn _flush(
 
     if (params_did_change) {
         std.log.debug("Parameters changed, updating voices and filter and notifying host", .{});
-        for (plugin.voices.voices.items) |*voice| {
-            voice.adsr.attack_time = plugin.params.get(Parameter.Attack).Float;
-            voice.adsr.decay_time = plugin.params.get(Parameter.Decay).Float;
-            voice.adsr.release_time = plugin.params.get(Parameter.Release).Float;
-            voice.adsr.original_sustain_value = plugin.params.get(Parameter.Sustain).Float;
-        }
-        _ = plugin.notifyHostParamsChanged();
-
-        const filter_type = plugin.params.get(.FilterType).Filter;
-        const q: f32 = @floatCast(plugin.params.get(.FilterQ).Float);
-        const sample_rate: f32 = @floatCast(plugin.sample_rate.?);
-        const cutoff_freq: f32 = @floatCast(plugin.params.get(.FilterFreq).Float);
-        plugin.filter_left.update(filter_type, cutoff_freq, sample_rate, q) catch |err| {
-            std.log.err("Unable to update filter parameters! {}", .{err});
-            return;
-        };
-        plugin.filter_right.update(filter_type, cutoff_freq, sample_rate, q) catch unreachable;
+        plugin.applyParamChanges(true);
     }
 }

@@ -1,5 +1,7 @@
 const std = @import("std");
 const zgui = @import("zgui");
+const zsynth = @import("zsynth-core");
+const zsynth_view = zsynth.View;
 
 pub const track_count = 4;
 pub const scene_count = 8;
@@ -23,12 +25,48 @@ pub const Track = struct {
     solo: bool,
 };
 
+pub const BottomMode = enum {
+    device,
+    sequencer,
+};
+
+pub const TrackPluginUI = struct {
+    choice_index: i32,
+    gui_open: bool,
+};
+
+pub const seq_steps = 16;
+pub const seq_rows = 12;
+
+const seq_step_width = 28.0;
+
+pub const SequencerClip = struct {
+    length_steps: u8,
+    notes: [seq_rows][seq_steps]bool,
+};
+
+const DragState = struct {
+    active: bool,
+    track: usize,
+    scene: usize,
+    start_len: u8,
+};
+
 pub const State = struct {
     playing: bool,
     bpm: f32,
     quantize_index: i32,
+    bottom_mode: BottomMode,
+    zsynth: ?*zsynth.Plugin,
+    selected_track: usize,
+    selected_scene: usize,
+    playhead_step: u8,
+    step_accum: f64,
+    drag: DragState,
     tracks: [track_count]Track,
+    track_plugins: [track_count]TrackPluginUI,
     clips: [track_count][scene_count]ClipSlot,
+    sequencer: [track_count][scene_count]SequencerClip,
 
     pub fn init() State {
         const tracks: [track_count]Track = .{
@@ -55,17 +93,49 @@ pub const State = struct {
                 };
             }
         }
+        var track_plugins: [track_count]TrackPluginUI = undefined;
+        for (&track_plugins) |*plugin| {
+            plugin.* = .{
+                .choice_index = 0,
+                .gui_open = false,
+            };
+        }
+        var sequencer: [track_count][scene_count]SequencerClip = undefined;
+        for (&sequencer) |*track_clips| {
+            for (track_clips) |*clip| {
+                clip.* = .{
+                    .length_steps = seq_steps,
+                    .notes = [_][seq_steps]bool{[_]bool{false} ** seq_steps} ** seq_rows,
+                };
+            }
+        }
+
         return .{
             .playing = true,
             .bpm = 120.0,
             .quantize_index = 2,
+            .bottom_mode = .device,
+            .zsynth = null,
+            .selected_track = 0,
+            .selected_scene = 0,
+            .playhead_step = 0,
+            .step_accum = 0,
+            .drag = .{
+                .active = false,
+                .track = 0,
+                .scene = 0,
+                .start_len = seq_steps,
+            },
             .tracks = tracks,
+            .track_plugins = track_plugins,
             .clips = clips,
+            .sequencer = sequencer,
         };
     }
 };
 
 const quantize_items: [:0]const u8 = "1/4\x001/2\x001\x002\x004\x00";
+const plugin_items: [:0]const u8 = "None\x00ZSynth\x00";
 
 pub fn draw(state: *State, ui_scale: f32) void {
     const display = zgui.io.getDisplaySize();
@@ -80,9 +150,33 @@ pub fn draw(state: *State, ui_scale: f32) void {
     } })) {
         drawTransport(state, ui_scale);
         zgui.separator();
-        drawClipGrid(state, ui_scale);
+        const avail = zgui.getContentRegionAvail();
+        const desired_bottom = 600.0 * ui_scale;
+        const bottom_height = @min(desired_bottom, avail[1] * 0.6);
+        const top_height = @max(0.0, avail[1] - bottom_height - (8.0 * ui_scale));
+        if (zgui.beginChild("clip_area##root", .{ .w = 0, .h = top_height })) {
+            drawClipGrid(state, ui_scale);
+        }
+        zgui.endChild();
+        zgui.spacing();
+        if (zgui.beginChild("bottom_panel##root", .{ .w = 0, .h = bottom_height })) {
+            drawBottomPanel(state, ui_scale);
+        }
+        zgui.endChild();
     }
     zgui.end();
+}
+
+pub fn tick(state: *State, dt: f64) void {
+    if (!state.playing) {
+        return;
+    }
+    const seconds_per_step = 60.0 / state.bpm / 4.0;
+    state.step_accum += dt;
+    while (state.step_accum >= seconds_per_step) {
+        state.step_accum -= seconds_per_step;
+        state.playhead_step = @intCast((state.playhead_step + 1) % seq_steps);
+    }
 }
 
 fn drawTransport(state: *State, ui_scale: f32) void {
@@ -124,6 +218,33 @@ fn drawClipGrid(state: *State, ui_scale: f32) void {
         zgui.textUnformatted(track.name);
     }
 
+    zgui.tableNextRow(.{ .min_row_height = 0 });
+    _ = zgui.tableNextColumn();
+    zgui.textUnformatted("Plugin");
+    for (&state.track_plugins, 0..) |*plugin_ui, t| {
+        var label_buf: [32]u8 = undefined;
+        var button_buf: [32]u8 = undefined;
+        const select_label = std.fmt.bufPrintZ(&label_buf, "##plugin_select_t{d}", .{t}) catch "##plugin_select";
+        const button_label = std.fmt.bufPrintZ(
+            &button_buf,
+            "{s}##plugin_t{d}",
+            .{ if (plugin_ui.gui_open) "Close" else "Open", t },
+        ) catch "Open##plugin";
+        _ = zgui.tableNextColumn();
+        zgui.setNextItemWidth(140.0 * ui_scale);
+        _ = zgui.combo(select_label, .{
+            .current_item = &plugin_ui.choice_index,
+            .items_separated_by_zeros = plugin_items,
+        });
+        zgui.sameLine(.{ .spacing = 6.0 * ui_scale });
+        if (zgui.button(button_label, .{
+            .w = 70.0 * ui_scale,
+            .h = 0,
+        })) {
+            plugin_ui.gui_open = !plugin_ui.gui_open;
+        }
+    }
+
     for (0..scene_count) |scene_index| {
         zgui.tableNextRow(.{ .min_row_height = row_height });
         _ = zgui.tableNextColumn();
@@ -142,28 +263,62 @@ fn drawClipGrid(state: *State, ui_scale: f32) void {
         for (0..track_count) |track_index| {
             _ = zgui.tableNextColumn();
             const slot = &state.clips[track_index][scene_index];
-            if (clipButton(slot, track_index, scene_index, ui_scale)) {
-                slot.state = switch (slot.state) {
-                    .empty => .playing,
-                    .stopped => .playing,
-                    .queued => .playing,
-                    .playing => .stopped,
-                };
+            const play_w = 34.0 * ui_scale;
+            const clip_w = 140.0 * ui_scale - play_w - (6.0 * ui_scale);
+            const clip_h = 56.0 * ui_scale;
+            const selected_clicked = clipButton(state, slot, track_index, scene_index, clip_w, clip_h, ui_scale);
+            zgui.sameLine(.{ .spacing = 6.0 * ui_scale });
+            var play_buf: [32]u8 = undefined;
+            const play_label = std.fmt.bufPrintZ(&play_buf, "Play##t{d}s{d}", .{ track_index, scene_index }) catch "Play##clip";
+            const play_clicked = zgui.button(play_label, .{ .w = play_w, .h = clip_h });
+
+            if (selected_clicked or play_clicked) {
+                state.selected_track = track_index;
+                state.selected_scene = scene_index;
+            }
+            if (play_clicked) {
+                if (slot.state == .playing) {
+                    slot.state = .stopped;
+                } else {
+                    for (0..scene_count) |slot_index| {
+                        state.clips[track_index][slot_index].state = if (slot_index == scene_index) .playing else .stopped;
+                    }
+                }
             }
         }
     }
 }
 
-fn clipButton(slot: *ClipSlot, track_index: usize, scene_index: usize, ui_scale: f32) bool {
+fn clipButton(
+    state: *State,
+    slot: *ClipSlot,
+    track_index: usize,
+    scene_index: usize,
+    width: f32,
+    height: f32,
+    ui_scale: f32,
+) bool {
+    const is_selected = state.selected_track == track_index and state.selected_scene == scene_index;
+    const base_w = width;
+    const base_h = height;
+    const button_w = base_w;
+    const button_h = base_h;
     const base_color = switch (slot.state) {
         .empty => [4]f32{ 0.18, 0.18, 0.2, 1.0 },
         .stopped => [4]f32{ 0.25, 0.25, 0.27, 1.0 },
         .queued => [4]f32{ 0.85, 0.55, 0.15, 1.0 },
         .playing => [4]f32{ 0.2, 0.7, 0.3, 1.0 },
     };
-    zgui.pushStyleColor4f(.{ .idx = .button, .c = base_color });
-    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ base_color[0] + 0.05, base_color[1] + 0.05, base_color[2] + 0.05, 1.0 } });
-    zgui.pushStyleColor4f(.{ .idx = .button_active, .c = .{ base_color[0] + 0.1, base_color[1] + 0.1, base_color[2] + 0.1, 1.0 } });
+    const select_boost: f32 = if (is_selected) 0.2 else 0.0;
+    const button_color = .{
+        @min(1.0, base_color[0] + select_boost),
+        @min(1.0, base_color[1] + select_boost),
+        @min(1.0, base_color[2] + select_boost),
+        1.0,
+    };
+    zgui.pushStyleColor4f(.{ .idx = .button, .c = button_color });
+    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ button_color[0] + 0.05, button_color[1] + 0.05, button_color[2] + 0.05, 1.0 } });
+    zgui.pushStyleColor4f(.{ .idx = .button_active, .c = .{ button_color[0] + 0.1, button_color[1] + 0.1, button_color[2] + 0.1, 1.0 } });
     defer zgui.popStyleColor(.{ .count = 3 });
 
     var label_buf: [64]u8 = undefined;
@@ -172,5 +327,140 @@ fn clipButton(slot: *ClipSlot, track_index: usize, scene_index: usize, ui_scale:
         "{s}##t{d}s{d}",
         .{ slot.label, track_index, scene_index },
     ) catch "Clip##fallback";
-    return zgui.button(label, .{ .w = 140.0 * ui_scale, .h = 56.0 * ui_scale });
+    const clicked = zgui.button(label, .{ .w = button_w, .h = button_h });
+
+    if (is_selected) {
+        const handle_w = 10.0 * ui_scale;
+        zgui.sameLine(.{ .spacing = -handle_w });
+        var handle_buf: [32]u8 = undefined;
+        const handle_label = std.fmt.bufPrintZ(&handle_buf, "##clip_resize_t{d}s{d}", .{ track_index, scene_index }) catch "##clip_resize";
+        _ = zgui.invisibleButton(handle_label, .{ .w = handle_w, .h = button_h });
+        if (zgui.isItemHovered(.{})) {
+            zgui.setMouseCursor(.resize_ew);
+        }
+        if (zgui.isItemActivated()) {
+            state.drag = .{
+                .active = true,
+                .track = track_index,
+                .scene = scene_index,
+                .start_len = state.sequencer[track_index][scene_index].length_steps,
+            };
+        }
+        if (state.drag.active and state.drag.track == track_index and state.drag.scene == scene_index and zgui.isItemActive()) {
+            const delta = zgui.getMouseDragDelta(.left, .{});
+            const delta_steps: i32 = @intFromFloat(@floor(delta[0] / (seq_step_width * ui_scale)));
+            var new_len: i32 = @as(i32, state.drag.start_len) + delta_steps;
+            new_len = std.math.clamp(new_len, 1, seq_steps);
+            state.sequencer[track_index][scene_index].length_steps = @intCast(new_len);
+        }
+        if (state.drag.active and state.drag.track == track_index and state.drag.scene == scene_index and zgui.isItemDeactivated()) {
+            state.drag.active = false;
+            zgui.resetMouseDragDelta(.left);
+        }
+    }
+
+    return clicked;
+}
+
+fn drawBottomPanel(state: *State, ui_scale: f32) void {
+    zgui.textUnformatted("Panel");
+    zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
+    if (zgui.button("Device##bottom", .{ .w = 90.0 * ui_scale, .h = 0 })) {
+        state.bottom_mode = .device;
+    }
+    zgui.sameLine(.{ .spacing = 6.0 * ui_scale });
+    if (zgui.button("Sequencer##bottom", .{ .w = 110.0 * ui_scale, .h = 0 })) {
+        state.bottom_mode = .sequencer;
+    }
+    zgui.separator();
+
+    switch (state.bottom_mode) {
+        .device => {
+            if (state.zsynth) |plugin| {
+                if (zgui.beginChild("zsynth_embed##device", .{ .w = 0, .h = 0, .child_flags = .{ .border = true } })) {
+                    zsynth_view.drawEmbedded(plugin, .{ .notify_host = false });
+                }
+                zgui.endChild();
+            } else {
+                zgui.textUnformatted("Device view (zsynth not loaded).");
+            }
+        },
+        .sequencer => {
+            drawSequencer(state, ui_scale);
+        },
+    }
+}
+
+fn drawSequencer(state: *State, ui_scale: f32) void {
+    const track_index = state.selected_track;
+    const scene_index = state.selected_scene;
+    const clip = &state.sequencer[track_index][scene_index];
+    const clip_label = state.clips[track_index][scene_index].label;
+    const length_steps = @max(@as(u8, 1), @min(clip.length_steps, seq_steps));
+
+    zgui.text("Sequencer: Track {d} / {s}", .{ track_index + 1, clip_label });
+    zgui.sameLine(.{ .spacing = 12.0 * ui_scale });
+    zgui.text("Length: {d} steps", .{length_steps});
+    zgui.separator();
+
+    const row_height = 24.0 * ui_scale;
+    const step_width = 28.0 * ui_scale;
+
+    if (!zgui.beginTable("sequencer_grid", .{
+        .column = seq_steps + 1,
+        .flags = .{ .borders = .all },
+    })) {
+        return;
+    }
+    defer zgui.endTable();
+
+    const note_labels = [_][]const u8{
+        "C4",
+        "C#4",
+        "D4",
+        "D#4",
+        "E4",
+        "F4",
+        "F#4",
+        "G4",
+        "G#4",
+        "A4",
+        "A#4",
+        "B4",
+    };
+
+    const playhead = @as(usize, @intCast(state.playhead_step % length_steps));
+
+    for (0..seq_rows) |row| {
+        zgui.tableNextRow(.{ .min_row_height = row_height });
+        _ = zgui.tableNextColumn();
+        zgui.textUnformatted(note_labels[seq_rows - 1 - row]);
+
+        for (0..seq_steps) |step| {
+            _ = zgui.tableNextColumn();
+            if (state.playing and step == playhead) {
+                const bg = zgui.colorConvertFloat4ToU32(.{ 0.16, 0.22, 0.32, 0.9 });
+                zgui.tableSetBgColor(.{ .target = .cell_bg, .color = bg });
+            }
+            const within_length = step < length_steps;
+            const active = clip.notes[seq_rows - 1 - row][step];
+            const color = if (active)
+                [4]f32{ 0.3, 0.75, 0.45, 1.0 }
+            else if (!within_length)
+                [4]f32{ 0.12, 0.12, 0.14, 1.0 }
+            else
+                [4]f32{ 0.18, 0.18, 0.22, 1.0 };
+            zgui.pushStyleColor4f(.{ .idx = .button, .c = color });
+            zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ color[0] + 0.06, color[1] + 0.06, color[2] + 0.06, 1.0 } });
+            zgui.pushStyleColor4f(.{ .idx = .button_active, .c = .{ color[0] + 0.12, color[1] + 0.12, color[2] + 0.12, 1.0 } });
+            defer zgui.popStyleColor(.{ .count = 3 });
+            var label_buf: [32]u8 = undefined;
+            const label = std.fmt.bufPrintZ(&label_buf, "##s{d}r{d}", .{ step, row }) catch "##seq";
+            if (zgui.button(label, .{ .w = step_width, .h = row_height - (4.0 * ui_scale) })) {
+                if (within_length) {
+                    clip.notes[seq_rows - 1 - row][step] = !active;
+                }
+            }
+        }
+    }
 }

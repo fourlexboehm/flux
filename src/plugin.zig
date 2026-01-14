@@ -1,4 +1,4 @@
-const Plugin = @This();
+pub const Plugin = @This();
 
 const std = @import("std");
 const clap = @import("clap-bindings");
@@ -8,6 +8,7 @@ const extensions = @import("extensions.zig");
 
 const Params = @import("ext/params.zig");
 const GUI = @import("ext/gui/gui.zig");
+const options = @import("options");
 const Voices = @import("audio/voices.zig");
 const Filter = @import("audio/filter.zig");
 
@@ -108,6 +109,33 @@ pub fn notifyHostParamsChanged(self: *Plugin) bool {
 
     self.jobs.notify_host_params_changed = true;
     return true;
+}
+
+pub fn applyParamChanges(self: *Plugin, notify_host: bool) void {
+    if (self.sample_rate == null) {
+        return;
+    }
+
+    for (self.voices.voices.items) |*voice| {
+        voice.adsr.attack_time = self.params.get(Parameter.Attack).Float;
+        voice.adsr.decay_time = self.params.get(Parameter.Decay).Float;
+        voice.adsr.release_time = self.params.get(Parameter.Release).Float;
+        voice.adsr.original_sustain_value = self.params.get(Parameter.Sustain).Float;
+    }
+
+    if (notify_host) {
+        _ = self.notifyHostParamsChanged();
+    }
+
+    const filter_type = self.params.get(.FilterType).Filter;
+    const q: f32 = @floatCast(self.params.get(.FilterQ).Float);
+    const sample_rate: f32 = @floatCast(self.sample_rate.?);
+    const cutoff_freq: f32 = @floatCast(self.params.get(.FilterFreq).Float);
+    self.filter_left.update(filter_type, cutoff_freq, sample_rate, q) catch |err| {
+        std.log.err("Unable to update filter parameters! {}", .{err});
+        return;
+    };
+    self.filter_right.update(filter_type, cutoff_freq, sample_rate, q) catch unreachable;
 }
 
 // Plugin callbacks
@@ -311,7 +339,7 @@ fn _getExtension(_: *const clap.Plugin, id: [*:0]const u8) callconv(.c) ?*const 
     if (std.mem.eql(u8, std.mem.span(id), clap.ext.state.id)) {
         return &ext_state;
     }
-    if (std.mem.eql(u8, std.mem.span(id), clap.ext.gui.id)) {
+    if (options.enable_gui and std.mem.eql(u8, std.mem.span(id), clap.ext.gui.id)) {
         return &ext_gui;
     }
     if (std.mem.eql(u8, std.mem.span(id), clap.ext.voice_info.id)) {
