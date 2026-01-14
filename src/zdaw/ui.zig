@@ -42,7 +42,7 @@ const seq_step_width = 28.0;
 
 pub const SequencerClip = struct {
     length_steps: u8,
-    notes: [seq_rows][seq_steps]bool,
+    notes: [seq_rows][seq_steps]u8,
 };
 
 const DragState = struct {
@@ -50,6 +50,21 @@ const DragState = struct {
     track: usize,
     scene: usize,
     start_len: u8,
+};
+
+const NoteDragState = struct {
+    const Mode = enum {
+        create,
+        resize,
+    };
+
+    active: bool,
+    track: usize,
+    scene: usize,
+    row: usize,
+    start_step: u8,
+    start_len: u8,
+    mode: Mode,
 };
 
 pub const State = struct {
@@ -63,6 +78,7 @@ pub const State = struct {
     playhead_step: u8,
     step_accum: f64,
     drag: DragState,
+    note_drag: NoteDragState,
     tracks: [track_count]Track,
     track_plugins: [track_count]TrackPluginUI,
     clips: [track_count][scene_count]ClipSlot,
@@ -105,7 +121,7 @@ pub const State = struct {
             for (track_clips) |*clip| {
                 clip.* = .{
                     .length_steps = seq_steps,
-                    .notes = [_][seq_steps]bool{[_]bool{false} ** seq_steps} ** seq_rows,
+                    .notes = [_][seq_steps]u8{[_]u8{0} ** seq_steps} ** seq_rows,
                 };
             }
         }
@@ -125,6 +141,15 @@ pub const State = struct {
                 .track = 0,
                 .scene = 0,
                 .start_len = seq_steps,
+            },
+            .note_drag = .{
+                .active = false,
+                .track = 0,
+                .scene = 0,
+                .row = 0,
+                .start_step = 0,
+                .start_len = 0,
+                .mode = .create,
             },
             .tracks = tracks,
             .track_plugins = track_plugins,
@@ -186,6 +211,8 @@ fn drawTransport(state: *State, ui_scale: f32) void {
     zgui.sameLine(.{ .spacing = spacing });
     if (zgui.button(if (state.playing) "Stop##transport" else "Play##transport", .{ .w = 80, .h = 0 })) {
         state.playing = !state.playing;
+        state.playhead_step = 0;
+        state.step_accum = 0;
     }
     zgui.sameLine(.{ .spacing = spacing });
     zgui.textUnformatted("BPM");
@@ -403,8 +430,8 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
     zgui.text("Length: {d} steps", .{length_steps});
     zgui.separator();
 
-    const row_height = 24.0 * ui_scale;
-    const step_width = 28.0 * ui_scale;
+    const row_height = 30.0 * ui_scale;
+    const step_width = 32.0 * ui_scale;
 
     if (!zgui.beginTable("sequencer_grid", .{
         .column = seq_steps + 1,
@@ -434,7 +461,8 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
     for (0..seq_rows) |row| {
         zgui.tableNextRow(.{ .min_row_height = row_height });
         _ = zgui.tableNextColumn();
-        zgui.textUnformatted(note_labels[seq_rows - 1 - row]);
+        const note_row = seq_rows - 1 - row;
+        zgui.textUnformatted(note_labels[note_row]);
 
         for (0..seq_steps) |step| {
             _ = zgui.tableNextColumn();
@@ -443,24 +471,159 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
                 zgui.tableSetBgColor(.{ .target = .cell_bg, .color = bg });
             }
             const within_length = step < length_steps;
-            const active = clip.notes[seq_rows - 1 - row][step];
-            const color = if (active)
-                [4]f32{ 0.3, 0.75, 0.45, 1.0 }
-            else if (!within_length)
-                [4]f32{ 0.12, 0.12, 0.14, 1.0 }
+            const note_start = findNoteStart(clip, note_row, step, length_steps);
+            const pos = zgui.getCursorScreenPos();
+            const bg_color = if (!within_length)
+                zgui.colorConvertFloat4ToU32(.{ 0.12, 0.12, 0.14, 1.0 })
             else
-                [4]f32{ 0.18, 0.18, 0.22, 1.0 };
-            zgui.pushStyleColor4f(.{ .idx = .button, .c = color });
-            zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ color[0] + 0.06, color[1] + 0.06, color[2] + 0.06, 1.0 } });
-            zgui.pushStyleColor4f(.{ .idx = .button_active, .c = .{ color[0] + 0.12, color[1] + 0.12, color[2] + 0.12, 1.0 } });
-            defer zgui.popStyleColor(.{ .count = 3 });
-            var label_buf: [32]u8 = undefined;
-            const label = std.fmt.bufPrintZ(&label_buf, "##s{d}r{d}", .{ step, row }) catch "##seq";
-            if (zgui.button(label, .{ .w = step_width, .h = row_height - (4.0 * ui_scale) })) {
-                if (within_length) {
-                    clip.notes[seq_rows - 1 - row][step] = !active;
+                zgui.colorConvertFloat4ToU32(.{ 0.18, 0.18, 0.22, 1.0 });
+
+            if (note_start != null and note_start.? == step) {
+                const note_len = noteLength(clip, note_row, step, length_steps);
+                const note_w = step_width * @as(f32, @floatFromInt(note_len));
+                const note_color = zgui.colorConvertFloat4ToU32(.{ 0.3, 0.75, 0.45, 1.0 });
+                const draw_list = zgui.getWindowDrawList();
+                draw_list.addRectFilled(.{
+                    .pmin = pos,
+                    .pmax = .{ pos[0] + note_w, pos[1] + row_height },
+                    .col = note_color,
+                    .rounding = 4.0 * ui_scale,
+                    .flags = zgui.DrawFlags.round_corners_all,
+                });
+
+                var body_buf: [48]u8 = undefined;
+                const body_id = std.fmt.bufPrintZ(&body_buf, "##note_body_t{d}s{d}r{d}st{d}", .{
+                    state.selected_track,
+                    state.selected_scene,
+                    note_row,
+                    step,
+                }) catch "##note_body";
+                _ = zgui.invisibleButton(body_id, .{ .w = step_width, .h = row_height });
+                const mouse = zgui.getMousePos();
+                const handle_w = 8.0 * ui_scale;
+                const near_edge = mouse[0] >= (pos[0] + note_w - handle_w) and mouse[0] <= (pos[0] + note_w);
+                if (zgui.isItemHovered(.{}) and near_edge) {
+                    zgui.setMouseCursor(.resize_ew);
+                }
+                if (zgui.isItemActivated() and near_edge) {
+                    state.note_drag = .{
+                        .active = true,
+                        .track = state.selected_track,
+                        .scene = state.selected_scene,
+                        .row = note_row,
+                        .start_step = @intCast(step),
+                        .start_len = note_len,
+                        .mode = .resize,
+                    };
+                }
+                if (state.note_drag.active and state.note_drag.mode == .resize and state.note_drag.track == state.selected_track and state.note_drag.scene == state.selected_scene and state.note_drag.row == note_row and state.note_drag.start_step == step and zgui.isItemActive()) {
+                    const delta = zgui.getMouseDragDelta(.left, .{});
+                    const delta_steps: i32 = @intFromFloat(@floor(delta[0] / step_width));
+                    const max_len = @as(i32, length_steps) - @as(i32, @intCast(step));
+                    var new_len: i32 = @as(i32, state.note_drag.start_len) + delta_steps;
+                    new_len = std.math.clamp(new_len, 1, max_len);
+                    clearNotesInRange(clip, note_row, step, @intCast(new_len));
+                    clip.notes[note_row][step] = @intCast(new_len);
+                }
+                if (state.note_drag.active and state.note_drag.mode == .resize and state.note_drag.track == state.selected_track and state.note_drag.scene == state.selected_scene and state.note_drag.row == note_row and state.note_drag.start_step == step and zgui.isItemDeactivated()) {
+                    state.note_drag.active = false;
+                    zgui.resetMouseDragDelta(.left);
+                }
+                if (!near_edge and zgui.isItemClicked(.left)) {
+                    clip.notes[note_row][step] = 0;
+                }
+            } else if (note_start != null) {
+                var body_buf: [48]u8 = undefined;
+                const body_id = std.fmt.bufPrintZ(&body_buf, "##note_mid_t{d}s{d}r{d}st{d}", .{
+                    state.selected_track,
+                    state.selected_scene,
+                    note_row,
+                    step,
+                }) catch "##note_mid";
+                if (zgui.invisibleButton(body_id, .{ .w = step_width, .h = row_height })) {
+                    const start = note_start.?;
+                    clip.notes[note_row][start] = 0;
+                }
+            } else {
+                const draw_list = zgui.getWindowDrawList();
+                draw_list.addRectFilled(.{
+                    .pmin = pos,
+                    .pmax = .{ pos[0] + step_width, pos[1] + row_height },
+                    .col = bg_color,
+                });
+                var label_buf: [32]u8 = undefined;
+                const label = std.fmt.bufPrintZ(&label_buf, "##s{d}r{d}", .{ step, row }) catch "##seq";
+                if (zgui.invisibleButton(label, .{ .w = step_width, .h = row_height })) {
+                    if (within_length) {
+                        clearNoteAtStep(clip, note_row, step, length_steps);
+                        clip.notes[note_row][step] = 1;
+                    }
+                }
+                if (within_length and zgui.isItemActivated()) {
+                    clearNoteAtStep(clip, note_row, step, length_steps);
+                    clip.notes[note_row][step] = 1;
+                    state.note_drag = .{
+                        .active = true,
+                        .track = state.selected_track,
+                        .scene = state.selected_scene,
+                        .row = note_row,
+                        .start_step = @intCast(step),
+                        .start_len = 1,
+                        .mode = .create,
+                    };
+                }
+                if (state.note_drag.active and state.note_drag.mode == .create and state.note_drag.track == state.selected_track and state.note_drag.scene == state.selected_scene and state.note_drag.row == note_row and state.note_drag.start_step == step and zgui.isItemActive()) {
+                    const delta = zgui.getMouseDragDelta(.left, .{});
+                    const delta_steps: i32 = @intFromFloat(@floor(delta[0] / step_width));
+                    const max_len = @as(i32, length_steps) - @as(i32, @intCast(step));
+                    var new_len: i32 = @as(i32, state.note_drag.start_len) + delta_steps;
+                    new_len = std.math.clamp(new_len, 1, max_len);
+                    clearNotesInRange(clip, note_row, step, @intCast(new_len));
+                    clip.notes[note_row][step] = @intCast(new_len);
+                }
+                if (state.note_drag.active and state.note_drag.mode == .create and state.note_drag.track == state.selected_track and state.note_drag.scene == state.selected_scene and state.note_drag.row == note_row and state.note_drag.start_step == step and zgui.isItemDeactivated()) {
+                    state.note_drag.active = false;
+                    zgui.resetMouseDragDelta(.left);
                 }
             }
         }
+    }
+}
+
+fn findNoteStart(clip: *const SequencerClip, row: usize, step: usize, length_steps: u8) ?usize {
+    var idx: i32 = @intCast(step);
+    while (idx >= 0) : (idx -= 1) {
+        const start: usize = @intCast(idx);
+        const len = clip.notes[row][start];
+        if (len == 0) continue;
+        if (start >= length_steps) return null;
+        const max_len = length_steps - @as(u8, @intCast(start));
+        const clamped_len = if (len > max_len) max_len else len;
+        if (step < start + clamped_len) {
+            return start;
+        }
+    }
+    return null;
+}
+
+fn noteLength(clip: *const SequencerClip, row: usize, start: usize, length_steps: u8) u8 {
+    const len = clip.notes[row][start];
+    if (start >= length_steps) return 0;
+    const max_len = length_steps - @as(u8, @intCast(start));
+    return if (len > max_len) max_len else len;
+}
+
+fn clearNoteAtStep(clip: *SequencerClip, row: usize, step: usize, length_steps: u8) void {
+    if (findNoteStart(clip, row, step, length_steps)) |start| {
+        clip.notes[row][start] = 0;
+    }
+}
+
+fn clearNotesInRange(clip: *SequencerClip, row: usize, start: usize, len: usize) void {
+    const end = start + len;
+    for (start..end) |idx| {
+        if (idx >= seq_steps) break;
+        if (idx == start) continue;
+        clip.notes[row][idx] = 0;
     }
 }
