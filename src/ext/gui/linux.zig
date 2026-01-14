@@ -89,6 +89,7 @@ pub fn draw(gui: *GUI) !void {
 
     const fb_size = window.getFramebufferSize();
 
+    imgui.setContext(gui);
     zgui.backend.newFrame(@intCast(fb_size[0]), @intCast(fb_size[1]));
     imgui.draw(gui);
     zgui.backend.draw();

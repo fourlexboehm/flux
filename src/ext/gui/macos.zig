@@ -112,6 +112,7 @@ pub fn draw(gui: *GUI) !void {
 
     const framebuffer_width = gui.width * @as(u32, @intFromFloat(gui.scale_factor));
     const framebuffer_height = gui.height * @as(u32, @intFromFloat(gui.scale_factor));
+    imgui.setContext(gui);
     zgui.backend.newFrame(framebuffer_width, framebuffer_height, data.view, descriptor);
     imgui.draw(gui);
 

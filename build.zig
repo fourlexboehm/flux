@@ -34,11 +34,6 @@ pub fn build(b: *std.Build) void {
             else => .glfw_opengl3,
         },
     });
-    const zgui_app = b.dependency("zgui", .{
-        .shared = false,
-        .with_implot = false,
-        .backend = .glfw_opengl3,
-    });
     const zglfw = b.dependency("zglfw", .{
         .shared = false,
         .x11 = true,
@@ -69,6 +64,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const zsynth_core = b.createModule(.{
+        .root_source_file = b.path("src/core.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     const lib = b.addLibrary(.{
         .name = "zsynth",
@@ -88,6 +88,10 @@ pub fn build(b: *std.Build) void {
     // Allow options to be passed in to source files
     var options = Step.Options.create(b);
     options.addOption(bool, "wait_for_debugger", wait_for_debugger);
+    options.addOption(bool, "enable_gui", true);
+    var options_core = Step.Options.create(b);
+    options_core.addOption(bool, "wait_for_debugger", wait_for_debugger);
+    options_core.addOption(bool, "enable_gui", false);
 
     // Something about this is very wrong...
     const font_data = @embedFile("assets/Roboto-Medium.ttf");
@@ -125,6 +129,18 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    zsynth_core.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
+    zsynth_core.addImport("regex", regex.module("regex"));
+    zsynth_core.addImport("zgui", zgui.module("root"));
+    zsynth_core.addImport("zglfw", zglfw.module("root"));
+    zsynth_core.addImport("zopengl", zopengl.module("root"));
+    zsynth_core.addImport("tracy", ztracy.module("root"));
+    zsynth_core.addOptions("options", options_core);
+    zsynth_core.addOptions("static_data", static_data);
+    if (builtin.os.tag == .macos) {
+        zsynth_core.addImport("objc", objc.module("mach-objc"));
+    }
+
     // Specific steps for different targets
     // Library
     const rename_dll_step = CreateClapPluginStep.create(b, lib);
@@ -141,15 +157,22 @@ pub fn build(b: *std.Build) void {
     }
 
     zdaw.root_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
+    zdaw.root_module.addImport("zsynth-core", zsynth_core);
     zdaw.root_module.addImport("zaudio", zaudio.module("root"));
-    zdaw.root_module.addImport("zgui", zgui_app.module("root"));
-    zdaw.root_module.linkLibrary(zgui_app.artifact("imgui"));
-    zdaw.root_module.addImport("zglfw", zglfw.module("root"));
-    zdaw.root_module.linkLibrary(zglfw.artifact("glfw"));
-    zdaw.root_module.addImport("zopengl", zopengl.module("root"));
-    zdaw.root_module.linkLibrary(zopengl.artifact("zopengl"));
+    zdaw.root_module.addImport("zgui", zgui.module("root"));
+    zdaw.root_module.linkLibrary(zgui.artifact("imgui"));
     zdaw.root_module.linkLibrary(zaudio.artifact("miniaudio"));
-
+    zdaw.root_module.addImport("tracy", ztracy.module("root"));
+    zdaw.root_module.linkLibrary(ztracy.artifact("tracy"));
+    if (builtin.os.tag == .macos) {
+        zdaw.root_module.addImport("objc", objc.module("mach-objc"));
+        zdaw.root_module.linkFramework("AppKit", .{});
+        zdaw.root_module.linkFramework("Cocoa", .{});
+        zdaw.root_module.linkFramework("CoreGraphics", .{});
+        zdaw.root_module.linkFramework("Foundation", .{});
+        zdaw.root_module.linkFramework("Metal", .{});
+        zdaw.root_module.linkFramework("QuartzCore", .{});
+    }
     b.installArtifact(zdaw);
 }
 
