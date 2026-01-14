@@ -174,6 +174,10 @@ pub fn build(b: *std.Build) void {
         zdaw.root_module.linkFramework("QuartzCore", .{});
     }
     b.installArtifact(zdaw);
+
+    const run_daw = b.addRunArtifact(zdaw);
+    const run_daw_step = b.step("run-daw", "Run the zdaw application");
+    run_daw_step.dependOn(&run_daw.step);
 }
 
 pub const CreateClapPluginStep = struct {

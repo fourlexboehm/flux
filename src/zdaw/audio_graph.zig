@@ -109,7 +109,7 @@ pub const NoteSource = struct {
         const length_steps = @max(@as(u8, 1), @min(clip.length_steps, ui.seq_steps));
         const step_index: usize = @intCast(self.current_step % length_steps);
         for (0..ui.seq_rows) |row| {
-            const now_active = clip.notes[row][step_index];
+            const now_active = noteIsActive(clip, row, step_index, length_steps);
             const was_active = self.active_notes[row];
             if (now_active and !was_active) {
                 self.event_list.pushNote(.{
@@ -219,6 +219,22 @@ pub const NoteSource = struct {
         return &self.input_events;
     }
 };
+
+fn noteIsActive(clip: *const ui.SequencerClip, row: usize, step: usize, length_steps: u8) bool {
+    var idx: i32 = @intCast(step);
+    while (idx >= 0) : (idx -= 1) {
+        const start: usize = @intCast(idx);
+        const len = clip.notes[row][start];
+        if (len == 0) continue;
+        if (start >= length_steps) continue;
+        const max_len: u8 = length_steps - @as(u8, @intCast(start));
+        const clamped_len = if (len > max_len) max_len else len;
+        if (step < start + clamped_len) {
+            return true;
+        }
+    }
+    return false;
+}
 
 pub const SynthNode = struct {
     plugin: *zsynth.Plugin,
