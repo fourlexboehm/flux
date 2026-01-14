@@ -7,6 +7,7 @@ const zgui = @import("zgui");
 const objc = @import("objc");
 
 const ui = @import("ui.zig");
+const audio_engine = @import("audio_engine.zig");
 const zsynth = @import("zsynth-core");
 
 const SampleRate = 48_000;
@@ -179,15 +180,14 @@ const AppWindow = struct {
 };
 
 fn dataCallback(
-    _: *zaudio.Device,
+    device: *zaudio.Device,
     output: ?*anyopaque,
     _: ?*const anyopaque,
     frame_count: u32,
 ) callconv(.c) void {
-    if (output == null) return;
-    const out_ptr: [*]f32 = @ptrCast(@alignCast(output.?));
-    const sample_count: usize = @as(usize, frame_count) * Channels;
-    @memset(out_ptr[0..sample_count], 0);
+    const user_data = zaudio.Device.getUserData(device) orelse return;
+    const engine: *audio_engine.AudioEngine = @ptrCast(@alignCast(user_data));
+    engine.render(device, output, frame_count);
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -209,11 +209,40 @@ pub fn main(init: std.process.Init) !void {
     zaudio.init(allocator);
     defer zaudio.deinit();
 
+    var state = ui.State.init();
+    var synths: [ui.track_count]*zsynth.Plugin = undefined;
+    var synth_count: usize = 0;
+    errdefer {
+        for (synths[0..synth_count]) |plugin| {
+            plugin.deinit();
+        }
+    }
+    for (0..ui.track_count) |track_index| {
+        const plugin = try zsynth.Plugin.init(allocator, &host.clap_host);
+        if (!plugin.plugin.init(&plugin.plugin)) return error.PluginInitFailed;
+        if (!plugin.plugin.activate(&plugin.plugin, SampleRate, 1, MaxFrames)) {
+            return error.PluginActivateFailed;
+        }
+        synths[track_index] = plugin;
+        synth_count += 1;
+    }
+    defer {
+        for (synths[0..synth_count]) |plugin| {
+            plugin.deinit();
+        }
+    }
+    state.zsynth = synths[0];
+
+    var engine = try audio_engine.AudioEngine.init(allocator, SampleRate, MaxFrames, synths);
+    defer engine.deinit();
+    engine.updateFromUi(&state);
+
     var device_config = zaudio.Device.Config.init(.playback);
     device_config.playback.format = zaudio.Format.float32;
     device_config.playback.channels = Channels;
     device_config.sample_rate = SampleRate;
     device_config.data_callback = dataCallback;
+    device_config.user_data = &engine;
 
     var device = try zaudio.Device.create(null, device_config);
     defer device.destroy();
@@ -232,15 +261,6 @@ pub fn main(init: std.process.Init) !void {
     zgui.backend.init(app_window.view, app_window.device);
     defer zgui.backend.deinit();
 
-    var state = ui.State.init();
-    var embedded_synth = try zsynth.Plugin.init(allocator, &host.clap_host);
-    defer embedded_synth.deinit();
-    if (!embedded_synth.plugin.init(&embedded_synth.plugin)) return error.PluginInitFailed;
-    if (!embedded_synth.plugin.activate(&embedded_synth.plugin, SampleRate, 1, MaxFrames)) {
-        return error.PluginActivateFailed;
-    }
-    state.zsynth = embedded_synth;
-
     var last_time = try std.time.Instant.now();
 
     std.log.info("zdaw running (Ctrl+C to quit)", .{});
@@ -252,6 +272,8 @@ pub fn main(init: std.process.Init) !void {
             const dt = @as(f64, @floatFromInt(delta_ns)) / std.time.ns_per_s;
             ui.tick(&state, dt);
         }
+        state.zsynth = synths[state.selected_track];
+        engine.updateFromUi(&state);
         const wants_keyboard = zgui.io.getWantCaptureKeyboard();
         if (!wants_keyboard and zgui.isKeyPressed(.space, false)) {
             state.playing = !state.playing;
