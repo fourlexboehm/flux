@@ -34,12 +34,18 @@ pub fn build(b: *std.Build) void {
             else => .glfw_opengl3,
         },
     });
+    const zgui_app = b.dependency("zgui", .{
+        .shared = false,
+        .with_implot = false,
+        .backend = .glfw_opengl3,
+    });
     const zglfw = b.dependency("zglfw", .{
         .shared = false,
         .x11 = true,
         .wayland = false,
     });
     const zopengl = b.dependency("zopengl", .{});
+    const zaudio = b.dependency("zaudio", .{});
     const objc = b.dependency("mach-objc", .{});
 
     const ztracy = b.dependency("ztracy", .{
@@ -58,6 +64,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const zdaw_module = b.createModule(.{
+        .root_source_file = b.path("src/zdaw/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     const lib = b.addLibrary(.{
         .name = "zsynth",
@@ -68,6 +79,10 @@ pub fn build(b: *std.Build) void {
     const exe = b.addExecutable(.{
         .name = "zsynth",
         .root_module = exe_module,
+    });
+    const zdaw = b.addExecutable(.{
+        .name = "zdaw",
+        .root_module = zdaw_module,
     });
 
     // Allow options to be passed in to source files
@@ -124,6 +139,18 @@ pub fn build(b: *std.Build) void {
         const run_step = b.step("run", "Run the application");
         run_step.dependOn(&run_exe.step);
     }
+
+    zdaw.root_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
+    zdaw.root_module.addImport("zaudio", zaudio.module("root"));
+    zdaw.root_module.addImport("zgui", zgui_app.module("root"));
+    zdaw.root_module.linkLibrary(zgui_app.artifact("imgui"));
+    zdaw.root_module.addImport("zglfw", zglfw.module("root"));
+    zdaw.root_module.linkLibrary(zglfw.artifact("glfw"));
+    zdaw.root_module.addImport("zopengl", zopengl.module("root"));
+    zdaw.root_module.linkLibrary(zopengl.artifact("zopengl"));
+    zdaw.root_module.linkLibrary(zaudio.artifact("miniaudio"));
+
+    b.installArtifact(zdaw);
 }
 
 pub const CreateClapPluginStep = struct {
