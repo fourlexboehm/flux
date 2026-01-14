@@ -21,6 +21,7 @@ This is just a hobby project / proof of concept for now, but I have some grand d
 
 - Custom wave table integration
 - On-board delay and reverb
+- Minimal DAW host (zdaw) with clip launcher, MIDI sequencing, and CLAP hosting
 
 ## Installation
 
@@ -36,3 +37,24 @@ This is just a hobby project / proof of concept for now, but I have some grand d
     - Optionally, if you want to embed the wave tables into the binary directly at compile time, run
       `zig build -Doptimize=ReleaseFast -Dgenerate_wavetables_comptime=true` instead.
 3. The build process should move the resulting `ZSynth.clap` plugin to your DAW's CLAP plugin folder. 
+
+## ZDaw (Experimental)
+
+`zdaw` is a minimal CLAP host + clip launcher UI built in this repo for early DAW experiments.
+
+### Run
+
+- Build: `zig build`
+- Launch: `./zig-out/bin/zdaw`
+
+The app loads the plugin from `zig-out/lib/ZSynth.clap/Contents/MacOS/ZSynth` on macOS or
+`zig-out/lib/zsynth.clap` on Linux.
+
+### Plan (MVP)
+
+- Audio engine: CoreAudio via miniaudio/zaudio (JACK backend for Linux).
+- Host: direct CLAP load by path, support core plugin lifecycle.
+- UI: ImGui clip launcher grid, transport, track mixer strip.
+- Sequencer: clip state machine (stopped/queued/playing) with quantized launch.
+- Graph: track -> instrument chain -> mixer -> master out.
+- Persistence: basic project save/load (JSON).

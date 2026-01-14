@@ -36,12 +36,10 @@
             .hash = "zopengl-0.6.0-dev-5-tnz1S4CwAgYCQeg_9QQ3z9-zDAQcSH-L6DkTHzOlcG",
         },
         .@"mach-objc" = .{
-            .url = "git+https://github.com/fourlexboehm/mach-objc#update-for-zig-0-16",
-            .hash = "mach_objc-0.0.0-1EgmOfUyDQBeSL49Pd92V0r3CQpL4KIkiGqh5MsDt8ns",
+            .path = "deps/mach-objc",
         },
         .zglfw = .{
-            .url = "git+https://github.com/zig-gamedev/zglfw#main",
-            .hash = "zglfw-0.10.0-dev-zgVDNC64IQCeL-_eVOA27Wa50WVitrJswOZVvgcXmIsy",
+            .path = "deps/zglfw",
         },
         .ztracy = .{
             .url = "git+https://github.com/zig-gamedev/ztracy#main",
@@ -49,6 +47,9 @@
         },
         .zgui = .{
             .path = "deps/zgui",
+        },
+        .zaudio = .{
+            .path = "deps/zaudio",
         },
     },
 
