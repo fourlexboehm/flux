@@ -774,7 +774,7 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
     const mouse = zgui.getMousePos();
     const mouse_down = zgui.isMouseDown(.left);
 
-    // Minimal header - just clip name and length
+    // Header with clip name, length, and zoom slider
     zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_bright });
     zgui.text("{s}", .{clip_label});
     zgui.popStyleColor(.{ .count = 1 });
@@ -783,6 +783,26 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
     zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
     zgui.text("{d:.0} bars", .{clip.length_beats / beats_per_bar});
     zgui.popStyleColor(.{ .count = 1 });
+
+    // Horizontal zoom slider
+    zgui.sameLine(.{ .spacing = 30.0 * ui_scale });
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
+    zgui.text("Zoom", .{});
+    zgui.popStyleColor(.{ .count = 1 });
+    zgui.sameLine(.{});
+    zgui.pushItemWidth(120.0 * ui_scale);
+    var zoom_val: f32 = 1.0 - (state.beats_per_pixel - 0.005) / (0.15 - 0.005); // Normalize to 0-1
+    if (zgui.sliderFloat("##hzoom", .{
+        .v = &zoom_val,
+        .min = 0.0,
+        .max = 1.0,
+        .cfmt = "",
+        .flags = .{},
+    })) {
+        // Convert back: higher zoom_val = more zoomed in = lower beats_per_pixel
+        state.beats_per_pixel = 0.005 + (1.0 - zoom_val) * (0.15 - 0.005);
+    }
+    zgui.popItemWidth();
 
     zgui.spacing();
 
@@ -905,11 +925,43 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
 
         // Draw clip end boundary (draggable)
         const clip_end_x = grid_window_pos[0] + clip.length_beats * pixels_per_beat - scroll_x;
-        const over_clip_end = mouse[0] >= clip_end_x - clip_end_handle_width and
-            mouse[0] <= clip_end_x + clip_end_handle_width and
-            mouse[1] >= grid_window_pos[1] and mouse[1] <= grid_window_pos[1] + grid_view_height;
 
-        // Clip end handle background
+        // Handle clip end drag using invisible button for reliable input capture
+        // Place button at clip end handle area
+        const handle_btn_x = clip_end_x - clip_end_handle_width;
+        const handle_btn_y = grid_window_pos[1];
+        const handle_btn_w = clip_end_handle_width * 2;
+        const handle_btn_h = grid_view_height;
+
+        // Save cursor, position button, create it, restore cursor
+        const saved_cursor = zgui.getCursorScreenPos();
+        zgui.setCursorScreenPos(.{ handle_btn_x, handle_btn_y });
+
+        // Create invisible button that captures the interaction
+        const clip_end_clicked = zgui.invisibleButton("##clip_end_handle", .{ .w = handle_btn_w, .h = handle_btn_h });
+        const clip_end_hovered = zgui.isItemHovered(.{});
+
+        // Handle click to start drag
+        if (clip_end_clicked and state.piano_drag.mode == .none) {
+            state.piano_drag = .{
+                .mode = .resize_clip,
+                .note_index = 0,
+                .grab_offset_beats = 0,
+                .grab_offset_pitch = 0,
+                .original_start = clip.length_beats,
+                .original_pitch = 0,
+            };
+        }
+
+        // Show cursor when hovering or dragging
+        if (clip_end_hovered or state.piano_drag.mode == .resize_clip) {
+            zgui.setMouseCursor(.resize_ew);
+        }
+
+        // Restore cursor position
+        zgui.setCursorScreenPos(saved_cursor);
+
+        // Now draw the clip end visuals
         if (clip_end_x > grid_window_pos[0] - clip_end_handle_width and clip_end_x < grid_window_pos[0] + grid_view_width + clip_end_handle_width) {
             // Semi-transparent area beyond clip
             if (clip_end_x < grid_window_pos[0] + grid_view_width) {
@@ -920,8 +972,8 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
                 });
             }
 
-            // Clip end line
-            const end_color = if (over_clip_end or state.piano_drag.mode == .resize_clip)
+            // Clip end line - bright when hovered or dragging
+            const end_color = if (clip_end_hovered or state.piano_drag.mode == .resize_clip)
                 Colors.accent
             else
                 Colors.accent_dim;
@@ -932,28 +984,13 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
                 .thickness = 3.0,
             });
 
-            // Drag handle indicator
+            // Drag handle indicator (triangle at top)
             draw_list.addTriangleFilled(.{
                 .p1 = .{ clip_end_x - 6, grid_window_pos[1] },
                 .p2 = .{ clip_end_x + 6, grid_window_pos[1] },
                 .p3 = .{ clip_end_x, grid_window_pos[1] + 10 },
                 .col = zgui.colorConvertFloat4ToU32(end_color),
             });
-        }
-
-        // Handle clip end drag
-        if (over_clip_end and state.piano_drag.mode == .none) {
-            zgui.setMouseCursor(.resize_ew);
-            if (zgui.isMouseClicked(.left)) {
-                state.piano_drag = .{
-                    .mode = .resize_clip,
-                    .note_index = 0,
-                    .grab_offset_beats = 0,
-                    .grab_offset_pitch = 0,
-                    .original_start = clip.length_beats,
-                    .original_pitch = 0,
-                };
-            }
         }
 
         // Draw playhead
