@@ -37,7 +37,10 @@ const Colors = struct {
 
     // Sequencer
     const note_color: [4]f32 = .{ 0.40, 0.75, 0.50, 1.0 };
+    const note_selected: [4]f32 = .{ 0.55, 0.85, 0.65, 1.0 };
     const playhead_bg: [4]f32 = .{ 0.25, 0.35, 0.45, 0.6 };
+    const selection_rect: [4]f32 = .{ 0.4, 0.6, 0.9, 0.3 };
+    const selection_rect_border: [4]f32 = .{ 0.5, 0.7, 1.0, 0.8 };
 };
 
 pub const ClipState = enum {
@@ -122,6 +125,131 @@ pub const PianoRollClip = struct {
     }
 };
 
+const ClipClipboardEntry = struct {
+    track_offset: i32,
+    scene_offset: i32,
+    slot_state: ClipState,
+    length_beats: f32,
+    notes: std.ArrayListUnmanaged(Note),
+};
+
+fn quantizeIndexToBeats(index: i32) f32 {
+    return switch (index) {
+        0 => 0.25,
+        1 => 0.5,
+        2 => 1.0,
+        3 => 2.0,
+        4 => 4.0,
+        else => 1.0,
+    };
+}
+
+fn snapToStep(value: f32, step: f32) f32 {
+    if (step <= 0) return value;
+    return @floor(value / step) * step;
+}
+
+fn removeNoteWithSelection(clip: *PianoRollClip, selected_note_index: *?usize, index: usize) void {
+    clip.removeNoteAt(index);
+    if (selected_note_index.*) |selected| {
+        if (selected == index) {
+            selected_note_index.* = null;
+        } else if (selected > index) {
+            selected_note_index.* = selected - 1;
+        }
+    }
+}
+
+fn resetPianoClip(clip: *PianoRollClip) void {
+    clip.length_beats = default_clip_bars * beats_per_bar;
+    clip.notes.clearRetainingCapacity();
+}
+
+fn clearClipSelection(state: *State) void {
+    for (&state.clip_selected) |*track_sel| {
+        for (track_sel) |*sel| {
+            sel.* = false;
+        }
+    }
+}
+
+fn anyClipSelected(state: *const State) bool {
+    for (state.clip_selected) |track_sel| {
+        for (track_sel) |sel| {
+            if (sel) return true;
+        }
+    }
+    return false;
+}
+
+fn clearClipClipboard(state: *State) void {
+    for (state.clip_clipboard.items) |*entry| {
+        entry.notes.deinit(state.allocator);
+    }
+    state.clip_clipboard.clearRetainingCapacity();
+}
+
+fn resetClipSlot(state: *State, track_index: usize, scene_index: usize) void {
+    state.clips[track_index][scene_index].state = .empty;
+    resetPianoClip(&state.piano_clips[track_index][scene_index]);
+}
+
+fn copySelectedClips(state: *State) void {
+    var found_selection = false;
+    var min_track: usize = track_count;
+    var min_scene: usize = scene_count;
+    for (0..track_count) |track_index| {
+        for (0..scene_count) |scene_index| {
+            if (state.clip_selected[track_index][scene_index]) {
+                found_selection = true;
+                min_track = @min(min_track, track_index);
+                min_scene = @min(min_scene, scene_index);
+            }
+        }
+    }
+
+    if (!found_selection) return;
+
+    clearClipClipboard(state);
+    state.clip_clipboard_origin_track = min_track;
+    state.clip_clipboard_origin_scene = min_scene;
+
+    for (0..track_count) |track_index| {
+        for (0..scene_count) |scene_index| {
+            if (!state.clip_selected[track_index][scene_index]) continue;
+            const slot = &state.clips[track_index][scene_index];
+            const clip = &state.piano_clips[track_index][scene_index];
+            if (slot.state == .empty and clip.notes.items.len == 0) continue;
+
+            var notes_copy: std.ArrayListUnmanaged(Note) = .{};
+            _ = notes_copy.appendSlice(state.allocator, clip.notes.items) catch {};
+            const entry = ClipClipboardEntry{
+                .track_offset = @as(i32, @intCast(track_index)) - @as(i32, @intCast(min_track)),
+                .scene_offset = @as(i32, @intCast(scene_index)) - @as(i32, @intCast(min_scene)),
+                .slot_state = if (slot.state == .playing) .stopped else slot.state,
+                .length_beats = clip.length_beats,
+                .notes = notes_copy,
+            };
+            _ = state.clip_clipboard.append(state.allocator, entry) catch {};
+        }
+    }
+}
+
+fn deleteSelectedClips(state: *State) void {
+    var any_selected = false;
+    for (0..track_count) |track_index| {
+        for (0..scene_count) |scene_index| {
+            if (state.clip_selected[track_index][scene_index]) {
+                resetClipSlot(state, track_index, scene_index);
+                any_selected = true;
+            }
+        }
+    }
+    if (any_selected) {
+        clearClipSelection(state);
+    }
+}
+
 const DragState = struct {
     active: bool,
     track: usize,
@@ -136,6 +264,7 @@ const PianoRollDrag = struct {
         resize_right,
         move,
         resize_clip,
+        select_rect, // Drag-to-select rectangle
     };
 
     mode: Mode,
@@ -146,6 +275,9 @@ const PianoRollDrag = struct {
     // Original values for move (to allow snapping back)
     original_start: f32,
     original_pitch: u8,
+    // For select_rect: start position of selection rectangle
+    select_start_x: f32,
+    select_start_y: f32,
 };
 
 pub const State = struct {
@@ -163,8 +295,24 @@ pub const State = struct {
     selected_track: usize,
     selected_scene: usize,
     playhead_beat: f32,
+    clip_selected: [track_count][scene_count]bool,
+    clip_clipboard: std.ArrayListUnmanaged(ClipClipboardEntry),
+    clip_clipboard_origin_track: usize,
+    clip_clipboard_origin_scene: usize,
+    clip_drag_pending: bool,
+    clip_drag_active: bool,
+    clip_drag_additive: bool,
+    clip_drag_start: [2]f32,
+    clip_drag_current: [2]f32,
     drag: DragState,
     piano_drag: PianoRollDrag,
+    selected_note_index: ?usize, // Primary selection for keyboard nav (last clicked)
+    selected_notes: std.AutoArrayHashMapUnmanaged(usize, void), // All selected note indices
+    piano_clipboard: std.ArrayListUnmanaged(Note), // Multiple notes for copy/paste
+    piano_context_note_index: ?usize,
+    piano_context_start: f32,
+    piano_context_pitch: u8,
+    piano_context_in_grid: bool,
     // Piano roll view state (continuous scroll)
     scroll_x: f32, // Horizontal scroll position (pixels)
     scroll_y: f32, // Vertical scroll position (pixels)
@@ -215,6 +363,12 @@ pub const State = struct {
                 clip.* = PianoRollClip.init(allocator);
             }
         }
+        var clip_selected_data: [track_count][scene_count]bool = undefined;
+        for (&clip_selected_data) |*track_sel| {
+            for (track_sel) |*sel| {
+                sel.* = false;
+            }
+        }
 
         return .{
             .allocator = allocator,
@@ -231,6 +385,15 @@ pub const State = struct {
             .selected_track = 0,
             .selected_scene = 0,
             .playhead_beat = 0,
+            .clip_selected = clip_selected_data,
+            .clip_clipboard = .{},
+            .clip_clipboard_origin_track = 0,
+            .clip_clipboard_origin_scene = 0,
+            .clip_drag_pending = false,
+            .clip_drag_active = false,
+            .clip_drag_additive = false,
+            .clip_drag_start = .{ 0, 0 },
+            .clip_drag_current = .{ 0, 0 },
             .drag = .{
                 .active = false,
                 .track = 0,
@@ -244,7 +407,16 @@ pub const State = struct {
                 .grab_offset_pitch = 0,
                 .original_start = 0,
                 .original_pitch = 0,
+                .select_start_x = 0,
+                .select_start_y = 0,
             },
+            .selected_note_index = null,
+            .selected_notes = .{},
+            .piano_clipboard = .{},
+            .piano_context_note_index = null,
+            .piano_context_start = 0,
+            .piano_context_pitch = 60,
+            .piano_context_in_grid = false,
             .scroll_x = 0, // Start at beat 0
             .scroll_y = 50 * 20.0, // Start around C4 area (row 50 * 20px row height)
             .beats_per_pixel = 0.02, // ~50 pixels per beat
@@ -263,6 +435,9 @@ pub const State = struct {
                 clip.deinit();
             }
         }
+        clearClipClipboard(self);
+        self.selected_notes.deinit(self.allocator);
+        self.piano_clipboard.deinit(self.allocator);
     }
 };
 
@@ -492,6 +667,15 @@ fn drawClipGrid(state: *State, ui_scale: f32) void {
     const header_height = 28.0 * ui_scale;
     const scene_col_w = 50.0 * ui_scale;
     const track_col_w = 180.0 * ui_scale;
+    const grid_pos = zgui.getCursorScreenPos();
+    const grid_width = scene_col_w + track_count * track_col_w;
+    const grid_height = header_height + (header_height + 4.0 * ui_scale) + scene_count * row_height;
+    const mouse = zgui.getMousePos();
+    const shift_down = zgui.isKeyDown(.left_shift) or zgui.isKeyDown(.right_shift);
+    const in_grid = mouse[0] >= grid_pos[0] and mouse[0] < grid_pos[0] + grid_width and
+        mouse[1] >= grid_pos[1] and mouse[1] < grid_pos[1] + grid_height;
+    var drag_blocked = false;
+    var hit_clip = false;
 
     if (!zgui.beginTable("clip_grid", .{
         .column = track_count + 1,
@@ -500,6 +684,18 @@ fn drawClipGrid(state: *State, ui_scale: f32) void {
         return;
     }
     defer zgui.endTable();
+
+    if (!zgui.isMouseDown(.left)) {
+        state.clip_drag_pending = false;
+        state.clip_drag_active = false;
+    }
+
+    if (state.clip_drag_active) {
+        state.clip_drag_current = mouse;
+        if (!state.clip_drag_additive) {
+            clearClipSelection(state);
+        }
+    }
 
     // Setup columns
     zgui.tableSetupColumn("##scenes", .{ .flags = .{ .width_fixed = true }, .init_width_or_height = scene_col_w });
@@ -605,7 +801,102 @@ fn drawClipGrid(state: *State, ui_scale: f32) void {
         for (0..track_count) |track_index| {
             _ = zgui.tableNextColumn();
             const slot = &state.clips[track_index][scene_index];
-            drawClipSlot(state, slot, track_index, scene_index, track_col_w - 8.0 * ui_scale, row_height - 6.0 * ui_scale, ui_scale);
+            drawClipSlot(
+                state,
+                slot,
+                track_index,
+                scene_index,
+                track_col_w - 8.0 * ui_scale,
+                row_height - 6.0 * ui_scale,
+                ui_scale,
+                &drag_blocked,
+                &hit_clip,
+            );
+        }
+    }
+
+    if (zgui.isMouseClicked(.left) and in_grid and !drag_blocked and !hit_clip) {
+        state.clip_drag_pending = true;
+        state.clip_drag_start = mouse;
+        state.clip_drag_current = mouse;
+        state.clip_drag_additive = shift_down;
+        if (!shift_down) {
+            clearClipSelection(state);
+        }
+    } else if (zgui.isMouseClicked(.left) and in_grid) {
+        state.clip_drag_pending = false;
+        state.clip_drag_active = false;
+        if (!shift_down and !hit_clip) {
+            clearClipSelection(state);
+        }
+    }
+
+    if (state.clip_drag_pending and !state.clip_drag_active and zgui.isMouseDragging(.left, 4.0)) {
+        state.clip_drag_active = true;
+        state.clip_drag_pending = false;
+    }
+
+    if (state.clip_drag_active) {
+        const sel_min = .{
+            @min(state.clip_drag_start[0], state.clip_drag_current[0]),
+            @min(state.clip_drag_start[1], state.clip_drag_current[1]),
+        };
+        const sel_max = .{
+            @max(state.clip_drag_start[0], state.clip_drag_current[0]),
+            @max(state.clip_drag_start[1], state.clip_drag_current[1]),
+        };
+        const overlay_color = zgui.colorConvertFloat4ToU32(.{
+            Colors.selected[0],
+            Colors.selected[1],
+            Colors.selected[2],
+            0.2,
+        });
+        const border_color = zgui.colorConvertFloat4ToU32(Colors.selected);
+        const draw_list = zgui.getWindowDrawList();
+        draw_list.addRectFilled(.{ .pmin = sel_min, .pmax = sel_max, .col = overlay_color });
+        draw_list.addRect(.{ .pmin = sel_min, .pmax = sel_max, .col = border_color, .thickness = 1.0 });
+    }
+
+    const keyboard_free = !zgui.isAnyItemActive();
+    const modifier_down = zgui.isKeyDown(.left_super) or zgui.isKeyDown(.right_super) or
+        zgui.isKeyDown(.left_ctrl) or zgui.isKeyDown(.right_ctrl);
+
+    if (keyboard_free and (in_grid or anyClipSelected(state))) {
+        if (modifier_down and zgui.isKeyPressed(.c, false)) {
+            copySelectedClips(state);
+        }
+
+        if (modifier_down and zgui.isKeyPressed(.x, false)) {
+            copySelectedClips(state);
+            deleteSelectedClips(state);
+        }
+
+        if (modifier_down and zgui.isKeyPressed(.v, false)) {
+            if (state.clip_clipboard.items.len > 0) {
+                clearClipSelection(state);
+                for (state.clip_clipboard.items) |entry| {
+                    const track_index_i = @as(i32, @intCast(state.selected_track)) + entry.track_offset;
+                    const scene_index_i = @as(i32, @intCast(state.selected_scene)) + entry.scene_offset;
+                    if (track_index_i < 0 or scene_index_i < 0) continue;
+                    const track_index: usize = @intCast(track_index_i);
+                    const scene_index: usize = @intCast(scene_index_i);
+                    if (track_index >= track_count or scene_index >= scene_count) continue;
+
+                    const slot = &state.clips[track_index][scene_index];
+                    const clip = &state.piano_clips[track_index][scene_index];
+                    clip.notes.clearRetainingCapacity();
+                    clip.length_beats = entry.length_beats;
+                    _ = clip.notes.appendSlice(state.allocator, entry.notes.items) catch {};
+
+                    const has_content = entry.notes.items.len > 0 or entry.slot_state != .empty;
+                    slot.state = if (has_content) .stopped else .empty;
+                    state.clip_selected[track_index][scene_index] = true;
+                }
+            }
+        }
+
+        if (zgui.isKeyPressed(.delete, false)) {
+            deleteSelectedClips(state);
         }
     }
 }
@@ -618,10 +909,13 @@ fn drawClipSlot(
     width: f32,
     height: f32,
     ui_scale: f32,
+    drag_blocked: *bool,
+    hit_clip: *bool,
 ) void {
-    const is_selected = state.selected_track == track_index and state.selected_scene == scene_index;
     const draw_list = zgui.getWindowDrawList();
     const pos = zgui.getCursorScreenPos();
+    const shift_down = zgui.isKeyDown(.left_shift) or zgui.isKeyDown(.right_shift);
+    const mouse = zgui.getMousePos();
 
     // Clip colors based on state
     const clip_color = switch (slot.state) {
@@ -634,6 +928,35 @@ fn drawClipSlot(
     // Play button dimensions
     const play_btn_w = 24.0 * ui_scale;
     const clip_w = width - play_btn_w - 4.0 * ui_scale;
+    const clip_rect_min = pos;
+    const clip_rect_max = .{ pos[0] + clip_w, pos[1] + height };
+    const over_clip = mouse[0] >= clip_rect_min[0] and mouse[0] < clip_rect_max[0] and
+        mouse[1] >= clip_rect_min[1] and mouse[1] < clip_rect_max[1];
+    if (over_clip) {
+        drag_blocked.* = true;
+        hit_clip.* = true;
+    }
+
+    if (state.clip_drag_active) {
+        const sel_min = .{
+            @min(state.clip_drag_start[0], state.clip_drag_current[0]),
+            @min(state.clip_drag_start[1], state.clip_drag_current[1]),
+        };
+        const sel_max = .{
+            @max(state.clip_drag_start[0], state.clip_drag_current[0]),
+            @max(state.clip_drag_start[1], state.clip_drag_current[1]),
+        };
+        const rect_min = pos;
+        const rect_max = .{ pos[0] + clip_w, pos[1] + height };
+        const intersects = !(rect_max[0] < sel_min[0] or rect_min[0] > sel_max[0] or
+            rect_max[1] < sel_min[1] or rect_min[1] > sel_max[1]);
+        if (intersects) {
+            state.clip_selected[track_index][scene_index] = true;
+        }
+    }
+
+    const is_selected = state.clip_selected[track_index][scene_index];
+    const is_active = state.selected_track == track_index and state.selected_scene == scene_index;
 
     // Draw clip background with rounded corners
     const rounding = 3.0 * ui_scale;
@@ -656,11 +979,11 @@ fn drawClipSlot(
     });
 
     // Selection border
-    if (is_selected) {
+    if (is_selected or is_active) {
         draw_list.addRect(.{
             .pmin = pos,
             .pmax = .{ pos[0] + clip_w, pos[1] + height },
-            .col = zgui.colorConvertFloat4ToU32(Colors.selected),
+            .col = zgui.colorConvertFloat4ToU32(if (is_selected) Colors.selected else Colors.accent),
             .rounding = rounding,
             .flags = zgui.DrawFlags.round_corners_all,
             .thickness = 2.0,
@@ -681,6 +1004,22 @@ fn drawClipSlot(
     if (zgui.invisibleButton(clip_id, .{ .w = clip_w, .h = height })) {
         state.selected_track = track_index;
         state.selected_scene = scene_index;
+        state.selected_note_index = null;
+        state.selected_notes.clearRetainingCapacity();
+        if (!shift_down) {
+            clearClipSelection(state);
+        }
+        state.clip_selected[track_index][scene_index] = true;
+    }
+    if (over_clip and zgui.isMouseClicked(.left)) {
+        state.selected_track = track_index;
+        state.selected_scene = scene_index;
+        state.selected_note_index = null;
+        state.selected_notes.clearRetainingCapacity();
+        if (!shift_down) {
+            clearClipSelection(state);
+        }
+        state.clip_selected[track_index][scene_index] = true;
     }
 
     zgui.sameLine(.{ .spacing = 4.0 * ui_scale });
@@ -698,6 +1037,12 @@ fn drawClipSlot(
     if (zgui.button(play_id, .{ .w = play_btn_w, .h = height })) {
         state.selected_track = track_index;
         state.selected_scene = scene_index;
+        state.selected_note_index = null;
+        state.selected_notes.clearRetainingCapacity();
+        if (!shift_down) {
+            clearClipSelection(state);
+        }
+        state.clip_selected[track_index][scene_index] = true;
         if (slot.state == .playing) {
             slot.state = .stopped;
         } else {
@@ -705,6 +1050,14 @@ fn drawClipSlot(
                 state.clips[track_index][slot_index].state = if (slot_index == scene_index) .playing else .stopped;
             }
         }
+    }
+    const play_rect_min = play_pos;
+    const play_rect_max = .{ play_pos[0] + play_btn_w, play_pos[1] + height };
+    const over_play = mouse[0] >= play_rect_min[0] and mouse[0] < play_rect_max[0] and
+        mouse[1] >= play_rect_min[1] and mouse[1] < play_rect_max[1];
+    if (over_play) {
+        drag_blocked.* = true;
+        hit_clip.* = true;
     }
     zgui.popStyleColor(.{ .count = 3 });
 
@@ -896,9 +1249,9 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
     const key_width = 48.0 * ui_scale;
     const ruler_height = 24.0 * ui_scale;
     const min_note_duration: f32 = 0.0625; // 1/16 note minimum
-    const default_note_duration: f32 = 0.25; // 1/4 note default
     const resize_handle_width = 8.0 * ui_scale;
     const clip_end_handle_width = 10.0 * ui_scale;
+    const quantize_beats = quantizeIndexToBeats(state.quantize_index);
 
     // Zoom - pixels per beat
     const pixels_per_beat = 60.0 / state.beats_per_pixel;
@@ -1136,6 +1489,8 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
                     .grab_offset_pitch = 0,
                     .original_start = clip.length_beats,
                     .original_pitch = 0,
+                    .select_start_x = 0,
+                    .select_start_y = 0,
                 };
             }
         } else if (state.piano_drag.mode == .resize_clip) {
@@ -1188,6 +1543,8 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
         }
 
         // Draw notes
+        var right_click_note_index: ?usize = null;
+        var left_click_note = false;
         for (clip.notes.items, 0..) |note, note_idx| {
             const note_row = 127 - @as(usize, note.pitch);
             const note_end = note.start + note.duration;
@@ -1200,20 +1557,36 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
             const note_y = grid_window_pos[1] + @as(f32, @floatFromInt(note_row)) * row_height - scroll_y;
             const note_w = note.duration * pixels_per_beat;
 
+            // Check if note is selected (in multi-selection set)
+            const is_selected = state.selected_notes.contains(note_idx);
+
             // Note body
+            const note_color = if (is_selected) Colors.note_selected else Colors.note_color;
             draw_list.addRectFilled(.{
                 .pmin = .{ note_x + 1, note_y + 1 },
                 .pmax = .{ note_x + note_w - 1, note_y + row_height - 1 },
-                .col = zgui.colorConvertFloat4ToU32(Colors.note_color),
+                .col = zgui.colorConvertFloat4ToU32(note_color),
                 .rounding = 2.0,
             });
 
+            // Selection highlight border
+            if (is_selected) {
+                draw_list.addRect(.{
+                    .pmin = .{ note_x, note_y },
+                    .pmax = .{ note_x + note_w, note_y + row_height },
+                    .col = zgui.colorConvertFloat4ToU32(.{ 1.0, 1.0, 1.0, 0.8 }),
+                    .rounding = 3.0,
+                    .thickness = 2.0,
+                });
+            }
+
             // Resize handle (subtle darker right edge)
             const handle_x = note_x + note_w - resize_handle_width;
+            const handle_color = if (is_selected) [4]f32{ 0.45, 0.75, 0.55, 1.0 } else [4]f32{ 0.28, 0.58, 0.38, 1.0 };
             draw_list.addRectFilled(.{
                 .pmin = .{ @max(note_x + 1, handle_x), note_y + 1 },
                 .pmax = .{ note_x + note_w - 1, note_y + row_height - 1 },
-                .col = zgui.colorConvertFloat4ToU32(.{ 0.28, 0.58, 0.38, 1.0 }),
+                .col = zgui.colorConvertFloat4ToU32(handle_color),
                 .rounding = 2.0,
                 .flags = zgui.DrawFlags.round_corners_right,
             });
@@ -1230,8 +1603,29 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
                     zgui.setMouseCursor(.resize_all);
                 }
 
+                const shift_down_note = zgui.isKeyDown(.left_shift) or zgui.isKeyDown(.right_shift);
+
                 if (zgui.isMouseClicked(.left)) {
                     const grab_beat = (mouse[0] - grid_window_pos[0] + scroll_x) / pixels_per_beat;
+                    const already_selected = state.selected_notes.contains(note_idx);
+
+                    // Handle selection
+                    if (shift_down_note) {
+                        // Shift+click: toggle this note in selection
+                        if (already_selected) {
+                            _ = state.selected_notes.orderedRemove(note_idx);
+                        } else {
+                            state.selected_notes.put(state.allocator, note_idx, {}) catch {};
+                        }
+                    } else if (!already_selected) {
+                        // Regular click on unselected note: clear selection and select only this note
+                        state.selected_notes.clearRetainingCapacity();
+                        state.selected_notes.put(state.allocator, note_idx, {}) catch {};
+                    }
+                    // If already selected and no shift, keep the multi-selection for dragging
+                    state.selected_note_index = note_idx;
+
+                    // Start drag operation
                     state.piano_drag = .{
                         .mode = if (over_handle) .resize_right else .move,
                         .note_index = note_idx,
@@ -1239,11 +1633,20 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
                         .grab_offset_pitch = 0,
                         .original_start = note.start,
                         .original_pitch = note.pitch,
+                        .select_start_x = 0,
+                        .select_start_y = 0,
                     };
+                    left_click_note = true;
                 }
 
                 if (zgui.isMouseClicked(.right)) {
-                    clip.removeNoteAt(note_idx);
+                    right_click_note_index = note_idx;
+                    state.selected_note_index = note_idx;
+                    // Add to selection if not already selected
+                    if (!state.selected_notes.contains(note_idx)) {
+                        state.selected_notes.clearRetainingCapacity();
+                        state.selected_notes.put(state.allocator, note_idx, {}) catch {};
+                    }
                 }
             }
         }
@@ -1256,6 +1659,195 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
         const in_grid = mouse[0] >= grid_window_pos[0] and mouse[0] < grid_window_pos[0] + grid_view_width and
             mouse[1] >= grid_window_pos[1] and mouse[1] < grid_window_pos[1] + grid_view_height;
 
+        const modifier_down = zgui.isKeyDown(.left_super) or zgui.isKeyDown(.right_super) or
+            zgui.isKeyDown(.left_ctrl) or zgui.isKeyDown(.right_ctrl);
+        const shift_down = zgui.isKeyDown(.left_shift) or zgui.isKeyDown(.right_shift);
+        const keyboard_free = !zgui.isAnyItemActive();
+
+        // Copy selected notes (Ctrl/Cmd+C)
+        if (keyboard_free and modifier_down and zgui.isKeyPressed(.c, false)) {
+            if (state.selected_notes.count() > 0) {
+                state.piano_clipboard.clearRetainingCapacity();
+                // Find the earliest note start time for relative positioning
+                var min_start: f32 = std.math.floatMax(f32);
+                for (state.selected_notes.keys()) |idx| {
+                    if (idx < clip.notes.items.len) {
+                        min_start = @min(min_start, clip.notes.items[idx].start);
+                    }
+                }
+                // Copy notes with relative positions
+                for (state.selected_notes.keys()) |idx| {
+                    if (idx < clip.notes.items.len) {
+                        var note_copy = clip.notes.items[idx];
+                        note_copy.start -= min_start; // Store relative to first note
+                        state.piano_clipboard.append(state.allocator, note_copy) catch {};
+                    }
+                }
+            }
+        }
+
+        // Cut selected notes (Ctrl/Cmd+X)
+        if (keyboard_free and modifier_down and zgui.isKeyPressed(.x, false)) {
+            if (state.selected_notes.count() > 0) {
+                state.piano_clipboard.clearRetainingCapacity();
+                // Find the earliest note start time for relative positioning
+                var min_start: f32 = std.math.floatMax(f32);
+                for (state.selected_notes.keys()) |idx| {
+                    if (idx < clip.notes.items.len) {
+                        min_start = @min(min_start, clip.notes.items[idx].start);
+                    }
+                }
+                // Copy notes with relative positions
+                for (state.selected_notes.keys()) |idx| {
+                    if (idx < clip.notes.items.len) {
+                        var note_copy = clip.notes.items[idx];
+                        note_copy.start -= min_start;
+                        state.piano_clipboard.append(state.allocator, note_copy) catch {};
+                    }
+                }
+                // Delete selected notes (in reverse order to maintain indices)
+                var indices_to_delete: std.ArrayListUnmanaged(usize) = .{};
+                defer indices_to_delete.deinit(state.allocator);
+                for (state.selected_notes.keys()) |idx| {
+                    indices_to_delete.append(state.allocator, idx) catch {};
+                }
+                std.mem.sort(usize, indices_to_delete.items, {}, std.sort.desc(usize));
+                for (indices_to_delete.items) |idx| {
+                    if (idx < clip.notes.items.len) {
+                        _ = clip.notes.orderedRemove(idx);
+                    }
+                }
+                state.selected_notes.clearRetainingCapacity();
+                state.selected_note_index = null;
+            }
+        }
+
+        // Paste notes (Ctrl/Cmd+V)
+        if (keyboard_free and modifier_down and zgui.isKeyPressed(.v, false)) {
+            if (state.piano_clipboard.items.len > 0 and in_grid) {
+                const click_beat = (mouse[0] - grid_window_pos[0] + scroll_x) / pixels_per_beat;
+                const click_row = (mouse[1] - grid_window_pos[1] + scroll_y) / row_height;
+                var click_pitch_i: i32 = 127 - @as(i32, @intFromFloat(click_row));
+                click_pitch_i = std.math.clamp(click_pitch_i, 0, 127);
+                const snapped_start = snapToStep(click_beat, quantize_beats);
+
+                // Find pitch offset (paste at mouse pitch relative to first note)
+                const first_pitch: i32 = @intCast(state.piano_clipboard.items[0].pitch);
+                const pitch_offset = click_pitch_i - first_pitch;
+
+                state.selected_notes.clearRetainingCapacity();
+                for (state.piano_clipboard.items) |copied| {
+                    const new_start = snapped_start + copied.start;
+                    if (new_start >= 0 and new_start < clip.length_beats) {
+                        const duration = @min(copied.duration, clip.length_beats - new_start);
+                        if (duration >= min_note_duration) {
+                            var new_pitch_i: i32 = @as(i32, copied.pitch) + pitch_offset;
+                            new_pitch_i = std.math.clamp(new_pitch_i, 0, 127);
+                            const new_pitch: u8 = @intCast(new_pitch_i);
+                            clip.addNote(new_pitch, new_start, duration) catch {};
+                            // Select newly pasted notes
+                            const new_idx = clip.notes.items.len - 1;
+                            state.selected_notes.put(state.allocator, new_idx, {}) catch {};
+                            state.selected_note_index = new_idx;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Delete selected notes (Delete key)
+        if (keyboard_free and in_grid and zgui.isKeyPressed(.delete, false)) {
+            if (state.selected_notes.count() > 0) {
+                // Delete in reverse order to maintain indices
+                var indices_to_delete: std.ArrayListUnmanaged(usize) = .{};
+                defer indices_to_delete.deinit(state.allocator);
+                for (state.selected_notes.keys()) |idx| {
+                    indices_to_delete.append(state.allocator, idx) catch {};
+                }
+                std.mem.sort(usize, indices_to_delete.items, {}, std.sort.desc(usize));
+                for (indices_to_delete.items) |idx| {
+                    if (idx < clip.notes.items.len) {
+                        _ = clip.notes.orderedRemove(idx);
+                    }
+                }
+                state.selected_notes.clearRetainingCapacity();
+                state.selected_note_index = null;
+            }
+        }
+
+        // Select all (Ctrl/Cmd+A)
+        if (keyboard_free and modifier_down and zgui.isKeyPressed(.a, false)) {
+            state.selected_notes.clearRetainingCapacity();
+            for (clip.notes.items, 0..) |_, idx| {
+                state.selected_notes.put(state.allocator, idx, {}) catch {};
+            }
+            if (clip.notes.items.len > 0) {
+                state.selected_note_index = 0;
+            }
+        }
+
+        // Arrow key handling for all selected notes
+        if (keyboard_free and in_grid and state.piano_drag.mode == .none and state.selected_notes.count() > 0) {
+            // Capture keyboard to prevent system bonk sound on macOS
+            zgui.setNextFrameWantCaptureKeyboard(true);
+
+            if (shift_down) {
+                // Shift+Arrow: adjust duration of all selected notes
+                if (zgui.isKeyPressed(.left_arrow, true)) {
+                    for (state.selected_notes.keys()) |idx| {
+                        if (idx < clip.notes.items.len) {
+                            const note = &clip.notes.items[idx];
+                            note.duration = @max(min_note_duration, note.duration - quantize_beats);
+                        }
+                    }
+                }
+                if (zgui.isKeyPressed(.right_arrow, true)) {
+                    for (state.selected_notes.keys()) |idx| {
+                        if (idx < clip.notes.items.len) {
+                            const note = &clip.notes.items[idx];
+                            note.duration = @min(clip.length_beats - note.start, note.duration + quantize_beats);
+                        }
+                    }
+                }
+            } else {
+                // Arrow: move all selected notes
+                if (zgui.isKeyPressed(.left_arrow, true)) {
+                    for (state.selected_notes.keys()) |idx| {
+                        if (idx < clip.notes.items.len) {
+                            const note = &clip.notes.items[idx];
+                            note.start = @max(0, note.start - quantize_beats);
+                        }
+                    }
+                }
+                if (zgui.isKeyPressed(.right_arrow, true)) {
+                    for (state.selected_notes.keys()) |idx| {
+                        if (idx < clip.notes.items.len) {
+                            const note = &clip.notes.items[idx];
+                            note.start = @min(clip.length_beats - note.duration, note.start + quantize_beats);
+                        }
+                    }
+                }
+                if (zgui.isKeyPressed(.up_arrow, true)) {
+                    for (state.selected_notes.keys()) |idx| {
+                        if (idx < clip.notes.items.len) {
+                            const note = &clip.notes.items[idx];
+                            const pitch_i: i32 = @min(127, @as(i32, note.pitch) + 1);
+                            note.pitch = @intCast(pitch_i);
+                        }
+                    }
+                }
+                if (zgui.isKeyPressed(.down_arrow, true)) {
+                    for (state.selected_notes.keys()) |idx| {
+                        if (idx < clip.notes.items.len) {
+                            const note = &clip.notes.items[idx];
+                            const pitch_i: i32 = @max(0, @as(i32, note.pitch) - 1);
+                            note.pitch = @intCast(pitch_i);
+                        }
+                    }
+                }
+            }
+        }
+
         // Middle mouse button pan
         if (in_grid and zgui.isMouseDragging(.middle, -1.0)) {
             const delta = zgui.getMouseDragDelta(.middle, .{});
@@ -1264,31 +1856,98 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
             zgui.resetMouseDragDelta(.middle);
         }
 
-        // Handle click on empty grid to create note
-        if (in_grid and zgui.isMouseClicked(.left) and state.piano_drag.mode == .none) {
+        if (in_grid and zgui.isMouseClicked(.right) and state.piano_drag.mode == .none) {
+            const click_beat = (mouse[0] - grid_window_pos[0] + scroll_x) / pixels_per_beat;
+            const click_row = (mouse[1] - grid_window_pos[1] + scroll_y) / row_height;
+            var click_pitch_i: i32 = 127 - @as(i32, @intFromFloat(click_row));
+            click_pitch_i = std.math.clamp(click_pitch_i, 0, 127);
+            const click_pitch: u8 = @intCast(click_pitch_i);
+            state.piano_context_note_index = right_click_note_index;
+            state.piano_context_start = snapToStep(click_beat, quantize_beats);
+            state.piano_context_pitch = click_pitch;
+            state.piano_context_in_grid = true;
+            zgui.openPopup("piano_roll_ctx", .{});
+        }
+
+        // Handle double-click on empty grid to create note
+        if (in_grid and zgui.isMouseDoubleClicked(.left) and state.piano_drag.mode == .none and !left_click_note) {
             const click_beat = (mouse[0] - grid_window_pos[0] + scroll_x) / pixels_per_beat;
             const click_row = (mouse[1] - grid_window_pos[1] + scroll_y) / row_height;
             const click_pitch_i: i32 = 127 - @as(i32, @intFromFloat(click_row));
 
             if (click_beat >= 0 and click_beat < clip.length_beats and click_pitch_i >= 0 and click_pitch_i < 128) {
                 const click_pitch: u8 = @intCast(click_pitch_i);
-                const snapped_start = @floor(click_beat * 4) / 4; // Snap to 1/4 note
+                const snapped_start = snapToStep(click_beat, quantize_beats);
+                const max_duration = clip.length_beats - snapped_start;
+                const note_duration = @min(quantize_beats, max_duration);
 
-                clip.addNote(click_pitch, snapped_start, default_note_duration) catch {};
-                state.piano_drag = .{
-                    .mode = .create,
-                    .note_index = clip.notes.items.len - 1,
-                    .grab_offset_beats = 0,
-                    .grab_offset_pitch = 0,
-                    .original_start = snapped_start,
-                    .original_pitch = click_pitch,
-                };
+                if (note_duration >= min_note_duration) {
+                    clip.addNote(click_pitch, snapped_start, note_duration) catch {};
+                    const new_idx = clip.notes.items.len - 1;
+                    state.selected_notes.clearRetainingCapacity();
+                    state.selected_notes.put(state.allocator, new_idx, {}) catch {};
+                    state.selected_note_index = new_idx;
+                    state.piano_drag = .{
+                        .mode = .create,
+                        .note_index = new_idx,
+                        .grab_offset_beats = 0,
+                        .grab_offset_pitch = 0,
+                        .original_start = snapped_start,
+                        .original_pitch = click_pitch,
+                        .select_start_x = 0,
+                        .select_start_y = 0,
+                    };
+                }
             }
+        }
+
+        // Handle single click on empty grid to start selection rectangle
+        if (in_grid and zgui.isMouseClicked(.left) and state.piano_drag.mode == .none and !left_click_note) {
+            // Clear selection unless shift is held
+            if (!shift_down) {
+                state.selected_notes.clearRetainingCapacity();
+                state.selected_note_index = null;
+            }
+            // Start selection rectangle drag
+            state.piano_drag = .{
+                .mode = .select_rect,
+                .note_index = 0,
+                .grab_offset_beats = 0,
+                .grab_offset_pitch = 0,
+                .original_start = 0,
+                .original_pitch = 0,
+                .select_start_x = mouse[0],
+                .select_start_y = mouse[1],
+            };
         }
 
         // Handle ongoing drag
         if (state.piano_drag.mode != .none) {
             if (!mouse_down) {
+                // On mouse release for select_rect, finalize selection
+                if (state.piano_drag.mode == .select_rect) {
+                    const sel_x1 = @min(state.piano_drag.select_start_x, mouse[0]);
+                    const sel_y1 = @min(state.piano_drag.select_start_y, mouse[1]);
+                    const sel_x2 = @max(state.piano_drag.select_start_x, mouse[0]);
+                    const sel_y2 = @max(state.piano_drag.select_start_y, mouse[1]);
+
+                    // Select all notes that intersect with the selection rectangle
+                    for (clip.notes.items, 0..) |note, note_idx| {
+                        const note_row = 127 - @as(usize, note.pitch);
+                        const note_x = grid_window_pos[0] + note.start * pixels_per_beat - scroll_x;
+                        const note_y = grid_window_pos[1] + @as(f32, @floatFromInt(note_row)) * row_height - scroll_y;
+                        const note_w = note.duration * pixels_per_beat;
+
+                        // Check if note rectangle intersects selection rectangle
+                        const note_x2 = note_x + note_w;
+                        const note_y2 = note_y + row_height;
+
+                        if (note_x < sel_x2 and note_x2 > sel_x1 and note_y < sel_y2 and note_y2 > sel_y1) {
+                            state.selected_notes.put(state.allocator, note_idx, {}) catch {};
+                            state.selected_note_index = note_idx;
+                        }
+                    }
+                }
                 state.piano_drag.mode = .none;
             } else {
                 switch (state.piano_drag.mode) {
@@ -1301,19 +1960,33 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
                     },
                     .move => {
                         if (state.piano_drag.note_index < clip.notes.items.len) {
-                            const note = &clip.notes.items[state.piano_drag.note_index];
                             const current_beat = (mouse[0] - grid_window_pos[0] + scroll_x) / pixels_per_beat;
                             const current_row = (mouse[1] - grid_window_pos[1] + scroll_y) / row_height;
 
                             var new_start = current_beat - state.piano_drag.grab_offset_beats;
-                            new_start = @max(0, @min(new_start, clip.length_beats - note.duration));
                             new_start = @floor(new_start * 4) / 4; // Snap to 1/4 note
 
                             var new_pitch_i: i32 = 127 - @as(i32, @intFromFloat(current_row));
                             new_pitch_i = std.math.clamp(new_pitch_i, 0, 127);
 
-                            note.start = new_start;
-                            note.pitch = @intCast(new_pitch_i);
+                            // Calculate delta from last frame position
+                            const delta_start = new_start - state.piano_drag.original_start;
+                            const delta_pitch = new_pitch_i - @as(i32, state.piano_drag.original_pitch);
+
+                            // Move all selected notes by the same delta
+                            for (state.selected_notes.keys()) |idx| {
+                                if (idx < clip.notes.items.len) {
+                                    const note = &clip.notes.items[idx];
+                                    const note_new_start = note.start + delta_start;
+                                    note.start = @max(0, @min(note_new_start, clip.length_beats - note.duration));
+                                    const note_pitch_i = @as(i32, note.pitch) + delta_pitch;
+                                    note.pitch = @intCast(std.math.clamp(note_pitch_i, 0, 127));
+                                }
+                            }
+
+                            // Update reference position for next frame delta calculation
+                            state.piano_drag.original_start = new_start;
+                            state.piano_drag.original_pitch = @intCast(new_pitch_i);
                         }
                     },
                     .resize_right, .create => {
@@ -1328,9 +2001,146 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
                             note.duration = new_end - note.start;
                         }
                     },
+                    .select_rect => {
+                        // Draw selection rectangle (handled below after clip rect)
+                    },
                     .none => {},
                 }
             }
+        }
+
+        // Draw selection rectangle while dragging
+        if (state.piano_drag.mode == .select_rect) {
+            const sel_x1 = @min(state.piano_drag.select_start_x, mouse[0]);
+            const sel_y1 = @min(state.piano_drag.select_start_y, mouse[1]);
+            const sel_x2 = @max(state.piano_drag.select_start_x, mouse[0]);
+            const sel_y2 = @max(state.piano_drag.select_start_y, mouse[1]);
+
+            // Clip to grid area
+            const clipped_x1 = @max(sel_x1, grid_window_pos[0]);
+            const clipped_y1 = @max(sel_y1, grid_window_pos[1]);
+            const clipped_x2 = @min(sel_x2, grid_window_pos[0] + grid_view_width);
+            const clipped_y2 = @min(sel_y2, grid_window_pos[1] + grid_view_height);
+
+            if (clipped_x2 > clipped_x1 and clipped_y2 > clipped_y1) {
+                draw_list.addRectFilled(.{
+                    .pmin = .{ clipped_x1, clipped_y1 },
+                    .pmax = .{ clipped_x2, clipped_y2 },
+                    .col = zgui.colorConvertFloat4ToU32(Colors.selection_rect),
+                });
+                draw_list.addRect(.{
+                    .pmin = .{ clipped_x1, clipped_y1 },
+                    .pmax = .{ clipped_x2, clipped_y2 },
+                    .col = zgui.colorConvertFloat4ToU32(Colors.selection_rect_border),
+                    .thickness = 1.0,
+                });
+            }
+        }
+
+        if (zgui.beginPopup("piano_roll_ctx", .{})) {
+            const has_selection = state.selected_notes.count() > 0;
+            const can_paste = state.piano_clipboard.items.len > 0 and state.piano_context_in_grid;
+
+            if (zgui.menuItem("Copy", .{ .shortcut = "Cmd/Ctrl+C", .enabled = has_selection })) {
+                state.piano_clipboard.clearRetainingCapacity();
+                var min_start: f32 = std.math.floatMax(f32);
+                for (state.selected_notes.keys()) |idx| {
+                    if (idx < clip.notes.items.len) {
+                        min_start = @min(min_start, clip.notes.items[idx].start);
+                    }
+                }
+                for (state.selected_notes.keys()) |idx| {
+                    if (idx < clip.notes.items.len) {
+                        var note_copy = clip.notes.items[idx];
+                        note_copy.start -= min_start;
+                        state.piano_clipboard.append(state.allocator, note_copy) catch {};
+                    }
+                }
+            }
+
+            if (zgui.menuItem("Cut", .{ .shortcut = "Cmd/Ctrl+X", .enabled = has_selection })) {
+                state.piano_clipboard.clearRetainingCapacity();
+                var min_start: f32 = std.math.floatMax(f32);
+                for (state.selected_notes.keys()) |idx| {
+                    if (idx < clip.notes.items.len) {
+                        min_start = @min(min_start, clip.notes.items[idx].start);
+                    }
+                }
+                for (state.selected_notes.keys()) |idx| {
+                    if (idx < clip.notes.items.len) {
+                        var note_copy = clip.notes.items[idx];
+                        note_copy.start -= min_start;
+                        state.piano_clipboard.append(state.allocator, note_copy) catch {};
+                    }
+                }
+                // Delete in reverse order
+                var indices_to_delete: std.ArrayListUnmanaged(usize) = .{};
+                defer indices_to_delete.deinit(state.allocator);
+                for (state.selected_notes.keys()) |idx| {
+                    indices_to_delete.append(state.allocator, idx) catch {};
+                }
+                std.mem.sort(usize, indices_to_delete.items, {}, std.sort.desc(usize));
+                for (indices_to_delete.items) |idx| {
+                    if (idx < clip.notes.items.len) {
+                        _ = clip.notes.orderedRemove(idx);
+                    }
+                }
+                state.selected_notes.clearRetainingCapacity();
+                state.selected_note_index = null;
+            }
+
+            if (zgui.menuItem("Paste", .{ .shortcut = "Cmd/Ctrl+V", .enabled = can_paste })) {
+                const snapped_start = state.piano_context_start;
+                const first_pitch: i32 = @intCast(state.piano_clipboard.items[0].pitch);
+                const pitch_offset = @as(i32, state.piano_context_pitch) - first_pitch;
+
+                state.selected_notes.clearRetainingCapacity();
+                for (state.piano_clipboard.items) |copied| {
+                    const new_start = snapped_start + copied.start;
+                    if (new_start >= 0 and new_start < clip.length_beats) {
+                        const duration = @min(copied.duration, clip.length_beats - new_start);
+                        if (duration >= min_note_duration) {
+                            var new_pitch_i: i32 = @as(i32, copied.pitch) + pitch_offset;
+                            new_pitch_i = std.math.clamp(new_pitch_i, 0, 127);
+                            const new_pitch: u8 = @intCast(new_pitch_i);
+                            clip.addNote(new_pitch, new_start, duration) catch {};
+                            const new_idx = clip.notes.items.len - 1;
+                            state.selected_notes.put(state.allocator, new_idx, {}) catch {};
+                            state.selected_note_index = new_idx;
+                        }
+                    }
+                }
+            }
+
+            if (zgui.menuItem("Delete", .{ .shortcut = "Del", .enabled = has_selection })) {
+                var indices_to_delete: std.ArrayListUnmanaged(usize) = .{};
+                defer indices_to_delete.deinit(state.allocator);
+                for (state.selected_notes.keys()) |idx| {
+                    indices_to_delete.append(state.allocator, idx) catch {};
+                }
+                std.mem.sort(usize, indices_to_delete.items, {}, std.sort.desc(usize));
+                for (indices_to_delete.items) |idx| {
+                    if (idx < clip.notes.items.len) {
+                        _ = clip.notes.orderedRemove(idx);
+                    }
+                }
+                state.selected_notes.clearRetainingCapacity();
+                state.selected_note_index = null;
+            }
+
+            zgui.separator();
+
+            if (zgui.menuItem("Select All", .{ .shortcut = "Cmd/Ctrl+A" })) {
+                state.selected_notes.clearRetainingCapacity();
+                for (clip.notes.items, 0..) |_, idx| {
+                    state.selected_notes.put(state.allocator, idx, {}) catch {};
+                }
+                if (clip.notes.items.len > 0) {
+                    state.selected_note_index = 0;
+                }
+            }
+
+            zgui.endPopup();
         }
     }
 
