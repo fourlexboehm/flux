@@ -1,7 +1,6 @@
 const std = @import("std");
 const clap = @import("clap-bindings");
 const ui = @import("ui.zig");
-const zsynth = @import("zsynth-core");
 
 pub const NodeId = u32;
 
@@ -31,6 +30,7 @@ pub const StateSnapshot = struct {
     // Note: piano_clips contain ArrayList which can't be trivially copied
     // We pass a pointer to the UI state's clips for reading notes
     piano_clips_ptr: *const [ui.track_count][ui.scene_count]ui.PianoRollClip,
+    track_plugins: [ui.track_count]?*const clap.Plugin,
 };
 
 const max_note_events = 128;
@@ -240,7 +240,7 @@ pub const NoteSource = struct {
 };
 
 pub const SynthNode = struct {
-    plugin: *zsynth.Plugin,
+    track_index: usize,
     output_left: []f32 = &.{},
     output_right: []f32 = &.{},
     out_events_list: OutputEventList = .{},
@@ -249,8 +249,8 @@ pub const SynthNode = struct {
         .tryPush = outputEventsTryPush,
     },
 
-    pub fn init(plugin: *zsynth.Plugin) SynthNode {
-        return SynthNode{ .plugin = plugin };
+    pub fn init(track_index: usize) SynthNode {
+        return SynthNode{ .track_index = track_index };
     }
 };
 
@@ -495,6 +495,7 @@ pub const Graph = struct {
                     @memset(outputs.left[0..frame_count], 0);
                     @memset(outputs.right[0..frame_count], 0);
 
+                    const plugin = snapshot.track_plugins[node.data.synth.track_index] orelse continue;
                     var channel_ptrs = [2][*]f32{ outputs.left.ptr, outputs.right.ptr };
                     var audio_out = clap.AudioBuffer{
                         .data32 = &channel_ptrs,
@@ -517,7 +518,7 @@ pub const Graph = struct {
                         .in_events = input_events,
                         .out_events = &node.data.synth.out_events,
                     };
-                    _ = node.data.synth.plugin.plugin.process(&node.data.synth.plugin.plugin, &clap_process);
+                    _ = plugin.process(plugin, &clap_process);
                 },
                 .gain => {
                     const outputs = self.getAudioOutput(node_id);

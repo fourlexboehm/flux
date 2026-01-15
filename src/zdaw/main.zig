@@ -9,6 +9,7 @@ const objc = @import("objc");
 const ui = @import("ui.zig");
 const audio_engine = @import("audio_engine.zig");
 const zsynth = @import("zsynth-core");
+const plugins = @import("plugins.zig");
 
 const SampleRate = 48_000;
 const Channels = 2;
@@ -52,8 +53,12 @@ const PluginHandle = struct {
     started: bool,
     activated: bool,
 
-    pub fn init(allocator: std.mem.Allocator, host: *const clap.Host) !PluginHandle {
-        const plugin_path = try defaultPluginPath();
+    pub fn init(
+        allocator: std.mem.Allocator,
+        host: *const clap.Host,
+        plugin_path: []const u8,
+        plugin_id: ?[]const u8,
+    ) !PluginHandle {
         const plugin_path_z = try allocator.dupeZ(u8, plugin_path);
         errdefer allocator.free(plugin_path_z);
 
@@ -66,11 +71,18 @@ const PluginHandle = struct {
 
         const factory_raw = entry.getFactory(clap.PluginFactory.id) orelse return error.MissingPluginFactory;
         const factory: *const clap.PluginFactory = @ptrCast(@alignCast(factory_raw));
-        const plugin_count = factory.getPluginCount(factory);
-        if (plugin_count == 0) return error.NoPluginsFound;
+        const plugin = blk: {
+            if (plugin_id) |id| {
+                const id_z = try allocator.dupeZ(u8, id);
+                defer allocator.free(id_z);
+                break :blk factory.createPlugin(factory, host, id_z) orelse return error.PluginCreateFailed;
+            }
 
-        const desc = factory.getPluginDescriptor(factory, 0) orelse return error.MissingPluginDescriptor;
-        const plugin = factory.createPlugin(factory, host, desc.id) orelse return error.PluginCreateFailed;
+            const plugin_count = factory.getPluginCount(factory);
+            if (plugin_count == 0) return error.NoPluginsFound;
+            const desc = factory.getPluginDescriptor(factory, 0) orelse return error.MissingPluginDescriptor;
+            break :blk factory.createPlugin(factory, host, desc.id) orelse return error.PluginCreateFailed;
+        };
 
         if (!plugin.init(plugin)) return error.PluginInitFailed;
 
@@ -108,6 +120,7 @@ const TrackPlugin = struct {
     gui_window: ?*objc.app_kit.Window = null,
     gui_view: ?*objc.app_kit.View = null,
     gui_open: bool = false,
+    choice_index: i32 = -1,
 };
 
 const AppWindow = struct {
@@ -209,8 +222,13 @@ pub fn main(init: std.process.Init) !void {
     zaudio.init(allocator);
     defer zaudio.deinit();
 
+    var catalog = try plugins.discover(allocator, io);
+    defer catalog.deinit();
+
     var state = ui.State.init(allocator);
     defer state.deinit();
+    state.plugin_items = catalog.items_z;
+    state.plugin_divider_index = catalog.divider_index;
     var synths: [ui.track_count]*zsynth.Plugin = undefined;
     var synth_count: usize = 0;
     errdefer {
@@ -234,9 +252,10 @@ pub fn main(init: std.process.Init) !void {
     }
     state.zsynth = synths[0];
 
-    var engine = try audio_engine.AudioEngine.init(allocator, SampleRate, MaxFrames, synths);
+    var engine = try audio_engine.AudioEngine.init(allocator, SampleRate, MaxFrames);
     defer engine.deinit();
     engine.updateFromUi(&state);
+    engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
 
     var device_config = zaudio.Device.Config.init(.playback);
     device_config.playback.format = zaudio.Format.float32;
@@ -274,6 +293,7 @@ pub fn main(init: std.process.Init) !void {
             ui.tick(&state, dt);
         }
         state.zsynth = synths[state.selected_track];
+        updateDeviceState(&state, &catalog, &track_plugins);
         engine.updateFromUi(&state);
         const wants_keyboard = zgui.io.getWantCaptureKeyboard();
         if (!wants_keyboard and zgui.isKeyPressed(.space, false)) {
@@ -330,7 +350,8 @@ pub fn main(init: std.process.Init) !void {
 
         zgui.backend.newFrame(fb_width, fb_height, app_window.view, descriptor);
         ui.draw(&state, 1.0);
-        try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state);
+        try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog);
+        engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
         zgui.backend.draw(command_buffer, command_encoder);
         command_encoder.as(objc.metal.CommandEncoder).endEncoding();
         command_buffer.presentDrawable(drawable.as(objc.metal.Drawable));
@@ -348,16 +369,68 @@ pub fn main(init: std.process.Init) !void {
     }
 }
 
-fn defaultPluginPath() ![]const u8 {
-    return switch (builtin.os.tag) {
-        .macos => "zig-out/lib/ZSynth.clap/Contents/MacOS/ZSynth",
-        .linux => "zig-out/lib/zsynth.clap",
-        else => error.UnsupportedOs,
-    };
-}
-
 fn sleepNs(io: std.Io, ns: u64) void {
     std.Io.Clock.Duration.sleep(.{ .clock = .awake, .raw = .fromNanoseconds(@intCast(ns)) }, io) catch {};
+}
+
+fn updateDeviceState(
+    state: *ui.State,
+    catalog: *const plugins.PluginCatalog,
+    track_plugins: *const [ui.track_count]TrackPlugin,
+) void {
+    const choice = state.track_plugins[state.selected_track].choice_index;
+    const entry = catalog.entryForIndex(choice);
+    if (entry == null or entry.?.kind == .none or entry.?.kind == .divider) {
+        state.device_kind = .none;
+        state.device_clap_plugin = null;
+        state.device_clap_name = "";
+        return;
+    }
+
+    switch (entry.?.kind) {
+        .builtin => {
+            state.device_kind = .builtin;
+            state.device_clap_plugin = null;
+            state.device_clap_name = "";
+        },
+        .clap => {
+            state.device_kind = .clap;
+            state.device_clap_name = entry.?.name;
+            const handle = track_plugins[state.selected_track].handle;
+            state.device_clap_plugin = if (handle) |h| h.plugin else null;
+        },
+        else => {
+            state.device_kind = .none;
+            state.device_clap_plugin = null;
+            state.device_clap_name = "";
+        },
+    }
+}
+
+fn collectTrackPlugins(
+    catalog: *const plugins.PluginCatalog,
+    track_plugins: *const [ui.track_count]TrackPlugin,
+    state: *const ui.State,
+    synths: [ui.track_count]*zsynth.Plugin,
+) [ui.track_count]?*const clap.Plugin {
+    var plugins_out: [ui.track_count]?*const clap.Plugin = [_]?*const clap.Plugin{null} ** ui.track_count;
+    for (0..ui.track_count) |t| {
+        const choice = state.track_plugins[t].choice_index;
+        const entry = catalog.entryForIndex(choice);
+        if (entry == null) {
+            continue;
+        }
+        switch (entry.?.kind) {
+            .builtin => {
+                plugins_out[t] = &synths[t].plugin;
+            },
+            .clap => {
+                plugins_out[t] = if (track_plugins[t].handle) |handle| handle.plugin else null;
+            },
+            else => {},
+        }
+    }
+    return plugins_out;
 }
 
 fn syncTrackPlugins(
@@ -365,21 +438,34 @@ fn syncTrackPlugins(
     host: *const clap.Host,
     track_plugins: *[ui.track_count]TrackPlugin,
     state: *ui.State,
+    catalog: *const plugins.PluginCatalog,
 ) !void {
     for (track_plugins, 0..) |*track, t| {
         const choice = state.track_plugins[t].choice_index;
         const wants_gui = state.track_plugins[t].gui_open;
 
-        if (choice == 0) {
+        const entry = catalog.entryForIndex(choice);
+        const kind = if (entry) |item| item.kind else .none;
+        if (kind == .none or kind == .divider) {
             if (track.handle != null) {
                 closePluginGui(track);
                 unloadPlugin(track, allocator);
             }
+            track.choice_index = choice;
             continue;
         }
 
+        if (track.choice_index != choice) {
+            if (track.handle != null) {
+                closePluginGui(track);
+                unloadPlugin(track, allocator);
+            }
+            track.choice_index = choice;
+        }
+
         if (track.handle == null) {
-            track.handle = try PluginHandle.init(allocator, host);
+            const path = entry.?.path orelse return error.PluginMissingPath;
+            track.handle = try PluginHandle.init(allocator, host, path, entry.?.id);
             track.gui_ext = getGuiExt(track.handle.?);
         }
 

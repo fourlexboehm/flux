@@ -1,6 +1,7 @@
 const std = @import("std");
 const zgui = @import("zgui");
 const zsynth = @import("zsynth-core");
+const clap = @import("clap-bindings");
 const zsynth_view = zsynth.View;
 
 pub const track_count = 4;
@@ -63,9 +64,16 @@ pub const BottomMode = enum {
     sequencer,
 };
 
+pub const DeviceKind = enum {
+    none,
+    builtin,
+    clap,
+};
+
 pub const TrackPluginUI = struct {
     choice_index: i32,
     gui_open: bool,
+    last_valid_choice: i32,
 };
 
 // Piano roll constants
@@ -149,6 +157,9 @@ pub const State = struct {
     bottom_panel_height: f32,
     splitter_drag_start: f32,
     zsynth: ?*zsynth.Plugin,
+    device_kind: DeviceKind,
+    device_clap_plugin: ?*const clap.Plugin,
+    device_clap_name: []const u8,
     selected_track: usize,
     selected_scene: usize,
     playhead_beat: f32,
@@ -160,6 +171,8 @@ pub const State = struct {
     beats_per_pixel: f32, // Horizontal zoom
     tracks: [track_count]Track,
     track_plugins: [track_count]TrackPluginUI,
+    plugin_items: [:0]const u8,
+    plugin_divider_index: ?i32,
     clips: [track_count][scene_count]ClipSlot,
     piano_clips: [track_count][scene_count]PianoRollClip,
 
@@ -193,6 +206,7 @@ pub const State = struct {
             plugin.* = .{
                 .choice_index = 0,
                 .gui_open = false,
+                .last_valid_choice = 0,
             };
         }
         var piano_clips_data: [track_count][scene_count]PianoRollClip = undefined;
@@ -211,6 +225,9 @@ pub const State = struct {
             .bottom_panel_height = 300.0,
             .splitter_drag_start = 0.0,
             .zsynth = null,
+            .device_kind = .none,
+            .device_clap_plugin = null,
+            .device_clap_name = "",
             .selected_track = 0,
             .selected_scene = 0,
             .playhead_beat = 0,
@@ -233,6 +250,8 @@ pub const State = struct {
             .beats_per_pixel = 0.02, // ~50 pixels per beat
             .tracks = tracks_data,
             .track_plugins = track_plugins_data,
+            .plugin_items = plugin_items,
+            .plugin_divider_index = null,
             .clips = clips_data,
             .piano_clips = piano_clips_data,
         };
@@ -515,10 +534,21 @@ fn drawClipGrid(state: *State, ui_scale: f32) void {
         ) catch "E##plugin";
         _ = zgui.tableNextColumn();
         zgui.setNextItemWidth(120.0 * ui_scale);
-        _ = zgui.combo(select_label, .{
+        const changed = zgui.combo(select_label, .{
             .current_item = &plugin_ui.choice_index,
-            .items_separated_by_zeros = plugin_items,
+            .items_separated_by_zeros = state.plugin_items,
         });
+        if (changed) {
+            if (state.plugin_divider_index) |divider_index| {
+                if (plugin_ui.choice_index == divider_index) {
+                    plugin_ui.choice_index = plugin_ui.last_valid_choice;
+                } else {
+                    plugin_ui.last_valid_choice = plugin_ui.choice_index;
+                }
+            } else {
+                plugin_ui.last_valid_choice = plugin_ui.choice_index;
+            }
+        }
         zgui.sameLine(.{ .spacing = 6.0 * ui_scale });
         if (zgui.button(button_label, .{ .w = 28.0 * ui_scale, .h = 0 })) {
             plugin_ui.gui_open = !plugin_ui.gui_open;
@@ -737,22 +767,125 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
 
     switch (state.bottom_mode) {
         .device => {
+            drawDevicePanel(state, ui_scale);
+        },
+        .sequencer => {
+            drawSequencer(state, ui_scale);
+        },
+    }
+}
+
+fn drawDevicePanel(state: *State, ui_scale: f32) void {
+    switch (state.device_kind) {
+        .builtin => {
             if (state.zsynth) |plugin| {
                 if (zgui.beginChild("zsynth_embed##device", .{ .w = 0, .h = 0 })) {
                     zsynth_view.drawEmbedded(plugin, .{ .notify_host = false });
                 }
                 zgui.endChild();
             } else {
-                zgui.spacing();
-                zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
-                zgui.textUnformatted("No device loaded. Select a plugin from the track header.");
-                zgui.popStyleColor(.{ .count = 1 });
+                drawNoDevice();
             }
         },
-        .sequencer => {
-            drawSequencer(state, ui_scale);
+        .clap => {
+            drawClapDevice(state, ui_scale);
+        },
+        .none => {
+            drawNoDevice();
         },
     }
+}
+
+fn drawNoDevice() void {
+    zgui.spacing();
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
+    zgui.textUnformatted("No device loaded. Select a plugin from the track header.");
+    zgui.popStyleColor(.{ .count = 1 });
+}
+
+fn drawClapDevice(state: *State, ui_scale: f32) void {
+    const plugin = state.device_clap_plugin orelse {
+        drawNoDevice();
+        return;
+    };
+
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_bright });
+    zgui.text("CLAP: {s}", .{state.device_clap_name});
+    zgui.popStyleColor(.{ .count = 1 });
+
+    zgui.sameLine(.{ .spacing = 12.0 * ui_scale });
+    const track = &state.track_plugins[state.selected_track];
+    const button_label = if (track.gui_open) "Close Window" else "Open Window";
+    if (zgui.button(button_label, .{ .w = 140.0 * ui_scale, .h = 0 })) {
+        track.gui_open = !track.gui_open;
+    }
+
+    zgui.separator();
+    drawClapParamDump(plugin);
+}
+
+fn drawClapParamDump(plugin: *const clap.Plugin) void {
+    const ext_raw = plugin.getExtension(plugin, clap.ext.params.id) orelse {
+        zgui.textUnformatted("No CLAP parameters exposed.");
+        return;
+    };
+    const params: *const clap.ext.params.Plugin = @ptrCast(@alignCast(ext_raw));
+    const count = params.count(plugin);
+    if (count == 0) {
+        zgui.textUnformatted("No CLAP parameters exposed.");
+        return;
+    }
+
+    if (!zgui.beginChild("clap_param_dump##device", .{ .w = 0, .h = 0, .child_flags = .{ .border = true } })) {
+        return;
+    }
+    defer zgui.endChild();
+
+    if (!zgui.beginTable("clap_param_table##device", .{
+        .column = 4,
+        .flags = .{ .row_bg = true, .borders = .{ .inner_v = true, .inner_h = true } },
+    })) {
+        return;
+    }
+    defer zgui.endTable();
+
+    zgui.tableSetupColumn("Parameter", .{});
+    zgui.tableSetupColumn("ID", .{ .flags = .{ .width_fixed = true }, .init_width_or_height = 80 });
+    zgui.tableSetupColumn("Default", .{ .flags = .{ .width_fixed = true }, .init_width_or_height = 110 });
+    zgui.tableSetupColumn("Range", .{ .flags = .{ .width_fixed = true }, .init_width_or_height = 160 });
+    zgui.tableHeadersRow();
+
+    for (0..count) |i| {
+        var info: clap.ext.params.Info = undefined;
+        if (!params.getInfo(plugin, @intCast(i), &info)) continue;
+
+        const name = sliceToNull(info.name[0..]);
+        const module = sliceToNull(info.module[0..]);
+
+        zgui.tableNextRow(.{});
+        _ = zgui.tableNextColumn();
+        if (module.len > 0) {
+            var label_buf: [256]u8 = undefined;
+            const label = std.fmt.bufPrintZ(&label_buf, "{s}/{s}", .{ module, name }) catch "";
+            zgui.textUnformatted(label);
+        } else {
+            zgui.textUnformatted(name);
+        }
+
+        _ = zgui.tableNextColumn();
+        zgui.text("{d}", .{info.id});
+
+        _ = zgui.tableNextColumn();
+        zgui.text("{d:.4}", .{info.default_value});
+
+        _ = zgui.tableNextColumn();
+        zgui.text("{d:.4} .. {d:.4}", .{ info.min_value, info.max_value });
+    }
+}
+
+fn sliceToNull(buf: []const u8) []const u8 {
+    const end = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
+    return buf[0..end];
 }
 
 fn drawSequencer(state: *State, ui_scale: f32) void {
@@ -986,40 +1119,28 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
         // Draw clip end boundary (draggable)
         const clip_end_x = grid_window_pos[0] + clip.length_beats * pixels_per_beat - scroll_x;
 
-        // Handle clip end drag using invisible button for reliable input capture
-        // Place button at clip end handle area
-        const handle_btn_x = clip_end_x - clip_end_handle_width;
-        const handle_btn_y = grid_window_pos[1];
-        const handle_btn_w = clip_end_handle_width * 2;
-        const handle_btn_h = grid_view_height;
+        // Check if mouse is over clip end handle (direct hit test)
+        const clip_end_hovered = mouse[0] >= clip_end_x - clip_end_handle_width and
+            mouse[0] <= clip_end_x + clip_end_handle_width and
+            mouse[1] >= grid_window_pos[1] and
+            mouse[1] <= grid_window_pos[1] + grid_view_height;
 
-        // Save cursor, position button, create it, restore cursor
-        const saved_cursor = zgui.getCursorScreenPos();
-        zgui.setCursorScreenPos(.{ handle_btn_x, handle_btn_y });
-
-        // Create invisible button that captures the interaction
-        const clip_end_clicked = zgui.invisibleButton("##clip_end_handle", .{ .w = handle_btn_w, .h = handle_btn_h });
-        const clip_end_hovered = zgui.isItemHovered(.{});
-
-        // Handle click to start drag
-        if (clip_end_clicked and state.piano_drag.mode == .none) {
-            state.piano_drag = .{
-                .mode = .resize_clip,
-                .note_index = 0,
-                .grab_offset_beats = 0,
-                .grab_offset_pitch = 0,
-                .original_start = clip.length_beats,
-                .original_pitch = 0,
-            };
-        }
-
-        // Show cursor when hovering or dragging
-        if (clip_end_hovered or state.piano_drag.mode == .resize_clip) {
+        // Handle clip end drag - check this FIRST before note interactions
+        if (clip_end_hovered and state.piano_drag.mode == .none) {
+            zgui.setMouseCursor(.resize_ew);
+            if (zgui.isMouseClicked(.left)) {
+                state.piano_drag = .{
+                    .mode = .resize_clip,
+                    .note_index = 0,
+                    .grab_offset_beats = 0,
+                    .grab_offset_pitch = 0,
+                    .original_start = clip.length_beats,
+                    .original_pitch = 0,
+                };
+            }
+        } else if (state.piano_drag.mode == .resize_clip) {
             zgui.setMouseCursor(.resize_ew);
         }
-
-        // Restore cursor position
-        zgui.setCursorScreenPos(saved_cursor);
 
         // Now draw the clip end visuals
         if (clip_end_x > grid_window_pos[0] - clip_end_handle_width and clip_end_x < grid_window_pos[0] + grid_view_width + clip_end_handle_width) {
