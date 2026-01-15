@@ -784,25 +784,88 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
     zgui.text("{d:.0} bars", .{clip.length_beats / beats_per_bar});
     zgui.popStyleColor(.{ .count = 1 });
 
-    // Horizontal zoom slider
+    // Scroll/Zoom bar - drag left/right to scroll, drag up/down to zoom
     zgui.sameLine(.{ .spacing = 30.0 * ui_scale });
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
-    zgui.text("Zoom", .{});
-    zgui.popStyleColor(.{ .count = 1 });
-    zgui.sameLine(.{});
-    zgui.pushItemWidth(120.0 * ui_scale);
-    var zoom_val: f32 = 1.0 - (state.beats_per_pixel - 0.005) / (0.15 - 0.005); // Normalize to 0-1
-    if (zgui.sliderFloat("##hzoom", .{
-        .v = &zoom_val,
-        .min = 0.0,
-        .max = 1.0,
-        .cfmt = "",
-        .flags = .{},
-    })) {
-        // Convert back: higher zoom_val = more zoomed in = lower beats_per_pixel
-        state.beats_per_pixel = 0.005 + (1.0 - zoom_val) * (0.15 - 0.005);
+
+    const scrollbar_width = 200.0 * ui_scale;
+    const scrollbar_height = 16.0 * ui_scale;
+
+    // Get position for drawing
+    const bar_pos = zgui.getCursorScreenPos();
+
+    // Create invisible button for interaction
+    _ = zgui.invisibleButton("##scroll_zoom_bar", .{ .w = scrollbar_width, .h = scrollbar_height });
+    const bar_hovered = zgui.isItemHovered(.{});
+    const bar_active = zgui.isItemActive();
+
+    // Handle drag
+    if (bar_active) {
+        const delta = zgui.getMouseDragDelta(.left, .{});
+        if (delta[0] != 0 or delta[1] != 0) {
+            // Horizontal drag = scroll (scaled by zoom level)
+            const scroll_sensitivity = 2.0;
+            state.scroll_x += delta[0] * scroll_sensitivity;
+
+            // Vertical drag = zoom (up = zoom in, down = zoom out)
+            const zoom_sensitivity = 0.003;
+            state.beats_per_pixel = std.math.clamp(
+                state.beats_per_pixel + delta[1] * zoom_sensitivity,
+                0.005, // Max zoom in
+                1.0, // Max zoom out - can see entire clip
+            );
+
+            zgui.resetMouseDragDelta(.left);
+        }
+        zgui.setMouseCursor(.resize_all);
+    } else if (bar_hovered) {
+        zgui.setMouseCursor(.resize_all);
     }
-    zgui.popItemWidth();
+
+    // Draw the scrollbar background
+    const draw_list = zgui.getWindowDrawList();
+    const bar_color = if (bar_active)
+        zgui.colorConvertFloat4ToU32(.{ 0.4, 0.4, 0.5, 1.0 })
+    else if (bar_hovered)
+        zgui.colorConvertFloat4ToU32(.{ 0.35, 0.35, 0.4, 1.0 })
+    else
+        zgui.colorConvertFloat4ToU32(.{ 0.25, 0.25, 0.3, 1.0 });
+
+    draw_list.addRectFilled(.{
+        .pmin = .{ bar_pos[0], bar_pos[1] },
+        .pmax = .{ bar_pos[0] + scrollbar_width, bar_pos[1] + scrollbar_height },
+        .col = bar_color,
+        .rounding = 4.0,
+    });
+
+    // Draw a thumb indicator showing current scroll position
+    // Calculate thumb size and position based on visible area vs total content
+    const max_beats_preview = @max(clip.length_beats + 16, 64);
+    const content_width_preview = max_beats_preview * pixels_per_beat;
+    const avail_preview = zgui.getContentRegionAvail();
+    const grid_view_width_preview = avail_preview[0] - key_width;
+
+    const thumb_ratio = @min(1.0, grid_view_width_preview / content_width_preview);
+    const thumb_width = @max(20.0 * ui_scale, scrollbar_width * thumb_ratio);
+    const max_thumb_x = scrollbar_width - thumb_width;
+    const scroll_ratio = if (content_width_preview > grid_view_width_preview)
+        state.scroll_x / (content_width_preview - grid_view_width_preview)
+    else
+        0.0;
+    const thumb_x = bar_pos[0] + scroll_ratio * max_thumb_x;
+
+    draw_list.addRectFilled(.{
+        .pmin = .{ thumb_x, bar_pos[1] + 2 },
+        .pmax = .{ thumb_x + thumb_width, bar_pos[1] + scrollbar_height - 2 },
+        .col = zgui.colorConvertFloat4ToU32(Colors.accent),
+        .rounding = 3.0,
+    });
+
+    // Show zoom level indicator (higher % = more zoomed in)
+    zgui.sameLine(.{ .spacing = 10.0 * ui_scale });
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
+    const zoom_pct = (1.0 - state.beats_per_pixel) / (1.0 - 0.005) * 100;
+    zgui.text("{d:.0}%", .{zoom_pct});
+    zgui.popStyleColor(.{ .count = 1 });
 
     zgui.spacing();
 
@@ -825,9 +888,6 @@ fn drawSequencer(state: *State, ui_scale: f32) void {
     const grid_area_y = base_pos[1] + ruler_height;
     const grid_view_width = total_width - key_width;
     const grid_view_height = total_height - ruler_height;
-
-    // Manual scroll handling - no child window, just draw directly
-    const draw_list = zgui.getWindowDrawList();
 
     // Clamp scroll values to valid range
     const max_scroll_x = @max(0.0, content_width - grid_view_width);
