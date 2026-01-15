@@ -209,7 +209,8 @@ pub fn main(init: std.process.Init) !void {
     zaudio.init(allocator);
     defer zaudio.deinit();
 
-    var state = ui.State.init();
+    var state = ui.State.init(allocator);
+    defer state.deinit();
     var synths: [ui.track_count]*zsynth.Plugin = undefined;
     var synth_count: usize = 0;
     errdefer {
@@ -277,8 +278,7 @@ pub fn main(init: std.process.Init) !void {
         const wants_keyboard = zgui.io.getWantCaptureKeyboard();
         if (!wants_keyboard and zgui.isKeyPressed(.space, false)) {
             state.playing = !state.playing;
-            state.playhead_step = 0;
-            state.step_accum = 0;
+            state.playhead_beat = 0;
         }
 
         while (app_window.app.nextEventMatchingMask(

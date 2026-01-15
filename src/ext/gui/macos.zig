@@ -14,6 +14,8 @@ pub fn init(gui: *GUI, view: *objc.app_kit.View) !void {
     gui.scale_factor = @floatCast(window.backingScaleFactor());
     imgui.applyScaleFactor(gui);
 
+    view.setWantsLayer(true);
+
     const width: f32 = @floatFromInt(gui.width);
     const height: f32 = @floatFromInt(gui.height);
     const framebuffer_width: f32 = width * gui.scale_factor;
@@ -69,6 +71,9 @@ pub fn deinit(gui: *GUI) void {
 }
 
 pub fn update(plugin: *Plugin) !void {
+    const pool = objc.objc.autoreleasePoolPush();
+    defer objc.objc.autoreleasePoolPop(pool);
+
     // Pass events from the NSApp down to the NSWindow and ImGui
     const NSApp = objc.app_kit.Application.sharedApplication();
     while (NSApp.nextEventMatchingMask(

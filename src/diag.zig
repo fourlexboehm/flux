@@ -7,6 +7,53 @@ const objc = @import("objc");
 const Plugin = @import("plugin.zig");
 const GUI = @import("ext/gui/gui.zig");
 
+const AppWindow = struct {
+    app: *objc.app_kit.Application,
+    window: *objc.app_kit.Window,
+    view: *objc.app_kit.View,
+
+    pub fn init(title: [:0]const u8, width: f64, height: f64) !AppWindow {
+        const app = objc.app_kit.Application.sharedApplication();
+        _ = app.setActivationPolicy(objc.app_kit.ApplicationActivationPolicyRegular);
+        app.activateIgnoringOtherApps(true);
+
+        const rect = objc.app_kit.Rect{
+            .origin = .{ .x = 0, .y = 0 },
+            .size = .{ .width = width, .height = height },
+        };
+        const style = objc.app_kit.WindowStyleMaskTitled |
+            objc.app_kit.WindowStyleMaskClosable |
+            objc.app_kit.WindowStyleMaskResizable |
+            objc.app_kit.WindowStyleMaskMiniaturizable;
+        const window = objc.app_kit.Window.alloc().initWithContentRect_styleMask_backing_defer_screen(
+            rect,
+            style,
+            objc.app_kit.BackingStoreBuffered,
+            false,
+            null,
+        );
+        window.setReleasedWhenClosed(false);
+        const title_str = objc.foundation.String.stringWithUTF8String(title);
+        window.setTitle(title_str);
+        window.center();
+
+        const view = objc.app_kit.View.alloc().initWithFrame(rect);
+        window.setContentView(view);
+        window.makeKeyAndOrderFront(null);
+
+        return .{
+            .app = app,
+            .window = window,
+            .view = view,
+        };
+    }
+
+    pub fn deinit(self: *AppWindow) void {
+        self.view.release();
+        self.window.release();
+    }
+};
+
 const MockHost = struct {
     clap_host: clap.Host,
     allocator: std.mem.Allocator,
@@ -85,19 +132,20 @@ pub fn main() !void {
 
     switch (builtin.os.tag) {
         .macos => {
-            // For macOS testing, we'll act like the "host" and create a window using GLFW
-            try glfw.init();
-            const glfw_window = try glfw.createWindow(800, 500, "ZSynth", null);
-            defer glfw_window.destroy();
-            const nswindow: *objc.app_kit.Window = @ptrCast(glfw.getCocoaWindow(glfw_window));
+            var app_window = try AppWindow.init("ZSynth", 800, 500);
+            defer app_window.deinit();
             const window = clap.ext.gui.Window{ .api = "cocoa", .data = .{
-                .cocoa = nswindow.contentView().?,
+                .cocoa = app_window.view,
             } };
             _ = plugin_gui_ext.create(&plugin.plugin, null, false);
             _ = plugin_gui_ext.setParent(&plugin.plugin, &window);
-            glfw_window.show();
-            while (plugin.gui) |gui| {
-                try gui.update();
+            _ = plugin_gui_ext.show(&plugin.plugin);
+            while (app_window.window.isVisible()) {
+                if (plugin.gui) |gui| {
+                    try gui.update();
+                } else {
+                    break;
+                }
             }
         },
         .linux => {

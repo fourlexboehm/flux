@@ -25,9 +25,12 @@ pub const Connection = struct {
 pub const StateSnapshot = struct {
     playing: bool,
     bpm: f32,
+    playhead_beat: f32,
     tracks: [ui.track_count]ui.Track,
     clips: [ui.track_count][ui.scene_count]ui.ClipSlot,
-    sequencer: [ui.track_count][ui.scene_count]ui.SequencerClip,
+    // Note: piano_clips contain ArrayList which can't be trivially copied
+    // We pass a pointer to the UI state's clips for reading notes
+    piano_clips_ptr: *const [ui.track_count][ui.scene_count]ui.PianoRollClip,
 };
 
 const max_note_events = 128;
@@ -80,13 +83,14 @@ fn outputEventsTryPush(list: *const clap.events.OutputEvents, event: *const clap
     return true;
 }
 
+const max_active_notes = 128;
+
 pub const NoteSource = struct {
     track_index: usize,
-    samples_into_step: f64 = 0.0,
-    current_step: u8 = 0,
-    active_notes: [ui.seq_rows]bool = [_]bool{false} ** ui.seq_rows,
+    current_beat: f64 = 0.0,
+    // Track which pitches are currently sounding (by MIDI pitch 0-127)
+    active_pitches: [128]bool = [_]bool{false} ** 128,
     last_scene: ?usize = null,
-    needs_step_trigger: bool = true,
     event_list: EventList = .{},
     input_events: clap.events.InputEvents = .{
         .context = undefined,
@@ -99,71 +103,77 @@ pub const NoteSource = struct {
     }
 
     fn resetSequencer(self: *NoteSource) void {
-        self.samples_into_step = 0.0;
-        self.current_step = 0;
-        self.active_notes = [_]bool{false} ** ui.seq_rows;
-        self.needs_step_trigger = true;
+        self.current_beat = 0.0;
+        self.active_pitches = [_]bool{false} ** 128;
     }
 
-    fn emitStepEvents(self: *NoteSource, clip: *const ui.SequencerClip, sample_offset: u32) void {
-        const length_steps = @max(@as(u8, 1), @min(clip.length_steps, ui.seq_steps));
-        const step_index: usize = @intCast(self.current_step % length_steps);
-        for (0..ui.seq_rows) |row| {
-            const now_active = noteIsActive(clip, row, step_index, length_steps);
-            const was_active = self.active_notes[row];
-            if (now_active and !was_active) {
-                self.event_list.pushNote(.{
-                    .header = .{
-                        .size = @sizeOf(clap.events.Note),
-                        .sample_offset = sample_offset,
-                        .space_id = clap.events.core_space_id,
-                        .type = .note_on,
-                        .flags = .{},
-                    },
-                    .note_id = .unspecified,
-                    .port_index = .unspecified,
-                    .channel = .unspecified,
-                    .key = @enumFromInt(60 + @as(i16, @intCast(ui.seq_rows - 1 - row))),
-                    .velocity = 1.0,
-                });
-            } else if (!now_active and was_active) {
-                self.event_list.pushNote(.{
-                    .header = .{
-                        .size = @sizeOf(clap.events.Note),
-                        .sample_offset = sample_offset,
-                        .space_id = clap.events.core_space_id,
-                        .type = .note_off,
-                        .flags = .{},
-                    },
-                    .note_id = .unspecified,
-                    .port_index = .unspecified,
-                    .channel = .unspecified,
-                    .key = @enumFromInt(60 + @as(i16, @intCast(ui.seq_rows - 1 - row))),
-                    .velocity = 0.0,
-                });
-            }
-            self.active_notes[row] = now_active;
-        }
+    fn emitNoteOn(self: *NoteSource, pitch: u8, sample_offset: u32) void {
+        self.event_list.pushNote(.{
+            .header = .{
+                .size = @sizeOf(clap.events.Note),
+                .sample_offset = sample_offset,
+                .space_id = clap.events.core_space_id,
+                .type = .note_on,
+                .flags = .{},
+            },
+            .note_id = .unspecified,
+            .port_index = .unspecified,
+            .channel = .unspecified,
+            .key = @enumFromInt(@as(i16, @intCast(pitch))),
+            .velocity = 1.0,
+        });
+        self.active_pitches[pitch] = true;
+    }
+
+    fn emitNoteOff(self: *NoteSource, pitch: u8, sample_offset: u32) void {
+        self.event_list.pushNote(.{
+            .header = .{
+                .size = @sizeOf(clap.events.Note),
+                .sample_offset = sample_offset,
+                .space_id = clap.events.core_space_id,
+                .type = .note_off,
+                .flags = .{},
+            },
+            .note_id = .unspecified,
+            .port_index = .unspecified,
+            .channel = .unspecified,
+            .key = @enumFromInt(@as(i16, @intCast(pitch))),
+            .velocity = 0.0,
+        });
+        self.active_pitches[pitch] = false;
     }
 
     fn emitAllNotesOff(self: *NoteSource) void {
-        for (0..ui.seq_rows) |row| {
-            if (!self.active_notes[row]) continue;
-            self.event_list.pushNote(.{
-                .header = .{
-                    .size = @sizeOf(clap.events.Note),
-                    .sample_offset = 0,
-                    .space_id = clap.events.core_space_id,
-                    .type = .note_off,
-                    .flags = .{},
-                },
-                .note_id = .unspecified,
-                .port_index = .unspecified,
-                .channel = .unspecified,
-                .key = @enumFromInt(60 + @as(i16, @intCast(ui.seq_rows - 1 - row))),
-                .velocity = 0.0,
-            });
-            self.active_notes[row] = false;
+        for (0..128) |pitch| {
+            if (self.active_pitches[pitch]) {
+                self.emitNoteOff(@intCast(pitch), 0);
+            }
+        }
+    }
+
+    fn updateNotesAtBeat(self: *NoteSource, clip: *const ui.PianoRollClip, beat: f32, sample_offset: u32) void {
+        // Determine which pitches should be active at this beat
+        var should_be_active: [128]bool = [_]bool{false} ** 128;
+
+        for (clip.notes.items) |note| {
+            const note_end = note.start + note.duration;
+            if (beat >= note.start and beat < note_end) {
+                should_be_active[note.pitch] = true;
+            }
+        }
+
+        // Emit note offs for pitches that should stop
+        for (0..128) |pitch| {
+            if (self.active_pitches[pitch] and !should_be_active[pitch]) {
+                self.emitNoteOff(@intCast(pitch), sample_offset);
+            }
+        }
+
+        // Emit note ons for pitches that should start
+        for (0..128) |pitch| {
+            if (should_be_active[pitch] and !self.active_pitches[pitch]) {
+                self.emitNoteOn(@intCast(pitch), sample_offset);
+            }
         }
     }
 
@@ -198,43 +208,36 @@ pub const NoteSource = struct {
             self.last_scene = active_scene;
         }
 
-        const clip = &snapshot.sequencer[self.track_index][active_scene.?];
-        if (self.needs_step_trigger) {
-            self.emitStepEvents(clip, 0);
-            self.needs_step_trigger = false;
-        }
+        const clip = &snapshot.piano_clips_ptr[self.track_index][active_scene.?];
+        const beats_per_second = @as(f64, snapshot.bpm) / 60.0;
+        const beats_per_sample = beats_per_second / @as(f64, sample_rate);
 
-        const samples_per_step = (@as(f64, sample_rate) * 60.0) / @as(f64, snapshot.bpm) / 4.0;
+        // Process sample by sample to catch note transitions
         var sample_index: u32 = 0;
+        var last_check_beat = self.current_beat;
+
         while (sample_index < frame_count) : (sample_index += 1) {
-            self.samples_into_step += 1.0;
-            if (self.samples_into_step >= samples_per_step) {
-                self.samples_into_step -= samples_per_step;
-                const length_steps = @max(@as(u8, 1), @min(clip.length_steps, ui.seq_steps));
-                self.current_step = @intCast((self.current_step + 1) % length_steps);
-                self.emitStepEvents(clip, sample_index);
+            self.current_beat += beats_per_sample;
+
+            // Loop the beat within clip length
+            if (self.current_beat >= clip.length_beats) {
+                self.current_beat = @mod(self.current_beat, @as(f64, clip.length_beats));
+                // On loop, recheck all notes
+                self.updateNotesAtBeat(clip, @floatCast(self.current_beat), sample_index);
+                last_check_beat = self.current_beat;
+            }
+
+            // Check for note transitions every 1/64th beat or so for efficiency
+            const check_interval = 0.015625; // 1/64th beat
+            if (self.current_beat - last_check_beat >= check_interval) {
+                self.updateNotesAtBeat(clip, @floatCast(self.current_beat), sample_index);
+                last_check_beat = self.current_beat;
             }
         }
 
         return &self.input_events;
     }
 };
-
-fn noteIsActive(clip: *const ui.SequencerClip, row: usize, step: usize, length_steps: u8) bool {
-    var idx: i32 = @intCast(step);
-    while (idx >= 0) : (idx -= 1) {
-        const start: usize = @intCast(idx);
-        const len = clip.notes[row][start];
-        if (len == 0) continue;
-        if (start >= length_steps) continue;
-        const max_len: u8 = length_steps - @as(u8, @intCast(start));
-        const clamped_len = if (len > max_len) max_len else len;
-        if (step < start + clamped_len) {
-            return true;
-        }
-    }
-    return false;
-}
 
 pub const SynthNode = struct {
     plugin: *zsynth.Plugin,

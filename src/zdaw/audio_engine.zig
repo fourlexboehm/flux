@@ -9,35 +9,40 @@ const Channels = 2;
 
 pub const SharedState = struct {
     mutex: std.Thread.Mutex = .{},
-    data: audio_graph.StateSnapshot,
+    playing: bool = false,
+    bpm: f32 = 120.0,
+    playhead_beat: f32 = 0,
+    tracks: [ui.track_count]ui.Track = undefined,
+    clips: [ui.track_count][ui.scene_count]ui.ClipSlot = undefined,
+    piano_clips_ptr: ?*const [ui.track_count][ui.scene_count]ui.PianoRollClip = null,
 
     pub fn init() SharedState {
-        const state = ui.State.init();
-        return .{
-            .data = .{
-                .playing = state.playing,
-                .bpm = state.bpm,
-                .tracks = state.tracks,
-                .clips = state.clips,
-                .sequencer = state.sequencer,
-            },
-        };
+        return .{};
     }
 
     pub fn updateFromUi(self: *SharedState, state: *const ui.State) void {
         self.mutex.lock();
         defer self.mutex.unlock();
-        self.data.playing = state.playing;
-        self.data.bpm = state.bpm;
-        self.data.tracks = state.tracks;
-        self.data.clips = state.clips;
-        self.data.sequencer = state.sequencer;
+        self.playing = state.playing;
+        self.bpm = state.bpm;
+        self.playhead_beat = state.playhead_beat;
+        self.tracks = state.tracks;
+        self.clips = state.clips;
+        self.piano_clips_ptr = &state.piano_clips;
     }
 
-    pub fn snapshot(self: *SharedState) audio_graph.StateSnapshot {
+    pub fn snapshot(self: *SharedState) ?audio_graph.StateSnapshot {
         self.mutex.lock();
         defer self.mutex.unlock();
-        return self.data;
+        if (self.piano_clips_ptr == null) return null;
+        return .{
+            .playing = self.playing,
+            .bpm = self.bpm,
+            .playhead_beat = self.playhead_beat,
+            .tracks = self.tracks,
+            .clips = self.clips,
+            .piano_clips_ptr = self.piano_clips_ptr.?,
+        };
     }
 };
 
@@ -143,7 +148,7 @@ pub const AudioEngine = struct {
         @memset(out_ptr[0..sample_count], 0);
 
         if (frame_count == 0) return;
-        const snapshot = self.shared.snapshot();
+        const snapshot = self.shared.snapshot() orelse return;
         self.graph.process(&snapshot, frame_count, self.steady_time);
         self.steady_time += frame_count;
 
