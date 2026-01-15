@@ -1,6 +1,6 @@
 const std = @import("std");
 const zaudio = @import("zaudio");
-const zsynth = @import("zsynth-core");
+const clap = @import("clap-bindings");
 
 const ui = @import("ui.zig");
 const audio_graph = @import("audio_graph.zig");
@@ -15,6 +15,7 @@ pub const SharedState = struct {
     tracks: [ui.track_count]ui.Track = undefined,
     clips: [ui.track_count][ui.scene_count]ui.ClipSlot = undefined,
     piano_clips_ptr: ?*const [ui.track_count][ui.scene_count]ui.PianoRollClip = null,
+    track_plugins: [ui.track_count]?*const clap.Plugin = [_]?*const clap.Plugin{null} ** ui.track_count,
 
     pub fn init() SharedState {
         return .{};
@@ -31,6 +32,12 @@ pub const SharedState = struct {
         self.piano_clips_ptr = &state.piano_clips;
     }
 
+    pub fn updatePlugins(self: *SharedState, plugins: [ui.track_count]?*const clap.Plugin) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.track_plugins = plugins;
+    }
+
     pub fn snapshot(self: *SharedState) ?audio_graph.StateSnapshot {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -42,6 +49,7 @@ pub const SharedState = struct {
             .tracks = self.tracks,
             .clips = self.clips,
             .piano_clips_ptr = self.piano_clips_ptr.?,
+            .track_plugins = self.track_plugins,
         };
     }
 };
@@ -58,7 +66,6 @@ pub const AudioEngine = struct {
         allocator: std.mem.Allocator,
         sample_rate: f32,
         max_frames: u32,
-        synths: [ui.track_count]*zsynth.Plugin,
     ) !AudioEngine {
         var graph = audio_graph.Graph.init(allocator);
 
@@ -78,7 +85,7 @@ pub const AudioEngine = struct {
             var synth_node = audio_graph.Node{
                 .id = 0,
                 .kind = .synth,
-                .data = .{ .synth = audio_graph.SynthNode.init(synths[track_index]) },
+                .data = .{ .synth = audio_graph.SynthNode.init(track_index) },
             };
             synth_node.addInput(.events);
             synth_node.addOutput(.audio);
@@ -139,6 +146,10 @@ pub const AudioEngine = struct {
 
     pub fn updateFromUi(self: *AudioEngine, state: *const ui.State) void {
         self.shared.updateFromUi(state);
+    }
+
+    pub fn updatePlugins(self: *AudioEngine, plugins: [ui.track_count]?*const clap.Plugin) void {
+        self.shared.updatePlugins(plugins);
     }
 
     pub fn render(self: *AudioEngine, device: *zaudio.Device, output: ?*anyopaque, frame_count: u32) void {
