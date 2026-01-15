@@ -294,7 +294,6 @@ pub fn main(init: std.process.Init) !void {
         }
         state.zsynth = synths[state.selected_track];
         updateDeviceState(&state, &catalog, &track_plugins);
-        engine.updateFromUi(&state);
         const wants_keyboard = zgui.io.getWantCaptureKeyboard();
         if (!wants_keyboard and zgui.isKeyPressed(.space, false)) {
             state.playing = !state.playing;
@@ -350,6 +349,7 @@ pub fn main(init: std.process.Init) !void {
 
         zgui.backend.newFrame(fb_width, fb_height, app_window.view, descriptor);
         ui.draw(&state, 1.0);
+        engine.updateFromUi(&state);
         try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog);
         engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
         zgui.backend.draw(command_buffer, command_encoder);
