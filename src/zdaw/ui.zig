@@ -363,6 +363,13 @@ fn drawClipGrid(state: *State, ui_scale: f32) void {
     // Draw session view
     const is_focused = state.focused_pane == .session;
     state.session.draw(ui_scale, state.playing, is_focused);
+    if (state.session.open_clip_request) |req| {
+        state.session.open_clip_request = null;
+        state.session.primary_track = req.track;
+        state.session.primary_scene = req.scene;
+        state.bottom_mode = .sequencer;
+        state.focused_pane = .bottom;
+    }
 }
 
 fn drawBottomPanel(state: *State, ui_scale: f32) void {
