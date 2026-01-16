@@ -123,7 +123,7 @@ pub fn main() !void {
     defer host.deinit();
 
     const plugin = try Plugin.init(allocator, &host.clap_host);
-    plugin.sample_rate = 48000;
+    plugin.sample_rate = 44100;
     defer plugin.deinit();
 
     host.setPlugin(plugin);

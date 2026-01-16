@@ -326,7 +326,6 @@ const ext_voice_info = extensions.VoiceInfo.create();
 const ext_thread_pool = extensions.ThreadPool.create();
 
 fn _getExtension(_: *const clap.Plugin, id: [*:0]const u8) callconv(.c) ?*const anyopaque {
-    std.log.debug("Get extension called {s}!", .{id});
     if (std.mem.eql(u8, std.mem.span(id), clap.ext.audio_ports.id)) {
         return &ext_audio_ports;
     }

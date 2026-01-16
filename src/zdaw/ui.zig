@@ -45,6 +45,8 @@ pub const TrackPluginUI = struct {
     last_valid_choice: i32,
 };
 
+const keyboard_base_pitch: u8 = 60; // Middle C (C4)
+
 pub const State = struct {
     allocator: std.mem.Allocator,
     playing: bool,
@@ -73,6 +75,7 @@ pub const State = struct {
     track_plugins: [ui.max_tracks]TrackPluginUI,
     plugin_items: [:0]const u8,
     plugin_divider_index: ?i32,
+    live_key_states: [ui.max_tracks][128]bool,
 
     pub fn init(allocator: std.mem.Allocator) State {
         var track_plugins_data: [ui.max_tracks]TrackPluginUI = undefined;
@@ -111,6 +114,7 @@ pub const State = struct {
             .track_plugins = track_plugins_data,
             .plugin_items = plugin_items,
             .plugin_divider_index = null,
+            .live_key_states = [_][128]bool{[_]bool{false} ** 128} ** ui.max_tracks,
         };
     }
 
@@ -281,6 +285,46 @@ pub fn tick(state: *State, dt: f64) void {
     // Loop within clip length
     if (state.playhead_beat >= clip.length_beats) {
         state.playhead_beat = @mod(state.playhead_beat, clip.length_beats);
+    }
+}
+
+pub fn updateKeyboardMidi(state: *State) void {
+    const KeyMapping = struct {
+        key: zgui.Key,
+        pitch: u8,
+    };
+    const mappings = [_]KeyMapping{
+        .{ .key = .a, .pitch = keyboard_base_pitch + 0 },
+        .{ .key = .s, .pitch = keyboard_base_pitch + 2 },
+        .{ .key = .d, .pitch = keyboard_base_pitch + 4 },
+        .{ .key = .f, .pitch = keyboard_base_pitch + 5 },
+        .{ .key = .g, .pitch = keyboard_base_pitch + 7 },
+        .{ .key = .h, .pitch = keyboard_base_pitch + 9 },
+        .{ .key = .j, .pitch = keyboard_base_pitch + 11 },
+        .{ .key = .k, .pitch = keyboard_base_pitch + 12 },
+        .{ .key = .l, .pitch = keyboard_base_pitch + 14 },
+        .{ .key = .semicolon, .pitch = keyboard_base_pitch + 16 },
+        .{ .key = .w, .pitch = keyboard_base_pitch + 1 },
+        .{ .key = .e, .pitch = keyboard_base_pitch + 3 },
+        .{ .key = .t, .pitch = keyboard_base_pitch + 6 },
+        .{ .key = .y, .pitch = keyboard_base_pitch + 8 },
+        .{ .key = .u, .pitch = keyboard_base_pitch + 10 },
+    };
+
+    var pressed = [_]bool{false} ** 128;
+    for (mappings) |mapping| {
+        if (zgui.isKeyDown(mapping.key)) {
+            pressed[mapping.pitch] = true;
+        }
+    }
+
+    const selected = state.selectedTrack();
+    for (0..ui.max_tracks) |track_index| {
+        if (track_index == selected) {
+            state.live_key_states[track_index] = pressed;
+        } else {
+            state.live_key_states[track_index] = [_]bool{false} ** 128;
+        }
     }
 }
 

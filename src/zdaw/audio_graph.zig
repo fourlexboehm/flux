@@ -31,6 +31,7 @@ pub const StateSnapshot = struct {
     // We pass a pointer to the UI state's clips for reading notes
     piano_clips_ptr: *const [ui.track_count][ui.scene_count]ui.PianoRollClip,
     track_plugins: [ui.track_count]?*const clap.Plugin,
+    live_key_states: [ui.track_count][128]bool,
 };
 
 const max_note_events = 128;
@@ -104,7 +105,7 @@ pub const NoteSource = struct {
 
     fn resetSequencer(self: *NoteSource) void {
         self.current_beat = 0.0;
-        self.active_pitches = [_]bool{false} ** 128;
+        self.last_scene = null;
     }
 
     fn emitNoteOn(self: *NoteSource, pitch: u8, sample_offset: u32) void {
@@ -143,15 +144,23 @@ pub const NoteSource = struct {
         self.active_pitches[pitch] = false;
     }
 
-    fn emitAllNotesOff(self: *NoteSource) void {
+    fn updateCombined(self: *NoteSource, desired: *const [128]bool, sample_offset: u32) void {
         for (0..128) |pitch| {
-            if (self.active_pitches[pitch]) {
-                self.emitNoteOff(@intCast(pitch), 0);
+            if (self.active_pitches[pitch] and !desired[pitch]) {
+                self.emitNoteOff(@intCast(pitch), sample_offset);
+            } else if (!self.active_pitches[pitch] and desired[pitch]) {
+                self.emitNoteOn(@intCast(pitch), sample_offset);
             }
         }
     }
 
-    fn updateNotesAtBeat(self: *NoteSource, clip: *const ui.PianoRollClip, beat: f32, sample_offset: u32) void {
+    fn updateNotesAtBeat(
+        self: *NoteSource,
+        clip: *const ui.PianoRollClip,
+        beat: f32,
+        sample_offset: u32,
+        live_should: *const [128]bool,
+    ) void {
         // Determine which pitches should be active at this beat
         var should_be_active: [128]bool = [_]bool{false} ** 128;
 
@@ -162,28 +171,20 @@ pub const NoteSource = struct {
             }
         }
 
-        // Emit note offs for pitches that should stop
         for (0..128) |pitch| {
-            if (self.active_pitches[pitch] and !should_be_active[pitch]) {
-                self.emitNoteOff(@intCast(pitch), sample_offset);
-            }
+            should_be_active[pitch] = should_be_active[pitch] or live_should[pitch];
         }
-
-        // Emit note ons for pitches that should start
-        for (0..128) |pitch| {
-            if (should_be_active[pitch] and !self.active_pitches[pitch]) {
-                self.emitNoteOn(@intCast(pitch), sample_offset);
-            }
-        }
+        self.updateCombined(&should_be_active, sample_offset);
     }
 
     fn process(self: *NoteSource, snapshot: *const StateSnapshot, sample_rate: f32, frame_count: u32) *const clap.events.InputEvents {
         self.event_list.reset();
         self.input_events.context = &self.event_list;
+        const live_should = &snapshot.live_key_states[self.track_index];
 
         if (!snapshot.playing) {
-            self.emitAllNotesOff();
             self.resetSequencer();
+            self.updateCombined(live_should, 0);
             return &self.input_events;
         }
 
@@ -196,24 +197,24 @@ pub const NoteSource = struct {
         }
 
         if (active_scene == null) {
-            self.emitAllNotesOff();
             self.resetSequencer();
-            self.last_scene = null;
+            self.updateCombined(live_should, 0);
             return &self.input_events;
         }
 
-        if (self.last_scene == null or self.last_scene.? != active_scene.?) {
-            self.emitAllNotesOff();
-            self.resetSequencer();
-            self.last_scene = active_scene;
-        }
-
         const clip = &snapshot.piano_clips_ptr[self.track_index][active_scene.?];
+
+        if (self.last_scene == null or self.last_scene.? != active_scene.?) {
+            self.current_beat = 0.0;
+            self.last_scene = active_scene;
+            self.updateNotesAtBeat(clip, 0.0, 0, live_should);
+        }
         const beats_per_second = @as(f64, snapshot.bpm) / 60.0;
         const beats_per_sample = beats_per_second / @as(f64, sample_rate);
 
         // Process sample by sample to catch note transitions
         var sample_index: u32 = 0;
+        self.updateNotesAtBeat(clip, @floatCast(self.current_beat), 0, live_should);
         var last_check_beat = self.current_beat;
 
         while (sample_index < frame_count) : (sample_index += 1) {
@@ -223,14 +224,14 @@ pub const NoteSource = struct {
             if (self.current_beat >= clip.length_beats) {
                 self.current_beat = @mod(self.current_beat, @as(f64, clip.length_beats));
                 // On loop, recheck all notes
-                self.updateNotesAtBeat(clip, @floatCast(self.current_beat), sample_index);
+                self.updateNotesAtBeat(clip, @floatCast(self.current_beat), sample_index, live_should);
                 last_check_beat = self.current_beat;
             }
 
             // Check for note transitions every 1/64th beat or so for efficiency
             const check_interval = 0.015625; // 1/64th beat
             if (self.current_beat - last_check_beat >= check_interval) {
-                self.updateNotesAtBeat(clip, @floatCast(self.current_beat), sample_index);
+                self.updateNotesAtBeat(clip, @floatCast(self.current_beat), sample_index, live_should);
                 last_check_beat = self.current_beat;
             }
         }
@@ -312,6 +313,8 @@ pub const Graph = struct {
     master_node: ?NodeId = null,
     sample_rate: f32 = 0.0,
     max_frames: u32 = 0,
+    scratch_input_left: []f32 = &.{},
+    scratch_input_right: []f32 = &.{},
 
     pub fn init(allocator: std.mem.Allocator) Graph {
         return .{
@@ -344,6 +347,12 @@ pub const Graph = struct {
                 .note_source => {},
             }
         }
+        if (self.scratch_input_left.len > 0) {
+            self.allocator.free(self.scratch_input_left);
+        }
+        if (self.scratch_input_right.len > 0) {
+            self.allocator.free(self.scratch_input_right);
+        }
         self.nodes.deinit(self.allocator);
         self.connections.deinit(self.allocator);
         self.render_order.deinit(self.allocator);
@@ -370,6 +379,8 @@ pub const Graph = struct {
     pub fn prepare(self: *Graph, sample_rate: f32, max_frames: u32) !void {
         self.sample_rate = sample_rate;
         self.max_frames = max_frames;
+        self.scratch_input_left = try self.allocator.alloc(f32, max_frames);
+        self.scratch_input_right = try self.allocator.alloc(f32, max_frames);
         for (self.nodes.items) |*node| {
             switch (node.kind) {
                 .note_source => {},
@@ -466,6 +477,19 @@ pub const Graph = struct {
         return null;
     }
 
+    fn getMainPortChannelCount(_: *Graph, plugin: *const clap.Plugin, is_input: bool) ?u32 {
+        const ext_raw = plugin.getExtension(plugin, clap.ext.audio_ports.id) orelse return null;
+        const ext: *const clap.ext.audio_ports.Plugin = @ptrCast(@alignCast(ext_raw));
+        if (ext.count(plugin, is_input) == 0) {
+            return 0;
+        }
+        var info: clap.ext.audio_ports.Info = undefined;
+        if (!ext.get(plugin, 0, is_input, &info)) {
+            return null;
+        }
+        return info.channel_count;
+    }
+
     pub fn process(self: *Graph, snapshot: *const StateSnapshot, frame_count: u32, steady_time: u64) void {
         var solo_active = false;
         for (snapshot.tracks) |track| {
@@ -475,7 +499,13 @@ pub const Graph = struct {
             }
         }
 
-        const empty_buffers: [0]clap.AudioBuffer = .{};
+        const empty_input = clap.AudioBuffer{
+            .data32 = null,
+            .data64 = null,
+            .channel_count = 0,
+            .latency = 0,
+            .constant_mask = 0,
+        };
         const empty_event_list = EventList{};
         var empty_input_events = clap.events.InputEvents{
             .context = @constCast(&empty_event_list),
@@ -496,25 +526,89 @@ pub const Graph = struct {
                     @memset(outputs.right[0..frame_count], 0);
 
                     const plugin = snapshot.track_plugins[node.data.synth.track_index] orelse continue;
+                    const output_channels = self.getMainPortChannelCount(plugin, false) orelse 2;
+                    const input_channels = self.getMainPortChannelCount(plugin, true) orelse 0;
+                    const output_channel_count: u32 = @min(if (output_channels == 0) 2 else output_channels, 2);
+                    const input_channel_count: u32 = if (input_channels == 0) 0 else @min(input_channels, 2);
+
+                    var input_ptrs: [2][*]f32 = undefined;
+                    var audio_in: clap.AudioBuffer = undefined;
+                    if (input_channel_count > 0) {
+                        @memset(self.scratch_input_left[0..frame_count], 0);
+                        if (input_channel_count > 1) {
+                            @memset(self.scratch_input_right[0..frame_count], 0);
+                        }
+                        input_ptrs = [2][*]f32{ self.scratch_input_left.ptr, self.scratch_input_right.ptr };
+                        audio_in = clap.AudioBuffer{
+                            .data32 = &input_ptrs,
+                            .data64 = null,
+                            .channel_count = input_channel_count,
+                            .latency = 0,
+                            .constant_mask = 0,
+                        };
+                    }
                     var channel_ptrs = [2][*]f32{ outputs.left.ptr, outputs.right.ptr };
                     var audio_out = clap.AudioBuffer{
                         .data32 = &channel_ptrs,
                         .data64 = null,
-                        .channel_count = 2,
+                        .channel_count = output_channel_count,
                         .latency = 0,
                         .constant_mask = 0,
                     };
 
                     const input_events = self.findEventInput(node_id) orelse &empty_input_events;
                     node.data.synth.out_events_list.count = 0;
+                    const process_inputs: [*]const clap.AudioBuffer = if (input_channel_count == 0)
+                        @as([*]const clap.AudioBuffer, @ptrCast(&empty_input))
+                    else
+                        @as([*]const clap.AudioBuffer, @ptrCast(&audio_in));
+                    const process_input_count: u32 = if (input_channel_count == 0) 0 else 1;
+                    const process_output_count: u32 = 1;
+                    const process_outputs_ptr: [*]clap.AudioBuffer = @as([*]clap.AudioBuffer, @ptrCast(&audio_out));
+                    const tempo = @as(f64, snapshot.bpm);
+                    const beats = @as(f64, snapshot.playhead_beat);
+                    const seconds = if (tempo > 0.0) beats * 60.0 / tempo else 0.0;
+                    const bar_len = 4.0;
+                    const bar_index = @floor(beats / bar_len);
+                    var transport = clap.events.Transport{
+                        .header = .{
+                            .size = @sizeOf(clap.events.Transport),
+                            .sample_offset = 0,
+                            .space_id = clap.events.core_space_id,
+                            .type = .transport,
+                            .flags = .{},
+                        },
+                        .flags = .{
+                            .has_tempo = true,
+                            .has_beats_timeline = true,
+                            .has_seconds_timeline = true,
+                            .has_time_signature = true,
+                            .is_playing = snapshot.playing,
+                            .is_recording = false,
+                            .is_loop_active = false,
+                            .is_within_pre_roll = false,
+                        },
+                        .song_pos_beats = clap.BeatTime.fromBeats(beats),
+                        .song_pos_seconds = clap.SecTime.fromSecs(seconds),
+                        .tempo = tempo,
+                        .tempo_increment = 0,
+                        .loop_start_beats = clap.BeatTime.fromBeats(0),
+                        .loop_end_beats = clap.BeatTime.fromBeats(0),
+                        .loop_start_seconds = clap.SecTime.fromSecs(0),
+                        .loop_end_seconds = clap.SecTime.fromSecs(0),
+                        .bar_start = clap.BeatTime.fromBeats(bar_index * bar_len),
+                        .bar_number = @as(i32, @intFromFloat(bar_index)) + 1,
+                        .time_signature_numerator = 4,
+                        .time_signature_denominator = 4,
+                    };
                     var clap_process = clap.Process{
                         .steady_time = @enumFromInt(@as(i64, @intCast(steady_time))),
                         .frames_count = frame_count,
-                        .transport = null,
-                        .audio_inputs = &empty_buffers,
-                        .audio_outputs = @ptrCast(&audio_out),
-                        .audio_inputs_count = 0,
-                        .audio_outputs_count = 1,
+                        .transport = &transport,
+                        .audio_inputs = process_inputs,
+                        .audio_outputs = process_outputs_ptr,
+                        .audio_inputs_count = process_input_count,
+                        .audio_outputs_count = process_output_count,
                         .in_events = input_events,
                         .out_events = &node.data.synth.out_events,
                     };
