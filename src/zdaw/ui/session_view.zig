@@ -72,6 +72,11 @@ pub const ClipboardEntry = struct {
     slot: ClipSlot,
 };
 
+pub const OpenClipRequest = struct {
+    track: usize,
+    scene: usize,
+};
+
 pub const SessionView = struct {
     allocator: std.mem.Allocator,
 
@@ -100,6 +105,7 @@ pub const SessionView = struct {
 
     // Playback state
     queued_scene: [max_tracks]?usize = [_]?usize{null} ** max_tracks,
+    open_clip_request: ?OpenClipRequest = null,
 
     pub fn init(allocator: std.mem.Allocator) SessionView {
         var self = SessionView{
@@ -491,6 +497,10 @@ pub const SessionView = struct {
                 // Start drag select
                 self.drag_select.begin(mouse, shift_down);
                 self.drag_moving = false;
+                if (hover_track != null and hover_scene != null) {
+                    self.primary_track = hover_track.?;
+                    self.primary_scene = hover_scene.?;
+                }
                 if (!shift_down) {
                     self.clearSelection();
                 }
@@ -550,10 +560,7 @@ pub const SessionView = struct {
             const track_label = std.fmt.bufPrintZ(&track_buf, "{s}##track_hdr{d}", .{ self.tracks[t].getName(), t }) catch "Track";
             if (zgui.selectable(track_label, .{ .selected = is_track_selected, .w = track_col_w - 16.0 * ui_scale })) {
                 self.primary_track = t;
-                // Select first clip in track if none selected
-                if (!self.hasSelection()) {
-                    self.selectOnly(t, self.primary_scene);
-                }
+                self.clearSelection();
             }
             zgui.popStyleColor(.{ .count = 1 });
         }
@@ -629,10 +636,7 @@ pub const SessionView = struct {
             const scene_label = std.fmt.bufPrintZ(&scene_buf, "{s}##scene_hdr{d}", .{ self.scenes[scene_idx].getName(), scene_idx }) catch "Scene";
             if (zgui.selectable(scene_label, .{ .selected = is_scene_selected, .w = scene_col_w - launch_size - 12.0 * ui_scale })) {
                 self.primary_scene = scene_idx;
-                // Select first clip in scene if none selected
-                if (!self.hasSelection()) {
-                    self.selectOnly(self.primary_track, scene_idx);
-                }
+                self.clearSelection();
             }
             zgui.popStyleColor(.{ .count = 1 });
 
@@ -754,8 +758,14 @@ pub const SessionView = struct {
 
         // Draw selection rectangle if active
         if (self.drag_select.active) {
-            const dl = zgui.getWindowDrawList();
+            const dl = zgui.getForegroundDrawList();
+            dl.pushClipRect(.{
+                .pmin = grid_pos,
+                .pmax = .{ grid_pos[0] + grid_width, grid_pos[1] + grid_height },
+                .intersect_with_current = true,
+            });
             self.drag_select.draw(dl);
+            dl.popClipRect();
         }
     }
 
@@ -766,7 +776,6 @@ pub const SessionView = struct {
 
         const slot = &self.clips[track][scene];
         const is_selected = self.isSelected(track, scene);
-        const is_primary = self.primary_track == track and self.primary_scene == scene;
 
         // Clip colors based on state
         const clip_color = switch (slot.state) {
@@ -786,7 +795,7 @@ pub const SessionView = struct {
             const clip_min = pos;
             const clip_max = [2]f32{ pos[0] + clip_w, pos[1] + height };
             if (self.drag_select.intersects(clip_min, clip_max)) {
-                if (!self.isSelected(track, scene)) {
+                if (!self.isSelected(track, scene) and slot.state != .empty) {
                     self.selectClip(track, scene);
                 }
             }
@@ -812,11 +821,11 @@ pub const SessionView = struct {
         });
 
         // Selection border
-        if (is_selected or is_primary) {
+        if (is_selected) {
             draw_list.addRect(.{
                 .pmin = pos,
                 .pmax = .{ pos[0] + clip_w, pos[1] + height },
-                .col = zgui.colorConvertFloat4ToU32(if (is_selected) colors.Colors.selected else colors.Colors.accent),
+                .col = zgui.colorConvertFloat4ToU32(colors.Colors.selected),
                 .rounding = rounding,
                 .flags = zgui.DrawFlags.round_corners_all,
                 .thickness = 2.0,
@@ -850,12 +859,13 @@ pub const SessionView = struct {
         // Invisible button for double-click detection
         _ = zgui.invisibleButton(clip_id, .{ .w = clip_w, .h = height });
 
-        // Handle double-click to create clip
+        // Handle double-click to create/open clip
         if (over_clip and zgui.isMouseDoubleClicked(.left)) {
             if (slot.state == .empty) {
                 self.createClip(track, scene);
-                self.selectOnly(track, scene);
             }
+            self.selectOnly(track, scene);
+            self.open_clip_request = .{ .track = track, .scene = scene };
         }
 
         zgui.sameLine(.{ .spacing = 4.0 * ui_scale });
@@ -952,11 +962,12 @@ pub const SessionView = struct {
     fn toggleClipPlayback(self: *SessionView, track: usize, scene: usize, playing: bool) void {
         const slot = &self.clips[track][scene];
 
-        // Also select/focus this clip
-        self.selectOnly(track, scene);
+        self.primary_track = track;
+        self.primary_scene = scene;
 
         // Empty slot = stop this track
         if (slot.state == .empty) {
+            self.clearSelection();
             // Stop all clips in this track
             for (0..self.scene_count) |s| {
                 if (self.clips[track][s].state == .playing or self.clips[track][s].state == .queued) {
@@ -966,6 +977,9 @@ pub const SessionView = struct {
             self.queued_scene[track] = null;
             return;
         }
+
+        // Also select/focus this clip
+        self.selectOnly(track, scene);
 
         if (slot.state == .playing) {
             slot.state = .stopped;

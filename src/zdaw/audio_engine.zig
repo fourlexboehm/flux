@@ -160,16 +160,22 @@ pub const AudioEngine = struct {
 
         if (frame_count == 0) return;
         const snapshot = self.shared.snapshot() orelse return;
-        self.graph.process(&snapshot, frame_count, self.steady_time);
-        self.steady_time += frame_count;
+        var frames_left = frame_count;
+        var frame_offset: usize = 0;
+        while (frames_left > 0) {
+            const chunk: u32 = @min(frames_left, self.max_frames);
+            self.graph.process(&snapshot, chunk, self.steady_time);
+            self.steady_time += chunk;
 
-        const master_id = self.graph.master_node orelse return;
-        const outputs = self.graph.getAudioOutput(master_id);
-        var idx: usize = 0;
-        for (0..frame_count) |i| {
-            out_ptr[idx] = outputs.left[i];
-            out_ptr[idx + 1] = outputs.right[i];
-            idx += Channels;
+            const master_id = self.graph.master_node orelse break;
+            const outputs = self.graph.getAudioOutput(master_id);
+            for (0..chunk) |i| {
+                const idx = (frame_offset + i) * Channels;
+                out_ptr[idx] = outputs.left[i];
+                out_ptr[idx + 1] = outputs.right[i];
+            }
+            frame_offset += chunk;
+            frames_left -= chunk;
         }
 
         _ = device;

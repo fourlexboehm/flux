@@ -10,6 +10,7 @@ const ui = @import("ui.zig");
 const audio_engine = @import("audio_engine.zig");
 const zsynth = @import("zsynth-core");
 const plugins = @import("plugins.zig");
+const project = @import("project.zig");
 
 const SampleRate = 48_000;
 const Channels = 2;
@@ -206,6 +207,7 @@ fn dataCallback(
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
+    const project_path = project.default_path;
 
     if (builtin.os.tag != .macos) {
         return error.UnsupportedOs;
@@ -252,6 +254,19 @@ pub fn main(init: std.process.Init) !void {
     }
     state.zsynth = synths[0];
 
+    const loaded_project = project.load(allocator, io, project_path) catch |err| blk: {
+        std.log.warn("Failed to load project: {}", .{err});
+        break :blk null;
+    };
+    if (loaded_project) |parsed| {
+        defer parsed.deinit();
+        try project.apply(&parsed.value, &state, &catalog);
+        state.zsynth = synths[state.selectedTrack()];
+        try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog);
+        const loaded_plugins = collectTrackPlugins(&catalog, &track_plugins, &state, synths);
+        project.applyDeviceStates(allocator, &parsed.value, loaded_plugins);
+    }
+
     var engine = try audio_engine.AudioEngine.init(allocator, SampleRate, MaxFrames);
     defer engine.deinit();
     engine.updateFromUi(&state);
@@ -295,7 +310,8 @@ pub fn main(init: std.process.Init) !void {
         state.zsynth = synths[state.selectedTrack()];
         updateDeviceState(&state, &catalog, &track_plugins);
         const wants_keyboard = zgui.io.getWantCaptureKeyboard();
-        if (!wants_keyboard and zgui.isKeyPressed(.space, false)) {
+        const item_active = zgui.isAnyItemActive();
+        if ((!wants_keyboard or !item_active) and zgui.isKeyPressed(.space, false)) {
             // Avoid macOS "bonk" when handling space outside ImGui widgets.
             zgui.setNextFrameWantCaptureKeyboard(true);
             state.playing = !state.playing;
@@ -368,6 +384,24 @@ pub fn main(init: std.process.Init) !void {
         }
 
         sleepNs(io, 5 * std.time.ns_per_ms);
+    }
+
+    if (device.isStarted()) {
+        device.stop() catch |err| {
+            std.log.warn("Failed to stop audio device: {}", .{err});
+        };
+    }
+    for (&track_plugins) |*track| {
+        closePluginGui(track);
+    }
+
+    const plugins_for_save = collectTrackPlugins(&catalog, &track_plugins, &state, synths);
+    project.save(allocator, io, project_path, &state, &catalog, plugins_for_save) catch |err| {
+        std.log.warn("Failed to save project: {}", .{err});
+    };
+
+    for (&track_plugins) |*track| {
+        unloadPlugin(track, allocator);
     }
 }
 
