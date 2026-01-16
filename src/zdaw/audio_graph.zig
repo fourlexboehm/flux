@@ -3,6 +3,7 @@ const clap = @import("clap-bindings");
 const ui = @import("ui.zig");
 
 pub const NodeId = u32;
+pub const max_clip_notes = 256;
 
 pub const PortKind = enum {
     audio,
@@ -25,13 +26,21 @@ pub const StateSnapshot = struct {
     playing: bool,
     bpm: f32,
     playhead_beat: f32,
+    track_count: usize,
+    scene_count: usize,
     tracks: [ui.track_count]ui.Track,
     clips: [ui.track_count][ui.scene_count]ui.ClipSlot,
-    // Note: piano_clips contain ArrayList which can't be trivially copied
-    // We pass a pointer to the UI state's clips for reading notes
-    piano_clips_ptr: *const [ui.track_count][ui.scene_count]ui.PianoRollClip,
+    piano_clips: [ui.track_count][ui.scene_count]ClipNotes,
     track_plugins: [ui.track_count]?*const clap.Plugin,
     live_key_states: [ui.track_count][128]bool,
+};
+
+pub const ClipNotes = struct {
+    length_beats: f32 = ui.default_clip_bars * ui.beats_per_bar,
+    count: u16 = 0,
+    notes: [max_clip_notes]ui.Note = [_]ui.Note{
+        .{ .pitch = 0, .start = 0, .duration = 0 },
+    } ** max_clip_notes,
 };
 
 const max_note_events = 128;
@@ -156,18 +165,26 @@ pub const NoteSource = struct {
 
     fn updateNotesAtBeat(
         self: *NoteSource,
-        clip: *const ui.PianoRollClip,
+        clip: *const ClipNotes,
         beat: f32,
         sample_offset: u32,
         live_should: *const [128]bool,
     ) void {
         // Determine which pitches should be active at this beat
         var should_be_active: [128]bool = [_]bool{false} ** 128;
+        const clip_len = clip.length_beats;
 
-        for (clip.notes.items) |note| {
+        for (clip.notes[0..clip.count]) |note| {
             const note_end = note.start + note.duration;
-            if (beat >= note.start and beat < note_end) {
-                should_be_active[note.pitch] = true;
+            if (note_end <= clip_len) {
+                if (beat >= note.start and beat < note_end) {
+                    should_be_active[note.pitch] = true;
+                }
+            } else {
+                const wrapped_end = note_end - clip_len;
+                if (beat >= note.start or beat < wrapped_end) {
+                    should_be_active[note.pitch] = true;
+                }
             }
         }
 
@@ -189,7 +206,9 @@ pub const NoteSource = struct {
         }
 
         var active_scene: ?usize = null;
-        for (snapshot.clips[self.track_index], 0..) |slot, scene_index| {
+        const scene_count = @min(snapshot.scene_count, ui.scene_count);
+        for (0..scene_count) |scene_index| {
+            const slot = snapshot.clips[self.track_index][scene_index];
             if (slot.state == .playing) {
                 active_scene = scene_index;
                 break;
@@ -202,41 +221,87 @@ pub const NoteSource = struct {
             return &self.input_events;
         }
 
-        const clip = &snapshot.piano_clips_ptr[self.track_index][active_scene.?];
+        const clip = &snapshot.piano_clips[self.track_index][active_scene.?];
 
         if (self.last_scene == null or self.last_scene.? != active_scene.?) {
             self.current_beat = 0.0;
             self.last_scene = active_scene;
-            self.updateNotesAtBeat(clip, 0.0, 0, live_should);
         }
+
+        const clip_len = @as(f64, clip.length_beats);
+        if (clip_len <= 0.0) {
+            self.updateCombined(live_should, 0);
+            return &self.input_events;
+        }
+
         const beats_per_second = @as(f64, snapshot.bpm) / 60.0;
         const beats_per_sample = beats_per_second / @as(f64, sample_rate);
+        const block_beats = beats_per_sample * @as(f64, frame_count);
+        const beat_start = self.current_beat;
+        const beat_end = beat_start + block_beats;
 
-        // Process sample by sample to catch note transitions
-        var sample_index: u32 = 0;
-        self.updateNotesAtBeat(clip, @floatCast(self.current_beat), 0, live_should);
-        var last_check_beat = self.current_beat;
+        self.updateNotesAtBeat(clip, @floatCast(beat_start), 0, live_should);
 
-        while (sample_index < frame_count) : (sample_index += 1) {
-            self.current_beat += beats_per_sample;
+        if (beat_end < clip_len) {
+            self.processSegment(clip, beat_start, beat_end, 0, beats_per_sample, clip_len);
+        } else {
+            const first_len = clip_len - beat_start;
+            const wrap_offset = @as(u32, @intFromFloat(@floor(first_len / beats_per_sample)));
+            self.processSegment(clip, beat_start, clip_len, 0, beats_per_sample, clip_len);
+            self.processSegment(clip, 0.0, @mod(beat_end, clip_len), wrap_offset, beats_per_sample, clip_len);
+        }
 
-            // Loop the beat within clip length
-            if (self.current_beat >= clip.length_beats) {
-                self.current_beat = @mod(self.current_beat, @as(f64, clip.length_beats));
-                // On loop, recheck all notes
-                self.updateNotesAtBeat(clip, @floatCast(self.current_beat), sample_index, live_should);
-                last_check_beat = self.current_beat;
-            }
-
-            // Check for note transitions every 1/64th beat or so for efficiency
-            const check_interval = 0.015625; // 1/64th beat
-            if (self.current_beat - last_check_beat >= check_interval) {
-                self.updateNotesAtBeat(clip, @floatCast(self.current_beat), sample_index, live_should);
-                last_check_beat = self.current_beat;
-            }
+        if (beat_end >= clip_len) {
+            self.current_beat = @mod(beat_end, clip_len);
+        } else {
+            self.current_beat = beat_end;
         }
 
         return &self.input_events;
+    }
+
+    fn processSegment(
+        self: *NoteSource,
+        clip: *const ClipNotes,
+        seg_start: f64,
+        seg_end: f64,
+        base_sample_offset: u32,
+        beats_per_sample: f64,
+        clip_len: f64,
+    ) void {
+        if (seg_end <= seg_start) return;
+        for (clip.notes[0..clip.count]) |note| {
+            const note_start = @as(f64, note.start);
+            const note_end = note_start + @as(f64, note.duration);
+
+            if (note_end <= clip_len) {
+                self.emitNoteEvents(note.pitch, note_start, note_end, seg_start, seg_end, base_sample_offset, beats_per_sample);
+            } else {
+                const wrapped_end = note_end - clip_len;
+                self.emitNoteEvents(note.pitch, note_start, clip_len, seg_start, seg_end, base_sample_offset, beats_per_sample);
+                self.emitNoteEvents(note.pitch, 0.0, wrapped_end, seg_start, seg_end, base_sample_offset, beats_per_sample);
+            }
+        }
+    }
+
+    fn emitNoteEvents(
+        self: *NoteSource,
+        pitch: u8,
+        note_start: f64,
+        note_end: f64,
+        seg_start: f64,
+        seg_end: f64,
+        base_sample_offset: u32,
+        beats_per_sample: f64,
+    ) void {
+        if (note_start > seg_start and note_start < seg_end) {
+            const offset = base_sample_offset + @as(u32, @intFromFloat(@floor((note_start - seg_start) / beats_per_sample)));
+            self.emitNoteOn(pitch, offset);
+        }
+        if (note_end > seg_start and note_end < seg_end) {
+            const offset = base_sample_offset + @as(u32, @intFromFloat(@floor((note_end - seg_start) / beats_per_sample)));
+            self.emitNoteOff(pitch, offset);
+        }
     }
 };
 
@@ -492,7 +557,9 @@ pub const Graph = struct {
 
     pub fn process(self: *Graph, snapshot: *const StateSnapshot, frame_count: u32, steady_time: u64) void {
         var solo_active = false;
-        for (snapshot.tracks) |track| {
+        const track_count = @min(snapshot.track_count, ui.track_count);
+        for (0..track_count) |t| {
+            const track = snapshot.tracks[t];
             if (track.solo) {
                 solo_active = true;
                 break;

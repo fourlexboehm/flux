@@ -64,11 +64,7 @@ pub fn discover(allocator: std.mem.Allocator, io: Io) !PluginCatalog {
     try appendStaticEntry(&catalog, .none, "None", null, null);
 
     const builtin_path = try defaultPluginPath();
-    const before_builtin = catalog.entries.items.len;
-    discoverPluginEntries(allocator, io, &catalog.entries, builtin_path, .builtin) catch {};
-    if (catalog.entries.items.len == before_builtin) {
-        try appendStaticEntry(&catalog, .builtin, "ZSynth", builtin_path, null);
-    }
+    try appendStaticEntry(&catalog, .builtin, "ZSynth", builtin_path, "com.juge.zsynth");
 
     var clap_entries: std.ArrayListUnmanaged(PluginEntry) = .{};
     defer clap_entries.deinit(allocator);
@@ -119,6 +115,9 @@ fn rebuildItemsZ(catalog: *PluginCatalog) !void {
 fn discoverClapEntries(allocator: std.mem.Allocator, io: Io, entries: *std.ArrayListUnmanaged(PluginEntry)) !void {
     if (builtin.os.tag != .macos) return;
 
+    const full_scan_env = std.c.getenv("ZDAW_CLAP_FULL_SCAN");
+    const full_scan = if (full_scan_env) |val| val[0] == '1' else false;
+
     var paths: std.ArrayList([]const u8) = .empty;
     defer {
         for (paths.items) |path| {
@@ -153,7 +152,11 @@ fn discoverClapEntries(allocator: std.mem.Allocator, io: Io, entries: *std.Array
             if (std.mem.eql(u8, entry.name, "ZSynth.clap")) continue;
             const full_path = try Dir.path.join(allocator, &[_][]const u8{ dir_path, entry.name });
             defer allocator.free(full_path);
-            discoverPluginEntries(allocator, io, entries, full_path, .clap) catch {};
+            if (full_scan) {
+                discoverPluginEntries(allocator, io, entries, full_path, .clap) catch {};
+            } else {
+                appendClapBundleEntry(allocator, io, entries, full_path) catch {};
+            }
         }
     }
 }
@@ -193,6 +196,26 @@ fn discoverPluginEntries(
             .id = id_copy,
         });
     }
+}
+
+fn appendClapBundleEntry(
+    allocator: std.mem.Allocator,
+    io: Io,
+    entries: *std.ArrayListUnmanaged(PluginEntry),
+    bundle_path: []const u8,
+) !void {
+    // TODO: Support bundles exposing multiple plugin descriptors via cached full scan.
+    const binary_path = resolveClapBinaryPath(allocator, io, bundle_path) catch return;
+    defer allocator.free(binary_path);
+    const name = Dir.path.stem(bundle_path);
+    const name_copy = try allocator.dupe(u8, name);
+    const path_copy = try allocator.dupe(u8, binary_path);
+    try entries.append(allocator, .{
+        .kind = .clap,
+        .name = name_copy,
+        .path = path_copy,
+        .id = null,
+    });
 }
 
 fn resolveClapBinaryPath(allocator: std.mem.Allocator, io: Io, plugin_path: []const u8) ![]const u8 {
