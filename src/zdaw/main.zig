@@ -12,9 +12,9 @@ const zsynth = @import("zsynth-core");
 const plugins = @import("plugins.zig");
 const project = @import("project.zig");
 
-const SampleRate = 48_000;
+const SampleRate = 44_100;
 const Channels = 2;
-const MaxFrames = 1024;
+const MaxFrames = 256;
 
 const Host = struct {
     clap_host: clap.Host,
@@ -88,7 +88,6 @@ const PluginHandle = struct {
         if (!plugin.init(plugin)) return error.PluginInitFailed;
 
         if (!plugin.activate(plugin, SampleRate, 1, MaxFrames)) return error.PluginActivateFailed;
-        if (!plugin.startProcessing(plugin)) return error.PluginStartFailed;
 
         return .{
             .lib = lib,
@@ -96,9 +95,18 @@ const PluginHandle = struct {
             .factory = factory,
             .plugin = plugin,
             .plugin_path_z = plugin_path_z,
-            .started = true,
+            .started = false,
             .activated = true,
         };
+    }
+
+    pub fn startProcessing(self: *PluginHandle) bool {
+        if (self.started) return true;
+        if (!self.plugin.startProcessing(self.plugin)) {
+            return false;
+        }
+        self.started = true;
+        return true;
     }
 
     pub fn deinit(self: *PluginHandle, allocator: std.mem.Allocator) void {
@@ -199,6 +207,9 @@ fn dataCallback(
     _: ?*const anyopaque,
     frame_count: u32,
 ) callconv(.c) void {
+    if (frame_count > MaxFrames) {
+        std.log.warn("Audio callback frame_count={} (requested {})", .{ frame_count, MaxFrames });
+    }
     const user_data = zaudio.Device.getUserData(device) orelse return;
     const engine: *audio_engine.AudioEngine = @ptrCast(@alignCast(user_data));
     engine.render(device, output, frame_count);
@@ -262,9 +273,22 @@ pub fn main(init: std.process.Init) !void {
         defer parsed.deinit();
         try project.apply(&parsed.value, &state, &catalog);
         state.zsynth = synths[state.selectedTrack()];
-        try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog, null, io);
+        try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog, null, io, false);
         const loaded_plugins = collectTrackPlugins(&catalog, &track_plugins, &state, synths);
         project.applyDeviceStates(allocator, &parsed.value, loaded_plugins);
+    }
+
+    for (synths[0..synth_count]) |plugin| {
+        if (!plugin.plugin.startProcessing(&plugin.plugin)) {
+            std.log.warn("Failed to start processing for built-in synth", .{});
+        }
+    }
+    for (&track_plugins) |*track| {
+        if (track.handle) |*handle| {
+            if (!handle.startProcessing()) {
+                std.log.warn("Failed to start processing for track plugin", .{});
+            }
+        }
     }
 
     var engine = try audio_engine.AudioEngine.init(allocator, SampleRate, MaxFrames);
@@ -276,6 +300,9 @@ pub fn main(init: std.process.Init) !void {
     device_config.playback.format = zaudio.Format.float32;
     device_config.playback.channels = Channels;
     device_config.sample_rate = SampleRate;
+    device_config.period_size_in_frames = MaxFrames;
+    device_config.performance_profile = .low_latency;
+    device_config.periods = 2;
     device_config.data_callback = dataCallback;
     device_config.user_data = &engine;
 
@@ -366,9 +393,11 @@ pub fn main(init: std.process.Init) !void {
         const command_encoder = command_buffer.renderCommandEncoderWithDescriptor(descriptor).?;
 
         zgui.backend.newFrame(fb_width, fb_height, app_window.view, descriptor);
+        zgui.setNextFrameWantCaptureKeyboard(true);
+        ui.updateKeyboardMidi(&state);
         ui.draw(&state, 1.0);
         engine.updateFromUi(&state);
-        try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog, &engine.shared, io);
+        try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog, &engine.shared, io, true);
         engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
         zgui.backend.draw(command_buffer, command_encoder);
         command_encoder.as(objc.metal.CommandEncoder).endEncoding();
@@ -477,6 +506,7 @@ fn syncTrackPlugins(
     catalog: *const plugins.PluginCatalog,
     shared: ?*audio_engine.SharedState,
     io: std.Io,
+    start_processing: bool,
 ) !void {
     const prepareUnload = struct {
         fn call(shared_state: ?*audio_engine.SharedState, track_index: usize, io_ctx: std.Io) void {
@@ -516,6 +546,11 @@ fn syncTrackPlugins(
             const path = entry.?.path orelse return error.PluginMissingPath;
             track.handle = try PluginHandle.init(allocator, host, path, entry.?.id);
             track.gui_ext = getGuiExt(track.handle.?);
+        }
+        if (start_processing and track.handle != null) {
+            if (!track.handle.?.startProcessing()) {
+                std.log.warn("Failed to start processing for track plugin", .{});
+            }
         }
 
         if (wants_gui and !track.gui_open) {

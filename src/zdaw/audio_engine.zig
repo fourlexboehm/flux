@@ -17,6 +17,7 @@ pub const SharedState = struct {
     clips: [ui.track_count][ui.scene_count]ui.ClipSlot = undefined,
     piano_clips_ptr: ?*const [ui.track_count][ui.scene_count]ui.PianoRollClip = null,
     track_plugins: [ui.track_count]?*const clap.Plugin = [_]?*const clap.Plugin{null} ** ui.track_count,
+    live_key_states: [ui.track_count][128]bool = [_][128]bool{[_]bool{false} ** 128} ** ui.track_count,
 
     pub fn init() SharedState {
         return .{};
@@ -31,6 +32,7 @@ pub const SharedState = struct {
         self.tracks = state.session.tracks;
         self.clips = state.session.clips;
         self.piano_clips_ptr = &state.piano_clips;
+        self.live_key_states = state.live_key_states;
     }
 
     pub fn updatePlugins(self: *SharedState, plugins: [ui.track_count]?*const clap.Plugin) void {
@@ -57,6 +59,7 @@ pub const SharedState = struct {
             .clips = self.clips,
             .piano_clips_ptr = self.piano_clips_ptr.?,
             .track_plugins = self.track_plugins,
+            .live_key_states = self.live_key_states,
         };
     }
 
