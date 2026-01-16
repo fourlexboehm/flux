@@ -1,0 +1,3613 @@
+const std = @import("std");
+const assert = std.debug.assert;
+//--------------------------------------------------------------------------------------------------
+//
+// Misc
+//
+//--------------------------------------------------------------------------------------------------
+pub fn init(allocator: std.mem.Allocator) void {
+    assert(mem_allocator == null);
+    mem_allocator = allocator;
+    mem_allocations = std.AutoHashMap(usize, usize).init(allocator);
+    mem_allocations.?.ensureTotalCapacity(16) catch @panic("zaudio: out of memory");
+
+    zaudioMallocPtr = zaudioMalloc;
+    zaudioReallocPtr = zaudioRealloc;
+    zaudioFreePtr = zaudioFree;
+
+    zaudioMemInit();
+}
+extern fn zaudioMemInit() callconv(.c) void;
+
+pub fn deinit() void {
+    assert(mem_allocator != null);
+    assert(mem_allocations.?.count() == 0);
+    mem_allocations.?.deinit();
+    mem_allocations = null;
+    mem_allocator = null;
+}
+
+pub const Error = error{
+    GenericError,
+    InvalidArgs,
+    InvalidOperation,
+    OutOfMemory,
+    OutOfRange,
+    AccessDenied,
+    DoesNotExist,
+    AlreadyExists,
+    TooManyOpenFiles,
+    InvalidFile,
+    TooBig,
+    PathTooLong,
+    NameTooLong,
+    NotDirectory,
+    IsDirectory,
+    DirectoryNotEmpty,
+    AtEnd,
+    NoSpace,
+    Busy,
+    IoError,
+    Interrupt,
+    Unavailable,
+    AlreadyInUse,
+    BadAddress,
+    BadSeek,
+    BadPipe,
+    Deadlock,
+    TooManyLinks,
+    NotImplemented,
+    NoMessage,
+    BadMessage,
+    NoDataAvailable,
+    InvalidData,
+    Timeout,
+    NoNetwork,
+    NotUnique,
+    NotSocket,
+    NoAddress,
+    BadProtocol,
+    ProtocolUnavailable,
+    ProtocolNotSupported,
+    ProtocolFamilyNotSupported,
+    AddressFamilyNotSupported,
+    SocketNotSupported,
+    ConnectionReset,
+    AlreadyConnected,
+    NotConnected,
+    ConnectionRefused,
+    NoHost,
+    InProgress,
+    Cancelled,
+    MemoryAlreadyMapped,
+
+    CrcNotMatch,
+
+    FormatNotSupported,
+    DeviceTypeNotSupported,
+    ShareModeNotSupported,
+    NoBackend,
+    NoDevice,
+    ApiNotFound,
+    InvalidDeviceConfig,
+    Loop,
+    BackendNotEnabled,
+
+    DeviceNotInitialized,
+    DeviceAlreadyInitialized,
+    DeviceNotStarted,
+    DeviceNotStopped,
+
+    FailedToInitBackend,
+    FailedToOpenBackendDevice,
+    FailedToStartBackendDevice,
+    FailedToStopBackendDevice,
+};
+
+pub const Result = enum(i32) {
+    success = 0,
+    generic_error = -1,
+    invalid_args = -2,
+    invalid_operation = -3,
+    out_of_memory = -4,
+    out_of_range = -5,
+    access_denied = -6,
+    does_not_exist = -7,
+    already_exists = -8,
+    too_many_open_files = -9,
+    invalid_file = -10,
+    too_big = -11,
+    path_too_long = -12,
+    name_too_long = -13,
+    not_directory = -14,
+    is_directory = -15,
+    directory_not_empty = -16,
+    at_end = -17,
+    no_space = -18,
+    busy = -19,
+    io_error = -20,
+    interrupt = -21,
+    unavailable = -22,
+    already_in_use = -23,
+    bad_address = -24,
+    bad_seek = -25,
+    bad_pipe = -26,
+    deadlock = -27,
+    too_many_links = -28,
+    not_implemented = -29,
+    no_message = -30,
+    bad_message = -31,
+    no_data_available = -32,
+    invalid_data = -33,
+    timeout = -34,
+    no_network = -35,
+    not_unique = -36,
+    not_socket = -37,
+    no_address = -38,
+    bad_protocol = -39,
+    protocol_unavailable = -40,
+    protocol_not_supported = -41,
+    protocol_family_not_supported = -42,
+    address_family_not_supported = -43,
+    socket_not_supported = -44,
+    connection_reset = -45,
+    already_connected = -46,
+    not_connected = -47,
+    connection_refused = -48,
+    no_host = -49,
+    in_progress = -50,
+    cancelled = -51,
+    memory_already_mapped = -52,
+
+    crc_not_match = -100,
+
+    format_not_supported = -200,
+    device_type_not_supported = -201,
+    share_mode_not_supported = -202,
+    no_backend = -203,
+    no_device = -204,
+    api_not_found = -205,
+    invalid_device_config = -206,
+    loop = -207,
+    backend_not_enabled = -208,
+
+    device_not_initialized = -300,
+    device_already_initialized = -301,
+    device_not_started = -302,
+    device_not_stopped = -303,
+
+    failed_to_init_backend = -400,
+    failed_to_open_backend_device = -401,
+    failed_to_start_backend_device = -402,
+    failed_to_stop_backend_device = -403,
+};
+
+pub fn maybeError(result: Result) Error!void {
+    return switch (result) {
+        .success => {},
+        .generic_error => Error.GenericError,
+        .invalid_args => Error.InvalidArgs,
+        .invalid_operation => Error.InvalidOperation,
+        .out_of_memory => Error.OutOfMemory,
+        .out_of_range => error.OutOfRange,
+        .access_denied => error.AccessDenied,
+        .does_not_exist => error.DoesNotExist,
+        .already_exists => error.AlreadyExists,
+        .too_many_open_files => error.TooManyOpenFiles,
+        .invalid_file => error.InvalidFile,
+        .too_big => error.TooBig,
+        .path_too_long => error.PathTooLong,
+        .name_too_long => error.NameTooLong,
+        .not_directory => error.NotDirectory,
+        .is_directory => error.IsDirectory,
+        .directory_not_empty => error.DirectoryNotEmpty,
+        .at_end => error.AtEnd,
+        .no_space => error.NoSpace,
+        .busy => error.Busy,
+        .io_error => error.IoError,
+        .interrupt => error.Interrupt,
+        .unavailable => error.Unavailable,
+        .already_in_use => error.AlreadyInUse,
+        .bad_address => error.BadAddress,
+        .bad_seek => error.BadSeek,
+        .bad_pipe => error.BadPipe,
+        .deadlock => error.Deadlock,
+        .too_many_links => error.TooManyLinks,
+        .not_implemented => error.NotImplemented,
+        .no_message => error.NoMessage,
+        .bad_message => error.BadMessage,
+        .no_data_available => error.NoDataAvailable,
+        .invalid_data => error.InvalidData,
+        .timeout => error.Timeout,
+        .no_network => error.NoNetwork,
+        .not_unique => error.NotUnique,
+        .not_socket => error.NotSocket,
+        .no_address => error.NoAddress,
+        .bad_protocol => error.BadProtocol,
+        .protocol_unavailable => error.ProtocolUnavailable,
+        .protocol_not_supported => error.ProtocolNotSupported,
+        .protocol_family_not_supported => error.ProtocolFamilyNotSupported,
+        .address_family_not_supported => error.AddressFamilyNotSupported,
+        .socket_not_supported => error.SocketNotSupported,
+        .connection_reset => error.ConnectionReset,
+        .already_connected => error.AlreadyConnected,
+        .not_connected => error.NotConnected,
+        .connection_refused => error.ConnectionRefused,
+        .no_host => error.NoHost,
+        .in_progress => error.InProgress,
+        .cancelled => error.Cancelled,
+        .memory_already_mapped => error.MemoryAlreadyMapped,
+
+        .crc_not_match => error.CrcNotMatch,
+
+        .format_not_supported => error.FormatNotSupported,
+        .device_type_not_supported => error.DeviceTypeNotSupported,
+        .share_mode_not_supported => error.ShareModeNotSupported,
+        .no_backend => error.NoBackend,
+        .no_device => error.NoDevice,
+        .api_not_found => error.ApiNotFound,
+        .invalid_device_config => error.InvalidDeviceConfig,
+        .loop => error.Loop,
+        .backend_not_enabled => error.BackendNotEnabled,
+
+        .device_not_initialized => error.DeviceNotInitialized,
+        .device_already_initialized => error.DeviceAlreadyInitialized,
+        .device_not_started => error.DeviceNotStarted,
+        .device_not_stopped => error.DeviceNotStopped,
+
+        .failed_to_init_backend => error.FailedToInitBackend,
+        .failed_to_open_backend_device => error.FailedToOpenBackendDevice,
+        .failed_to_start_backend_device => error.FailedToStartBackendDevice,
+        .failed_to_stop_backend_device => error.FailedToStopBackendDevice,
+    };
+}
+
+pub const PanMode = enum(u32) {
+    balance,
+    pan,
+};
+
+pub const DitherMode = enum(u32) {
+    none,
+    rectangle,
+    triangle,
+};
+
+pub const AttenuationModel = enum(u32) {
+    none,
+    inverse,
+    linear,
+    exponential,
+};
+
+pub const Positioning = enum(u32) {
+    absolute,
+    relative,
+};
+
+pub const Format = enum(u32) {
+    unknown,
+    unsigned8,
+    signed16,
+    signed24,
+    signed32,
+    float32,
+};
+
+pub const EncodingFormat = enum(u32) {
+    unknown,
+    wav,
+    flac,
+    mp3,
+    vorbis,
+};
+
+pub const PerformanceProfile = enum(u32) {
+    low_latency,
+    conservative,
+};
+
+pub const ResampleAlgorithm = enum(u32) {
+    linear,
+    custom,
+};
+
+pub const ChannelMixMode = enum(u32) {
+    rectangular,
+    simple,
+    custom_weights,
+
+    pub const default: ChannelMixMode = .rectangular;
+};
+
+pub const ShareMode = enum(u32) {
+    shared,
+    exclusive,
+};
+
+pub const WasapiUsage = enum(u32) {
+    default,
+    games,
+    pro_audio,
+};
+
+pub const OpenslStreamType = enum(u32) {
+    default,
+    voice,
+    system,
+    ring,
+    media,
+    alarm,
+    notification,
+};
+
+pub const OpenslRecordingPreset = enum(u32) {
+    default,
+    generic,
+    camcorder,
+    recognition,
+    voice_communication,
+    voice_unprocessed,
+};
+
+pub const AaudioUsage = enum(u32) {
+    default,
+    media,
+    voice_communication,
+    voice_communication_signalling,
+    alarm,
+    notification,
+    notification_ringtone,
+    notification_event,
+    assistance_accessibility,
+    assistance_navigation_guidance,
+    assistance_sonification,
+    game,
+    assitant,
+    emergency,
+    safety,
+    vehicle_status,
+    announcement,
+};
+
+pub const AaudioContentType = enum(u32) {
+    default,
+    speech,
+    music,
+    movie,
+    sonification,
+};
+
+pub const AaudioInputPreset = enum(u32) {
+    default,
+    generic,
+    camcorder,
+    voice_recognition,
+    voice_communication,
+    unprocessed,
+    voice_performance,
+};
+
+pub const AaudioAllowedCapturePolicy = enum(u32) {
+    default,
+    by_all,
+    by_system,
+    by_none,
+};
+
+pub const MonoExpansionMode = enum(u32) {
+    duplicate,
+    average,
+    stereo_only,
+
+    pub const default: MonoExpansionMode = .duplicate;
+};
+
+pub const AllocationCallbacks = extern struct {
+    user_data: ?*anyopaque,
+
+    onMalloc: ?*const fn (len: usize, user_data: ?*anyopaque) callconv(.c) ?*anyopaque,
+
+    onRealloc: ?*const fn (
+        ptr: ?*anyopaque,
+        len: usize,
+        user_data: ?*anyopaque,
+    ) callconv(.c) ?*anyopaque,
+
+    onFree: ?*const fn (ptr: ?*anyopaque, user_data: ?*anyopaque) callconv(.c) void,
+};
+
+pub const Bool32 = enum(u32) {
+    false32,
+    true32,
+};
+
+pub const Channel = u8;
+
+pub const ResourceManager = opaque {
+    // TODO: Add methods.
+
+    pub const PipelineNotifications = extern struct {
+        init: StageNotification,
+        done: StageNotification,
+
+        pub const StageNotification = extern struct {
+            notification: ?*anyopaque,
+            fence: ?*Fence,
+        };
+    };
+};
+
+pub const Vfs = extern struct {
+    pub const FileHandle = ?*anyopaque;
+    pub const OpenMode = enum(c_int) {
+        read = 1,
+        write,
+    };
+    pub const SeekOrigin = enum(c_int) {
+        start,
+        current,
+        end,
+    };
+    pub const FileInfo = extern struct {
+        size_in_bytes: usize,
+    };
+
+    on_open: ?*const fn (self: *Vfs, file_path: [*:0]const u8, mode: OpenMode, handle: *FileHandle) callconv(.c) Result,
+    on_openw: ?*const fn (self: *Vfs, file_path: [*:0]const u32, mode: OpenMode, handle: *FileHandle) callconv(.c) Result,
+    on_close: ?*const fn (self: *Vfs, handle: FileHandle) callconv(.c) Result,
+    on_read: ?*const fn (self: *Vfs, handle: FileHandle, dst: [*]u8, size: usize, bytes_read: *usize) callconv(.c) Result,
+    on_write: ?*const fn (self: *Vfs, handle: FileHandle, src: [*]const u8, size: usize, bytes_written: *usize) callconv(.c) Result,
+    on_seek: ?*const fn (self: *Vfs, handle: FileHandle, offset: i64, origin: SeekOrigin) callconv(.c) Result,
+    on_tell: ?*const fn (self: *Vfs, handle: FileHandle, offset: *i64) callconv(.c) Result,
+    on_info: ?*const fn (self: *Vfs, handle: FileHandle, info: *FileInfo) callconv(.c) Result,
+};
+
+pub const readProc = *const fn (user_data: ?*anyopaque, buffer_out: ?*anyopaque, bytes_to_read: usize, bytes_read: *usize) callconv(.c) Result;
+pub const seekProc = *const fn (user_data: ?*anyopaque, offset: i64, origin: Vfs.SeekOrigin) callconv(.c) Result;
+pub const tellProc = *const fn (user_data: ?*anyopaque, cursor: ?*i64) callconv(.c) Result;
+
+pub const Context = opaque {
+    // TODO: Add methods.
+};
+
+pub const Log = opaque {
+    // TODO: Add methods.
+};
+//--------------------------------------------------------------------------------------------------
+//
+// DataSource
+//
+//--------------------------------------------------------------------------------------------------
+pub const DataSourceBase = extern struct {
+    vtable: *const DataSource.VTable,
+    range_begin_in_frames: u64,
+    range_end_in_frames: u64,
+    loop_begin_in_frames: u64,
+    loop_end_in_frames: u64,
+    p_current: *DataSource,
+    p_next: *DataSource,
+    onGetNext: ?*const fn (*DataSource) callconv(.c) void,
+    is_looping: Bool32,
+};
+
+pub const DataSource = opaque {
+    pub const destroy = zaudioDataSourceDestroy;
+    extern fn zaudioDataSourceDestroy(handle: *DataSource) void;
+
+    pub const Config = extern struct {
+        vtable: *const VTable,
+
+        pub fn init() Config {
+            var config: Config = undefined;
+            zaudioDataSourceConfigInit(&config);
+            return config;
+        }
+        extern fn zaudioDataSourceConfigInit(out_config: *Config) void;
+    };
+
+    pub fn create(config: Config, data_source_base: *DataSourceBase) Error!*DataSource {
+        try maybeError(zaudioDataSourceCreate(&config, data_source_base));
+        return @ptrCast(data_source_base);
+    }
+    extern fn zaudioDataSourceCreate(config: *const Config, data_source_base: *DataSourceBase) Result;
+
+    pub const Flags = packed struct(u32) {
+        self_managed_range_and_loop_point: bool = false,
+        _padding: u31 = 0,
+    };
+
+    pub const VTable = extern struct {
+        onRead: ?*const fn (
+            ds: *DataSource,
+            frames_out: ?*anyopaque,
+            frame_count: u64,
+            frames_read: *u64,
+        ) callconv(.c) Result,
+
+        onSeek: ?*const fn (ds: *DataSource, frame_index: u64) callconv(.c) Result,
+
+        onGetDataFormat: ?*const fn (
+            ds: *DataSource,
+            format: ?*Format,
+            channels: ?*u32,
+            sample_rate: ?*u32,
+            channel_map: ?[*]Channel,
+            channel_map_cap: usize,
+        ) callconv(.c) Result,
+
+        onGetCursor: ?*const fn (ds: *DataSource, cursor: ?*u64) callconv(.c) Result,
+
+        onGetLength: ?*const fn (ds: *DataSource, length: ?*u64) callconv(.c) Result,
+
+        onSetLooping: ?*const fn (ds: *DataSource, is_looping: Bool32) callconv(.c) Result,
+
+        flags: Flags,
+    };
+};
+//--------------------------------------------------------------------------------------------------
+//
+// Waveform (-> DataSource)
+//
+//--------------------------------------------------------------------------------------------------
+pub const Waveform = opaque {
+    pub const destroy = zaudioWaveformDestroy;
+    extern fn zaudioWaveformDestroy(waveform: *Waveform) void;
+
+    pub fn asDataSource(handle: *const Waveform) *const DataSource {
+        return @as(*const DataSource, @ptrCast(handle));
+    }
+    pub fn asDataSourceMut(handle: *Waveform) *DataSource {
+        return @as(*DataSource, @ptrCast(handle));
+    }
+
+    pub fn setAmplitude(waveform: *Waveform, amplitude: f64) Error!void {
+        try maybeError(ma_waveform_set_amplitude(waveform, amplitude));
+    }
+    extern fn ma_waveform_set_amplitude(waveform: *Waveform, amplitude: f64) Result;
+
+    pub fn setFrequency(waveform: *Waveform, frequency: f64) Error!void {
+        try maybeError(ma_waveform_set_frequency(waveform, frequency));
+    }
+    extern fn ma_waveform_set_frequency(waveform: *Waveform, frequency: f64) Result;
+
+    pub fn setType(waveform: *Waveform, waveform_type: Type) Error!void {
+        try maybeError(ma_waveform_set_type(waveform, waveform_type));
+    }
+    extern fn ma_waveform_set_type(waveform: *Waveform, waveform_type: Type) Result;
+
+    pub fn setSampleRate(waveform: *Waveform, sample_rate: u32) Error!void {
+        try maybeError(ma_waveform_set_sample_rate(waveform, sample_rate));
+    }
+    extern fn ma_waveform_set_sample_rate(waveform: *Waveform, sample_rate: u32) Result;
+
+    pub fn create(config: Config) Error!*Waveform {
+        var handle: ?*Waveform = null;
+        try maybeError(zaudioWaveformCreate(&config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioWaveformCreate(config: *const Config, handle: ?*?*Waveform) Result;
+
+    pub const Type = enum(u32) {
+        sine,
+        square,
+        triangle,
+        sawtooth,
+    };
+
+    pub const Config = extern struct {
+        format: Format,
+        channels: u32,
+        sampleRate: u32,
+        waveform_type: Type,
+        amplitude: f64,
+        frequency: f64,
+
+        pub fn init(
+            format: Format,
+            num_channels: u32,
+            sample_rate: u32,
+            waveform_type: Type,
+            amplitude: f64,
+            frequency: f64,
+        ) Config {
+            var config: Config = undefined;
+            zaudioWaveformConfigInit(
+                format,
+                num_channels,
+                sample_rate,
+                waveform_type,
+                amplitude,
+                frequency,
+                &config,
+            );
+            return config;
+        }
+        extern fn zaudioWaveformConfigInit(
+            format: Format,
+            channels: u32,
+            sampleRate: u32,
+            waveform_type: Type,
+            amplitude: f64,
+            frequency: f64,
+            out_config: *Config,
+        ) void;
+    };
+};
+//--------------------------------------------------------------------------------------------------
+//
+// Noise (-> DataSource)
+//
+//--------------------------------------------------------------------------------------------------
+pub const Noise = opaque {
+    pub const destroy = zaudioNoiseDestroy;
+    extern fn zaudioNoiseDestroy(handle: *Noise) void;
+
+    pub fn asDataSource(handle: *Noise) *const DataSource {
+        return @as(*const DataSource, @ptrCast(handle));
+    }
+    pub fn asDataSourceMut(handle: *Noise) *DataSource {
+        return @as(*DataSource, @ptrCast(handle));
+    }
+
+    pub fn setAmplitude(noise: *Noise, amplitude: f64) Error!void {
+        try maybeError(ma_noise_set_amplitude(noise, amplitude));
+    }
+    extern fn ma_noise_set_amplitude(noise: *Noise, amplitude: f64) Result;
+
+    pub fn setType(noise: *Noise, noise_type: Type) Error!void {
+        _ = noise_type;
+        _ = noise;
+        unreachable; // Deprecated by miniaudio
+    }
+
+    pub fn create(config: Config) Error!*Noise {
+        var handle: ?*Noise = null;
+        try maybeError(zaudioNoiseCreate(&config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioNoiseCreate(config: *const Config, out_handle: ?*?*Noise) Result;
+
+    pub const Type = enum(u32) {
+        white,
+        pink,
+        brownian,
+    };
+
+    pub const Config = extern struct {
+        format: Format,
+        num_channels: u32,
+        noise_type: Type,
+        seed: i32,
+        amplitude: f64,
+        duplicate_channels: Bool32,
+
+        pub fn init(
+            format: Format,
+            num_channels: u32,
+            noise_type: Type,
+            seed: i32,
+            amplitude: f64,
+        ) Config {
+            var config: Config = undefined;
+            zaudioNoiseConfigInit(format, num_channels, noise_type, seed, amplitude, &config);
+            return config;
+        }
+        extern fn zaudioNoiseConfigInit(
+            format: Format,
+            num_channels: u32,
+            noise_type: Type,
+            seed: i32,
+            amplitude: f64,
+            out_config: *Config,
+        ) void;
+    };
+};
+//--------------------------------------------------------------------------------------------------
+//
+// AudioBuffer
+//
+//--------------------------------------------------------------------------------------------------
+pub const AudioBuffer = opaque {
+    pub const Config = extern struct {
+        format: Format,
+        channels: u32,
+        sample_rate: u32,
+        size_in_frames: u64,
+        data: ?*const anyopaque,
+        allocation_callbacks: AllocationCallbacks,
+
+        extern fn zaudioAudioBufferConfigInit(
+            format: Format,
+            channels: u32,
+            size_in_frames: u64,
+            data: ?*const anyopaque,
+            out_config: *Config,
+        ) void;
+
+        pub fn init(
+            format: Format,
+            channels: u32,
+            size_in_frames: u64,
+            data: ?*const anyopaque,
+        ) Config {
+            var config: Config = undefined;
+            zaudioAudioBufferConfigInit(format, channels, size_in_frames, data, &config);
+            return config;
+        }
+    };
+
+    pub fn create(config: Config) Error!*AudioBuffer {
+        var handle: ?*AudioBuffer = null;
+        try maybeError(zaudioAudioBufferCreate(&config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioAudioBufferCreate(config: *const Config, out_handle: ?*?*AudioBuffer) Result;
+
+    pub const destroy = zaudioAudioBufferDestroy;
+    extern fn zaudioAudioBufferDestroy(handle: *AudioBuffer) void;
+
+    pub fn asDataSource(audio_buffer: *const AudioBuffer) *const DataSource {
+        return @as(*const DataSource, @ptrCast(audio_buffer));
+    }
+    pub fn asDataSourceMut(audio_buffer: *AudioBuffer) *DataSource {
+        return @as(*DataSource, @ptrCast(audio_buffer));
+    }
+};
+
+//--------------------------------------------------------------------------------------------------
+//
+// Data Converter
+//
+//--------------------------------------------------------------------------------------------------
+pub const DataConverter = opaque {
+    pub const destroy = zaudioDataConverterDestroy;
+    extern fn zaudioDataConverterDestroy(handle: *DataConverter) void;
+
+    pub fn create(config: Config) Error!*DataConverter {
+        var handle: ?*DataConverter = null;
+        try maybeError(zaudioDataConverterCreate(&config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioDataConverterCreate(config: *const Config, handle: ?*?*DataConverter) Result;
+
+    /// Please don't use the .len of the buffer slice since frame count is different from the actual sample buffer size
+    /// which your actual buffer size is equal to frame size multiplied by the number of channel, so you should get the
+    /// frame_count_xxx with using either getRequiredInputFrameCount() or getExpectedOutputFrameCount() as a var,
+    /// or you will get an incomplete or even a corrupted sample
+    pub fn processPcmFrames(
+        converter: *DataConverter,
+        frames_in: *anyopaque,
+        frame_count_in: *u64,
+        frame_out: *anyopaque,
+        frame_count_out: *u64,
+    ) Error!void {
+        try maybeError(ma_data_converter_process_pcm_frames(
+            converter,
+            frames_in,
+            frame_count_in,
+            frame_out,
+            frame_count_out,
+        ));
+    }
+    extern fn ma_data_converter_process_pcm_frames(converter: *DataConverter, frames_in: *anyopaque, frame_count_in: *u64, frame_out: *anyopaque, frame_count_out: *u64) Result;
+
+    pub fn setRate(converter: *DataConverter, sample_rate_in: u32, sample_rate_out: u32) Error!void {
+        try maybeError(ma_data_converter_set_rate(converter, sample_rate_in, sample_rate_out));
+    }
+    extern fn ma_data_converter_set_rate(converter: *DataConverter, sample_rate_in: u32, sample_rate_out: u32) Result;
+
+    pub fn setRateRatio(converter: *DataConverter, ratio_in_out: f32) Error!void {
+        try maybeError(ma_data_converter_set_rate_ratio(converter, ratio_in_out));
+    }
+    extern fn ma_data_converter_set_rate_ratio(converter: *DataConverter, ratioInOut: f32) Result;
+
+    pub fn getInputLatency(converter: *DataConverter) u64 {
+        return ma_data_converter_get_input_latency(converter);
+    }
+    extern fn ma_data_converter_get_input_latency(converter: *DataConverter) u64;
+
+    pub fn getOutPutLatency(converter: *DataConverter) u64 {
+        return ma_data_converter_get_output_latency(converter);
+    }
+    extern fn ma_data_converter_get_output_latency(converter: *DataConverter) u64;
+
+    pub fn getRequiredInputFrameCount(converter: *DataConverter, output_frame_count: u64) Error!u64 {
+        var input_frame_count: u64 = undefined;
+        try maybeError(ma_data_converter_get_required_input_frame_count(converter, output_frame_count, &input_frame_count));
+        return input_frame_count;
+    }
+    extern fn ma_data_converter_get_required_input_frame_count(converter: *DataConverter, output_frame_count: u64, input_frame_count: *u64) Result;
+
+    pub fn getExpectedOutputFrameCount(converter: *DataConverter, input_frame_count: u64) Error!u64 {
+        var output_frame_count: u64 = undefined;
+        try maybeError(ma_data_converter_get_expected_output_frame_count(converter, input_frame_count, &output_frame_count));
+        return output_frame_count;
+    }
+    extern fn ma_data_converter_get_expected_output_frame_count(converter: *DataConverter, input_frame_count: u64, output_frame_count: *u64) Result;
+
+    pub fn getInputChannelMap(converter: *DataConverter, channel_map: ?[]Channel) Error!void {
+        try maybeError(ma_data_converter_get_input_channel_map(
+            converter,
+            if (channel_map) |chm| chm.ptr else null,
+            if (channel_map) |chm| chm.len else 0,
+        ));
+    }
+    extern fn ma_data_converter_get_input_channel_map(converter: *DataConverter, channel_map: ?[*]Channel, channel_map_cap: usize) Result;
+
+    pub fn getOutputChannelMap(
+        converter: *DataConverter,
+        channel_map: ?[]Channel,
+    ) Error!void {
+        try maybeError(ma_data_converter_get_output_channel_map(
+            converter,
+            if (channel_map) |chm| chm.ptr else null,
+            if (channel_map) |chm| chm.len else 0,
+        ));
+    }
+    extern fn ma_data_converter_get_output_channel_map(converter: *DataConverter, channel_map: ?[*]Channel, channel_map_cap: usize) Result;
+
+    pub fn reset(converter: *DataConverter) Error!void {
+        try maybeError(ma_data_converter_reset(converter));
+    }
+    extern fn ma_data_converter_reset(converter: *DataConverter) Result;
+
+    pub const ExecutionPath = enum(u32) {
+        passthrough,
+        format_only,
+        channels_only,
+        resample_only,
+        resample_first,
+        channels_first,
+    };
+
+    pub const Config = extern struct {
+        format_in: Format,
+        format_out: Format,
+        channels_in: u32,
+        channels_out: u32,
+        sample_rate_in: u32,
+        sample_rate_out: u32,
+        channel_map_in: ?[*]Channel,
+        channel_map_out: ?[*]Channel,
+        dither_mode: DitherMode,
+        channel_mix_mode: ChannelMixMode,
+        calculate_LFE_from_spatial_channels: u32,
+        channel_weighs_io_ptr: [*][*]f32, // [in][out]. Only used when mixingMode is set to ma_channel_mix_mode_custom_weights.
+        allow_dynamic_sample_rate: u32,
+        resampling: Resampler.Config,
+
+        pub fn initDefault() Config {
+            var config: Config = undefined;
+            zaudioDataConverterConfigInitDefault(&config);
+            return config;
+        }
+        extern fn zaudioDataConverterConfigInitDefault(out_config: *Config) void;
+
+        pub fn init(
+            format_in: Format,
+            format_out: Format,
+            channels_in: u32,
+            channels_out: u32,
+            sample_rate_in: u32,
+            sample_rate_out: u32,
+        ) Config {
+            var config: Config = undefined;
+            zaudioDataConverterConfigInit(
+                format_in,
+                format_out,
+                channels_in,
+                channels_out,
+                sample_rate_in,
+                sample_rate_out,
+                &config,
+            );
+            return config;
+        }
+        extern fn zaudioDataConverterConfigInit(
+            format_in: Format,
+            format_out: Format,
+            channels_in: u32,
+            channels_out: u32,
+            sample_rate_in: u32,
+            sample_rate_out: u32,
+            out_config: *Config,
+        ) void;
+    };
+};
+
+//--------------------------------------------------------------------------------------------------
+//
+// Decoder
+//
+//--------------------------------------------------------------------------------------------------
+pub const Decoder = opaque {
+    pub fn asDataSource(handle: *const Decoder) *const DataSource {
+        return @as(*const DataSource, @ptrCast(handle));
+    }
+    pub fn asDataSourceMut(handle: *Decoder) *DataSource {
+        return @as(*DataSource, @ptrCast(handle));
+    }
+
+    pub const destroy = zaudioDecoderDestroy;
+    extern fn zaudioDecoderDestroy(handle: *Decoder) void;
+
+    pub fn create(decoder_on_read: decoderReadProc, decoder_on_seek: decoderSeekProc, user_data: *anyopaque, config: Config) Error!*Decoder {
+        var handle: ?*Decoder = null;
+        try maybeError(zaudioDecoderCreate(decoder_on_read, decoder_on_seek, user_data, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioDecoderCreate(on_read: decoderReadProc, on_seek: decoderSeekProc, user_data: *anyopaque, config: *const Config, out_handle: ?*?*Decoder) Result;
+
+    pub fn createFromMemory(data: ?*const anyopaque, data_size: usize, config: Config) Error!*Decoder {
+        var handle: ?*Decoder = null;
+        try maybeError(zaudioDecoderCreateFromMemory(data, data_size, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioDecoderCreateFromMemory(data: ?*const anyopaque, data_size: usize, config: *const Config, out_handle: ?*?*Decoder) Result;
+
+    pub fn createFromVfs(vfs: *Vfs, file_path: [:0]const u8, config: Config) Error!*Decoder {
+        var handle: ?*Decoder = null;
+        try maybeError(zaudioDecoderCreateFromVfs(vfs, file_path.ptr, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioDecoderCreateFromVfs(vfs: *Vfs, file_path: [*:0]const u8, config: *const Config, out_handle: ?*?*Decoder) Result;
+
+    pub fn createFromFile(file_path: [:0]const u8, config: Config) Error!*Decoder {
+        var handle: ?*Decoder = null;
+        try maybeError(zaudioDecoderCreateFromFile(file_path.ptr, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioDecoderCreateFromFile(file_path: [*:0]const u8, config: *const Config, out_handle: ?*?*Decoder) Result;
+
+    pub fn readPCMFrames(decoder: *Decoder, frame_out: *anyopaque, frames_count: u64) Error!u64 {
+        var frames_read: u64 = undefined;
+        try maybeError(ma_decoder_read_pcm_frames(decoder, frame_out, frames_count, &frames_read));
+        return frames_read;
+    }
+    extern fn ma_decoder_read_pcm_frames(decoder: *Decoder, frame_out: *anyopaque, frames_count: u64, frames_read: ?*u64) Result;
+
+    pub fn seekToPCMFrames(decoder: *Decoder, frame_index: u64) Error!void {
+        try maybeError(ma_decoder_seek_to_pcm_frame(decoder, frame_index));
+    }
+    extern fn ma_decoder_seek_to_pcm_frame(decoder: *Decoder, frame_index: u64) Result;
+
+    pub fn getDataFormat(
+        decoder: *const Decoder,
+        format: ?*Format,
+        channels: ?*u32,
+        sample_rate: ?*u32,
+        channel_map: ?[]Channel,
+    ) Error!void {
+        try maybeError(ma_decoder_get_data_format(
+            decoder,
+            format,
+            channels,
+            sample_rate,
+            if (channel_map) |chm| chm.ptr else null,
+            if (channel_map) |chm| chm.len else 0,
+        ));
+    }
+    extern fn ma_decoder_get_data_format(decoder: *const Decoder, format: ?*Format, channels: ?*u32, sample_rate: ?*u32, channel_map: ?[*]Channel, channel_map_cap: usize) Result;
+
+    pub fn getCursorInPCMFrames(decoder: *Decoder) Error!u64 {
+        var cursor: u64 = undefined;
+        try maybeError(ma_decoder_get_cursor_in_pcm_frames(decoder, &cursor));
+        return cursor;
+    }
+    extern fn ma_decoder_get_cursor_in_pcm_frames(decoder: *Decoder, cursor: *u64) Result;
+
+    pub fn getLengthInPCMFrames(decoder: *Decoder) Error!u64 {
+        var length: u64 = undefined;
+        try maybeError(ma_decoder_get_length_in_pcm_frames(decoder, &length));
+        return length;
+    }
+    extern fn ma_decoder_get_length_in_pcm_frames(decoder: *Decoder, length: *u64) Result;
+
+    pub fn getAvailableFrames(decoder: *Decoder) Error!u64 {
+        var available_frames: u64 = undefined;
+        try maybeError(ma_decoder_get_available_frames(decoder, &available_frames));
+        return available_frames;
+    }
+    extern fn ma_decoder_get_available_frames(decoder: *Decoder, available_frames: *u64) Result;
+
+    pub const VTable = extern struct {
+        onInit: ?*const fn (
+            user_data: *anyopaque,
+            on_read: readProc,
+            on_seek: seekProc,
+            on_tell: tellProc,
+            read_seek_tell_user_data: *anyopaque,
+            config: *const BackendConfig,
+            allocation_callbacks: AllocationCallbacks,
+            backend: **DataSource,
+        ) callconv(.c) Result,
+
+        onInitFile: ?*const fn (
+            user_data: *anyopaque,
+            file_path: [*:0]const u8,
+            config: BackendConfig,
+            allocation_callbacks: AllocationCallbacks,
+            backend: **DataSource,
+        ) callconv(.c) Result,
+
+        onInitMemory: ?*const fn (
+            user_data: *anyopaque,
+            data: *const anyopaque,
+            data_size: usize,
+            config: BackendConfig,
+            allocation_callbacks: AllocationCallbacks,
+            backend: **DataSource,
+        ) callconv(.c) Result,
+
+        onUninit: ?*const fn (
+            user_data: *anyopaque,
+            backend: *DataSource,
+            allocation_callbacks: AllocationCallbacks,
+        ) callconv(.c) void,
+    };
+
+    pub const getUserData = zaudioDecoderGetUserData;
+    extern fn zaudioDecoderGetUserData(device: *const Decoder) ?*anyopaque;
+
+    pub const Config = extern struct {
+        format: Format,
+        channels: u32,
+        sample_rate: u32,
+        channel_map: ?[*]Channel,
+        channel_mix_mode: ChannelMixMode,
+        dither_mode: DitherMode,
+        resampling: Resampler.Config,
+        allocation_callbacks: AllocationCallbacks,
+        encoding_format: EncodingFormat,
+        seek_point_count: u32,
+        custom_backend_vtable: ?*?*VTable,
+        custom_backend_count: u32,
+        custom_backend_user_data: ?*anyopaque,
+
+        pub fn initDefault() Config {
+            var config: Config = undefined;
+            zaudioDecoderConfigInitDefault(&config);
+            return config;
+        }
+        extern fn zaudioDecoderConfigInitDefault(out_config: *Config) void;
+
+        pub fn init(output_format: Format, output_channels: u32, output_sample_rate: u32) Config {
+            var config: Config = undefined;
+            zaudioDecoderConfigInit(output_format, output_channels, output_sample_rate, &config);
+            return config;
+        }
+        extern fn zaudioDecoderConfigInit(output_format: Format, output_channels: u32, output_sample_rate: u32, out_config: *Config) void;
+    };
+
+    pub const BackendConfig = extern struct {
+        preferred_format: Format,
+        seek_point_count: u32,
+    };
+};
+
+pub const decoderReadProc = fn (decoder: *Decoder, buffer_out: *anyopaque, bytes_to_read: usize, bytes_read: *usize) callconv(.c) Result;
+pub const decoderSeekProc = fn (decoder: *Decoder, byte_offset: i64, origin: Vfs.SeekOrigin) callconv(.c) Result;
+pub const decoderTellProc = fn (decoder: *Decoder, cursor: *i64) callconv(.c) Result;
+
+//--------------------------------------------------------------------------------------------------
+//
+// Encoder
+//
+//--------------------------------------------------------------------------------------------------
+
+pub const Encoder = opaque {
+    pub const destroy = zaudioEncoderDestroy;
+    extern fn zaudioEncoderDestroy(handle: *Encoder) void;
+
+    pub fn create(encoder_on_write: encoderWriteProc, encoder_on_seek: encoderSeekProc, user_data: *anyopaque, config: Config) Error!*Encoder {
+        var handle: ?*Encoder = null;
+        try maybeError(zaudioEncoderCreate(encoder_on_write, encoder_on_seek, user_data, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioEncoderCreate(on_write: encoderWriteProc, on_seek: encoderSeekProc, user_data: *anyopaque, config: *const Config, out_handle: ?*?*Encoder) Result;
+
+    pub fn createFromVfs(vfs: *Vfs, file_path: [:0]const u8, config: Config) Error!*Encoder {
+        var handle: ?*Encoder = null;
+        try maybeError(zaudioEncoderCreateFromVfs(vfs, file_path.ptr, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioEncoderCreateFromVfs(vfs: *Vfs, file_path: [*:0]const u8, config: *const Config, out_handle: ?*?*Encoder) Result;
+
+    pub fn createFromFile(file_path: [:0]const u8, config: Config) Error!*Encoder {
+        var handle: ?*Encoder = null;
+        try maybeError(zaudioEncoderCreateFromFile(file_path.ptr, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioEncoderCreateFromFile(file_path: [*:0]const u8, config: *const Config, handle: ?*?*Encoder) Result;
+
+    pub fn writePcmFrame(encoder: *Encoder, frames_in: *anyopaque, frames_count: u64) Error!u64 {
+        var frames_written: u64 = undefined;
+        try maybeError(ma_encoder_write_pcm_frames(encoder, frames_in, frames_count, &frames_written));
+        return frames_written;
+    }
+    extern fn ma_encoder_write_pcm_frames(encoder: *Encoder, frames_in: *anyopaque, frame_count: u64, frames_written: *u64) Result;
+
+    pub const getUserData = zaudioEncoderGetUserData;
+    extern fn zaudioEncoderGetUserData(device: *const Encoder) ?*anyopaque;
+
+    pub const Config = extern struct {
+        encoding_format: EncodingFormat,
+        format: Format,
+        channels: u32,
+        sample_rate: u32,
+        allocation_callbacks: AllocationCallbacks,
+
+        pub fn init(encoding_format: EncodingFormat, format: Format, channels: u32, sample_rate: u32) Config {
+            var config: Config = undefined;
+            zaudioEncoderConfigInit(encoding_format, format, channels, sample_rate, &config);
+            return config;
+        }
+        extern fn zaudioEncoderConfigInit(encoding_format: EncodingFormat, format: Format, channel: u32, sample_rate: u32, out_config: *Config) void;
+    };
+};
+
+pub const encoderWriteProc = *const fn (encoder: *Encoder, buffer_in: *anyopaque, bytes_to_write: usize, bytes_written: *usize) callconv(.c) Result;
+pub const encoderSeekProc = *const fn (encoder: *Encoder, offset: i64, origin: Vfs.SeekOrigin) callconv(.c) Result;
+pub const encoderInitProc = *const fn (encoder: *Encoder) callconv(.c) Result;
+pub const encoderUninitProc = *const fn (encoder: *Encoder) callconv(.c) void;
+pub const encoderWritePcmFrameProc = *const fn (encoder: *Encoder, frames_in: *anyopaque, frame_count: u64, frames_written: *u64) callconv(.c) Result;
+
+//--------------------------------------------------------------------------------------------------
+//
+// Resampler (Incomplete, but since many of the function requires the type, especially the config,
+//                 we eventually need an opaque function to reduce code repetition)
+//
+//--------------------------------------------------------------------------------------------------
+pub const Resampler = opaque {
+    pub const Config = extern struct {
+        format: Format,
+        channels: u32,
+        sample_rate_in: u32,
+        sample_rate_out: u32,
+        algorithm: ResampleAlgorithm,
+        backend_vtable: ?*anyopaque, // TODO: Should be `*ma_resampling_backend_vtable` (custom resamplers).
+        backend_user_data: ?*anyopaque,
+        linear: extern struct {
+            lpf_order: u32,
+        },
+    };
+};
+
+//--------------------------------------------------------------------------------------------------
+//
+// Node
+//
+//--------------------------------------------------------------------------------------------------
+pub const Node = opaque {
+    pub const State = enum(u32) {
+        started,
+        stopped,
+    };
+
+    pub const Flags = packed struct(u32) {
+        passthrough: bool = false,
+        continuous_processing: bool = false,
+        allow_null_input: bool = false,
+        different_processing_rates: bool = false,
+        silent_output: bool = false,
+        _padding: u27 = 0,
+    };
+
+    pub const VTable = extern struct {
+        onProcess: ?*const fn (
+            node: *Node,
+            frames_in: ?*[*]const f32,
+            frame_count_in: ?*u32,
+            frames_out: *[*]f32,
+            frame_count_out: *u32,
+        ) callconv(.c) void,
+
+        onGetRequiredInputFrameCount: ?*const fn (
+            node: *Node,
+            output_frame_count: u32,
+            input_frame_count: *u32,
+        ) callconv(.c) Result,
+
+        input_bus_count: u8,
+        output_bus_count: u8,
+        flags: Flags,
+    };
+
+    pub const Config = extern struct {
+        vtable: *VTable,
+        initial_state: State,
+        input_bus_count: u32,
+        output_bus_count: u32,
+        input_channels: [*]const u32,
+        output_channels: [*]const u32,
+
+        pub fn init() Config {
+            var config: Config = undefined;
+            zaudioNodeConfigInit(&config);
+            return config;
+        }
+        extern fn zaudioNodeConfigInit(out_config: *Config) void;
+    };
+
+    pub fn getNodeGraph(node: *const Node) *const NodeGraph {
+        return ma_node_get_node_graph(@constCast(node));
+    }
+    pub fn getNodeGraphMut(node: *Node) *NodeGraph {
+        return ma_node_get_node_graph(node);
+    }
+    extern fn ma_node_get_node_graph(node: *Node) *NodeGraph;
+
+    pub fn getInputBusCount(node: *const Node) u32 {
+        return ma_node_get_input_bus_count(node);
+    }
+    extern fn ma_node_get_input_bus_count(node: *const Node) u32;
+
+    pub fn getOutputBusCount(node: *const Node) u32 {
+        return ma_node_get_output_bus_count(node);
+    }
+    extern fn ma_node_get_output_bus_count(node: *const Node) u32;
+
+    pub fn getInputChannels(node: *const Node, bus_index: u32) u32 {
+        return ma_node_get_input_channels(node, bus_index);
+    }
+    extern fn ma_node_get_input_channels(node: *const Node, bus_index: u32) u32;
+
+    pub fn getOutputChannels(node: *const Node, bus_index: u32) u32 {
+        return ma_node_get_output_channels(node, bus_index);
+    }
+    extern fn ma_node_get_output_channels(node: *const Node, bus_index: u32) u32;
+
+    pub fn attachOutputBus(
+        node: *Node,
+        output_bus_index: u32,
+        other_node: *Node,
+        other_node_input_bus_index: u32,
+    ) Error!void {
+        try maybeError(ma_node_attach_output_bus(
+            node,
+            output_bus_index,
+            other_node,
+            other_node_input_bus_index,
+        ));
+    }
+    extern fn ma_node_attach_output_bus(
+        node: *Node,
+        output_bus_index: u32,
+        other_node: *Node,
+        other_node_input_bus_index: u32,
+    ) Result;
+
+    pub fn dettachOutputBus(node: *Node, output_bus_index: u32) Error!void {
+        try maybeError(ma_node_detach_output_bus(node, output_bus_index));
+    }
+    extern fn ma_node_detach_output_bus(node: *Node, output_bus_index: u32) Result;
+
+    pub fn dettachAllOutputBuses(node: *Node) Error!void {
+        try maybeError(ma_node_detach_all_output_buses(node));
+    }
+    extern fn ma_node_detach_all_output_buses(node: *Node) Result;
+
+    pub fn setOutputBusVolume(node: *Node, output_bus_index: u32, volume: f32) Error!void {
+        try maybeError(ma_node_set_output_bus_volume(node, output_bus_index, volume));
+    }
+    extern fn ma_node_set_output_bus_volume(node: *Node, output_bus_index: u32, volume: f32) Result;
+
+    pub fn getOutputBusVolume(node: *const Node, output_bus_index: u32) f32 {
+        return ma_node_get_output_bus_volume(node, output_bus_index);
+    }
+    extern fn ma_node_get_output_bus_volume(node: *const Node, output_bus_index: u32) f32;
+
+    pub fn setState(node: *Node, state: State) Error!void {
+        try maybeError(ma_node_set_state(node, state));
+    }
+    extern fn ma_node_set_state(node: *Node, state: State) Result;
+
+    pub fn getState(node: *const Node) State {
+        return ma_node_get_state(node);
+    }
+    extern fn ma_node_get_state(node: *const Node) State;
+
+    pub fn setTime(node: *Node, local_time: u64) Error!void {
+        try maybeError(ma_node_set_time(node, local_time));
+    }
+    extern fn ma_node_set_time(node: *Node, local_time: u64) Result;
+
+    pub fn getTime(node: *const Node) u64 {
+        return ma_node_get_time(node);
+    }
+    extern fn ma_node_get_time(node: *const Node) u64;
+};
+//--------------------------------------------------------------------------------------------------
+//
+// DataSourceNode (-> Node)
+//
+//--------------------------------------------------------------------------------------------------
+pub const DataSourceNode = opaque {
+    pub const destroy = zaudioDataSourceNodeDestroy;
+    extern fn zaudioDataSourceNodeDestroy(handle: *DataSourceNode) void;
+
+    pub fn asNode(node: *const DataSourceNode) *const Node {
+        return @as(*const Node, @ptrCast(node));
+    }
+    pub fn asNodeMut(node: *DataSourceNode) *Node {
+        return @as(*Node, @ptrCast(node));
+    }
+
+    pub fn setLooping(handle: *DataSourceNode, is_looping: bool) !void {
+        try maybeError(ma_data_source_node_set_looping(handle, if (is_looping) .true32 else .false32));
+    }
+    extern fn ma_data_source_node_set_looping(handle: *DataSourceNode, is_looping: Bool32) Result;
+
+    pub fn isLooping(handle: *const DataSourceNode) bool {
+        return ma_data_source_node_is_looping(handle) != .false32;
+    }
+    extern fn ma_data_source_node_is_looping(handle: *const DataSourceNode) Bool32;
+
+    pub const Config = extern struct {
+        node_config: Node.Config,
+        data_source: *DataSource,
+
+        pub fn init(ds: *DataSource) Config {
+            var config: Config = undefined;
+            zaudioDataSourceNodeConfigInit(ds, &config);
+            return config;
+        }
+        extern fn zaudioDataSourceNodeConfigInit(ds: *DataSource, out_config: *Config) void;
+    };
+};
+//--------------------------------------------------------------------------------------------------
+//
+// SplitterNode (-> Node)
+//
+//--------------------------------------------------------------------------------------------------
+pub const SplitterNode = opaque {
+    pub const destroy = zaudioSplitterNodeDestroy;
+    extern fn zaudioSplitterNodeDestroy(handle: *SplitterNode) void;
+
+    pub fn asNode(node: *const SplitterNode) *const Node {
+        return @as(*const Node, @ptrCast(node));
+    }
+    pub fn asNodeMut(node: *SplitterNode) *Node {
+        return @as(*Node, @ptrCast(node));
+    }
+
+    pub const Config = extern struct {
+        node_config: Node.Config,
+        channels: u32,
+        output_bus_count: u32,
+
+        pub fn init(channels: u32) Config {
+            var config: Config = undefined;
+            zaudioSplitterNodeConfigInit(channels, &config);
+            return config;
+        }
+        extern fn zaudioSplitterNodeConfigInit(channels: u32, out_config: *Config) void;
+    };
+};
+//--------------------------------------------------------------------------------------------------
+//
+// BiquadNode (-> Node) - Biquad Filter Node
+//
+//--------------------------------------------------------------------------------------------------
+pub const BiquadConfig = extern struct {
+    format: Format,
+    channels: u32,
+    b0: f64,
+    b1: f64,
+    b2: f64,
+    a0: f64,
+    a1: f64,
+    a2: f64,
+};
+
+pub const BiquadNode = opaque {
+    pub const destroy = zaudioBiquadNodeDestroy;
+    extern fn zaudioBiquadNodeDestroy(handle: *BiquadNode) void;
+
+    pub fn asNode(node: *const BiquadNode) *const Node {
+        return @as(*const Node, @ptrCast(node));
+    }
+    pub fn asNodeMut(node: *BiquadNode) *Node {
+        return @as(*Node, @ptrCast(node));
+    }
+
+    pub fn reconfigure(handle: *BiquadNode, config: BiquadConfig) Error!void {
+        try maybeError(ma_biquad_node_reinit(&config, handle));
+    }
+    extern fn ma_biquad_node_reinit(config: *const BiquadConfig, handle: *BiquadNode) Result;
+
+    pub const Config = extern struct {
+        node_config: Node.Config,
+        biquad: BiquadConfig,
+
+        pub fn init(channels: u32, b0: f32, b1: f32, b2: f32, a0: f32, a1: f32, a2: f32) Config {
+            var config: Config = undefined;
+            zaudioBiquadNodeConfigInit(channels, b0, b1, b2, a0, a1, a2, &config);
+            return config;
+        }
+    };
+    extern fn zaudioBiquadNodeConfigInit(
+        channels: u32,
+        b0: f32,
+        b1: f32,
+        b2: f32,
+        a0: f32,
+        a1: f32,
+        a2: f32,
+        out_config: *Config,
+    ) void;
+};
+//--------------------------------------------------------------------------------------------------
+//
+// LpfNode (-> Node) - Low-Pass Filter Node
+//
+//--------------------------------------------------------------------------------------------------
+pub const LpfConfig = extern struct {
+    format: Format,
+    channels: u32,
+    sample_rate: u32,
+    cutoff_frequency: f64,
+    order: u32,
+};
+
+pub const LpfNode = opaque {
+    pub const destroy = zaudioLpfNodeDestroy;
+    extern fn zaudioLpfNodeDestroy(handle: *LpfNode) void;
+
+    pub fn asNode(node: *const LpfNode) *const Node {
+        return @as(*const Node, @ptrCast(node));
+    }
+    pub fn asNodeMut(node: *LpfNode) *Node {
+        return @as(*Node, @ptrCast(node));
+    }
+
+    pub fn reconfigure(handle: *LpfNode, config: LpfConfig) Error!void {
+        try maybeError(ma_lpf_node_reinit(&config, handle));
+    }
+    extern fn ma_lpf_node_reinit(config: *const LpfConfig, handle: *LpfNode) Result;
+
+    pub const Config = extern struct {
+        node_config: Node.Config,
+        lpf: LpfConfig,
+
+        pub fn init(channels: u32, sample_rate: u32, cutoff_frequency: f64, order: u32) Config {
+            var config: Config = undefined;
+            zaudioLpfNodeConfigInit(channels, sample_rate, cutoff_frequency, order, &config);
+            return config;
+        }
+        extern fn zaudioLpfNodeConfigInit(
+            channels: u32,
+            sample_rate: u32,
+            cutoff_frequency: f64,
+            order: u32,
+            out_config: *Config,
+        ) void;
+    };
+};
+//--------------------------------------------------------------------------------------------------
+//
+// HpfNode (-> Node) - High-Pass Filter Node
+//
+//--------------------------------------------------------------------------------------------------
+pub const HpfConfig = extern struct {
+    format: Format,
+    channels: u32,
+    sample_rate: u32,
+    cutoff_frequency: f64,
+    order: u32,
+};
+
+pub const HpfNode = opaque {
+    pub const destroy = zaudioHpfNodeDestroy;
+    extern fn zaudioHpfNodeDestroy(handle: *HpfNode) void;
+
+    pub fn asNode(node: *const HpfNode) *const Node {
+        return @as(*const Node, @ptrCast(node));
+    }
+    pub fn asNodeMut(node: *HpfNode) *Node {
+        return @as(*Node, @ptrCast(node));
+    }
+
+    pub fn reconfigure(handle: *HpfNode, config: HpfConfig) Error!void {
+        try maybeError(ma_hpf_node_reinit(&config, handle));
+    }
+    extern fn ma_hpf_node_reinit(config: *const HpfConfig, handle: *HpfNode) Result;
+
+    pub const Config = extern struct {
+        node_config: Node.Config,
+        hpf: HpfConfig,
+
+        pub fn init(channels: u32, sample_rate: u32, cutoff_frequency: f64, order: u32) Config {
+            var config: Config = undefined;
+            zaudioHpfNodeConfigInit(channels, sample_rate, cutoff_frequency, order, &config);
+            return config;
+        }
+        extern fn zaudioHpfNodeConfigInit(
+            channels: u32,
+            sample_rate: u32,
+            cutoff_frequency: f64,
+            order: u32,
+            out_config: *Config,
+        ) void;
+    };
+};
+//--------------------------------------------------------------------------------------------------
+//
+// NotchNode (-> Node) - Notch Filter Node
+//
+//--------------------------------------------------------------------------------------------------
+pub const NotchConfig = extern struct {
+    format: Format,
+    channels: u32,
+    sample_rate: u32,
+    q: f64,
+    frequency: f64,
+};
+
+pub const NotchNode = opaque {
+    pub const destroy = zaudioNotchNodeDestroy;
+    extern fn zaudioNotchNodeDestroy(handle: *NotchNode) void;
+
+    pub fn asNode(node: *const NotchNode) *const Node {
+        return @as(*const Node, @ptrCast(node));
+    }
+    pub fn asNodeMut(node: *NotchNode) *Node {
+        return @as(*Node, @ptrCast(node));
+    }
+
+    pub fn reconfigure(handle: *NotchNode, config: NotchConfig) Error!void {
+        try maybeError(ma_notch_node_reinit(&config, handle));
+    }
+    extern fn ma_notch_node_reinit(config: *const NotchConfig, handle: *NotchNode) Result;
+
+    pub const Config = extern struct {
+        node_config: Node.Config,
+        notch: NotchConfig,
+
+        pub fn init(channels: u32, sample_rate: u32, q: f64, frequency: f64) Config {
+            var config: Config = undefined;
+            zaudioNotchNodeConfigInit(channels, sample_rate, q, frequency, &config);
+            return config;
+        }
+        extern fn zaudioNotchNodeConfigInit(
+            channels: u32,
+            sample_rate: u32,
+            q: f64,
+            frequency: f64,
+            out_config: *Config,
+        ) void;
+    };
+};
+//--------------------------------------------------------------------------------------------------
+//
+// PeakNode (-> Node) - Peak Filter Node
+//
+//--------------------------------------------------------------------------------------------------
+pub const PeakConfig = extern struct {
+    format: Format,
+    channels: u32,
+    sample_rate: u32,
+    gain_db: f64,
+    q: f64,
+    frequency: f64,
+};
+
+pub const PeakNode = opaque {
+    pub const destroy = zaudioPeakNodeDestroy;
+    extern fn zaudioPeakNodeDestroy(handle: *PeakNode) void;
+
+    pub fn asNode(node: *const PeakNode) *const Node {
+        return @as(*const Node, @ptrCast(node));
+    }
+    pub fn asNodeMut(node: *PeakNode) *Node {
+        return @as(*Node, @ptrCast(node));
+    }
+
+    pub fn reconfigure(handle: *PeakNode, config: PeakConfig) Error!void {
+        try maybeError(ma_peak_node_reinit(&config, handle));
+    }
+    extern fn ma_peak_node_reinit(config: *const PeakConfig, handle: *PeakNode) Result;
+
+    pub const Config = extern struct {
+        node_config: Node.Config,
+        peak: PeakConfig,
+
+        pub fn init(channels: u32, sample_rate: u32, gain_db: f64, q: f64, frequency: f64) Config {
+            var config: Config = undefined;
+            zaudioPeakNodeConfigInit(channels, sample_rate, gain_db, q, frequency, &config);
+            return config;
+        }
+        extern fn zaudioPeakNodeConfigInit(
+            channels: u32,
+            sample_rate: u32,
+            gain_db: f64,
+            q: f64,
+            frequency: f64,
+            out_config: *Config,
+        ) void;
+    };
+};
+//--------------------------------------------------------------------------------------------------
+//
+// LoshelfNode (-> Node) - Low Shelf Filter Node
+//
+//--------------------------------------------------------------------------------------------------
+pub const LoshelfConfig = extern struct {
+    format: Format,
+    channels: u32,
+    sample_rate: u32,
+    gain_db: f64,
+    shelf_slope: f64,
+    frequency: f64,
+};
+
+pub const LoshelfNode = opaque {
+    pub const destroy = zaudioLoshelfNodeDestroy;
+    extern fn zaudioLoshelfNodeDestroy(handle: *LoshelfNode) void;
+
+    pub fn asNode(node: *const LoshelfNode) *const Node {
+        return @as(*const Node, @ptrCast(node));
+    }
+    pub fn asNodeMut(node: *LoshelfNode) *Node {
+        return @as(*Node, @ptrCast(node));
+    }
+
+    pub fn reconfigure(handle: *LoshelfNode, config: LoshelfConfig) Error!void {
+        try maybeError(ma_loshelf_node_reinit(&config, handle));
+    }
+    extern fn ma_loshelf_node_reinit(config: *const LoshelfConfig, handle: *LoshelfNode) Result;
+
+    pub const Config = extern struct {
+        node_config: Node.Config,
+        loshelf: LoshelfConfig,
+
+        pub fn init(
+            channels: u32,
+            sample_rate: u32,
+            gain_db: f64,
+            shelf_slope: f64,
+            frequency: f64,
+        ) Config {
+            var config: Config = undefined;
+            zaudioLoshelfNodeConfigInit(channels, sample_rate, gain_db, shelf_slope, frequency, &config);
+            return config;
+        }
+        extern fn zaudioLoshelfNodeConfigInit(
+            channels: u32,
+            sample_rate: u32,
+            gain_db: f64,
+            shelf_slope: f64,
+            frequency: f64,
+            out_config: *Config,
+        ) void;
+    };
+};
+//--------------------------------------------------------------------------------------------------
+//
+// HishelfNode (-> Node) - High Shelf Filter Node
+//
+//--------------------------------------------------------------------------------------------------
+pub const HishelfConfig = extern struct {
+    format: Format,
+    channels: u32,
+    sample_rate: u32,
+    gain_db: f64,
+    shelf_slope: f64,
+    frequency: f64,
+};
+
+pub const HishelfNode = opaque {
+    pub const destroy = zaudioHishelfNodeDestroy;
+    extern fn zaudioHishelfNodeDestroy(handle: *HishelfNode) void;
+
+    pub fn asNode(node: *const HishelfNode) *const Node {
+        return @as(*const Node, @ptrCast(node));
+    }
+    pub fn asNodeMut(node: *HishelfNode) *Node {
+        return @as(*Node, @ptrCast(node));
+    }
+
+    pub fn reconfigure(handle: *HishelfNode, config: HishelfConfig) Error!void {
+        try maybeError(ma_hishelf_node_reinit(&config, handle));
+    }
+    extern fn ma_hishelf_node_reinit(config: *const HishelfConfig, handle: *HishelfNode) Result;
+
+    pub const Config = extern struct {
+        node_config: Node.Config,
+        hishelf: HishelfConfig,
+
+        pub fn init(
+            channels: u32,
+            sample_rate: u32,
+            gain_db: f64,
+            shelf_slope: f64,
+            frequency: f64,
+        ) Config {
+            var config: Config = undefined;
+            zaudioHishelfNodeConfigInit(channels, sample_rate, gain_db, shelf_slope, frequency, &config);
+            return config;
+        }
+        extern fn zaudioHishelfNodeConfigInit(
+            channels: u32,
+            sample_rate: u32,
+            gain_db: f64,
+            shelf_slope: f64,
+            frequency: f64,
+            out_config: *Config,
+        ) void;
+    };
+};
+//--------------------------------------------------------------------------------------------------
+//
+// DelayFilterNode (-> Node)
+//
+//--------------------------------------------------------------------------------------------------
+pub const DelayConfig = extern struct {
+    channels: u32,
+    sample_rate: u32,
+    delay_in_frames: u32,
+    delay_start: Bool32,
+    wet: f32,
+    dry: f32,
+    decay: f32,
+};
+
+pub const DelayNode = opaque {
+    pub const destroy = zaudioDelayNodeDestroy;
+    extern fn zaudioDelayNodeDestroy(handle: *DelayNode) void;
+
+    pub fn asNode(node: *const DelayNode) *const Node {
+        return @as(*const Node, @ptrCast(node));
+    }
+    pub fn asNodeMut(node: *DelayNode) *Node {
+        return @as(*Node, @ptrCast(node));
+    }
+
+    pub const setWet = ma_delay_node_set_wet;
+    extern fn ma_delay_node_set_wet(handle: *DelayNode, value: f32) void;
+
+    pub const getWet = ma_delay_node_get_wet;
+    extern fn ma_delay_node_get_wet(handle: *const DelayNode) f32;
+
+    pub const setDry = ma_delay_node_set_dry;
+    extern fn ma_delay_node_set_dry(handle: *DelayNode, value: f32) void;
+
+    pub const getDry = ma_delay_node_get_dry;
+    extern fn ma_delay_node_get_dry(handle: *const DelayNode) f32;
+
+    pub const setDecay = ma_delay_node_set_decay;
+    extern fn ma_delay_node_set_decay(handle: *DelayNode, value: f32) void;
+
+    pub const getDecay = ma_delay_node_get_decay;
+    extern fn ma_delay_node_get_decay(handle: *const DelayNode) f32;
+
+    pub const Config = extern struct {
+        node_config: Node.Config,
+        delay: DelayConfig,
+
+        pub fn init(channels: u32, sample_rate: u32, delay_in_frames: u32, decay: f32) Config {
+            var config: Config = undefined;
+            zaudioDelayNodeConfigInit(channels, sample_rate, delay_in_frames, decay, &config);
+            return config;
+        }
+        extern fn zaudioDelayNodeConfigInit(
+            channels: u32,
+            sample_rate: u32,
+            delay_in_frames: u32,
+            decay: f32,
+            out_config: *Config,
+        ) void;
+    };
+};
+//--------------------------------------------------------------------------------------------------
+//
+// NodeGraph (-> Node)
+//
+//--------------------------------------------------------------------------------------------------
+pub const NodeGraph = opaque {
+    pub const Config = extern struct {
+        channels: u32,
+        processing_size_in_frames: u32,
+        premix_stack_size_in_bytes: usize,
+
+        pub fn init(channels: u32) Config {
+            var config: Config = undefined;
+            zaudioNodeGraphConfigInit(channels, &config);
+            return config;
+        }
+        extern fn zaudioNodeGraphConfigInit(channels: u32, out_config: *Config) void;
+    };
+
+    pub fn create(config: Config) Error!*NodeGraph {
+        var handle: ?*NodeGraph = null;
+        try maybeError(zaudioNodeGraphCreate(&config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioNodeGraphCreate(config: *const Config, out_handle: ?*?*NodeGraph) Result;
+
+    pub const destroy = zaudioNodeGraphDestroy;
+    extern fn zaudioNodeGraphDestroy(handle: *NodeGraph) void;
+
+    pub fn asNode(node: *const NodeGraph) *const Node {
+        return @as(*const Node, @ptrCast(node));
+    }
+    pub fn asNodeMut(node: *NodeGraph) *Node {
+        return @as(*Node, @ptrCast(node));
+    }
+
+    pub fn createDataSourceNode(node_graph: *NodeGraph, config: DataSourceNode.Config) Error!*DataSourceNode {
+        var handle: ?*DataSourceNode = null;
+        try maybeError(zaudioDataSourceNodeCreate(node_graph, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioDataSourceNodeCreate(
+        node_graph: *NodeGraph,
+        config: *const DataSourceNode.Config,
+        out_handle: ?*?*DataSourceNode,
+    ) Result;
+
+    pub fn createBiquadNode(node_graph: *NodeGraph, config: BiquadNode.Config) Error!*BiquadNode {
+        var handle: ?*BiquadNode = null;
+        try maybeError(zaudioBiquadNodeCreate(node_graph, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioBiquadNodeCreate(
+        node_graph: *NodeGraph,
+        config: *const BiquadNode.Config,
+        out_handle: ?*?*BiquadNode,
+    ) Result;
+
+    pub fn createLpfNode(node_graph: *NodeGraph, config: LpfNode.Config) Error!*LpfNode {
+        var handle: ?*LpfNode = null;
+        try maybeError(zaudioLpfNodeCreate(node_graph, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioLpfNodeCreate(
+        node_graph: *NodeGraph,
+        config: *const LpfNode.Config,
+        out_handle: ?*?*LpfNode,
+    ) Result;
+
+    pub fn createHpfNode(node_graph: *NodeGraph, config: HpfNode.Config) Error!*HpfNode {
+        var handle: ?*HpfNode = null;
+        try maybeError(zaudioHpfNodeCreate(node_graph, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioHpfNodeCreate(
+        node_graph: *NodeGraph,
+        config: *const HpfNode.Config,
+        out_handle: ?*?*HpfNode,
+    ) Result;
+
+    pub fn createSplitterNode(node_graph: *NodeGraph, config: SplitterNode.Config) Error!*SplitterNode {
+        var handle: ?*SplitterNode = null;
+        try maybeError(zaudioSplitterNodeCreate(node_graph, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioSplitterNodeCreate(
+        node_graph: *NodeGraph,
+        config: *const SplitterNode.Config,
+        out_handle: ?*?*SplitterNode,
+    ) Result;
+
+    pub fn createNotchNode(node_graph: *NodeGraph, config: NotchNode.Config) Error!*NotchNode {
+        var handle: ?*NotchNode = null;
+        try maybeError(zaudioNotchNodeCreate(node_graph, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioNotchNodeCreate(
+        node_graph: *NodeGraph,
+        config: *const NotchNode.Config,
+        out_handle: ?*?*NotchNode,
+    ) Result;
+
+    pub fn createPeakNode(node_graph: *NodeGraph, config: PeakNode.Config) Error!*PeakNode {
+        var handle: ?*PeakNode = null;
+        try maybeError(zaudioPeakNodeCreate(node_graph, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioPeakNodeCreate(
+        node_graph: *NodeGraph,
+        config: *const PeakNode.Config,
+        out_handle: ?*?*PeakNode,
+    ) Result;
+
+    pub fn createLoshelfNode(node_graph: *NodeGraph, config: LoshelfNode.Config) Error!*LoshelfNode {
+        var handle: ?*LoshelfNode = null;
+        try maybeError(zaudioLoshelfNodeCreate(node_graph, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioLoshelfNodeCreate(
+        node_graph: *NodeGraph,
+        config: *const LoshelfNode.Config,
+        out_handle: ?*?*LoshelfNode,
+    ) Result;
+
+    pub fn createHishelfNode(node_graph: *NodeGraph, config: HishelfNode.Config) Error!*HishelfNode {
+        var handle: ?*HishelfNode = null;
+        try maybeError(zaudioHishelfNodeCreate(node_graph, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioHishelfNodeCreate(
+        node_graph: *NodeGraph,
+        config: *const HishelfNode.Config,
+        out_handle: ?*?*HishelfNode,
+    ) Result;
+
+    pub fn createDelayNode(node_graph: *NodeGraph, config: DelayNode.Config) Error!*DelayNode {
+        var handle: ?*DelayNode = null;
+        try maybeError(zaudioDelayNodeCreate(node_graph, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioDelayNodeCreate(
+        node_graph: *NodeGraph,
+        config: *const DelayNode.Config,
+        out_handle: ?*?*DelayNode,
+    ) Result;
+
+    pub fn getEndpoint(handle: *const NodeGraph) *const Node {
+        return ma_node_graph_get_endpoint(@constCast(handle));
+    }
+    pub fn getEndpointMut(handle: *NodeGraph) *Node {
+        return ma_node_graph_get_endpoint(handle);
+    }
+    extern fn ma_node_graph_get_endpoint(handle: *NodeGraph) *Node;
+
+    pub fn getChannels(handle: *const NodeGraph) u32 {
+        return ma_node_graph_get_channels(handle);
+    }
+    extern fn ma_node_graph_get_channels(handle: *const NodeGraph) u32;
+
+    pub fn readPcmFrames(
+        node_graph: *NodeGraph,
+        frames_out: *anyopaque,
+        frame_count: u64,
+        frames_read: ?*u64,
+    ) Error!void {
+        try maybeError(ma_node_graph_read_pcm_frames(
+            node_graph,
+            frames_out,
+            frame_count,
+            frames_read,
+        ));
+    }
+    extern fn ma_node_graph_read_pcm_frames(
+        handle: *NodeGraph,
+        frames_out: *anyopaque,
+        frame_count: u64,
+        frames_read: ?*u64,
+    ) Result;
+};
+//--------------------------------------------------------------------------------------------------
+//
+// Device
+//
+//--------------------------------------------------------------------------------------------------
+pub const Device = opaque {
+    pub fn create(context: ?*Context, config: Config) Error!*Device {
+        var handle: ?*Device = null;
+        try maybeError(zaudioDeviceCreate(context, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioDeviceCreate(
+        context: ?*Context,
+        config: *const Config,
+        out_handle: ?*?*Device,
+    ) Result;
+
+    pub const destroy = zaudioDeviceDestroy;
+    extern fn zaudioDeviceDestroy(device: *Device) void;
+
+    pub const getUserData = zaudioDeviceGetUserData;
+    extern fn zaudioDeviceGetUserData(device: *const Device) ?*anyopaque;
+
+    pub fn getContext(device: *const Device) *const Context {
+        return ma_device_get_context(@constCast(device));
+    }
+    pub fn getContextMut(device: *Device) *Context {
+        return ma_device_get_context(device);
+    }
+    extern fn ma_device_get_context(device: *Device) *Context;
+
+    pub fn getLog(device: *const Device) ?*const Log {
+        return ma_device_get_log(@constCast(device));
+    }
+    pub fn getLogMut(device: *Device) ?*Log {
+        return ma_device_get_log(device);
+    }
+    extern fn ma_device_get_log(device: *Device) ?*Log;
+
+    pub fn start(device: *Device) Error!void {
+        try maybeError(ma_device_start(device));
+    }
+    extern fn ma_device_start(device: *Device) Result;
+
+    pub fn stop(device: *Device) Error!void {
+        try maybeError(ma_device_stop(device));
+    }
+    extern fn ma_device_stop(device: *Device) Result;
+
+    pub fn isStarted(device: *const Device) bool {
+        return ma_device_is_started(device) != .false32;
+    }
+    extern fn ma_device_is_started(device: *const Device) Bool32;
+
+    pub const getState = ma_device_get_state;
+    extern fn ma_device_get_state(device: *const Device) State;
+
+    pub fn setMasterVolume(device: *Device, volume: f32) Error!void {
+        try maybeError(ma_device_set_master_volume(device, volume));
+    }
+    extern fn ma_device_set_master_volume(device: *Device, volume: f32) Result;
+
+    pub fn getMasterVolume(device: *const Device) Error!f32 {
+        var volume: f32 = 0.0;
+        try maybeError(ma_device_get_master_volume(device, &volume));
+        return volume;
+    }
+    extern fn ma_device_get_master_volume(device: *const Device, volume: *f32) Result;
+
+    pub const getSampleRate = zaudioDeviceGetSampleRate;
+    extern fn zaudioDeviceGetSampleRate(device: *const Device) u32;
+
+    pub const getPlaybackFormat = zaudioDeviceGetPlaybackFormat;
+    extern fn zaudioDeviceGetPlaybackFormat(device: *const Device) Format;
+
+    pub const getPlaybackChannels = zaudioDeviceGetPlaybackChannels;
+    extern fn zaudioDeviceGetPlaybackChannels(device: *const Device) u32;
+
+    pub const Type = enum(c_int) {
+        playback = 1,
+        capture = 2,
+        duplex = 3,
+        loopback = 4,
+    };
+
+    pub const State = enum(c_int) {
+        uninitialized = 0,
+        stopped = 1,
+        started = 2,
+        starting = 3,
+        stopping = 4,
+    };
+
+    pub const Config = extern struct {
+        device_type: Type,
+        sample_rate: u32,
+        period_size_in_frames: u32,
+        period_size_in_milliseconds: u32,
+        periods: u32,
+        performance_profile: PerformanceProfile,
+        no_pre_silenced_output_buffer: bool,
+        no_clip: bool,
+        no_disable_denormals: bool,
+        no_fixed_sized_callback: bool,
+        data_callback: ?DataProc,
+        notification_callback: ?NotificationProc,
+        stop_callback: ?StopProc,
+        user_data: ?*anyopaque,
+        resampling: extern struct {
+            format: Format,
+            channels: u32,
+            sample_rate_in: u32,
+            sample_rate_out: u32,
+            algorithm: ResampleAlgorithm,
+            backend_vtable: ?*anyopaque, // TODO: Should be `*ma_resampling_backend_vtable` (custom resamplers).
+            backend_user_data: ?*anyopaque,
+            linear: extern struct {
+                lpf_order: u32,
+            },
+        },
+        playback: extern struct {
+            device_id: ?*const Id,
+            format: Format,
+            channels: u32,
+            channel_map: [*]Channel,
+            channel_mix_mode: ChannelMixMode,
+            calculate_lfe_from_spatial_channels: Bool32,
+            share_mode: ShareMode,
+        },
+        capture: extern struct {
+            device_id: ?*const Id,
+            format: Format,
+            channels: u32,
+            channel_map: [*]Channel,
+            channel_mix_mode: ChannelMixMode,
+            calculate_lfe_from_spatial_channels: Bool32,
+            share_mode: ShareMode,
+        },
+        wasapi: extern struct {
+            usage: WasapiUsage,
+            no_auto_convert_src: bool,
+            no_default_quality_src: bool,
+            no_auto_stream_routing: bool,
+            no_hardware_offloading: bool,
+            loopback_process_id: u32,
+            loopback_process_exclude: bool,
+        },
+        alsa: extern struct {
+            no_mmap: Bool32,
+            no_auto_format: Bool32,
+            no_auto_channels: Bool32,
+            no_auto_resample: Bool32,
+        },
+        pulse: extern struct {
+            stream_name_playback: [*:0]const u8,
+            stream_name_capture: [*:0]const u8,
+            channel_map: i32,
+        },
+        coreaudio: extern struct {
+            allow_nominal_sample_rate_change: Bool32,
+        },
+        opensl: extern struct {
+            stream_type: OpenslStreamType,
+            recording_preset: OpenslRecordingPreset,
+            enable_compatibility_workarounds: Bool32,
+        },
+        aaudio: extern struct {
+            usage: AaudioUsage,
+            content_type: AaudioContentType,
+            input_preset: AaudioInputPreset,
+            allowed_capture_policy: AaudioAllowedCapturePolicy,
+            no_auto_start_after_reroute: Bool32,
+            enable_compatibility_workarounds: Bool32,
+            allow_set_buffer_capacity: Bool32,
+        },
+
+        pub fn init(device_type: Type) Config {
+            var config: Config = undefined;
+            zaudioDeviceConfigInit(device_type, &config);
+            return config;
+        }
+        extern fn zaudioDeviceConfigInit(device_type: Type, out_config: *Config) void;
+    };
+
+    pub const DataProc = *const fn (
+        device: *Device,
+        output: ?*anyopaque,
+        input: ?*const anyopaque,
+        frame_count: u32,
+    ) callconv(.c) void;
+
+    pub const NotificationProc = *const fn (
+        *const anyopaque, // TODO: Should be `*const ma_device_notification`.
+    ) callconv(.c) void;
+
+    pub const StopProc = *const fn (device: *Device) callconv(.c) void;
+
+    pub const Id = extern union {
+        wasapi: [64]i32,
+        dsound: [16]u8,
+        winmm: u32,
+        alsa: [256]u8,
+        pulse: [256]u8,
+        jack: i32,
+        coreaudio: [256]u8,
+        sndio: [256]u8,
+        audio4: [256]u8,
+        oss: [64]u8,
+        aaudio: i32,
+        opensl: u32,
+        webaudio: [32]u8,
+        custom: extern union {
+            i: i32,
+            s: [256]u8,
+            p: ?*anyopaque,
+        },
+        nullbackend: i32,
+    };
+};
+//--------------------------------------------------------------------------------------------------
+//
+// Engine (-> NodeGraph -> Node)
+//
+//--------------------------------------------------------------------------------------------------
+pub const Engine = opaque {
+    pub const Config = extern struct {
+        resource_manager: ?*ResourceManager,
+        context: ?*Context,
+        device: ?*Device,
+        playback_device_id: ?*Device.Id,
+        data_callback: ?Device.DataProc,
+        notification_callback: ?Device.NotificationProc,
+        log: ?*Log,
+        listener_count: u32,
+        channels: u32,
+        sample_rate: u32,
+        period_size_in_frames: u32,
+        period_size_in_milliseconds: u32,
+        gain_smooth_time_in_frames: u32,
+        gain_smooth_time_in_milliseconds: u32,
+        default_volume_smooth_time_in_pcm_frames: u32,
+        premix_stack_size_in_bytes: u32,
+        allocation_callbacks: AllocationCallbacks,
+        no_auto_start: Bool32,
+        no_device: Bool32,
+        mono_expansion_mode: MonoExpansionMode,
+        resource_manager_vfs: ?*Vfs,
+        on_process: ?Engine.ProcessProc,
+        user_data: ?*anyopaque,
+
+        pub fn init() Config {
+            var config: Config = undefined;
+            zaudioEngineConfigInit(&config);
+            return config;
+        }
+        extern fn zaudioEngineConfigInit(out_config: *Config) void;
+    };
+
+    pub const ProcessProc = *const fn (
+        user_data: ?*anyopaque,
+        frames_out: [*]f32,
+        frame_count: u64,
+    ) callconv(.c) void;
+
+    pub fn create(config: ?Config) Error!*Engine {
+        var handle: ?*Engine = null;
+        try maybeError(zaudioEngineCreate(if (config) |conf| &conf else null, &handle));
+        return handle.?;
+    }
+    extern fn zaudioEngineCreate(config: ?*const Config, out_handle: ?*?*Engine) Result;
+
+    pub const destroy = zaudioEngineDestroy;
+    extern fn zaudioEngineDestroy(handle: *Engine) void;
+
+    pub fn asNode(node: *const Engine) *const Node {
+        return @as(*const Node, @ptrCast(node));
+    }
+    pub fn asNodeMut(node: *Engine) *Node {
+        return @as(*Node, @ptrCast(node));
+    }
+    pub fn asNodeGraph(handle: *const Engine) *const NodeGraph {
+        return @as(*const NodeGraph, @ptrCast(handle));
+    }
+    pub fn asNodeGraphMut(handle: *Engine) *NodeGraph {
+        return @as(*NodeGraph, @ptrCast(handle));
+    }
+
+    pub fn createSoundFromFile(
+        engine: *Engine,
+        file_path: [:0]const u8,
+        args: struct {
+            flags: Sound.Flags = .{},
+            sgroup: ?*SoundGroup = null,
+            done_fence: ?*Fence = null,
+        },
+    ) Error!*Sound {
+        return Sound.createFromFile(engine, file_path, args.flags, args.sgroup, args.done_fence);
+    }
+
+    pub fn createSoundFromDataSource(
+        engine: *Engine,
+        data_source: *DataSource,
+        flags: Sound.Flags,
+        sgroup: ?*SoundGroup,
+    ) Error!*Sound {
+        return Sound.createFromDataSource(engine, data_source, flags, sgroup);
+    }
+
+    pub fn createSound(engine: *Engine, config: Sound.Config) Error!*Sound {
+        return Sound.create(engine, config);
+    }
+
+    pub fn createSoundCopy(
+        engine: *Engine,
+        existing_sound: *Sound,
+        flags: Sound.Flags,
+        sgroup: ?*SoundGroup,
+    ) Error!*Sound {
+        return Sound.createCopy(engine, existing_sound, flags, sgroup);
+    }
+
+    pub fn createSoundGroup(engine: *Engine, flags: Sound.Flags, parent: ?*SoundGroup) Error!*SoundGroup {
+        return SoundGroup.create(engine, flags, parent);
+    }
+
+    pub fn getResourceManager(engine: *const Engine) *const ResourceManager {
+        return ma_engine_get_resource_manager(@constCast(engine));
+    }
+    pub fn getResourceManagerMut(engine: *Engine) *ResourceManager {
+        return ma_engine_get_resource_manager(engine);
+    }
+    extern fn ma_engine_get_resource_manager(engine: *Engine) *ResourceManager;
+
+    pub fn getDevice(engine: *const Engine) ?*const Device {
+        return ma_engine_get_device(@constCast(engine));
+    }
+    pub fn getDeviceMut(engine: *Engine) ?*Device {
+        return ma_engine_get_device(engine);
+    }
+    extern fn ma_engine_get_device(engine: *Engine) ?*Device;
+
+    pub fn getLog(engine: *const Engine) ?*const Log {
+        return ma_engine_get_log(@constCast(engine));
+    }
+    pub fn getLogMut(engine: *Engine) ?*Log {
+        return ma_engine_get_log(engine);
+    }
+    extern fn ma_engine_get_log(engine: *Engine) ?*Log;
+
+    pub const getSampleRate = ma_engine_get_sample_rate;
+    extern fn ma_engine_get_sample_rate(engine: *const Engine) u32;
+
+    pub fn start(engine: *Engine) Error!void {
+        try maybeError(ma_engine_start(engine));
+    }
+    extern fn ma_engine_start(engine: *Engine) Result;
+
+    pub fn stop(engine: *Engine) Error!void {
+        try maybeError(ma_engine_stop(engine));
+    }
+    extern fn ma_engine_stop(engine: *Engine) Result;
+
+    pub fn setVolume(engine: *Engine, volume: f32) Error!void {
+        try maybeError(ma_engine_set_volume(engine, volume));
+    }
+    extern fn ma_engine_set_volume(engine: *Engine, volume: f32) Result;
+
+    pub fn setGainDb(engine: *Engine, gain_db: f32) Error!void {
+        try maybeError(ma_engine_set_gain_db(engine, gain_db));
+    }
+    extern fn ma_engine_set_gain_db(engine: *Engine, gain_db: f32) Result;
+
+    pub const getListenerCount = ma_engine_get_listener_count;
+    extern fn ma_engine_get_listener_count(engine: *const Engine) u32;
+
+    pub fn findClosestListener(engine: *const Engine, absolute_pos_xyz: [3]f32) u32 {
+        return ma_engine_find_closest_listener(
+            engine,
+            absolute_pos_xyz[0],
+            absolute_pos_xyz[1],
+            absolute_pos_xyz[2],
+        );
+    }
+    extern fn ma_engine_find_closest_listener(engine: *const Engine, x: f32, y: f32, z: f32) u32;
+
+    pub fn setListenerPosition(engine: *Engine, index: u32, v: [3]f32) void {
+        ma_engine_listener_set_position(engine, index, v[0], v[1], v[2]);
+    }
+    extern fn ma_engine_listener_set_position(engine: *Engine, index: u32, x: f32, y: f32, z: f32) void;
+
+    pub fn getListenerPosition(engine: *const Engine, index: u32) [3]f32 {
+        var v: [3]f32 = undefined;
+        WA_ma_engine_listener_get_position(engine, index, &v);
+        return v;
+    }
+    extern fn WA_ma_engine_listener_get_position(engine: *const Engine, index: u32, vout: *[3]f32) void;
+
+    pub fn setListenerDirection(engine: *Engine, index: u32, v: [3]f32) void {
+        ma_engine_listener_set_direction(engine, index, v[0], v[1], v[2]);
+    }
+    extern fn ma_engine_listener_set_direction(engine: *Engine, index: u32, x: f32, y: f32, z: f32) void;
+
+    pub fn getListenerDirection(engine: *const Engine, index: u32) [3]f32 {
+        var v: [3]f32 = undefined;
+        WA_ma_engine_listener_get_direction(engine, index, &v);
+        return v;
+    }
+    extern fn WA_ma_engine_listener_get_direction(engine: *const Engine, index: u32, vout: *[3]f32) void;
+
+    pub fn setListenerVelocity(engine: *Engine, index: u32, v: [3]f32) void {
+        ma_engine_listener_set_velocity(engine, index, v[0], v[1], v[2]);
+    }
+    extern fn ma_engine_listener_set_velocity(engine: *Engine, index: u32, x: f32, y: f32, z: f32) void;
+
+    pub fn getListenerVelocity(engine: *const Engine, index: u32) [3]f32 {
+        var v: [3]f32 = undefined;
+        WA_ma_engine_listener_get_velocity(engine, index, &v);
+        return v;
+    }
+    extern fn WA_ma_engine_listener_get_velocity(engine: *const Engine, index: u32, vout: *[3]f32) void;
+
+    pub fn setListenerWorldUp(engine: *Engine, index: u32, v: [3]f32) void {
+        ma_engine_listener_set_world_up(engine, index, v[0], v[1], v[2]);
+    }
+    extern fn ma_engine_listener_set_world_up(engine: *Engine, index: u32, x: f32, y: f32, z: f32) void;
+
+    pub fn getListenerWorldUp(engine: *const Engine, index: u32) [3]f32 {
+        var v: [3]f32 = undefined;
+        WA_ma_engine_listener_get_world_up(engine, index, &v);
+        return v;
+    }
+    extern fn WA_ma_engine_listener_get_world_up(engine: *const Engine, index: u32, vout: *[3]f32) void;
+
+    pub fn setListenerEnabled(engine: *Engine, index: u32, enabled: bool) void {
+        ma_engine_listener_set_enabled(engine, index, if (enabled) .true32 else .false32);
+    }
+    extern fn ma_engine_listener_set_enabled(engine: *Engine, index: u32, is_enabled: Bool32) void;
+
+    pub fn isListenerEnabled(engine: *const Engine, index: u32) bool {
+        return ma_engine_listener_is_enabled(engine, index) != .false32;
+    }
+    extern fn ma_engine_listener_is_enabled(engine: *const Engine, index: u32) Bool32;
+
+    pub const setListenerCone = ma_engine_listener_set_cone;
+    extern fn ma_engine_listener_set_cone(
+        engine: *Engine,
+        index: u32,
+        inner_radians: f32,
+        outer_radians: f32,
+        outer_gain: f32,
+    ) void;
+
+    pub const getListenerCone = ma_engine_listener_get_cone;
+    extern fn ma_engine_listener_get_cone(
+        engine: *const Engine,
+        index: u32,
+        inner_radians: ?*f32,
+        outer_radians: ?*f32,
+        outer_gain: ?*f32,
+    ) void;
+
+    pub fn playSound(engine: *Engine, filepath: [:0]const u8, sgroup: ?*SoundGroup) Error!void {
+        try maybeError(ma_engine_play_sound(engine, filepath.ptr, sgroup));
+    }
+    extern fn ma_engine_play_sound(engine: *Engine, filepath: [*:0]const u8, sgroup: ?*SoundGroup) Result;
+
+    pub fn playSoundEx(
+        engine: *Engine,
+        filepath: [:0]const u8,
+        node: ?*Node,
+        node_input_bus_index: u32,
+    ) Error!void {
+        try maybeError(ma_engine_play_sound_ex(engine, filepath.ptr, node, node_input_bus_index));
+    }
+    extern fn ma_engine_play_sound_ex(
+        engine: *Engine,
+        filepath: [*:0]const u8,
+        node: ?*Node,
+        node_input_bus_index: u32,
+    ) Result;
+};
+//--------------------------------------------------------------------------------------------------
+//
+// Sound (-> Node)
+//
+//--------------------------------------------------------------------------------------------------
+pub const Sound = opaque {
+    fn createFromFile(
+        engine: *Engine,
+        file_path: [:0]const u8,
+        flags: Flags,
+        sgroup: ?*SoundGroup,
+        done_fence: ?*Fence,
+    ) Error!*Sound {
+        var handle: ?*Sound = null;
+        try maybeError(zaudioSoundCreateFromFile(engine, file_path.ptr, flags, sgroup, done_fence, &handle));
+        return handle.?;
+    }
+    extern fn zaudioSoundCreateFromFile(
+        engine: *Engine,
+        file_path: [*:0]const u8,
+        flags: Flags,
+        sgroup: ?*SoundGroup,
+        done_fence: ?*Fence,
+        out_handle: ?*?*Sound,
+    ) Result;
+
+    fn createFromDataSource(
+        engine: *Engine,
+        data_source: *DataSource,
+        flags: Flags,
+        sgroup: ?*SoundGroup,
+    ) Error!*Sound {
+        var handle: ?*Sound = null;
+        try maybeError(zaudioSoundCreateFromDataSource(engine, data_source, flags, sgroup, &handle));
+        return handle.?;
+    }
+    extern fn zaudioSoundCreateFromDataSource(
+        engine: *Engine,
+        data_source: *DataSource,
+        flags: Flags,
+        sgroup: ?*SoundGroup,
+        out_handle: ?*?*Sound,
+    ) Result;
+
+    fn createCopy(engine: *Engine, existing_sound: *Sound, flags: Flags, sgroup: ?*SoundGroup) Error!*Sound {
+        var handle: ?*Sound = null;
+        try maybeError(zaudioSoundCreateCopy(engine, existing_sound, flags, sgroup, &handle));
+        return handle.?;
+    }
+    extern fn zaudioSoundCreateCopy(
+        engine: *Engine,
+        existing_sound: *Sound,
+        flags: Flags,
+        sgroup: ?*SoundGroup,
+        out_handle: ?*?*Sound,
+    ) Result;
+
+    fn create(engine: *Engine, config: Sound.Config) Error!*Sound {
+        var handle: ?*Sound = null;
+        try maybeError(zaudioSoundCreate(engine, &config, &handle));
+        return handle.?;
+    }
+    extern fn zaudioSoundCreate(engine: *Engine, config: *const Sound.Config, out_handle: ?*?*Sound) Result;
+
+    pub const destroy = zaudioSoundDestroy;
+    extern fn zaudioSoundDestroy(sound: *Sound) void;
+
+    pub fn asNode(node: *const Sound) *const Node {
+        return @as(*const Node, @ptrCast(node));
+    }
+    pub fn asNodeMut(node: *Sound) *Node {
+        return @as(*Node, @ptrCast(node));
+    }
+
+    pub const getDataSource = ma_sound_get_data_source;
+    extern fn ma_sound_get_data_source(sound: *const Sound) ?*DataSource;
+
+    pub const getEngine = ma_sound_get_engine;
+    extern fn ma_sound_get_engine(sound: *const Sound) *Engine;
+
+    pub fn start(sound: *Sound) Error!void {
+        try maybeError(ma_sound_start(sound));
+    }
+    extern fn ma_sound_start(sound: *Sound) Result;
+
+    pub fn stop(sound: *Sound) Error!void {
+        try maybeError(ma_sound_stop(sound));
+    }
+    extern fn ma_sound_stop(sound: *Sound) Result;
+
+    pub const setVolume = ma_sound_set_volume;
+    extern fn ma_sound_set_volume(sound: *Sound, volume: f32) void;
+
+    pub const getVolume = ma_sound_get_volume;
+    extern fn ma_sound_get_volume(sound: *const Sound) f32;
+
+    pub const setPan = ma_sound_set_pan;
+    extern fn ma_sound_set_pan(sound: *Sound, pan: f32) void;
+
+    pub const getPan = ma_sound_get_pan;
+    extern fn ma_sound_get_pan(sound: *const Sound) f32;
+
+    pub const setPanMode = ma_sound_set_pan_mode;
+    extern fn ma_sound_set_pan_mode(sound: *Sound, pan_mode: PanMode) void;
+
+    pub const getPanMode = ma_sound_get_pan_mode;
+    extern fn ma_sound_get_pan_mode(sound: *const Sound) PanMode;
+
+    pub const setPitch = ma_sound_set_pitch;
+    extern fn ma_sound_set_pitch(sound: *Sound, pitch: f32) void;
+
+    pub const getPitch = ma_sound_get_pitch;
+    extern fn ma_sound_get_pitch(sound: *const Sound) f32;
+
+    pub fn setSpatializationEnabled(sound: *Sound, enabled: bool) void {
+        ma_sound_set_spatialization_enabled(sound, if (enabled) .true32 else .false32);
+    }
+    extern fn ma_sound_set_spatialization_enabled(sound: *Sound, enabled: Bool32) void;
+
+    pub fn isSpatializationEnabled(sound: *const Sound) bool {
+        return ma_sound_is_spatialization_enabled(sound) != .false32;
+    }
+    extern fn ma_sound_is_spatialization_enabled(sound: *const Sound) Bool32;
+
+    pub const setPinnedListenerIndex = ma_sound_set_pinned_listener_index;
+    extern fn ma_sound_set_pinned_listener_index(sound: *Sound, index: u32) void;
+
+    pub const getPinnedListenerIndex = ma_sound_get_pinned_listener_index;
+    extern fn ma_sound_get_pinned_listener_index(sound: *const Sound) u32;
+
+    pub const getListenerIndex = ma_sound_get_listener_index;
+    extern fn ma_sound_get_listener_index(sound: *const Sound) u32;
+
+    pub fn getDirectionToListener(sound: *const Sound) [3]f32 {
+        var v: [3]f32 = undefined;
+        WA_ma_sound_get_direction_to_listener(sound, &v);
+        return v;
+    }
+    extern fn WA_ma_sound_get_direction_to_listener(sound: *const Sound, vout: *[3]f32) void;
+
+    pub fn setPosition(sound: *Sound, v: [3]f32) void {
+        ma_sound_set_position(sound, v[0], v[1], v[2]);
+    }
+    extern fn ma_sound_set_position(sound: *Sound, x: f32, y: f32, z: f32) void;
+
+    pub fn getPosition(sound: *const Sound) [3]f32 {
+        var v: [3]f32 = undefined;
+        WA_ma_sound_get_position(sound, &v);
+        return v;
+    }
+    extern fn WA_ma_sound_get_position(sound: *const Sound, vout: *[3]f32) void;
+
+    pub fn setDirection(sound: *Sound, v: [3]f32) void {
+        ma_sound_set_direction(sound, v[0], v[1], v[2]);
+    }
+    extern fn ma_sound_set_direction(sound: *Sound, x: f32, y: f32, z: f32) void;
+
+    pub fn getDirection(sound: *const Sound) [3]f32 {
+        var v: [3]f32 = undefined;
+        WA_ma_sound_get_direction(sound, &v);
+        return v;
+    }
+    extern fn WA_ma_sound_get_direction(sound: *const Sound, vout: *[3]f32) void;
+
+    pub fn setVelocity(sound: *Sound, v: [3]f32) void {
+        ma_sound_set_velocity(sound, v[0], v[1], v[2]);
+    }
+    extern fn ma_sound_set_velocity(sound: *Sound, x: f32, y: f32, z: f32) void;
+
+    pub fn getVelocity(sound: *const Sound) [3]f32 {
+        var v: [3]f32 = undefined;
+        WA_ma_sound_get_velocity(sound, &v);
+        return v;
+    }
+    extern fn WA_ma_sound_get_velocity(sound: *const Sound, vout: *[3]f32) void;
+
+    pub const setAttenuationModel = ma_sound_set_attenuation_model;
+    extern fn ma_sound_set_attenuation_model(sound: *Sound, model: AttenuationModel) void;
+
+    pub const getAttenuationModel = ma_sound_get_attenuation_model;
+    extern fn ma_sound_get_attenuation_model(sound: *const Sound) AttenuationModel;
+
+    pub const setPositioning = ma_sound_set_positioning;
+    extern fn ma_sound_set_positioning(sound: *Sound, pos: Positioning) void;
+
+    pub const getPositioning = ma_sound_get_positioning;
+    extern fn ma_sound_get_positioning(sound: *const Sound) Positioning;
+
+    pub const setRolloff = ma_sound_set_rolloff;
+    extern fn ma_sound_set_rolloff(sound: *Sound, rolloff: f32) void;
+
+    pub const getRolloff = ma_sound_get_rolloff;
+    extern fn ma_sound_get_rolloff(sound: *const Sound) f32;
+
+    pub const setMinGain = ma_sound_set_min_gain;
+    extern fn ma_sound_set_min_gain(sound: *Sound, min_gain: f32) void;
+
+    pub const getMinGain = ma_sound_get_min_gain;
+    extern fn ma_sound_get_min_gain(sound: *const Sound) f32;
+
+    pub const setMaxGain = ma_sound_set_max_gain;
+    extern fn ma_sound_set_max_gain(sound: *Sound, max_gain: f32) void;
+
+    pub const getMaxGain = ma_sound_get_max_gain;
+    extern fn ma_sound_get_max_gain(sound: *const Sound) f32;
+
+    pub const setMinDistance = ma_sound_set_min_distance;
+    extern fn ma_sound_set_min_distance(sound: *Sound, min_distance: f32) void;
+
+    pub const getMinDistance = ma_sound_get_min_distance;
+    extern fn ma_sound_get_min_distance(sound: *const Sound) f32;
+
+    pub const setMaxDistance = ma_sound_set_max_distance;
+    extern fn ma_sound_set_max_distance(sound: *Sound, max_distance: f32) void;
+
+    pub const getMaxDistance = ma_sound_get_max_distance;
+    extern fn ma_sound_get_max_distance(sound: *const Sound) f32;
+
+    pub const setCone = ma_sound_set_cone;
+    extern fn ma_sound_set_cone(sound: *Sound, inner_radians: f32, outer_radians: f32, outer_gain: f32) void;
+
+    pub const getCone = ma_sound_get_cone;
+    extern fn ma_sound_get_cone(
+        sound: *const Sound,
+        inner_radians: ?*f32,
+        outer_radians: ?*f32,
+        outer_gain: ?*f32,
+    ) void;
+
+    pub const setDopplerFactor = ma_sound_set_doppler_factor;
+    extern fn ma_sound_set_doppler_factor(sound: *Sound, factor: f32) void;
+
+    pub const getDopplerFactor = ma_sound_get_doppler_factor;
+    extern fn ma_sound_get_doppler_factor(sound: *const Sound) f32;
+
+    pub const setDirectionalAttenuationFactor = ma_sound_set_directional_attenuation_factor;
+    extern fn ma_sound_set_directional_attenuation_factor(sound: *Sound, factor: f32) void;
+
+    pub const getDirectionalAttenuationFactor = ma_sound_get_directional_attenuation_factor;
+    extern fn ma_sound_get_directional_attenuation_factor(sound: *const Sound) f32;
+
+    pub const setFadeInPcmFrames = ma_sound_set_fade_in_pcm_frames;
+    extern fn ma_sound_set_fade_in_pcm_frames(
+        sound: *Sound,
+        volume_begin: f32,
+        volume_end: f32,
+        len_in_frames: u64,
+    ) void;
+
+    pub const setFadeInMilliseconds = ma_sound_set_fade_in_milliseconds;
+    extern fn ma_sound_set_fade_in_milliseconds(
+        sound: *Sound,
+        volume_begin: f32,
+        volume_end: f32,
+        len_in_ms: u64,
+    ) void;
+
+    pub const getCurrentFadeVolume = ma_sound_get_current_fade_volume;
+    extern fn ma_sound_get_current_fade_volume(sound: *const Sound) f32;
+
+    pub const setStartTimeInPcmFrames = ma_sound_set_start_time_in_pcm_frames;
+    extern fn ma_sound_set_start_time_in_pcm_frames(sound: *Sound, abs_global_time_in_frames: u64) void;
+
+    pub const setStartTimeInMilliseconds = ma_sound_set_start_time_in_milliseconds;
+    extern fn ma_sound_set_start_time_in_milliseconds(sound: *Sound, abs_global_time_in_ms: u64) void;
+
+    pub const setStopTimeInPcmFrames = ma_sound_set_stop_time_in_pcm_frames;
+    extern fn ma_sound_set_stop_time_in_pcm_frames(sound: *Sound, abs_global_time_in_frames: u64) void;
+
+    pub const setStopTimeInMilliseconds = ma_sound_set_stop_time_in_milliseconds;
+    extern fn ma_sound_set_stop_time_in_milliseconds(sound: *Sound, abs_global_time_in_ms: u64) void;
+
+    pub fn isPlaying(sound: *const Sound) bool {
+        return ma_sound_is_playing(sound) != .false32;
+    }
+    extern fn ma_sound_is_playing(sound: *const Sound) Bool32;
+
+    pub const getTimeInPcmFrames = ma_sound_get_time_in_pcm_frames;
+    extern fn ma_sound_get_time_in_pcm_frames(sound: *const Sound) u64;
+
+    pub fn setLooping(sound: *Sound, looping: bool) void {
+        ma_sound_set_looping(sound, if (looping) .true32 else .false32);
+    }
+    extern fn ma_sound_set_looping(sound: *Sound, looping: Bool32) void;
+
+    pub fn isLooping(sound: *const Sound) bool {
+        return ma_sound_is_looping(sound) != .false32;
+    }
+    extern fn ma_sound_is_looping(sound: *const Sound) Bool32;
+
+    pub fn isAtEnd(sound: *const Sound) bool {
+        return ma_sound_at_end(sound) != .false32;
+    }
+    extern fn ma_sound_at_end(sound: *const Sound) Bool32;
+
+    pub fn seekToPcmFrame(sound: *Sound, frame_index: u64) Error!void {
+        try maybeError(ma_sound_seek_to_pcm_frame(sound, frame_index));
+    }
+    extern fn ma_sound_seek_to_pcm_frame(sound: *Sound, frame_index: u64) Result;
+
+    pub fn seekToSecond(sound: *Sound, seek_point_in_second: f32) Error!void {
+        try maybeError(ma_sound_seek_to_second(sound, seek_point_in_second));
+    }
+    extern fn ma_sound_seek_to_second(sound: *Sound, seek_point_in_second: f64) Result;
+
+    pub fn getDataFormat(
+        sound: *const Sound,
+        format: ?*Format,
+        channels: ?*u32,
+        sample_rate: ?*u32,
+        channel_map: ?[]Channel,
+    ) Error!void {
+        try maybeError(ma_sound_get_data_format(
+            sound,
+            format,
+            channels,
+            sample_rate,
+            if (channel_map) |chm| chm.ptr else null,
+            if (channel_map) |chm| chm.len else 0,
+        ));
+    }
+    extern fn ma_sound_get_data_format(
+        sound: *const Sound,
+        format: ?*Format,
+        channels: ?*u32,
+        sample_rate: ?*u32,
+        channel_map: ?[*]Channel,
+        channel_map_cap: usize,
+    ) Result;
+
+    pub fn getCursorInPcmFrames(sound: *const Sound) Error!u64 {
+        var cursor: u64 = 0;
+        try maybeError(ma_sound_get_cursor_in_pcm_frames(sound, &cursor));
+        return cursor;
+    }
+    extern fn ma_sound_get_cursor_in_pcm_frames(sound: *const Sound, cursor: *u64) Result;
+
+    pub fn getLengthInPcmFrames(sound: *const Sound) Error!u64 {
+        var length: u64 = 0;
+        try maybeError(ma_sound_get_length_in_pcm_frames(sound, &length));
+        return length;
+    }
+    extern fn ma_sound_get_length_in_pcm_frames(sound: *const Sound, length: *u64) Result;
+
+    pub fn getCursorInSeconds(sound: *const Sound) Error!f32 {
+        var cursor: f32 = 0.0;
+        try maybeError(ma_sound_get_cursor_in_seconds(sound, &cursor));
+        return cursor;
+    }
+    extern fn ma_sound_get_cursor_in_seconds(sound: *const Sound, cursor: *f32) Result;
+
+    pub fn getLengthInSeconds(sound: *const Sound) Error!f32 {
+        var length: f32 = 0.0;
+        try maybeError(ma_sound_get_length_in_seconds(sound, &length));
+        return length;
+    }
+    extern fn ma_sound_get_length_in_seconds(sound: *const Sound, length: *f32) Result;
+
+    pub const Flags = packed struct(c_int) {
+        // Resource manager flags
+        stream: bool = false,
+        decode: bool = false,
+        async_load: bool = false,
+        wait_init: bool = false,
+        unknown_length: bool = false,
+        looping: bool = false,
+
+        _padding0: u6 = 0,
+
+        // ma_sound specific flags
+        no_default_attachment: bool = false,
+        no_pitch: bool = false,
+        no_spatialization: bool = false,
+
+        _padding1: u17 = 0,
+    };
+
+    pub const Config = extern struct {
+        file_path: ?[*:0]const u8,
+        file_path_w: ?[*:0]const i32,
+        data_source: ?*DataSource,
+        initial_attachment: ?*Node,
+        initial_attachment_input_bus_index: u32,
+        channels_in: u32,
+        channels_out: u32,
+        mono_expansion_mode: MonoExpansionMode,
+        flags: Flags,
+        volume_smooth_time_in_pcm_frames: u32,
+        initial_seek_point_in_pcm_frames: u64,
+        range_beg_in_pcm_frames: u64,
+        range_end_in_pcm_Frames: u64,
+        loop_point_beg_in_pcm_frames: u64,
+        loop_point_end_in_pcm_frames: u64,
+        end_callback: ?EndProc,
+        user_data: ?*anyopaque,
+        init_notifications: ResourceManager.PipelineNotifications,
+        done_fence: ?*Fence,
+        is_looping: Bool32,
+
+        pub fn init() Config {
+            var config: Config = undefined;
+            zaudioSoundConfigInit(&config);
+            return config;
+        }
+        extern fn zaudioSoundConfigInit(out_config: *Config) void;
+    };
+
+    pub const EndProc = *const fn (
+        user_data: ?*anyopaque,
+        sound: *Sound,
+    ) callconv(.c) void;
+};
+//--------------------------------------------------------------------------------------------------
+//
+// SoundGroup (-> Node)
+//
+//--------------------------------------------------------------------------------------------------
+pub const SoundGroup = opaque {
+    pub const Config = Sound.Config;
+
+    fn create(engine: *Engine, flags: Sound.Flags, parent: ?*SoundGroup) Error!*SoundGroup {
+        var handle: ?*SoundGroup = null;
+        try maybeError(zaudioSoundGroupCreate(engine, flags, parent, &handle));
+        return handle.?;
+    }
+    extern fn zaudioSoundGroupCreate(
+        engine: *Engine,
+        flags: Sound.Flags,
+        parent: ?*SoundGroup,
+        out_handle: ?*?*SoundGroup,
+    ) Result;
+
+    pub const destroy = zaudioSoundGroupDestroy;
+    extern fn zaudioSoundGroupDestroy(handle: *SoundGroup) void;
+
+    pub fn asNode(node: *const SoundGroup) *const Node {
+        return @as(*const Node, @ptrCast(node));
+    }
+    pub fn asNodeMut(node: *SoundGroup) *Node {
+        return @as(*Node, @ptrCast(node));
+    }
+    pub fn asNodeGraph(handle: *const SoundGroup) *const NodeGraph {
+        return @as(*const NodeGraph, @ptrCast(handle));
+    }
+    pub fn asNodeGraphMut(handle: *SoundGroup) *NodeGraph {
+        return @as(*NodeGraph, @ptrCast(handle));
+    }
+
+    pub const getEngine = ma_sound_group_get_engine;
+    extern fn ma_sound_group_get_engine(sound: *const SoundGroup) *Engine;
+
+    pub fn start(sound: *SoundGroup) Error!void {
+        try maybeError(ma_sound_group_start(sound));
+    }
+    extern fn ma_sound_group_start(sound: *SoundGroup) Result;
+
+    pub fn stop(sound: *SoundGroup) Error!void {
+        try maybeError(ma_sound_group_stop(sound));
+    }
+    extern fn ma_sound_group_stop(sound: *SoundGroup) Result;
+
+    pub const setVolume = ma_sound_group_set_volume;
+    extern fn ma_sound_group_set_volume(sound: *SoundGroup, volume: f32) void;
+
+    pub const getVolume = ma_sound_group_get_volume;
+    extern fn ma_sound_group_get_volume(sound: *const SoundGroup) f32;
+
+    pub const setPan = ma_sound_group_set_pan;
+    extern fn ma_sound_group_set_pan(sound: *SoundGroup, pan: f32) void;
+
+    pub const getPan = ma_sound_group_get_pan;
+    extern fn ma_sound_group_get_pan(sound: *const SoundGroup) f32;
+
+    pub const setPanMode = ma_sound_group_set_pan_mode;
+    extern fn ma_sound_group_set_pan_mode(sound: *SoundGroup, pan_mode: PanMode) void;
+
+    pub const getPanMode = ma_sound_group_get_pan_mode;
+    extern fn ma_sound_group_get_pan_mode(sound: *const SoundGroup) PanMode;
+
+    pub const setPitch = ma_sound_group_set_pitch;
+    extern fn ma_sound_group_set_pitch(sound: *SoundGroup, pitch: f32) void;
+
+    pub const getPitch = ma_sound_group_get_pitch;
+    extern fn ma_sound_group_get_pitch(sound: *const SoundGroup) f32;
+
+    pub fn setSpatializationEnabled(sound: *SoundGroup, enabled: bool) void {
+        ma_sound_group_set_spatialization_enabled(sound, if (enabled) .true32 else .false32);
+    }
+    extern fn ma_sound_group_set_spatialization_enabled(sound: *SoundGroup, enabled: Bool32) void;
+
+    pub fn isSpatializationEnabled(sound: *const SoundGroup) bool {
+        return ma_sound_group_is_spatialization_enabled(sound) != .false32;
+    }
+    extern fn ma_sound_group_is_spatialization_enabled(sound: *const SoundGroup) Bool32;
+
+    pub const setPinnedListenerIndex = ma_sound_group_set_pinned_listener_index;
+    extern fn ma_sound_group_set_pinned_listener_index(sound: *SoundGroup, index: u32) void;
+
+    pub const getPinnedListenerIndex = ma_sound_group_get_pinned_listener_index;
+    extern fn ma_sound_group_get_pinned_listener_index(sound: *const SoundGroup) u32;
+
+    pub const getListenerIndex = ma_sound_group_get_listener_index;
+    extern fn ma_sound_group_get_listener_index(sound: *const SoundGroup) u32;
+
+    pub fn getDirectionToListener(sound: *const SoundGroup) [3]f32 {
+        var v: [3]f32 = undefined;
+        WA_ma_sound_group_get_direction_to_listener(sound, &v);
+        return v;
+    }
+    extern fn WA_ma_sound_group_get_direction_to_listener(sound: *const SoundGroup, vout: *[3]f32) void;
+
+    pub fn setPosition(sound: *SoundGroup, v: [3]f32) void {
+        ma_sound_group_set_position(sound, v[0], v[1], v[2]);
+    }
+    extern fn ma_sound_group_set_position(sound: *const SoundGroup, x: f32, y: f32, z: f32) void;
+
+    pub fn getPosition(sound: *const SoundGroup) [3]f32 {
+        var v: [3]f32 = undefined;
+        WA_ma_sound_group_get_position(sound, &v);
+        return v;
+    }
+    extern fn WA_ma_sound_group_get_position(sound: *const SoundGroup, vout: *[3]f32) void;
+
+    pub fn setDirection(sound: *SoundGroup, v: [3]f32) void {
+        ma_sound_group_set_direction(sound, v[0], v[1], v[2]);
+    }
+    extern fn ma_sound_group_set_direction(sound: *SoundGroup, x: f32, y: f32, z: f32) void;
+
+    pub fn getDirection(sound: *const SoundGroup) [3]f32 {
+        var v: [3]f32 = undefined;
+        WA_ma_sound_group_get_direction(sound, &v);
+        return v;
+    }
+    extern fn WA_ma_sound_group_get_direction(sound: *const SoundGroup, vout: *[3]f32) void;
+
+    pub fn setVelocity(sound: *SoundGroup, v: [3]f32) void {
+        ma_sound_group_set_velocity(sound, v[0], v[1], v[2]);
+    }
+    extern fn ma_sound_group_set_velocity(sound: *SoundGroup, x: f32, y: f32, z: f32) void;
+
+    pub fn getVelocity(sound: *const SoundGroup) [3]f32 {
+        var v: [3]f32 = undefined;
+        WA_ma_sound_group_get_velocity(sound, &v);
+        return v;
+    }
+    extern fn WA_ma_sound_group_get_velocity(sound: *const SoundGroup, vout: *[3]f32) void;
+
+    pub const setAttenuationModel = ma_sound_group_set_attenuation_model;
+    extern fn ma_sound_group_set_attenuation_model(sound: *SoundGroup, model: AttenuationModel) void;
+
+    pub const getAttenuationModel = ma_sound_group_get_attenuation_model;
+    extern fn ma_sound_group_get_attenuation_model(sound: *const SoundGroup) AttenuationModel;
+
+    pub const setPositioning = ma_sound_group_set_positioning;
+    extern fn ma_sound_group_set_positioning(sound: *SoundGroup, pos: Positioning) void;
+
+    pub const getPositioning = ma_sound_group_get_positioning;
+    extern fn ma_sound_group_get_positioning(sound: *const SoundGroup) Positioning;
+
+    pub const setRolloff = ma_sound_group_set_rolloff;
+    extern fn ma_sound_group_set_rolloff(sound: *SoundGroup, rolloff: f32) void;
+
+    pub const getRolloff = ma_sound_group_get_rolloff;
+    extern fn ma_sound_group_get_rolloff(sound: *const SoundGroup) f32;
+
+    pub const setMinGain = ma_sound_group_set_min_gain;
+    extern fn ma_sound_group_set_min_gain(sound: *SoundGroup, min_gain: f32) void;
+
+    pub const getMinGain = ma_sound_group_get_min_gain;
+    extern fn ma_sound_group_get_min_gain(sound: *const SoundGroup) f32;
+
+    pub const setMaxGain = ma_sound_group_set_max_gain;
+    extern fn ma_sound_group_set_max_gain(sound: *SoundGroup, max_gain: f32) void;
+
+    pub const getMaxGain = ma_sound_group_get_max_gain;
+    extern fn ma_sound_group_get_max_gain(sound: *const SoundGroup) f32;
+
+    pub const setMinDistance = ma_sound_group_set_min_distance;
+    extern fn ma_sound_group_set_min_distance(sound: *SoundGroup, min_distance: f32) void;
+
+    pub const getMinDistance = ma_sound_group_get_min_distance;
+    extern fn ma_sound_group_get_min_distance(sound: *const SoundGroup) f32;
+
+    pub const setMaxDistance = ma_sound_group_set_max_distance;
+    extern fn ma_sound_group_set_max_distance(sound: *SoundGroup, max_distance: f32) void;
+
+    pub const getMaxDistance = ma_sound_group_get_max_distance;
+    extern fn ma_sound_group_get_max_distance(sound: *const SoundGroup) f32;
+
+    pub const setCone = ma_sound_group_set_cone;
+    extern fn ma_sound_group_set_cone(
+        sound: *SoundGroup,
+        inner_radians: f32,
+        outer_radians: f32,
+        outer_gain: f32,
+    ) void;
+
+    pub const getCone = ma_sound_group_get_cone;
+    extern fn ma_sound_group_get_cone(
+        sound: *const SoundGroup,
+        inner_radians: ?*f32,
+        outer_radians: ?*f32,
+        outer_gain: ?*f32,
+    ) void;
+
+    pub const setDopplerFactor = ma_sound_group_set_doppler_factor;
+    extern fn ma_sound_group_set_doppler_factor(sound: *SoundGroup, factor: f32) void;
+
+    pub const getDopplerFactor = ma_sound_group_get_doppler_factor;
+    extern fn ma_sound_group_get_doppler_factor(sound: *const SoundGroup) f32;
+
+    pub const setDirectionalAttenuationFactor = ma_sound_group_set_directional_attenuation_factor;
+    extern fn ma_sound_group_set_directional_attenuation_factor(sound: *SoundGroup, factor: f32) void;
+
+    pub const getDirectionalAttenuationFactor = ma_sound_group_get_directional_attenuation_factor;
+    extern fn ma_sound_group_get_directional_attenuation_factor(sound: *const SoundGroup) f32;
+
+    pub const setFadeInPcmFrames = ma_sound_group_set_fade_in_pcm_frames;
+    extern fn ma_sound_group_set_fade_in_pcm_frames(
+        sound: *SoundGroup,
+        volume_begin: f32,
+        volume_end: f32,
+        len_in_frames: u64,
+    ) void;
+
+    pub const setFadeInMilliseconds = ma_sound_group_set_fade_in_milliseconds;
+    extern fn ma_sound_group_set_fade_in_milliseconds(
+        sound: *SoundGroup,
+        volume_begin: f32,
+        volume_end: f32,
+        len_in_ms: u64,
+    ) void;
+
+    pub const getCurrentFadeVolume = ma_sound_group_get_current_fade_volume;
+    extern fn ma_sound_group_get_current_fade_volume(sound: *const SoundGroup) f32;
+
+    pub const setStartTimeInPcmFrames = ma_sound_group_set_start_time_in_pcm_frames;
+    extern fn ma_sound_group_set_start_time_in_pcm_frames(sound: *SoundGroup, abs_global_time_in_frames: u64) void;
+
+    pub const setStartTimeInMilliseconds = ma_sound_group_set_start_time_in_milliseconds;
+    extern fn ma_sound_group_set_start_time_in_milliseconds(sound: *SoundGroup, abs_global_time_in_ms: u64) void;
+
+    pub const setStopTimeInPcmFrames = ma_sound_group_set_stop_time_in_pcm_frames;
+    extern fn ma_sound_group_set_stop_time_in_pcm_frames(sound: *SoundGroup, abs_global_time_in_frames: u64) void;
+
+    pub const setStopTimeInMilliseconds = ma_sound_group_set_stop_time_in_milliseconds;
+    extern fn ma_sound_group_set_stop_time_in_milliseconds(sound: *SoundGroup, abs_global_time_in_ms: u64) void;
+
+    pub fn isPlaying(sound: *const SoundGroup) bool {
+        return ma_sound_group_is_playing(sound) != .false32;
+    }
+    extern fn ma_sound_group_is_playing(sound: *const SoundGroup) Bool32;
+
+    pub const getTimeInPcmFrames = ma_sound_group_get_time_in_pcm_frames;
+    extern fn ma_sound_group_get_time_in_pcm_frames(sound: *const SoundGroup) u64;
+};
+//--------------------------------------------------------------------------------------------------
+//
+// Fence
+//
+//--------------------------------------------------------------------------------------------------
+pub const Fence = opaque {
+    pub fn create() Error!*Fence {
+        var handle: ?*Fence = null;
+        try maybeError(zaudioFenceCreate(&handle));
+        return handle.?;
+    }
+    extern fn zaudioFenceCreate(out_handle: ?*?*Fence) Result;
+
+    pub const destroy = zaudioFenceDestroy;
+    extern fn zaudioFenceDestroy(handle: *Fence) void;
+
+    pub fn acquire(fence: *Fence) Error!void {
+        try maybeError(ma_fence_acquire(fence));
+    }
+    extern fn ma_fence_acquire(fence: *Fence) Result;
+
+    pub fn release(fence: *Fence) Error!void {
+        try maybeError(ma_fence_release(fence));
+    }
+    extern fn ma_fence_release(fence: *Fence) Result;
+
+    pub fn wait(fence: *Fence) Error!void {
+        try maybeError(ma_fence_wait(fence));
+    }
+    extern fn ma_fence_wait(fence: *Fence) Result;
+};
+//--------------------------------------------------------------------------------------------------
+//
+// Memory
+//
+//--------------------------------------------------------------------------------------------------
+var mem_allocator: ?std.mem.Allocator = null;
+var mem_allocations: ?std.AutoHashMap(usize, usize) = null;
+var mem_mutex: std.Thread.Mutex = .{};
+const mem_alignment = 16;
+
+extern var zaudioMallocPtr: ?*const fn (size: usize, _: ?*anyopaque) callconv(.c) ?*anyopaque;
+
+fn zaudioMalloc(size: usize, _: ?*anyopaque) callconv(.c) ?*anyopaque {
+    mem_mutex.lock();
+    defer mem_mutex.unlock();
+
+    const zig_version = @import("builtin").zig_version;
+
+    const alignment = comptime if (zig_version.minor == 14)
+        mem_alignment
+    else
+        std.mem.Alignment.fromByteUnits(mem_alignment);
+
+    const mem = mem_allocator.?.alignedAlloc(
+        u8,
+        alignment,
+        size,
+    ) catch @panic("zaudio: out of memory");
+
+    mem_allocations.?.put(@intFromPtr(mem.ptr), size) catch @panic("zaudio: out of memory");
+
+    return mem.ptr;
+}
+
+extern var zaudioReallocPtr: ?*const fn (ptr: ?*anyopaque, size: usize, _: ?*anyopaque) callconv(.c) ?*anyopaque;
+
+fn zaudioRealloc(ptr: ?*anyopaque, size: usize, _: ?*anyopaque) callconv(.c) ?*anyopaque {
+    mem_mutex.lock();
+    defer mem_mutex.unlock();
+
+    const old_size = if (ptr != null) mem_allocations.?.get(@intFromPtr(ptr.?)).? else 0;
+    const old_mem = if (old_size > 0)
+        @as([*]align(mem_alignment) u8, @ptrCast(@alignCast(ptr)))[0..old_size]
+    else
+        @as([*]align(mem_alignment) u8, undefined)[0..0];
+
+    const new_mem = mem_allocator.?.realloc(old_mem, size) catch @panic("zaudio: out of memory");
+
+    if (ptr != null) {
+        const removed = mem_allocations.?.remove(@intFromPtr(ptr.?));
+        std.debug.assert(removed);
+    }
+
+    mem_allocations.?.put(@intFromPtr(new_mem.ptr), size) catch @panic("zaudio: out of memory");
+
+    return new_mem.ptr;
+}
+
+extern var zaudioFreePtr: ?*const fn (maybe_ptr: ?*anyopaque, _: ?*anyopaque) callconv(.c) void;
+
+fn zaudioFree(maybe_ptr: ?*anyopaque, _: ?*anyopaque) callconv(.c) void {
+    if (maybe_ptr) |ptr| {
+        mem_mutex.lock();
+        defer mem_mutex.unlock();
+
+        const size = mem_allocations.?.fetchRemove(@intFromPtr(ptr)).?.value;
+        const mem = @as([*]align(mem_alignment) u8, @ptrCast(@alignCast(ptr)))[0..size];
+        mem_allocator.?.free(mem);
+    }
+}
+//--------------------------------------------------------------------------------------------------
+//
+// Tests
+//
+//--------------------------------------------------------------------------------------------------
+const expect = std.testing.expect;
+
+test "zaudio.engine.basic" {
+    init(std.testing.allocator);
+    defer deinit();
+
+    var engine_config = Engine.Config.init();
+    engine_config.no_device = .true32;
+    engine_config.channels = 2;
+    engine_config.sample_rate = 48000;
+
+    const engine = try Engine.create(engine_config);
+    defer engine.destroy();
+
+    try engine.asNodeMut().setTime(engine.asNode().getTime());
+
+    _ = engine.asNodeGraph().getChannels();
+    _ = engine.getSampleRate();
+    _ = engine.getListenerCount();
+    _ = engine.findClosestListener(.{ 0.0, 0.0, 0.0 });
+
+    try engine.setVolume(1.0);
+    try engine.setGainDb(1.0);
+
+    engine.setListenerEnabled(0, true);
+    try expect(engine.isListenerEnabled(0) == true);
+
+    engine.setListenerPosition(0, .{ 1.0, 2.0, 3.0 });
+    {
+        const pos = engine.getListenerPosition(0);
+        try expect(pos[0] == 1.0 and pos[1] == 2.0 and pos[2] == 3.0);
+    }
+
+    _ = engine.getResourceManager();
+    _ = engine.getResourceManagerMut();
+    _ = engine.getLog();
+    _ = engine.asNodeGraph().getEndpoint();
+
+    const hpf_node = try engine.asNodeGraphMut().createHpfNode(HpfNode.Config.init(
+        engine.asNodeGraph().getChannels(),
+        engine.getSampleRate(),
+        1000.0,
+        2,
+    ));
+    defer hpf_node.destroy();
+    try hpf_node.asNodeMut().attachOutputBus(0, engine.asNodeGraphMut().getEndpointMut(), 0);
+}
+
+test "zaudio.soundgroup.basic" {
+    init(std.testing.allocator);
+    defer deinit();
+
+    var engine_config = Engine.Config.init();
+    engine_config.no_device = .true32;
+    engine_config.channels = 2;
+    engine_config.sample_rate = 48000;
+
+    const engine = try Engine.create(engine_config);
+    defer engine.destroy();
+
+    const sgroup = try engine.createSoundGroup(.{}, null);
+    defer sgroup.destroy();
+
+    try expect(sgroup.getEngine() == engine);
+
+    try sgroup.start();
+    try sgroup.stop();
+    try sgroup.start();
+
+    _ = sgroup.asNode().getInputChannels(0);
+    _ = sgroup.asNode().getOutputChannels(0);
+    _ = sgroup.asNode().getInputBusCount();
+    _ = sgroup.asNode().getOutputBusCount();
+
+    sgroup.setVolume(0.5);
+    try expect(sgroup.getVolume() == 0.5);
+
+    sgroup.setPan(0.25);
+    try expect(sgroup.getPan() == 0.25);
+
+    const sdir = [3]f32{ 1.0, 2.0, 3.0 };
+    sgroup.setDirection(sdir);
+    {
+        const gdir = sgroup.getDirection();
+        expect(sdir[0] == gdir[0] and sdir[1] == gdir[1] and sdir[2] == gdir[2]) catch |err| {
+            std.debug.print("Direction is: {any} should be: {any}\n", .{ gdir, sdir });
+            return err;
+        };
+    }
+}
+
+test {
+    std.testing.refAllDeclsRecursive(@This());
+}
+
+test "zaudio.fence.basic" {
+    init(std.testing.allocator);
+    defer deinit();
+
+    const fence = try Fence.create();
+    defer fence.destroy();
+
+    try fence.acquire();
+    try fence.release();
+    try fence.wait();
+}
+
+test "zaudio.sound.basic" {
+    init(std.testing.allocator);
+    defer deinit();
+
+    var engine_config = Engine.Config.init();
+    engine_config.no_device = .true32;
+    engine_config.channels = 2;
+    engine_config.sample_rate = 48000;
+
+    const engine = try Engine.create(engine_config);
+    defer engine.destroy();
+
+    var config = Sound.Config.init();
+    config.channels_in = 1;
+    const sound = try engine.createSound(config);
+    defer sound.destroy();
+
+    _ = sound.asNode().getInputChannels(0);
+    _ = sound.asNode().getOutputChannels(0);
+    _ = sound.asNode().getInputBusCount();
+    _ = sound.asNode().getOutputBusCount();
+
+    // Cloning only works for data buffers (not streams) that are loaded from the resource manager.
+    _ = engine.createSoundCopy(sound, .{}, null) catch |err| try expect(err == Error.InvalidOperation);
+
+    sound.setVolume(0.25);
+    try expect(sound.getVolume() == 0.25);
+
+    sound.setPanMode(.pan);
+    try expect(sound.getPanMode() == .pan);
+
+    sound.setLooping(false);
+    try expect(sound.isLooping() == false);
+
+    sound.setPitch(0.5);
+    try expect(sound.getPitch() == 0.5);
+
+    try expect(sound.asNode().getNodeGraph() == engine.asNodeGraph());
+
+    var format: Format = .unknown;
+    var num_channels: u32 = 0;
+    var sample_rate: u32 = 0;
+    try sound.getDataFormat(&format, &num_channels, &sample_rate, null);
+    try expect(num_channels == 1);
+    try expect(sample_rate > 0);
+    try expect(format != .unknown);
+}
+
+test "zaudio.device.basic" {
+    init(std.testing.allocator);
+    defer deinit();
+
+    var config = Device.Config.init(.playback);
+    config.playback.format = .float32;
+    config.playback.channels = 2;
+    config.sample_rate = 48_000;
+    const device = Device.create(null, config) catch |err| {
+        std.debug.print("Failed to create Device with error: {s}", .{@errorName(err)});
+        return;
+    };
+    defer device.destroy();
+    try device.start();
+    try expect(device.getState() == .started or device.getState() == .starting);
+    try device.stop();
+    try expect(device.getState() == .stopped or device.getState() == .stopping);
+    const context = device.getContext();
+    _ = context;
+    const log = device.getLog();
+    _ = log;
+    try device.setMasterVolume(0.1);
+    try expect((try device.getMasterVolume()) == 0.1);
+}
+
+test "zaudio.node_graph.basic" {
+    init(std.testing.allocator);
+    defer deinit();
+
+    const config = NodeGraph.Config.init(2);
+    const node_graph = try NodeGraph.create(config);
+    defer node_graph.destroy();
+    _ = node_graph.asNode().getTime();
+}
+
+test "zaudio.audio_buffer" {
+    init(std.testing.allocator);
+    defer deinit();
+
+    const zig_version = @import("builtin").zig_version;
+    const ArrayList = if (zig_version.minor == 15) std.ArrayList else std.ArrayListUnmanaged;
+
+    var samples = try ArrayList(f32).initCapacity(std.testing.allocator, 1000);
+    defer samples.deinit(std.testing.allocator);
+
+    var prng = std.Random.DefaultPrng.init(0);
+    const rand = prng.random();
+
+    samples.expandToCapacity();
+    for (samples.items) |*sample| {
+        sample.* = -1.0 + 2.0 * rand.float(f32);
+    }
+
+    const audio_buffer = try AudioBuffer.create(
+        AudioBuffer.Config.init(.float32, 1, samples.items.len, samples.items.ptr),
+    );
+    defer audio_buffer.destroy();
+
+    var engine_config = Engine.Config.init();
+    engine_config.no_device = .true32;
+    engine_config.channels = 2;
+    engine_config.sample_rate = 48000;
+
+    const engine = try Engine.create(engine_config);
+    defer engine.destroy();
+
+    const sound = try engine.createSoundFromDataSource(audio_buffer.asDataSourceMut(), .{}, null);
+    defer sound.destroy();
+
+    sound.setLooping(true);
+    try sound.start();
+
+    std.Thread.sleep(1e8);
+}
+
+test "zaudio.data_converter" {
+    init(std.testing.allocator);
+    defer deinit();
+
+    var ctrl_upward_saw_source = std.mem.zeroes([256]u8);
+    for (0..256) |i| {
+        ctrl_upward_saw_source[i] = @intCast(i);
+    }
+    var ctrl_upward_saw: []u8 = ctrl_upward_saw_source[0..ctrl_upward_saw_source.len];
+
+    var data_conv_cfg = DataConverter.Config.init(.unsigned8, .float32, 1, 2, 48000, 96000);
+    try expect(data_conv_cfg.format_in == .unsigned8);
+    try expect(data_conv_cfg.format_out == .float32);
+    try expect(data_conv_cfg.channels_in == 1);
+    try expect(data_conv_cfg.channels_out == 2);
+    try expect(data_conv_cfg.sample_rate_in == 48000);
+    try expect(data_conv_cfg.sample_rate_out == 96000);
+
+    // remove load pass filter in the converter
+    data_conv_cfg.resampling.linear.lpf_order = 0;
+
+    var data_conv = try DataConverter.create(data_conv_cfg);
+    defer data_conv.destroy();
+
+    var expected_frame_cnt: u64 = try data_conv.getExpectedOutputFrameCount(ctrl_upward_saw_source.len);
+    try expect(expected_frame_cnt == ctrl_upward_saw_source.len * 2); // doubled the sample rate, doubled the frames
+
+    const new_upward_saw = try std.testing.allocator.alloc(f32, expected_frame_cnt * data_conv_cfg.channels_out);
+    defer std.testing.allocator.free(new_upward_saw);
+
+    try data_conv.processPcmFrames(@ptrCast(ctrl_upward_saw.ptr), &ctrl_upward_saw.len, @ptrCast(new_upward_saw.ptr), &expected_frame_cnt);
+
+    // to validate the result samples, since the conversion process has latency, we need to offset the samples by the latency value
+    const input_latency = data_conv.getInputLatency();
+    const output_latency = data_conv.getOutPutLatency();
+    var prev_sample = -std.math.floatMax(f32);
+
+    for ((input_latency + output_latency)..new_upward_saw.len) |i| {
+        if (i % 2 == 1) continue;
+        try expect(new_upward_saw[i] > prev_sample);
+        try expect(new_upward_saw[i] == new_upward_saw[i + 1]);
+        prev_sample = new_upward_saw[i];
+    }
+}
+
+const TestingEncodedStorage = struct {
+    const Self = @This();
+    data_allocator: std.mem.Allocator,
+    buffer: []u8,
+    cursor: usize = 0,
+
+    pub fn init(allocator_in: std.mem.Allocator) !Self {
+        return Self{
+            .data_allocator = allocator_in,
+            .buffer = try allocator_in.alloc(u8, 1),
+        };
+    }
+
+    pub fn deinit(self: Self) void {
+        self.data_allocator.free(self.buffer);
+    }
+
+    pub fn writeSlice(self: *Self, input: []u8) !usize {
+        if (self.cursor + input.len >= self.buffer.len) {
+            self.buffer = try self.data_allocator.realloc(self.buffer, self.cursor + input.len);
+        }
+        @memmove(self.buffer[self.cursor .. self.cursor + input.len], input);
+        self.cursor += input.len;
+        return input.len;
+    }
+};
+
+fn testing_on_write(encoder: *Encoder, buffer_in: *anyopaque, bytes_to_write: usize, bytes_written: *usize) callconv(.c) Result {
+    const result_buffer: *TestingEncodedStorage = @ptrCast(@alignCast(encoder.getUserData()));
+    const buffer_in_data: [*]u8 = @ptrCast(@alignCast(buffer_in));
+    bytes_written.* += result_buffer.writeSlice(buffer_in_data[0..bytes_to_write]) catch return Result.out_of_memory;
+    return Result.success;
+}
+
+fn testing_on_seek(encoder: *Encoder, offset: i64, _: Vfs.SeekOrigin) callconv(.c) Result {
+    const result_buffer: *TestingEncodedStorage = @ptrCast(@alignCast(encoder.getUserData()));
+    result_buffer.cursor = @intCast(offset);
+    return Result.success;
+}
+
+test "zaudio.encoder_decoder_roundtrip" {
+    init(std.testing.allocator);
+    defer deinit();
+
+    var encoder_result = try TestingEncodedStorage.init(std.testing.allocator);
+    defer encoder_result.deinit();
+
+    const encoder_cfg = Encoder.Config.init(.wav, .unsigned8, 1, 44100);
+    try expect(encoder_cfg.channels == 1);
+    try expect(encoder_cfg.encoding_format == .wav);
+    try expect(encoder_cfg.format == .unsigned8);
+    try expect(encoder_cfg.sample_rate == 44100);
+
+    var ctrl_upward_saw_source = std.mem.zeroes([256]u8);
+    for (0..256) |i| {
+        ctrl_upward_saw_source[i] = @intCast(i);
+    }
+
+    { // the encoder.destroy() includes writing the file size for the wav file, so we need a block for the defer
+        var encoder = try Encoder.create(testing_on_write, testing_on_seek, @ptrCast(&encoder_result), encoder_cfg);
+        defer encoder.destroy();
+
+        _ = try encoder.writePcmFrame(@ptrCast(&ctrl_upward_saw_source), ctrl_upward_saw_source.len);
+    }
+
+    // this proves .wav has successfully generated
+    const result_list = encoder_result.buffer;
+    try expect(std.mem.eql(u8, "RIFF", result_list[0..4]));
+    try expect(std.mem.eql(u8, "WAVEfmt ", result_list[8..16]));
+    // The first 8 bytes are not include in the file_size of the .wav format, so we need to +8 for comparison
+    const file_size: usize = @as(usize, @intCast(result_list[4])) + (@as(usize, @intCast(result_list[5])) * 256) + 8;
+    try expect(file_size == result_list.len);
+
+    const decoder_cfg = Decoder.Config.init(.unsigned8, 1, 44100);
+    try expect(decoder_cfg.format == .unsigned8);
+    try expect(decoder_cfg.channels == 1);
+    try expect(decoder_cfg.sample_rate == 44100);
+
+    const decoder = try Decoder.createFromMemory(@ptrCast(result_list.ptr), result_list.len, decoder_cfg);
+    defer decoder.destroy();
+    try expect(try decoder.getAvailableFrames() == 256);
+
+    var format: Format = .unknown;
+    var num_channels: u32 = 0;
+    var sample_rate: u32 = 0;
+    try decoder.getDataFormat(&format, &num_channels, &sample_rate, null);
+    try expect(format == .unsigned8);
+    try expect(num_channels == 1);
+    try expect(sample_rate == 44100);
+
+    var ctrl_upward_saw_distination = std.mem.zeroes([256]u8);
+    const frames_read = try decoder.readPCMFrames(@ptrCast(&ctrl_upward_saw_distination), ctrl_upward_saw_distination.len);
+    try expect(frames_read == ctrl_upward_saw_distination.len);
+
+    // after encoding and decoding, the decoded result should be identical to the original saw sample.
+    for (ctrl_upward_saw_source, ctrl_upward_saw_distination) |src, dst| {
+        try expect(src == dst);
+    }
+
+    // this should change the cursor to the middle of the sample
+    try decoder.seekToPCMFrames(128);
+    var ctrl_upward_saw_distination_half = std.mem.zeroes([128]u8);
+    const frames_read_half = try decoder.readPCMFrames(@ptrCast(&ctrl_upward_saw_distination_half), ctrl_upward_saw_distination_half.len);
+    try expect(frames_read_half == frames_read / 2);
+
+    for (ctrl_upward_saw_distination_half, 0..) |half, i| {
+        try expect(half == ctrl_upward_saw_source[128 + i]);
+    }
+}
+
+test {
+    std.testing.refAllDecls(@This());
+}
+//--------------------------------------------------------------------------------------------------

@@ -9,6 +9,7 @@ const Channels = 2;
 
 pub const SharedState = struct {
     mutex: std.Thread.Mutex = .{},
+    processing: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     playing: bool = false,
     bpm: f32 = 120.0,
     playhead_beat: f32 = 0,
@@ -38,6 +39,12 @@ pub const SharedState = struct {
         self.track_plugins = plugins;
     }
 
+    pub fn setTrackPlugin(self: *SharedState, track_index: usize, plugin: ?*const clap.Plugin) void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+        self.track_plugins[track_index] = plugin;
+    }
+
     pub fn snapshot(self: *SharedState) ?audio_graph.StateSnapshot {
         self.mutex.lock();
         defer self.mutex.unlock();
@@ -51,6 +58,20 @@ pub const SharedState = struct {
             .piano_clips_ptr = self.piano_clips_ptr.?,
             .track_plugins = self.track_plugins,
         };
+    }
+
+    pub fn beginProcess(self: *SharedState) void {
+        _ = self.processing.fetchAdd(1, .monotonic);
+    }
+
+    pub fn endProcess(self: *SharedState) void {
+        _ = self.processing.fetchSub(1, .monotonic);
+    }
+
+    pub fn waitForIdle(self: *SharedState, io: std.Io) void {
+        while (self.processing.load(.acquire) != 0) {
+            _ = io.sleep(std.Io.Duration.fromMilliseconds(1), .awake) catch {};
+        }
     }
 };
 
@@ -154,6 +175,8 @@ pub const AudioEngine = struct {
 
     pub fn render(self: *AudioEngine, device: *zaudio.Device, output: ?*anyopaque, frame_count: u32) void {
         if (output == null) return;
+        self.shared.beginProcess();
+        defer self.shared.endProcess();
         const out_ptr: [*]f32 = @ptrCast(@alignCast(output.?));
         const sample_count: usize = @as(usize, frame_count) * Channels;
         @memset(out_ptr[0..sample_count], 0);
