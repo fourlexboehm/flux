@@ -1,71 +1,36 @@
-const piano_roll = @import("piano_roll.zig");
 const std = @import("std");
 const zgui = @import("zgui");
 const zsynth = @import("zsynth-core");
 const clap = @import("clap-bindings");
 const zsynth_view = zsynth.View;
 
-pub const track_count = 4;
-pub const scene_count = 8;
+// Import UI modules
+pub const ui = @import("ui/root.zig");
+pub const Colors = ui.Colors;
+pub const SessionView = ui.SessionView;
+pub const PianoRollClip = ui.PianoRollClip;
+pub const PianoRollState = ui.PianoRollState;
+pub const Note = ui.Note;
+pub const ClipState = ui.ClipState;
+pub const ClipSlot = ui.ClipSlot;
+pub const Track = ui.Track;
 
-// Ableton-style color palette
-pub const Colors = struct {
-    // Backgrounds
-    pub const bg_dark: [4]f32 = .{ 0.10, 0.10, 0.10, 1.0 };
-    pub const bg_panel: [4]f32 = .{ 0.14, 0.14, 0.14, 1.0 };
-    pub const bg_cell: [4]f32 = .{ 0.18, 0.18, 0.18, 1.0 };
-    pub const bg_header: [4]f32 = .{ 0.12, 0.12, 0.12, 1.0 };
-
-    // Clip states
-    pub const clip_empty: [4]f32 = .{ 0.15, 0.15, 0.15, 1.0 };
-    pub const clip_stopped: [4]f32 = .{ 0.22, 0.22, 0.22, 1.0 };
-    pub const clip_queued: [4]f32 = .{ 0.90, 0.55, 0.10, 1.0 };
-    pub const clip_playing: [4]f32 = .{ 0.35, 0.75, 0.35, 1.0 };
-
-    // Accent & highlights
-    pub const accent: [4]f32 = .{ 0.95, 0.50, 0.10, 1.0 };
-    pub const accent_dim: [4]f32 = .{ 0.60, 0.35, 0.10, 1.0 };
-    pub const selected: [4]f32 = .{ 0.30, 0.55, 0.80, 1.0 };
-    pub const border: [4]f32 = .{ 0.25, 0.25, 0.25, 1.0 };
-
-    // Text
-    pub const text_bright: [4]f32 = .{ 0.90, 0.90, 0.90, 1.0 };
-    pub const text_dim: [4]f32 = .{ 0.55, 0.55, 0.55, 1.0 };
-
-    // Transport
-    pub const transport_play: [4]f32 = .{ 0.35, 0.75, 0.35, 1.0 };
-    pub const transport_stop: [4]f32 = .{ 0.75, 0.35, 0.35, 1.0 };
-
-    // Sequencer
-    pub const note_color: [4]f32 = .{ 0.40, 0.75, 0.50, 1.0 };
-    pub const note_selected: [4]f32 = .{ 0.55, 0.85, 0.65, 1.0 };
-    pub const playhead_bg: [4]f32 = .{ 0.25, 0.35, 0.45, 0.6 };
-    pub const selection_rect: [4]f32 = .{ 0.4, 0.6, 0.9, 0.3 };
-    pub const selection_rect_border: [4]f32 = .{ 0.5, 0.7, 1.0, 0.8 };
-};
-
-pub const ClipState = enum {
-    empty,
-    stopped,
-    queued,
-    playing,
-};
-
-pub const ClipSlot = struct {
-    label: []const u8,
-    state: ClipState,
-};
-
-pub const Track = struct {
-    name: []const u8,
-    volume: f32,
-    mute: bool,
-    solo: bool,
-};
+// Re-export constants for compatibility
+pub const track_count = ui.max_tracks;
+pub const scene_count = ui.max_scenes;
+pub const beats_per_bar = ui.beats_per_bar;
+pub const default_clip_bars = ui.default_clip_bars;
+pub const total_pitches = ui.total_pitches;
+pub const quantizeIndexToBeats = ui.quantizeIndexToBeats;
 
 pub const BottomMode = enum {
     device,
     sequencer,
+};
+
+pub const FocusedPane = enum {
+    session,
+    bottom,
 };
 
 pub const DeviceKind = enum {
@@ -80,180 +45,6 @@ pub const TrackPluginUI = struct {
     last_valid_choice: i32,
 };
 
-// Piano roll constants
-pub const total_pitches = 128; // MIDI range C-1 to G9
-pub const beats_per_bar = 4;
-pub const default_clip_bars = 4;
-
-pub const Note = struct {
-    pitch: u8, // MIDI pitch 0-127
-    start: f32, // Start time in beats
-    duration: f32, // Duration in beats
-};
-
-pub const PianoRollClip = struct {
-    allocator: std.mem.Allocator,
-    length_beats: f32,
-    notes: std.ArrayListUnmanaged(Note),
-
-    pub fn init(allocator: std.mem.Allocator) PianoRollClip {
-        return .{
-            .allocator = allocator,
-            .length_beats = default_clip_bars * beats_per_bar,
-            .notes = .{},
-        };
-    }
-
-    pub fn deinit(self: *PianoRollClip) void {
-        self.notes.deinit(self.allocator);
-    }
-
-    pub fn addNote(self: *PianoRollClip, pitch: u8, start: f32, duration: f32) !void {
-        try self.notes.append(self.allocator, .{ .pitch = pitch, .start = start, .duration = duration });
-    }
-
-    pub fn removeNoteAt(self: *PianoRollClip, index: usize) void {
-        _ = self.notes.orderedRemove(index);
-    }
-
-    pub fn findNoteAt(self: *const PianoRollClip, pitch: u8, time: f32) ?usize {
-        for (self.notes.items, 0..) |note, i| {
-            if (note.pitch == pitch and time >= note.start and time < note.start + note.duration) {
-                return i;
-            }
-        }
-        return null;
-    }
-};
-
-const ClipClipboardEntry = struct {
-    track_offset: i32,
-    scene_offset: i32,
-    slot_state: ClipState,
-    length_beats: f32,
-    notes: std.ArrayListUnmanaged(Note),
-};
-
-fn resetPianoClip(clip: *PianoRollClip) void {
-    clip.length_beats = default_clip_bars * beats_per_bar;
-    clip.notes.clearRetainingCapacity();
-}
-
-fn clearClipSelection(state: *State) void {
-    for (&state.clip_selected) |*track_sel| {
-        for (track_sel) |*sel| {
-            sel.* = false;
-        }
-    }
-}
-
-fn anyClipSelected(state: *const State) bool {
-    for (state.clip_selected) |track_sel| {
-        for (track_sel) |sel| {
-            if (sel) return true;
-        }
-    }
-    return false;
-}
-
-fn clearClipClipboard(state: *State) void {
-    for (state.clip_clipboard.items) |*entry| {
-        entry.notes.deinit(state.allocator);
-    }
-    state.clip_clipboard.clearRetainingCapacity();
-}
-
-fn resetClipSlot(state: *State, track_index: usize, scene_index: usize) void {
-    state.clips[track_index][scene_index].state = .empty;
-    resetPianoClip(&state.piano_clips[track_index][scene_index]);
-}
-
-fn copySelectedClips(state: *State) void {
-    var found_selection = false;
-    var min_track: usize = track_count;
-    var min_scene: usize = scene_count;
-    for (0..track_count) |track_index| {
-        for (0..scene_count) |scene_index| {
-            if (state.clip_selected[track_index][scene_index]) {
-                found_selection = true;
-                min_track = @min(min_track, track_index);
-                min_scene = @min(min_scene, scene_index);
-            }
-        }
-    }
-
-    if (!found_selection) return;
-
-    clearClipClipboard(state);
-    state.clip_clipboard_origin_track = min_track;
-    state.clip_clipboard_origin_scene = min_scene;
-
-    for (0..track_count) |track_index| {
-        for (0..scene_count) |scene_index| {
-            if (!state.clip_selected[track_index][scene_index]) continue;
-            const slot = &state.clips[track_index][scene_index];
-            const clip = &state.piano_clips[track_index][scene_index];
-            if (slot.state == .empty and clip.notes.items.len == 0) continue;
-
-            var notes_copy: std.ArrayListUnmanaged(Note) = .{};
-            _ = notes_copy.appendSlice(state.allocator, clip.notes.items) catch {};
-            const entry = ClipClipboardEntry{
-                .track_offset = @as(i32, @intCast(track_index)) - @as(i32, @intCast(min_track)),
-                .scene_offset = @as(i32, @intCast(scene_index)) - @as(i32, @intCast(min_scene)),
-                .slot_state = if (slot.state == .playing) .stopped else slot.state,
-                .length_beats = clip.length_beats,
-                .notes = notes_copy,
-            };
-            _ = state.clip_clipboard.append(state.allocator, entry) catch {};
-        }
-    }
-}
-
-fn deleteSelectedClips(state: *State) void {
-    var any_selected = false;
-    for (0..track_count) |track_index| {
-        for (0..scene_count) |scene_index| {
-            if (state.clip_selected[track_index][scene_index]) {
-                resetClipSlot(state, track_index, scene_index);
-                any_selected = true;
-            }
-        }
-    }
-    if (any_selected) {
-        clearClipSelection(state);
-    }
-}
-
-const DragState = struct {
-    active: bool,
-    track: usize,
-    scene: usize,
-    start_len: u8,
-};
-
-const PianoRollDrag = struct {
-    const Mode = enum {
-        none,
-        create,
-        resize_right,
-        move,
-        resize_clip,
-        select_rect, // Drag-to-select rectangle
-    };
-
-    mode: Mode,
-    note_index: usize, // Index into clip.notes
-    // For move: offset from note start to where mouse clicked (in beats)
-    grab_offset_beats: f32,
-    grab_offset_pitch: i32,
-    // Original values for move (to allow snapping back)
-    original_start: f32,
-    original_pitch: u8,
-    // For select_rect: start position of selection rectangle
-    select_start_x: f32,
-    select_start_y: f32,
-};
-
 pub const State = struct {
     allocator: std.mem.Allocator,
     playing: bool,
@@ -266,64 +57,25 @@ pub const State = struct {
     device_kind: DeviceKind,
     device_clap_plugin: ?*const clap.Plugin,
     device_clap_name: []const u8,
-    selected_track: usize,
-    selected_scene: usize,
     playhead_beat: f32,
-    clip_selected: [track_count][scene_count]bool,
-    clip_clipboard: std.ArrayListUnmanaged(ClipClipboardEntry),
-    clip_clipboard_origin_track: usize,
-    clip_clipboard_origin_scene: usize,
-    clip_drag_pending: bool,
-    clip_drag_active: bool,
-    clip_drag_additive: bool,
-    clip_drag_start: [2]f32,
-    clip_drag_current: [2]f32,
-    drag: DragState,
-    piano_drag: PianoRollDrag,
-    selected_note_index: ?usize, // Primary selection for keyboard nav (last clicked)
-    selected_notes: std.AutoArrayHashMapUnmanaged(usize, void), // All selected note indices
-    piano_clipboard: std.ArrayListUnmanaged(Note), // Multiple notes for copy/paste
-    piano_context_note_index: ?usize,
-    piano_context_start: f32,
-    piano_context_pitch: u8,
-    piano_context_in_grid: bool,
-    // Piano roll view state (continuous scroll)
-    scroll_x: f32, // Horizontal scroll position (pixels)
-    scroll_y: f32, // Vertical scroll position (pixels)
-    beats_per_pixel: f32, // Horizontal zoom
-    tracks: [track_count]Track,
-    track_plugins: [track_count]TrackPluginUI,
+    focused_pane: FocusedPane,
+
+    // Session view
+    session: SessionView,
+
+    // Piano roll state
+    piano_state: PianoRollState,
+
+    // Piano clips storage (separate from session view's clip metadata)
+    piano_clips: [ui.max_tracks][ui.max_scenes]PianoRollClip,
+
+    // Track plugin UI state
+    track_plugins: [ui.max_tracks]TrackPluginUI,
     plugin_items: [:0]const u8,
     plugin_divider_index: ?i32,
-    clips: [track_count][scene_count]ClipSlot,
-    piano_clips: [track_count][scene_count]PianoRollClip,
 
     pub fn init(allocator: std.mem.Allocator) State {
-        const tracks_data: [track_count]Track = .{
-            .{ .name = "Track 1", .volume = 0.8, .mute = false, .solo = false },
-            .{ .name = "Track 2", .volume = 0.8, .mute = false, .solo = false },
-            .{ .name = "Track 3", .volume = 0.8, .mute = false, .solo = false },
-            .{ .name = "Track 4", .volume = 0.8, .mute = false, .solo = false },
-        };
-        var clips_data: [track_count][scene_count]ClipSlot = undefined;
-        for (&clips_data, 0..) |*track_clips, t| {
-            for (track_clips, 0..) |*slot, s| {
-                slot.* = .{
-                    .label = switch (s) {
-                        0 => "Intro",
-                        1 => "Verse",
-                        2 => "Build",
-                        3 => "Chorus",
-                        4 => "Bridge",
-                        5 => "Drop",
-                        6 => "Outro",
-                        else => "Clip",
-                    },
-                    .state = if (t == 0 and s == 0) .playing else .stopped,
-                };
-            }
-        }
-        var track_plugins_data: [track_count]TrackPluginUI = undefined;
+        var track_plugins_data: [ui.max_tracks]TrackPluginUI = undefined;
         for (&track_plugins_data) |*plugin| {
             plugin.* = .{
                 .choice_index = 0,
@@ -331,22 +83,17 @@ pub const State = struct {
                 .last_valid_choice = 0,
             };
         }
-        var piano_clips_data: [track_count][scene_count]PianoRollClip = undefined;
+
+        var piano_clips_data: [ui.max_tracks][ui.max_scenes]PianoRollClip = undefined;
         for (&piano_clips_data) |*track_clips| {
             for (track_clips) |*clip| {
                 clip.* = PianoRollClip.init(allocator);
             }
         }
-        var clip_selected_data: [track_count][scene_count]bool = undefined;
-        for (&clip_selected_data) |*track_sel| {
-            for (track_sel) |*sel| {
-                sel.* = false;
-            }
-        }
 
         return .{
             .allocator = allocator,
-            .playing = true,
+            .playing = false,
             .bpm = 120.0,
             .quantize_index = 2,
             .bottom_mode = .device,
@@ -356,50 +103,14 @@ pub const State = struct {
             .device_kind = .none,
             .device_clap_plugin = null,
             .device_clap_name = "",
-            .selected_track = 0,
-            .selected_scene = 0,
             .playhead_beat = 0,
-            .clip_selected = clip_selected_data,
-            .clip_clipboard = .{},
-            .clip_clipboard_origin_track = 0,
-            .clip_clipboard_origin_scene = 0,
-            .clip_drag_pending = false,
-            .clip_drag_active = false,
-            .clip_drag_additive = false,
-            .clip_drag_start = .{ 0, 0 },
-            .clip_drag_current = .{ 0, 0 },
-            .drag = .{
-                .active = false,
-                .track = 0,
-                .scene = 0,
-                .start_len = 16,
-            },
-            .piano_drag = .{
-                .mode = .none,
-                .note_index = 0,
-                .grab_offset_beats = 0,
-                .grab_offset_pitch = 0,
-                .original_start = 0,
-                .original_pitch = 0,
-                .select_start_x = 0,
-                .select_start_y = 0,
-            },
-            .selected_note_index = null,
-            .selected_notes = .{},
-            .piano_clipboard = .{},
-            .piano_context_note_index = null,
-            .piano_context_start = 0,
-            .piano_context_pitch = 60,
-            .piano_context_in_grid = false,
-            .scroll_x = 0, // Start at beat 0
-            .scroll_y = 50 * 20.0, // Start around C4 area (row 50 * 20px row height)
-            .beats_per_pixel = 0.02, // ~50 pixels per beat
-            .tracks = tracks_data,
+            .focused_pane = .session,
+            .session = SessionView.init(allocator),
+            .piano_state = PianoRollState.init(allocator),
+            .piano_clips = piano_clips_data,
             .track_plugins = track_plugins_data,
             .plugin_items = plugin_items,
             .plugin_divider_index = null,
-            .clips = clips_data,
-            .piano_clips = piano_clips_data,
         };
     }
 
@@ -409,9 +120,24 @@ pub const State = struct {
                 clip.deinit();
             }
         }
-        clearClipClipboard(self);
-        self.selected_notes.deinit(self.allocator);
-        self.piano_clipboard.deinit(self.allocator);
+        self.session.deinit();
+        self.piano_state.deinit();
+    }
+
+    pub fn selectedTrack(self: *const State) usize {
+        return self.session.primary_track;
+    }
+
+    pub fn selectedScene(self: *const State) usize {
+        return self.session.primary_scene;
+    }
+
+    pub fn currentClip(self: *State) *PianoRollClip {
+        return &self.piano_clips[self.selectedTrack()][self.selectedScene()];
+    }
+
+    pub fn currentClipLabel(self: *const State) []const u8 {
+        return self.session.scenes[self.selectedScene()].getName();
     }
 };
 
@@ -423,7 +149,6 @@ pub fn draw(state: *State, ui_scale: f32) void {
     zgui.setNextWindowPos(.{ .x = 0, .y = 0, .cond = .always });
     zgui.setNextWindowSize(.{ .w = display[0], .h = display[1], .cond = .always });
 
-    // Apply Ableton dark theme
     pushAbletonStyle();
     defer popAbletonStyle();
 
@@ -446,6 +171,10 @@ pub fn draw(state: *State, ui_scale: f32) void {
 
         // Clip grid area
         if (zgui.beginChild("clip_area##root", .{ .w = 0, .h = top_height, .window_flags = .{ .no_scrollbar = true, .no_scroll_with_mouse = true } })) {
+            // Track focus
+            if (zgui.isWindowHovered(.{ .child_windows = true }) and zgui.isMouseClicked(.left)) {
+                state.focused_pane = .session;
+            }
             drawClipGrid(state, ui_scale);
         }
         zgui.endChild();
@@ -463,7 +192,6 @@ pub fn draw(state: *State, ui_scale: f32) void {
             zgui.setMouseCursor(.resize_ns);
         }
 
-        // Draw splitter bar
         const splitter_color = if (is_active)
             Colors.accent
         else if (is_hovered)
@@ -476,7 +204,6 @@ pub fn draw(state: *State, ui_scale: f32) void {
             .col = zgui.colorConvertFloat4ToU32(splitter_color),
         });
 
-        // Handle drag
         if (zgui.isItemActivated()) {
             state.splitter_drag_start = state.bottom_panel_height;
         }
@@ -487,6 +214,10 @@ pub fn draw(state: *State, ui_scale: f32) void {
 
         // Bottom panel
         if (zgui.beginChild("bottom_panel##root", .{ .w = 0, .h = bottom_height, .child_flags = .{ .border = true }, .window_flags = .{ .no_scrollbar = true, .no_scroll_with_mouse = true } })) {
+            // Track focus
+            if (zgui.isWindowHovered(.{ .child_windows = true }) and zgui.isMouseClicked(.left)) {
+                state.focused_pane = .bottom;
+            }
             drawBottomPanel(state, ui_scale);
         }
         zgui.endChild();
@@ -495,44 +226,29 @@ pub fn draw(state: *State, ui_scale: f32) void {
 }
 
 fn pushAbletonStyle() void {
-    // Window & frame backgrounds
     zgui.pushStyleColor4f(.{ .idx = .window_bg, .c = Colors.bg_dark });
     zgui.pushStyleColor4f(.{ .idx = .child_bg, .c = Colors.bg_panel });
     zgui.pushStyleColor4f(.{ .idx = .popup_bg, .c = Colors.bg_panel });
     zgui.pushStyleColor4f(.{ .idx = .frame_bg, .c = Colors.bg_cell });
     zgui.pushStyleColor4f(.{ .idx = .frame_bg_hovered, .c = .{ 0.22, 0.22, 0.22, 1.0 } });
     zgui.pushStyleColor4f(.{ .idx = .frame_bg_active, .c = .{ 0.25, 0.25, 0.25, 1.0 } });
-
-    // Headers
     zgui.pushStyleColor4f(.{ .idx = .header, .c = Colors.bg_header });
     zgui.pushStyleColor4f(.{ .idx = .header_hovered, .c = .{ 0.18, 0.18, 0.18, 1.0 } });
     zgui.pushStyleColor4f(.{ .idx = .header_active, .c = Colors.accent_dim });
-
-    // Buttons
     zgui.pushStyleColor4f(.{ .idx = .button, .c = Colors.bg_cell });
     zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ 0.25, 0.25, 0.25, 1.0 } });
     zgui.pushStyleColor4f(.{ .idx = .button_active, .c = Colors.accent_dim });
-
-    // Sliders
     zgui.pushStyleColor4f(.{ .idx = .slider_grab, .c = Colors.accent });
     zgui.pushStyleColor4f(.{ .idx = .slider_grab_active, .c = Colors.accent });
-
-    // Text
     zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_bright });
     zgui.pushStyleColor4f(.{ .idx = .text_disabled, .c = Colors.text_dim });
-
-    // Borders & separators
     zgui.pushStyleColor4f(.{ .idx = .border, .c = Colors.border });
     zgui.pushStyleColor4f(.{ .idx = .separator, .c = Colors.border });
-
-    // Table
     zgui.pushStyleColor4f(.{ .idx = .table_header_bg, .c = Colors.bg_header });
     zgui.pushStyleColor4f(.{ .idx = .table_row_bg, .c = Colors.bg_panel });
     zgui.pushStyleColor4f(.{ .idx = .table_row_bg_alt, .c = Colors.bg_dark });
     zgui.pushStyleColor4f(.{ .idx = .table_border_strong, .c = Colors.border });
     zgui.pushStyleColor4f(.{ .idx = .table_border_light, .c = .{ 0.20, 0.20, 0.20, 1.0 } });
-
-    // Scrollbar
     zgui.pushStyleColor4f(.{ .idx = .scrollbar_bg, .c = Colors.bg_dark });
     zgui.pushStyleColor4f(.{ .idx = .scrollbar_grab, .c = .{ 0.30, 0.30, 0.30, 1.0 } });
     zgui.pushStyleColor4f(.{ .idx = .scrollbar_grab_hovered, .c = .{ 0.40, 0.40, 0.40, 1.0 } });
@@ -547,9 +263,21 @@ pub fn tick(state: *State, dt: f64) void {
     if (!state.playing) {
         return;
     }
-    const clip = &state.piano_clips[state.selected_track][state.selected_scene];
+
+    const clip = state.currentClip();
     const beats_per_second = state.bpm / 60.0;
+    const prev_beat = state.playhead_beat;
     state.playhead_beat += @as(f32, @floatCast(dt)) * @as(f32, @floatCast(beats_per_second));
+
+    // Check quantize boundary for scene switches
+    const quantize_beats = quantizeIndexToBeats(state.quantize_index);
+    const prev_quantize = @floor(prev_beat / quantize_beats);
+    const curr_quantize = @floor(state.playhead_beat / quantize_beats);
+
+    if (curr_quantize > prev_quantize) {
+        state.session.processQuantizedSwitches();
+    }
+
     // Loop within clip length
     if (state.playhead_beat >= clip.length_beats) {
         state.playhead_beat = @mod(state.playhead_beat, clip.length_beats);
@@ -557,11 +285,10 @@ pub fn tick(state: *State, dt: f64) void {
 }
 
 fn drawTransport(state: *State, ui_scale: f32) void {
-    const transport_h = 32.0 * ui_scale;
-    const btn_size = 28.0 * ui_scale;
-    const spacing = 16.0 * ui_scale;
+    const transport_h = 40.0 * ui_scale;
+    const btn_size = 36.0 * ui_scale;
+    const spacing = 20.0 * ui_scale;
 
-    // Transport container with darker background
     const draw_list = zgui.getWindowDrawList();
     const pos = zgui.getCursorScreenPos();
     const avail_w = zgui.getContentRegionAvail()[0];
@@ -571,9 +298,9 @@ fn drawTransport(state: *State, ui_scale: f32) void {
         .col = zgui.colorConvertFloat4ToU32(Colors.bg_header),
     });
 
-    zgui.setCursorPosY(zgui.getCursorPosY() + 4.0 * ui_scale);
+    zgui.setCursorPosY(zgui.getCursorPosY() + 6.0 * ui_scale);
+    zgui.setCursorPosX(zgui.getCursorPosX() + 8.0 * ui_scale);
 
-    // Play/Stop button with triangle icon
     const play_color = if (state.playing) Colors.transport_play else Colors.text_dim;
     zgui.pushStyleColor4f(.{ .idx = .button, .c = Colors.bg_header });
     zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ 0.20, 0.20, 0.20, 1.0 } });
@@ -585,10 +312,9 @@ fn drawTransport(state: *State, ui_scale: f32) void {
         state.playing = !state.playing;
         state.playhead_beat = 0;
     }
-    // Draw play triangle or stop square
+
     if (state.playing) {
-        // Stop square
-        const sq_size = 10.0 * ui_scale;
+        const sq_size = 14.0 * ui_scale;
         const cx = btn_pos[0] + btn_size / 2.0;
         const cy = btn_pos[1] + btn_size / 2.0;
         draw_list.addRectFilled(.{
@@ -597,8 +323,7 @@ fn drawTransport(state: *State, ui_scale: f32) void {
             .col = zgui.colorConvertFloat4ToU32(play_color),
         });
     } else {
-        // Play triangle
-        const tri_size = 12.0 * ui_scale;
+        const tri_size = 16.0 * ui_scale;
         const cx = btn_pos[0] + btn_size / 2.0 + 2.0 * ui_scale;
         const cy = btn_pos[1] + btn_size / 2.0;
         draw_list.addTriangleFilled(.{
@@ -611,7 +336,6 @@ fn drawTransport(state: *State, ui_scale: f32) void {
 
     zgui.sameLine(.{ .spacing = spacing });
 
-    // BPM display with value
     zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
     zgui.textUnformatted("BPM");
     zgui.popStyleColor(.{ .count = 1 });
@@ -626,7 +350,6 @@ fn drawTransport(state: *State, ui_scale: f32) void {
 
     zgui.sameLine(.{ .spacing = spacing });
 
-    // Quantize
     zgui.setNextItemWidth(80.0 * ui_scale);
     _ = zgui.combo("##transport_quantize", .{
         .current_item = &state.quantize_index,
@@ -637,425 +360,9 @@ fn drawTransport(state: *State, ui_scale: f32) void {
 }
 
 fn drawClipGrid(state: *State, ui_scale: f32) void {
-    const row_height = 48.0 * ui_scale;
-    const header_height = 28.0 * ui_scale;
-    const scene_col_w = 50.0 * ui_scale;
-    const track_col_w = 180.0 * ui_scale;
-    const grid_pos = zgui.getCursorScreenPos();
-    const grid_width = scene_col_w + track_count * track_col_w;
-    const grid_height = header_height + (header_height + 4.0 * ui_scale) + scene_count * row_height;
-    const mouse = zgui.getMousePos();
-    const shift_down = zgui.isKeyDown(.left_shift) or zgui.isKeyDown(.right_shift);
-    const in_grid = mouse[0] >= grid_pos[0] and mouse[0] < grid_pos[0] + grid_width and
-        mouse[1] >= grid_pos[1] and mouse[1] < grid_pos[1] + grid_height;
-    var drag_blocked = false;
-    var hit_clip = false;
-
-    if (!zgui.beginTable("clip_grid", .{
-        .column = track_count + 1,
-        .flags = .{ .borders = .{ .inner_v = true }, .row_bg = false, .sizing = .fixed_fit },
-    })) {
-        return;
-    }
-    defer zgui.endTable();
-
-    if (!zgui.isMouseDown(.left)) {
-        state.clip_drag_pending = false;
-        state.clip_drag_active = false;
-    }
-
-    if (state.clip_drag_active) {
-        state.clip_drag_current = mouse;
-        if (!state.clip_drag_additive) {
-            clearClipSelection(state);
-        }
-    }
-
-    // Setup columns
-    zgui.tableSetupColumn("##scenes", .{ .flags = .{ .width_fixed = true }, .init_width_or_height = scene_col_w });
-    for (0..track_count) |_| {
-        zgui.tableSetupColumn("##track", .{ .flags = .{ .width_fixed = true }, .init_width_or_height = track_col_w });
-    }
-
-    // Track headers
-    zgui.tableNextRow(.{ .min_row_height = header_height });
-    _ = zgui.tableNextColumn();
-    for (state.tracks) |track| {
-        _ = zgui.tableNextColumn();
-        zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
-        zgui.textUnformatted(track.name);
-        zgui.popStyleColor(.{ .count = 1 });
-    }
-
-    // Plugin row
-    zgui.tableNextRow(.{ .min_row_height = header_height + 4.0 * ui_scale });
-    _ = zgui.tableNextColumn();
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
-    zgui.textUnformatted("Plugin");
-    zgui.popStyleColor(.{ .count = 1 });
-    for (&state.track_plugins, 0..) |*plugin_ui, t| {
-        var label_buf: [32]u8 = undefined;
-        var button_buf: [32]u8 = undefined;
-        const select_label = std.fmt.bufPrintZ(&label_buf, "##plugin_select_t{d}", .{t}) catch "##plugin_select";
-        const button_label = std.fmt.bufPrintZ(
-            &button_buf,
-            "{s}##plugin_t{d}",
-            .{ if (plugin_ui.gui_open) "X" else "E", t },
-        ) catch "E##plugin";
-        _ = zgui.tableNextColumn();
-        zgui.setNextItemWidth(120.0 * ui_scale);
-        const changed = zgui.combo(select_label, .{
-            .current_item = &plugin_ui.choice_index,
-            .items_separated_by_zeros = state.plugin_items,
-        });
-        if (changed) {
-            if (state.plugin_divider_index) |divider_index| {
-                if (plugin_ui.choice_index == divider_index) {
-                    plugin_ui.choice_index = plugin_ui.last_valid_choice;
-                } else {
-                    plugin_ui.last_valid_choice = plugin_ui.choice_index;
-                }
-            } else {
-                plugin_ui.last_valid_choice = plugin_ui.choice_index;
-            }
-        }
-        zgui.sameLine(.{ .spacing = 6.0 * ui_scale });
-        if (zgui.button(button_label, .{ .w = 28.0 * ui_scale, .h = 0 })) {
-            plugin_ui.gui_open = !plugin_ui.gui_open;
-        }
-    }
-
-    // Clip slots
-    for (0..scene_count) |scene_index| {
-        zgui.tableNextRow(.{ .min_row_height = row_height });
-
-        // Scene column with launch button
-        _ = zgui.tableNextColumn();
-        const draw_list = zgui.getWindowDrawList();
-
-        // Scene number
-        var scene_buf: [8]u8 = undefined;
-        const scene_label = std.fmt.bufPrintZ(&scene_buf, "{d}", .{scene_index + 1}) catch "?";
-        zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
-        zgui.textUnformatted(scene_label);
-        zgui.popStyleColor(.{ .count = 1 });
-
-        zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
-
-        // Scene launch triangle button
-        const launch_size = 20.0 * ui_scale;
-        const launch_pos = zgui.getCursorScreenPos();
-        var launch_buf: [32]u8 = undefined;
-        const launch_id = std.fmt.bufPrintZ(&launch_buf, "##scene_launch{d}", .{scene_index}) catch "##scene_launch";
-
-        zgui.pushStyleColor4f(.{ .idx = .button, .c = Colors.bg_panel });
-        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ 0.22, 0.22, 0.22, 1.0 } });
-        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = Colors.accent_dim });
-        if (zgui.button(launch_id, .{ .w = launch_size, .h = launch_size })) {
-            for (0..track_count) |track_index| {
-                for (0..scene_count) |slot_index| {
-                    state.clips[track_index][slot_index].state = if (slot_index == scene_index) .playing else .stopped;
-                }
-            }
-        }
-        zgui.popStyleColor(.{ .count = 3 });
-
-        // Draw launch triangle
-        const tri_size = 8.0 * ui_scale;
-        const cx = launch_pos[0] + launch_size / 2.0 + 1.0 * ui_scale;
-        const cy = launch_pos[1] + launch_size / 2.0;
-        draw_list.addTriangleFilled(.{
-            .p1 = .{ cx - tri_size / 2.0, cy - tri_size / 2.0 },
-            .p2 = .{ cx - tri_size / 2.0, cy + tri_size / 2.0 },
-            .p3 = .{ cx + tri_size / 2.0, cy },
-            .col = zgui.colorConvertFloat4ToU32(Colors.accent),
-        });
-
-        // Clip slots for each track
-        for (0..track_count) |track_index| {
-            _ = zgui.tableNextColumn();
-            const slot = &state.clips[track_index][scene_index];
-            drawClipSlot(
-                state,
-                slot,
-                track_index,
-                scene_index,
-                track_col_w - 8.0 * ui_scale,
-                row_height - 6.0 * ui_scale,
-                ui_scale,
-                &drag_blocked,
-                &hit_clip,
-            );
-        }
-    }
-
-    if (zgui.isMouseClicked(.left) and in_grid and !drag_blocked and !hit_clip) {
-        state.clip_drag_pending = true;
-        state.clip_drag_start = mouse;
-        state.clip_drag_current = mouse;
-        state.clip_drag_additive = shift_down;
-        if (!shift_down) {
-            clearClipSelection(state);
-        }
-    } else if (zgui.isMouseClicked(.left) and in_grid) {
-        state.clip_drag_pending = false;
-        state.clip_drag_active = false;
-        if (!shift_down and !hit_clip) {
-            clearClipSelection(state);
-        }
-    }
-
-    if (state.clip_drag_pending and !state.clip_drag_active and zgui.isMouseDragging(.left, 4.0)) {
-        state.clip_drag_active = true;
-        state.clip_drag_pending = false;
-    }
-
-    if (state.clip_drag_active) {
-        const sel_min = .{
-            @min(state.clip_drag_start[0], state.clip_drag_current[0]),
-            @min(state.clip_drag_start[1], state.clip_drag_current[1]),
-        };
-        const sel_max = .{
-            @max(state.clip_drag_start[0], state.clip_drag_current[0]),
-            @max(state.clip_drag_start[1], state.clip_drag_current[1]),
-        };
-        const overlay_color = zgui.colorConvertFloat4ToU32(.{
-            Colors.selected[0],
-            Colors.selected[1],
-            Colors.selected[2],
-            0.2,
-        });
-        const border_color = zgui.colorConvertFloat4ToU32(Colors.selected);
-        const draw_list = zgui.getWindowDrawList();
-        draw_list.addRectFilled(.{ .pmin = sel_min, .pmax = sel_max, .col = overlay_color });
-        draw_list.addRect(.{ .pmin = sel_min, .pmax = sel_max, .col = border_color, .thickness = 1.0 });
-    }
-
-    const keyboard_free = !zgui.isAnyItemActive();
-    const modifier_down = zgui.isKeyDown(.left_super) or zgui.isKeyDown(.right_super) or
-        zgui.isKeyDown(.left_ctrl) or zgui.isKeyDown(.right_ctrl);
-
-    if (keyboard_free and (in_grid or anyClipSelected(state))) {
-        if (modifier_down and zgui.isKeyPressed(.c, false)) {
-            copySelectedClips(state);
-        }
-
-        if (modifier_down and zgui.isKeyPressed(.x, false)) {
-            copySelectedClips(state);
-            deleteSelectedClips(state);
-        }
-
-        if (modifier_down and zgui.isKeyPressed(.v, false)) {
-            if (state.clip_clipboard.items.len > 0) {
-                clearClipSelection(state);
-                for (state.clip_clipboard.items) |entry| {
-                    const track_index_i = @as(i32, @intCast(state.selected_track)) + entry.track_offset;
-                    const scene_index_i = @as(i32, @intCast(state.selected_scene)) + entry.scene_offset;
-                    if (track_index_i < 0 or scene_index_i < 0) continue;
-                    const track_index: usize = @intCast(track_index_i);
-                    const scene_index: usize = @intCast(scene_index_i);
-                    if (track_index >= track_count or scene_index >= scene_count) continue;
-
-                    const slot = &state.clips[track_index][scene_index];
-                    const clip = &state.piano_clips[track_index][scene_index];
-                    clip.notes.clearRetainingCapacity();
-                    clip.length_beats = entry.length_beats;
-                    _ = clip.notes.appendSlice(state.allocator, entry.notes.items) catch {};
-
-                    const has_content = entry.notes.items.len > 0 or entry.slot_state != .empty;
-                    slot.state = if (has_content) .stopped else .empty;
-                    state.clip_selected[track_index][scene_index] = true;
-                }
-            }
-        }
-
-        if (zgui.isKeyPressed(.delete, false)) {
-            deleteSelectedClips(state);
-        }
-    }
-}
-
-fn drawClipSlot(
-    state: *State,
-    slot: *ClipSlot,
-    track_index: usize,
-    scene_index: usize,
-    width: f32,
-    height: f32,
-    ui_scale: f32,
-    drag_blocked: *bool,
-    hit_clip: *bool,
-) void {
-    const draw_list = zgui.getWindowDrawList();
-    const pos = zgui.getCursorScreenPos();
-    const shift_down = zgui.isKeyDown(.left_shift) or zgui.isKeyDown(.right_shift);
-    const mouse = zgui.getMousePos();
-
-    // Clip colors based on state
-    const clip_color = switch (slot.state) {
-        .empty => Colors.clip_empty,
-        .stopped => Colors.clip_stopped,
-        .queued => Colors.clip_queued,
-        .playing => Colors.clip_playing,
-    };
-
-    // Play button dimensions
-    const play_btn_w = 24.0 * ui_scale;
-    const clip_w = width - play_btn_w - 4.0 * ui_scale;
-    const clip_rect_min = pos;
-    const clip_rect_max = .{ pos[0] + clip_w, pos[1] + height };
-    const over_clip = mouse[0] >= clip_rect_min[0] and mouse[0] < clip_rect_max[0] and
-        mouse[1] >= clip_rect_min[1] and mouse[1] < clip_rect_max[1];
-    if (over_clip) {
-        drag_blocked.* = true;
-        hit_clip.* = true;
-    }
-
-    if (state.clip_drag_active) {
-        const sel_min = .{
-            @min(state.clip_drag_start[0], state.clip_drag_current[0]),
-            @min(state.clip_drag_start[1], state.clip_drag_current[1]),
-        };
-        const sel_max = .{
-            @max(state.clip_drag_start[0], state.clip_drag_current[0]),
-            @max(state.clip_drag_start[1], state.clip_drag_current[1]),
-        };
-        const rect_min = pos;
-        const rect_max = .{ pos[0] + clip_w, pos[1] + height };
-        const intersects = !(rect_max[0] < sel_min[0] or rect_min[0] > sel_max[0] or
-            rect_max[1] < sel_min[1] or rect_min[1] > sel_max[1]);
-        if (intersects) {
-            state.clip_selected[track_index][scene_index] = true;
-        }
-    }
-
-    const is_selected = state.clip_selected[track_index][scene_index];
-    const is_active = state.selected_track == track_index and state.selected_scene == scene_index;
-
-    // Draw clip background with rounded corners
-    const rounding = 3.0 * ui_scale;
-    var bg_color = clip_color;
-    if (is_selected) {
-        bg_color = .{
-            @min(1.0, clip_color[0] + 0.12),
-            @min(1.0, clip_color[1] + 0.12),
-            @min(1.0, clip_color[2] + 0.12),
-            1.0,
-        };
-    }
-
-    draw_list.addRectFilled(.{
-        .pmin = pos,
-        .pmax = .{ pos[0] + clip_w, pos[1] + height },
-        .col = zgui.colorConvertFloat4ToU32(bg_color),
-        .rounding = rounding,
-        .flags = zgui.DrawFlags.round_corners_all,
-    });
-
-    // Selection border
-    if (is_selected or is_active) {
-        draw_list.addRect(.{
-            .pmin = pos,
-            .pmax = .{ pos[0] + clip_w, pos[1] + height },
-            .col = zgui.colorConvertFloat4ToU32(if (is_selected) Colors.selected else Colors.accent),
-            .rounding = rounding,
-            .flags = zgui.DrawFlags.round_corners_all,
-            .thickness = 2.0,
-        });
-    }
-
-    // Clip label - centered vertically
-    const text_color = if (slot.state == .playing or slot.state == .queued)
-        zgui.colorConvertFloat4ToU32(.{ 0.1, 0.1, 0.1, 1.0 })
-    else
-        zgui.colorConvertFloat4ToU32(Colors.text_bright);
-    const text_y = pos[1] + (height - 14.0 * ui_scale) / 2.0;
-    draw_list.addText(.{ pos[0] + 6.0 * ui_scale, text_y }, text_color, "{s}", .{slot.label});
-
-    // Invisible button for clip selection
-    var clip_buf: [32]u8 = undefined;
-    const clip_id = std.fmt.bufPrintZ(&clip_buf, "##clip_t{d}s{d}", .{ track_index, scene_index }) catch "##clip";
-    if (zgui.invisibleButton(clip_id, .{ .w = clip_w, .h = height })) {
-        state.selected_track = track_index;
-        state.selected_scene = scene_index;
-        state.selected_note_index = null;
-        state.selected_notes.clearRetainingCapacity();
-        if (!shift_down) {
-            clearClipSelection(state);
-        }
-        state.clip_selected[track_index][scene_index] = true;
-    }
-    if (over_clip and zgui.isMouseClicked(.left)) {
-        state.selected_track = track_index;
-        state.selected_scene = scene_index;
-        state.selected_note_index = null;
-        state.selected_notes.clearRetainingCapacity();
-        if (!shift_down) {
-            clearClipSelection(state);
-        }
-        state.clip_selected[track_index][scene_index] = true;
-    }
-
-    zgui.sameLine(.{ .spacing = 4.0 * ui_scale });
-
-    // Play button with triangle
-    const play_pos = zgui.getCursorScreenPos();
-    var play_buf: [32]u8 = undefined;
-    const play_id = std.fmt.bufPrintZ(&play_buf, "##play_t{d}s{d}", .{ track_index, scene_index }) catch "##play";
-
-    const is_playing = slot.state == .playing;
-    const play_bg = if (is_playing) Colors.clip_playing else Colors.bg_cell;
-    zgui.pushStyleColor4f(.{ .idx = .button, .c = play_bg });
-    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ play_bg[0] + 0.08, play_bg[1] + 0.08, play_bg[2] + 0.08, 1.0 } });
-    zgui.pushStyleColor4f(.{ .idx = .button_active, .c = Colors.accent_dim });
-    if (zgui.button(play_id, .{ .w = play_btn_w, .h = height })) {
-        state.selected_track = track_index;
-        state.selected_scene = scene_index;
-        state.selected_note_index = null;
-        state.selected_notes.clearRetainingCapacity();
-        if (!shift_down) {
-            clearClipSelection(state);
-        }
-        state.clip_selected[track_index][scene_index] = true;
-        if (slot.state == .playing) {
-            slot.state = .stopped;
-        } else {
-            for (0..scene_count) |slot_index| {
-                state.clips[track_index][slot_index].state = if (slot_index == scene_index) .playing else .stopped;
-            }
-        }
-    }
-    const play_rect_min = play_pos;
-    const play_rect_max = .{ play_pos[0] + play_btn_w, play_pos[1] + height };
-    const over_play = mouse[0] >= play_rect_min[0] and mouse[0] < play_rect_max[0] and
-        mouse[1] >= play_rect_min[1] and mouse[1] < play_rect_max[1];
-    if (over_play) {
-        drag_blocked.* = true;
-        hit_clip.* = true;
-    }
-    zgui.popStyleColor(.{ .count = 3 });
-
-    // Draw play triangle or stop square on the button
-    const icon_size = 8.0 * ui_scale;
-    const cx = play_pos[0] + play_btn_w / 2.0;
-    const cy = play_pos[1] + height / 2.0;
-
-    if (is_playing) {
-        // Stop square
-        draw_list.addRectFilled(.{
-            .pmin = .{ cx - icon_size / 2.0, cy - icon_size / 2.0 },
-            .pmax = .{ cx + icon_size / 2.0, cy + icon_size / 2.0 },
-            .col = zgui.colorConvertFloat4ToU32(.{ 0.1, 0.1, 0.1, 1.0 }),
-        });
-    } else {
-        // Play triangle
-        draw_list.addTriangleFilled(.{
-            .p1 = .{ cx - icon_size / 2.0, cy - icon_size / 2.0 },
-            .p2 = .{ cx - icon_size / 2.0, cy + icon_size / 2.0 },
-            .p3 = .{ cx + icon_size / 2.0 + 1.0, cy },
-            .col = zgui.colorConvertFloat4ToU32(Colors.text_dim),
-        });
-    }
+    // Draw session view
+    const is_focused = state.focused_pane == .session;
+    state.session.draw(ui_scale, state.playing, is_focused);
 }
 
 fn drawBottomPanel(state: *State, ui_scale: f32) void {
@@ -1086,7 +393,7 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
     zgui.sameLine(.{});
     zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
     var track_buf: [64]u8 = undefined;
-    const track_info = std.fmt.bufPrintZ(&track_buf, "  Track {d} / Scene {d}", .{ state.selected_track + 1, state.selected_scene + 1 }) catch "";
+    const track_info = std.fmt.bufPrintZ(&track_buf, "  Track {d} / Scene {d}", .{ state.selectedTrack() + 1, state.selectedScene() + 1 }) catch "";
     zgui.textUnformatted(track_info);
     zgui.popStyleColor(.{ .count = 1 });
 
@@ -1097,12 +404,53 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
             drawDevicePanel(state, ui_scale);
         },
         .sequencer => {
-            piano_roll.drawSequencer(state, ui_scale);
+            // Only show piano roll if there's a clip at this position
+            const clip_slot = state.session.clips[state.selectedTrack()][state.selectedScene()];
+            if (clip_slot.state == .empty) {
+                zgui.spacing();
+                zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
+                zgui.textUnformatted("No clip. Double-click in session view to create one.");
+                zgui.popStyleColor(.{ .count = 1 });
+            } else {
+                const is_focused = state.focused_pane == .bottom;
+                ui.piano_roll.drawSequencer(
+                    &state.piano_state,
+                    state.currentClip(),
+                    state.currentClipLabel(),
+                    state.playhead_beat,
+                    state.playing,
+                    state.quantize_index,
+                    ui_scale,
+                    is_focused,
+                );
+            }
         },
     }
 }
 
 fn drawDevicePanel(state: *State, ui_scale: f32) void {
+    // Track device selector
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
+    zgui.textUnformatted("Device:");
+    zgui.popStyleColor(.{ .count = 1 });
+
+    zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
+    zgui.setNextItemWidth(200.0 * ui_scale);
+
+    const track_idx = state.selectedTrack();
+    const track_plugin = &state.track_plugins[track_idx];
+
+    if (zgui.combo("##device_select", .{
+        .current_item = &track_plugin.choice_index,
+        .items_separated_by_zeros = state.plugin_items,
+    })) {
+        // Selection changed
+        track_plugin.gui_open = false;
+    }
+
+    zgui.sameLine(.{ .spacing = 20.0 * ui_scale });
+    zgui.separator();
+
     switch (state.device_kind) {
         .builtin => {
             if (state.zsynth) |plugin| {
@@ -1141,7 +489,7 @@ fn drawClapDevice(state: *State, ui_scale: f32) void {
     zgui.popStyleColor(.{ .count = 1 });
 
     zgui.sameLine(.{ .spacing = 12.0 * ui_scale });
-    const track = &state.track_plugins[state.selected_track];
+    const track = &state.track_plugins[state.selectedTrack()];
     const button_label = if (track.gui_open) "Close Window" else "Open Window";
     if (zgui.button(button_label, .{ .w = 140.0 * ui_scale, .h = 0 })) {
         track.gui_open = !track.gui_open;

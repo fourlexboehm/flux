@@ -292,10 +292,12 @@ pub fn main(init: std.process.Init) !void {
             const dt = @as(f64, @floatFromInt(delta_ns)) / std.time.ns_per_s;
             ui.tick(&state, dt);
         }
-        state.zsynth = synths[state.selected_track];
+        state.zsynth = synths[state.selectedTrack()];
         updateDeviceState(&state, &catalog, &track_plugins);
         const wants_keyboard = zgui.io.getWantCaptureKeyboard();
         if (!wants_keyboard and zgui.isKeyPressed(.space, false)) {
+            // Avoid macOS "bonk" when handling space outside ImGui widgets.
+            zgui.setNextFrameWantCaptureKeyboard(true);
             state.playing = !state.playing;
             state.playhead_beat = 0;
         }
@@ -378,7 +380,7 @@ fn updateDeviceState(
     catalog: *const plugins.PluginCatalog,
     track_plugins: *const [ui.track_count]TrackPlugin,
 ) void {
-    const choice = state.track_plugins[state.selected_track].choice_index;
+    const choice = state.track_plugins[state.selectedTrack()].choice_index;
     const entry = catalog.entryForIndex(choice);
     if (entry == null or entry.?.kind == .none or entry.?.kind == .divider) {
         state.device_kind = .none;
@@ -396,7 +398,7 @@ fn updateDeviceState(
         .clap => {
             state.device_kind = .clap;
             state.device_clap_name = entry.?.name;
-            const handle = track_plugins[state.selected_track].handle;
+            const handle = track_plugins[state.selectedTrack()].handle;
             state.device_clap_plugin = if (handle) |h| h.plugin else null;
         },
         else => {
