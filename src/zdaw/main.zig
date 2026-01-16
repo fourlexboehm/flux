@@ -14,7 +14,7 @@ const project = @import("project.zig");
 
 const SampleRate = 44_100;
 const Channels = 2;
-const MaxFrames = 256;
+const MaxFrames = 128;
 
 const Host = struct {
     clap_host: clap.Host,

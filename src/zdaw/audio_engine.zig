@@ -8,59 +8,71 @@ const audio_graph = @import("audio_graph.zig");
 const Channels = 2;
 
 pub const SharedState = struct {
-    mutex: std.Thread.Mutex = .{},
     processing: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
-    playing: bool = false,
-    bpm: f32 = 120.0,
-    playhead_beat: f32 = 0,
-    tracks: [ui.track_count]ui.Track = undefined,
-    clips: [ui.track_count][ui.scene_count]ui.ClipSlot = undefined,
-    piano_clips_ptr: ?*const [ui.track_count][ui.scene_count]ui.PianoRollClip = null,
+    active_index: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    snapshots: []audio_graph.StateSnapshot,
     track_plugins: [ui.track_count]?*const clap.Plugin = [_]?*const clap.Plugin{null} ** ui.track_count,
-    live_key_states: [ui.track_count][128]bool = [_][128]bool{[_]bool{false} ** 128} ** ui.track_count,
 
-    pub fn init() SharedState {
-        return .{};
+    pub fn init(allocator: std.mem.Allocator) !SharedState {
+        var snapshots = try allocator.alloc(audio_graph.StateSnapshot, 2);
+        initSnapshot(&snapshots[0]);
+        initSnapshot(&snapshots[1]);
+        return .{
+            .snapshots = snapshots,
+        };
+    }
+
+    pub fn deinit(self: *SharedState, allocator: std.mem.Allocator) void {
+        allocator.free(self.snapshots);
     }
 
     pub fn updateFromUi(self: *SharedState, state: *const ui.State) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        self.playing = state.playing;
-        self.bpm = state.bpm;
-        self.playhead_beat = state.playhead_beat;
-        self.tracks = state.session.tracks;
-        self.clips = state.session.clips;
-        self.piano_clips_ptr = &state.piano_clips;
-        self.live_key_states = state.live_key_states;
+        while (self.processing.load(.acquire) != 0) {
+            std.atomic.spinLoopHint();
+        }
+        const current = self.active_index.load(.acquire);
+        const next: u32 = 1 - current;
+        var back = &self.snapshots[next];
+        back.playing = state.playing;
+        back.bpm = state.bpm;
+        back.playhead_beat = state.playhead_beat;
+        back.track_count = state.session.track_count;
+        back.scene_count = state.session.scene_count;
+        back.tracks = state.session.tracks;
+        back.clips = state.session.clips;
+        back.track_plugins = self.track_plugins;
+        back.live_key_states = state.live_key_states;
+        for (0..ui.track_count) |t| {
+            for (0..ui.scene_count) |s| {
+                const src = &state.piano_clips[t][s];
+                var dst = &back.piano_clips[t][s];
+                dst.length_beats = src.length_beats;
+                const note_count = @min(src.notes.items.len, audio_graph.max_clip_notes);
+                dst.count = @intCast(note_count);
+                if (note_count > 0) {
+                    @memcpy(dst.notes[0..note_count], src.notes.items[0..note_count]);
+                }
+            }
+        }
+        self.active_index.store(next, .release);
     }
 
     pub fn updatePlugins(self: *SharedState, plugins: [ui.track_count]?*const clap.Plugin) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
         self.track_plugins = plugins;
     }
 
     pub fn setTrackPlugin(self: *SharedState, track_index: usize, plugin: ?*const clap.Plugin) void {
-        self.mutex.lock();
-        defer self.mutex.unlock();
         self.track_plugins[track_index] = plugin;
+        const current = self.active_index.load(.acquire);
+        const next: u32 = 1 - current;
+        self.snapshots[next] = self.snapshots[current];
+        self.snapshots[next].track_plugins[track_index] = plugin;
+        self.active_index.store(next, .release);
     }
 
-    pub fn snapshot(self: *SharedState) ?audio_graph.StateSnapshot {
-        self.mutex.lock();
-        defer self.mutex.unlock();
-        if (self.piano_clips_ptr == null) return null;
-        return .{
-            .playing = self.playing,
-            .bpm = self.bpm,
-            .playhead_beat = self.playhead_beat,
-            .tracks = self.tracks,
-            .clips = self.clips,
-            .piano_clips_ptr = self.piano_clips_ptr.?,
-            .track_plugins = self.track_plugins,
-            .live_key_states = self.live_key_states,
-        };
+    pub fn snapshot(self: *SharedState) *const audio_graph.StateSnapshot {
+        const current = self.active_index.load(.acquire);
+        return &self.snapshots[current];
     }
 
     pub fn beginProcess(self: *SharedState) void {
@@ -85,90 +97,38 @@ pub const AudioEngine = struct {
     steady_time: u64 = 0,
     sample_rate: f32,
     max_frames: u32,
+    track_count: usize,
+    rebuilding: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
     pub fn init(
         allocator: std.mem.Allocator,
         sample_rate: f32,
         max_frames: u32,
     ) !AudioEngine {
-        var graph = audio_graph.Graph.init(allocator);
-
-        var note_nodes: [ui.track_count]audio_graph.NodeId = undefined;
-        var synth_nodes: [ui.track_count]audio_graph.NodeId = undefined;
-        var gain_nodes: [ui.track_count]audio_graph.NodeId = undefined;
-
-        for (0..ui.track_count) |track_index| {
-            var note_node = audio_graph.Node{
-                .id = 0,
-                .kind = .note_source,
-                .data = .{ .note_source = audio_graph.NoteSource.init(track_index) },
-            };
-            note_node.addOutput(.events);
-            note_nodes[track_index] = try graph.addNode(note_node);
-
-            var synth_node = audio_graph.Node{
-                .id = 0,
-                .kind = .synth,
-                .data = .{ .synth = audio_graph.SynthNode.init(track_index) },
-            };
-            synth_node.addInput(.events);
-            synth_node.addOutput(.audio);
-            synth_nodes[track_index] = try graph.addNode(synth_node);
-
-            var gain_node = audio_graph.Node{
-                .id = 0,
-                .kind = .gain,
-                .data = .{ .gain = .{ .track_index = track_index } },
-            };
-            gain_node.addInput(.audio);
-            gain_node.addOutput(.audio);
-            gain_nodes[track_index] = try graph.addNode(gain_node);
-
-            try graph.connect(note_nodes[track_index], 0, synth_nodes[track_index], 0, .events);
-            try graph.connect(synth_nodes[track_index], 0, gain_nodes[track_index], 0, .audio);
-        }
-
-        var mixer_node = audio_graph.Node{
-            .id = 0,
-            .kind = .mixer,
-            .data = .{ .mixer = .{} },
-        };
-        mixer_node.addInput(.audio);
-        mixer_node.addOutput(.audio);
-        const mixer_id = try graph.addNode(mixer_node);
-
-        for (0..ui.track_count) |track_index| {
-            try graph.connect(gain_nodes[track_index], 0, mixer_id, 0, .audio);
-        }
-
-        var master_node = audio_graph.Node{
-            .id = 0,
-            .kind = .master,
-            .data = .{ .master = .{} },
-        };
-        master_node.addInput(.audio);
-        master_node.addOutput(.audio);
-        const master_id = try graph.addNode(master_node);
-        try graph.connect(mixer_id, 0, master_id, 0, .audio);
-        graph.master_node = master_id;
-
-        try graph.prepare(sample_rate, max_frames);
-
-        const shared = SharedState.init();
+        const shared = try SharedState.init(allocator);
+        const track_count = ui.track_count;
+        const graph = try buildGraph(allocator, track_count, sample_rate, max_frames);
         return .{
             .allocator = allocator,
             .graph = graph,
             .shared = shared,
             .sample_rate = sample_rate,
             .max_frames = max_frames,
+            .track_count = track_count,
         };
     }
 
     pub fn deinit(self: *AudioEngine) void {
         self.graph.deinit();
+        self.shared.deinit(self.allocator);
     }
 
     pub fn updateFromUi(self: *AudioEngine, state: *const ui.State) void {
+        if (state.session.track_count != self.track_count) {
+            self.rebuildGraph(state.session.track_count) catch |err| {
+                std.log.warn("Failed to rebuild graph: {}", .{err});
+            };
+        }
         self.shared.updateFromUi(state);
     }
 
@@ -184,13 +144,14 @@ pub const AudioEngine = struct {
         const sample_count: usize = @as(usize, frame_count) * Channels;
         @memset(out_ptr[0..sample_count], 0);
 
+        if (self.rebuilding.load(.acquire) != 0) return;
         if (frame_count == 0) return;
-        const snapshot = self.shared.snapshot() orelse return;
+        const snapshot = self.shared.snapshot();
         var frames_left = frame_count;
         var frame_offset: usize = 0;
         while (frames_left > 0) {
             const chunk: u32 = @min(frames_left, self.max_frames);
-            self.graph.process(&snapshot, chunk, self.steady_time);
+            self.graph.process(snapshot, chunk, self.steady_time);
             self.steady_time += chunk;
 
             const master_id = self.graph.master_node orelse break;
@@ -206,4 +167,101 @@ pub const AudioEngine = struct {
 
         _ = device;
     }
+
+    fn rebuildGraph(self: *AudioEngine, track_count: usize) !void {
+        if (track_count == self.track_count) return;
+        self.rebuilding.store(1, .release);
+        while (self.shared.processing.load(.acquire) != 0) {
+            std.atomic.spinLoopHint();
+        }
+        const new_graph = try buildGraph(self.allocator, track_count, self.sample_rate, self.max_frames);
+        self.graph.deinit();
+        self.graph = new_graph;
+        self.track_count = track_count;
+        self.rebuilding.store(0, .release);
+    }
 };
+
+fn buildGraph(
+    allocator: std.mem.Allocator,
+    track_count: usize,
+    sample_rate: f32,
+    max_frames: u32,
+) !audio_graph.Graph {
+    var graph = audio_graph.Graph.init(allocator);
+
+    var note_nodes: [ui.track_count]audio_graph.NodeId = undefined;
+    var synth_nodes: [ui.track_count]audio_graph.NodeId = undefined;
+    var gain_nodes: [ui.track_count]audio_graph.NodeId = undefined;
+    const count = @min(track_count, ui.track_count);
+
+    for (0..count) |track_index| {
+        var note_node = audio_graph.Node{
+            .id = 0,
+            .kind = .note_source,
+            .data = .{ .note_source = audio_graph.NoteSource.init(track_index) },
+        };
+        note_node.addOutput(.events);
+        note_nodes[track_index] = try graph.addNode(note_node);
+
+        var synth_node = audio_graph.Node{
+            .id = 0,
+            .kind = .synth,
+            .data = .{ .synth = audio_graph.SynthNode.init(track_index) },
+        };
+        synth_node.addInput(.events);
+        synth_node.addOutput(.audio);
+        synth_nodes[track_index] = try graph.addNode(synth_node);
+
+        var gain_node = audio_graph.Node{
+            .id = 0,
+            .kind = .gain,
+            .data = .{ .gain = .{ .track_index = track_index } },
+        };
+        gain_node.addInput(.audio);
+        gain_node.addOutput(.audio);
+        gain_nodes[track_index] = try graph.addNode(gain_node);
+
+        try graph.connect(note_nodes[track_index], 0, synth_nodes[track_index], 0, .events);
+        try graph.connect(synth_nodes[track_index], 0, gain_nodes[track_index], 0, .audio);
+    }
+
+    var mixer_node = audio_graph.Node{
+        .id = 0,
+        .kind = .mixer,
+        .data = .{ .mixer = .{} },
+    };
+    mixer_node.addInput(.audio);
+    mixer_node.addOutput(.audio);
+    const mixer_id = try graph.addNode(mixer_node);
+
+    for (0..count) |track_index| {
+        try graph.connect(gain_nodes[track_index], 0, mixer_id, 0, .audio);
+    }
+
+    var master_node = audio_graph.Node{
+        .id = 0,
+        .kind = .master,
+        .data = .{ .master = .{} },
+    };
+    master_node.addInput(.audio);
+    master_node.addOutput(.audio);
+    const master_id = try graph.addNode(master_node);
+    try graph.connect(mixer_id, 0, master_id, 0, .audio);
+    graph.master_node = master_id;
+
+    try graph.prepare(sample_rate, max_frames);
+    return graph;
+}
+fn initSnapshot(snapshot: *audio_graph.StateSnapshot) void {
+    snapshot.* = std.mem.zeroes(audio_graph.StateSnapshot);
+    snapshot.track_count = ui.track_count;
+    snapshot.scene_count = ui.scene_count;
+    for (0..ui.track_count) |t| {
+        for (0..ui.scene_count) |s| {
+            snapshot.clips[t][s].length_beats = ui.default_clip_bars * ui.beats_per_bar;
+            snapshot.piano_clips[t][s].length_beats = ui.default_clip_bars * ui.beats_per_bar;
+            snapshot.piano_clips[t][s].count = 0;
+        }
+    }
+}
