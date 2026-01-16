@@ -262,7 +262,7 @@ pub fn main(init: std.process.Init) !void {
         defer parsed.deinit();
         try project.apply(&parsed.value, &state, &catalog);
         state.zsynth = synths[state.selectedTrack()];
-        try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog);
+        try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog, null, io);
         const loaded_plugins = collectTrackPlugins(&catalog, &track_plugins, &state, synths);
         project.applyDeviceStates(allocator, &parsed.value, loaded_plugins);
     }
@@ -368,7 +368,7 @@ pub fn main(init: std.process.Init) !void {
         zgui.backend.newFrame(fb_width, fb_height, app_window.view, descriptor);
         ui.draw(&state, 1.0);
         engine.updateFromUi(&state);
-        try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog);
+        try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog, &engine.shared, io);
         engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
         zgui.backend.draw(command_buffer, command_encoder);
         command_encoder.as(objc.metal.CommandEncoder).endEncoding();
@@ -475,7 +475,18 @@ fn syncTrackPlugins(
     track_plugins: *[ui.track_count]TrackPlugin,
     state: *ui.State,
     catalog: *const plugins.PluginCatalog,
+    shared: ?*audio_engine.SharedState,
+    io: std.Io,
 ) !void {
+    const prepareUnload = struct {
+        fn call(shared_state: ?*audio_engine.SharedState, track_index: usize, io_ctx: std.Io) void {
+            if (shared_state) |shared_ref| {
+                shared_ref.setTrackPlugin(track_index, null);
+                shared_ref.waitForIdle(io_ctx);
+            }
+        }
+    }.call;
+
     for (track_plugins, 0..) |*track, t| {
         const choice = state.track_plugins[t].choice_index;
         const wants_gui = state.track_plugins[t].gui_open;
@@ -485,6 +496,7 @@ fn syncTrackPlugins(
         if (kind == .none or kind == .divider) {
             if (track.handle != null) {
                 closePluginGui(track);
+                prepareUnload(shared, t, io);
                 unloadPlugin(track, allocator);
             }
             track.choice_index = choice;
@@ -494,6 +506,7 @@ fn syncTrackPlugins(
         if (track.choice_index != choice) {
             if (track.handle != null) {
                 closePluginGui(track);
+                prepareUnload(shared, t, io);
                 unloadPlugin(track, allocator);
             }
             track.choice_index = choice;
