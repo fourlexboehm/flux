@@ -27,8 +27,8 @@ pub const SharedState = struct {
         self.playing = state.playing;
         self.bpm = state.bpm;
         self.playhead_beat = state.playhead_beat;
-        self.tracks = state.tracks;
-        self.clips = state.clips;
+        self.tracks = state.session.tracks;
+        self.clips = state.session.clips;
         self.piano_clips_ptr = &state.piano_clips;
     }
 
