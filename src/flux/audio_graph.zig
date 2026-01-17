@@ -1,7 +1,9 @@
 const std = @import("std");
 const clap = @import("clap-bindings");
+const tracy = @import("tracy");
 const ui = @import("ui.zig");
 const audio_engine = @import("audio_engine.zig");
+const thread_pool = @import("thread_pool.zig");
 
 pub const NodeId = u32;
 pub const max_clip_notes = 256;
@@ -381,6 +383,9 @@ pub const Graph = struct {
     max_frames: u32 = 0,
     scratch_input_left: []f32 = &.{},
     scratch_input_right: []f32 = &.{},
+    synth_node_ids: std.ArrayList(NodeId),
+    note_source_node_ids: std.ArrayList(NodeId),
+    gain_node_ids: std.ArrayList(NodeId),
 
     pub fn init(allocator: std.mem.Allocator) Graph {
         return .{
@@ -388,6 +393,9 @@ pub const Graph = struct {
             .nodes = .empty,
             .connections = .empty,
             .render_order = .empty,
+            .synth_node_ids = .empty,
+            .note_source_node_ids = .empty,
+            .gain_node_ids = .empty,
         };
     }
 
@@ -422,6 +430,9 @@ pub const Graph = struct {
         self.nodes.deinit(self.allocator);
         self.connections.deinit(self.allocator);
         self.render_order.deinit(self.allocator);
+        self.synth_node_ids.deinit(self.allocator);
+        self.note_source_node_ids.deinit(self.allocator);
+        self.gain_node_ids.deinit(self.allocator);
     }
 
     pub fn addNode(self: *Graph, node: Node) !NodeId {
@@ -474,6 +485,10 @@ pub const Graph = struct {
 
     fn buildRenderOrder(self: *Graph) !void {
         self.render_order.clearRetainingCapacity();
+        self.synth_node_ids.clearRetainingCapacity();
+        self.note_source_node_ids.clearRetainingCapacity();
+        self.gain_node_ids.clearRetainingCapacity();
+
         const node_count = self.nodes.items.len;
         var indegree = try self.allocator.alloc(u32, node_count);
         defer self.allocator.free(indegree);
@@ -494,6 +509,16 @@ pub const Graph = struct {
         while (queue.items.len > 0) {
             const id = queue.orderedRemove(0);
             try self.render_order.append(self.allocator, id);
+
+            // Categorize by node type
+            const node = &self.nodes.items[id];
+            switch (node.kind) {
+                .note_source => try self.note_source_node_ids.append(self.allocator, id),
+                .synth => try self.synth_node_ids.append(self.allocator, id),
+                .gain => try self.gain_node_ids.append(self.allocator, id),
+                .mixer, .master => {},
+            }
+
             for (self.connections.items) |conn| {
                 if (conn.from == id) {
                     indegree[conn.to] -= 1;
@@ -556,7 +581,19 @@ pub const Graph = struct {
         return info.channel_count;
     }
 
-    pub fn process(self: *Graph, snapshot: *const StateSnapshot, shared: *audio_engine.SharedState, frame_count: u32, steady_time: u64) void {
+    const ProcessContext = struct {
+        graph: *Graph,
+        snapshot: *const StateSnapshot,
+        shared: *audio_engine.SharedState,
+        frame_count: u32,
+        steady_time: u64,
+        solo_active: bool,
+    };
+
+    pub fn process(self: *Graph, snapshot: *const StateSnapshot, shared: *audio_engine.SharedState, pool: ?*thread_pool.ThreadPool, frame_count: u32, steady_time: u64) void {
+        const zone = tracy.ZoneN(@src(), "Graph.process");
+        defer zone.End();
+
         var solo_active = false;
         const track_count = @min(snapshot.track_count, ui.track_count);
         for (0..track_count) |t| {
@@ -566,6 +603,104 @@ pub const Graph = struct {
                 break;
             }
         }
+
+        // Process note sources (lightweight, sequential)
+        {
+            const ns_zone = tracy.ZoneN(@src(), "Note sources");
+            defer ns_zone.End();
+            for (self.note_source_node_ids.items) |node_id| {
+                var node = &self.nodes.items[node_id];
+                _ = node.data.note_source.process(snapshot, self.sample_rate, frame_count);
+            }
+        }
+
+        // Process synths (heavy, parallel if pool available)
+        {
+            const synth_zone = tracy.ZoneN(@src(), "Synths");
+            defer synth_zone.End();
+
+            var ctx = ProcessContext{
+                .graph = self,
+                .snapshot = snapshot,
+                .shared = shared,
+                .frame_count = frame_count,
+                .steady_time = steady_time,
+                .solo_active = solo_active,
+            };
+
+            if (pool) |p| {
+                p.executeMany(
+                    @intCast(self.synth_node_ids.items.len),
+                    @ptrCast(&ctx),
+                    processSynthTask,
+                );
+            } else {
+                for (self.synth_node_ids.items, 0..) |_, i| {
+                    processSynthTask(@ptrCast(&ctx), @intCast(i));
+                }
+            }
+        }
+
+        // Process gains (lightweight, sequential)
+        {
+            const gain_zone = tracy.ZoneN(@src(), "Gains");
+            defer gain_zone.End();
+            for (self.gain_node_ids.items) |node_id| {
+                const node = &self.nodes.items[node_id];
+                const outputs = self.getAudioOutput(node_id);
+                self.sumAudioInputs(node_id, frame_count, outputs.left, outputs.right);
+                const track = snapshot.tracks[node.data.gain.track_index];
+                const mute = track.mute or (solo_active and !track.solo);
+                const gain = if (mute) 0.0 else track.volume;
+                for (0..frame_count) |i| {
+                    outputs.left[i] *= gain;
+                    outputs.right[i] *= gain;
+                }
+            }
+        }
+
+        // Process mixer and master (sequential)
+        {
+            const mix_zone = tracy.ZoneN(@src(), "Mixer/Master");
+            defer mix_zone.End();
+            for (self.render_order.items) |node_id| {
+                const node = &self.nodes.items[node_id];
+                switch (node.kind) {
+                    .mixer, .master => {
+                        const outputs = self.getAudioOutput(node_id);
+                        self.sumAudioInputs(node_id, frame_count, outputs.left, outputs.right);
+                    },
+                    else => {},
+                }
+            }
+        }
+    }
+
+    fn processSynthTask(ctx_ptr: *anyopaque, task_index: u32) void {
+        const zone = tracy.ZoneN(@src(), "Synth task");
+        defer zone.End();
+
+        const ctx: *ProcessContext = @ptrCast(@alignCast(ctx_ptr));
+        const node_id = ctx.graph.synth_node_ids.items[task_index];
+        var node = &ctx.graph.nodes.items[node_id];
+
+        node.data.synth.out_events.context = &node.data.synth.out_events_list;
+        const outputs = ctx.graph.getAudioOutput(node_id);
+        @memset(outputs.left[0..ctx.frame_count], 0);
+        @memset(outputs.right[0..ctx.frame_count], 0);
+
+        const plugin = ctx.snapshot.track_plugins[node.data.synth.track_index] orelse return;
+        const output_channels = ctx.graph.getMainPortChannelCount(plugin, false) orelse 2;
+        const output_channel_count: u32 = @min(if (output_channels == 0) 2 else output_channels, 2);
+
+        var channel_ptrs = [2][*]f32{ outputs.left.ptr, outputs.right.ptr };
+        var audio_out = clap.AudioBuffer{
+            .data32 = &channel_ptrs,
+            .data64 = null,
+            .channel_count = output_channel_count,
+            .latency = 0,
+            .constant_mask = 0,
+        };
 
         const empty_input = clap.AudioBuffer{
             .data32 = null,
@@ -581,129 +716,61 @@ pub const Graph = struct {
             .get = inputEventsGet,
         };
 
-        for (self.render_order.items) |node_id| {
-            var node = &self.nodes.items[node_id];
-            switch (node.kind) {
-                .note_source => {
-                    _ = node.data.note_source.process(snapshot, self.sample_rate, frame_count);
-                },
-                .synth => {
-                    node.data.synth.out_events.context = &node.data.synth.out_events_list;
-                    const outputs = self.getAudioOutput(node_id);
-                    @memset(outputs.left[0..frame_count], 0);
-                    @memset(outputs.right[0..frame_count], 0);
+        const input_events = ctx.graph.findEventInput(node_id) orelse &empty_input_events;
+        node.data.synth.out_events_list.count = 0;
 
-                    const plugin = snapshot.track_plugins[node.data.synth.track_index] orelse continue;
-                    const output_channels = self.getMainPortChannelCount(plugin, false) orelse 2;
-                    const input_channels = self.getMainPortChannelCount(plugin, true) orelse 0;
-                    const output_channel_count: u32 = @min(if (output_channels == 0) 2 else output_channels, 2);
-                    const input_channel_count: u32 = if (input_channels == 0) 0 else @min(input_channels, 2);
+        const tempo = @as(f64, ctx.snapshot.bpm);
+        const beats = @as(f64, ctx.snapshot.playhead_beat);
+        const seconds = if (tempo > 0.0) beats * 60.0 / tempo else 0.0;
+        const bar_len = 4.0;
+        const bar_index = @floor(beats / bar_len);
 
-                    var input_ptrs: [2][*]f32 = undefined;
-                    var audio_in: clap.AudioBuffer = undefined;
-                    if (input_channel_count > 0) {
-                        @memset(self.scratch_input_left[0..frame_count], 0);
-                        if (input_channel_count > 1) {
-                            @memset(self.scratch_input_right[0..frame_count], 0);
-                        }
-                        input_ptrs = [2][*]f32{ self.scratch_input_left.ptr, self.scratch_input_right.ptr };
-                        audio_in = clap.AudioBuffer{
-                            .data32 = &input_ptrs,
-                            .data64 = null,
-                            .channel_count = input_channel_count,
-                            .latency = 0,
-                            .constant_mask = 0,
-                        };
-                    }
-                    var channel_ptrs = [2][*]f32{ outputs.left.ptr, outputs.right.ptr };
-                    var audio_out = clap.AudioBuffer{
-                        .data32 = &channel_ptrs,
-                        .data64 = null,
-                        .channel_count = output_channel_count,
-                        .latency = 0,
-                        .constant_mask = 0,
-                    };
+        var transport = clap.events.Transport{
+            .header = .{
+                .size = @sizeOf(clap.events.Transport),
+                .sample_offset = 0,
+                .space_id = clap.events.core_space_id,
+                .type = .transport,
+                .flags = .{},
+            },
+            .flags = .{
+                .has_tempo = true,
+                .has_beats_timeline = true,
+                .has_seconds_timeline = true,
+                .has_time_signature = true,
+                .is_playing = ctx.snapshot.playing,
+                .is_recording = false,
+                .is_loop_active = false,
+                .is_within_pre_roll = false,
+            },
+            .song_pos_beats = clap.BeatTime.fromBeats(beats),
+            .song_pos_seconds = clap.SecTime.fromSecs(seconds),
+            .tempo = tempo,
+            .tempo_increment = 0,
+            .loop_start_beats = clap.BeatTime.fromBeats(0),
+            .loop_end_beats = clap.BeatTime.fromBeats(0),
+            .loop_start_seconds = clap.SecTime.fromSecs(0),
+            .loop_end_seconds = clap.SecTime.fromSecs(0),
+            .bar_start = clap.BeatTime.fromBeats(bar_index * bar_len),
+            .bar_number = @as(i32, @intFromFloat(bar_index)) + 1,
+            .time_signature_numerator = 4,
+            .time_signature_denominator = 4,
+        };
 
-                    const input_events = self.findEventInput(node_id) orelse &empty_input_events;
-                    node.data.synth.out_events_list.count = 0;
-                    const process_inputs: [*]const clap.AudioBuffer = if (input_channel_count == 0)
-                        @as([*]const clap.AudioBuffer, @ptrCast(&empty_input))
-                    else
-                        @as([*]const clap.AudioBuffer, @ptrCast(&audio_in));
-                    const process_input_count: u32 = if (input_channel_count == 0) 0 else 1;
-                    const process_output_count: u32 = 1;
-                    const process_outputs_ptr: [*]clap.AudioBuffer = @as([*]clap.AudioBuffer, @ptrCast(&audio_out));
-                    const tempo = @as(f64, snapshot.bpm);
-                    const beats = @as(f64, snapshot.playhead_beat);
-                    const seconds = if (tempo > 0.0) beats * 60.0 / tempo else 0.0;
-                    const bar_len = 4.0;
-                    const bar_index = @floor(beats / bar_len);
-                    var transport = clap.events.Transport{
-                        .header = .{
-                            .size = @sizeOf(clap.events.Transport),
-                            .sample_offset = 0,
-                            .space_id = clap.events.core_space_id,
-                            .type = .transport,
-                            .flags = .{},
-                        },
-                        .flags = .{
-                            .has_tempo = true,
-                            .has_beats_timeline = true,
-                            .has_seconds_timeline = true,
-                            .has_time_signature = true,
-                            .is_playing = snapshot.playing,
-                            .is_recording = false,
-                            .is_loop_active = false,
-                            .is_within_pre_roll = false,
-                        },
-                        .song_pos_beats = clap.BeatTime.fromBeats(beats),
-                        .song_pos_seconds = clap.SecTime.fromSecs(seconds),
-                        .tempo = tempo,
-                        .tempo_increment = 0,
-                        .loop_start_beats = clap.BeatTime.fromBeats(0),
-                        .loop_end_beats = clap.BeatTime.fromBeats(0),
-                        .loop_start_seconds = clap.SecTime.fromSecs(0),
-                        .loop_end_seconds = clap.SecTime.fromSecs(0),
-                        .bar_start = clap.BeatTime.fromBeats(bar_index * bar_len),
-                        .bar_number = @as(i32, @intFromFloat(bar_index)) + 1,
-                        .time_signature_numerator = 4,
-                        .time_signature_denominator = 4,
-                    };
-                    var clap_process = clap.Process{
-                        .steady_time = @enumFromInt(@as(i64, @intCast(steady_time))),
-                        .frames_count = frame_count,
-                        .transport = &transport,
-                        .audio_inputs = process_inputs,
-                        .audio_outputs = process_outputs_ptr,
-                        .audio_inputs_count = process_input_count,
-                        .audio_outputs_count = process_output_count,
-                        .in_events = input_events,
-                        .out_events = &node.data.synth.out_events,
-                    };
-                    shared.current_processing_plugin.store(plugin, .release);
-                    _ = plugin.process(plugin, &clap_process);
-                    shared.current_processing_plugin.store(null, .release);
-                },
-                .gain => {
-                    const outputs = self.getAudioOutput(node_id);
-                    self.sumAudioInputs(node_id, frame_count, outputs.left, outputs.right);
-                    const track = snapshot.tracks[node.data.gain.track_index];
-                    const mute = track.mute or (solo_active and !track.solo);
-                    const gain = if (mute) 0.0 else track.volume;
-                    for (0..frame_count) |i| {
-                        outputs.left[i] *= gain;
-                        outputs.right[i] *= gain;
-                    }
-                },
-                .mixer => {
-                    const outputs = self.getAudioOutput(node_id);
-                    self.sumAudioInputs(node_id, frame_count, outputs.left, outputs.right);
-                },
-                .master => {
-                    const outputs = self.getAudioOutput(node_id);
-                    self.sumAudioInputs(node_id, frame_count, outputs.left, outputs.right);
-                },
-            }
-        }
+        var clap_process = clap.Process{
+            .steady_time = @enumFromInt(@as(i64, @intCast(ctx.steady_time))),
+            .frames_count = ctx.frame_count,
+            .transport = &transport,
+            .audio_inputs = @as([*]const clap.AudioBuffer, @ptrCast(&empty_input)),
+            .audio_outputs = @as([*]clap.AudioBuffer, @ptrCast(&audio_out)),
+            .audio_inputs_count = 0,
+            .audio_outputs_count = 1,
+            .in_events = input_events,
+            .out_events = &node.data.synth.out_events,
+        };
+
+        ctx.shared.current_processing_plugin.store(plugin, .release);
+        _ = plugin.process(plugin, &clap_process);
+        ctx.shared.current_processing_plugin.store(null, .release);
     }
 };
