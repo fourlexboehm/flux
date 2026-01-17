@@ -24,7 +24,7 @@ const Host = struct {
             .clap_host = .{
                 .clap_version = clap.version,
                 .host_data = undefined,
-                .name = "zdaw",
+                .name = "flux",
                 .vendor = "gearmulator",
                 .url = null,
                 .version = "0.1",
@@ -310,7 +310,7 @@ pub fn main(init: std.process.Init) !void {
     defer device.destroy();
     try device.start();
 
-    var app_window = try AppWindow.init("zdaw", 1280, 720);
+    var app_window = try AppWindow.init("flux", 1280, 720);
     defer app_window.deinit();
 
     zgui.init(allocator);
@@ -325,7 +325,7 @@ pub fn main(init: std.process.Init) !void {
 
     var last_time = try std.time.Instant.now();
 
-    std.log.info("zdaw running (Ctrl+C to quit)", .{});
+    std.log.info("flux running (Ctrl+C to quit)", .{});
     while (app_window.window.isVisible()) {
         const now = std.time.Instant.now() catch last_time;
         const delta_ns = now.since(last_time);

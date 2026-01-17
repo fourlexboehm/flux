@@ -50,22 +50,22 @@ pub fn build(b: *std.Build) void {
     });
 
     const lib_module = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
+        .root_source_file = b.path("zsynth/src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
     const exe_module = b.createModule(.{
-        .root_source_file = b.path("src/diag.zig"),
+        .root_source_file = b.path("zsynth/src/diag.zig"),
         .target = target,
         .optimize = optimize,
     });
-    const zdaw_module = b.createModule(.{
-        .root_source_file = b.path("src/zdaw/main.zig"),
+    const flux_module = b.createModule(.{
+        .root_source_file = b.path("src/flux/main.zig"),
         .target = target,
         .optimize = optimize,
     });
     const zsynth_core = b.createModule(.{
-        .root_source_file = b.path("src/core.zig"),
+        .root_source_file = b.path("zsynth/src/core.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -80,9 +80,9 @@ pub fn build(b: *std.Build) void {
         .name = "zsynth",
         .root_module = exe_module,
     });
-    const zdaw = b.addExecutable(.{
-        .name = "zdaw",
-        .root_module = zdaw_module,
+    const flux = b.addExecutable(.{
+        .name = "flux",
+        .root_module = flux_module,
     });
 
     // Allow options to be passed in to source files
@@ -156,28 +156,28 @@ pub fn build(b: *std.Build) void {
         run_step.dependOn(&run_exe.step);
     }
 
-    zdaw.root_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
-    zdaw.root_module.addImport("zsynth-core", zsynth_core);
-    zdaw.root_module.addImport("zaudio", zaudio.module("root"));
-    zdaw.root_module.addImport("zgui", zgui.module("root"));
-    zdaw.root_module.linkLibrary(zgui.artifact("imgui"));
-    zdaw.root_module.linkLibrary(zaudio.artifact("miniaudio"));
-    zdaw.root_module.addImport("tracy", ztracy.module("root"));
-    zdaw.root_module.linkLibrary(ztracy.artifact("tracy"));
+    flux.root_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
+    flux.root_module.addImport("zsynth-core", zsynth_core);
+    flux.root_module.addImport("zaudio", zaudio.module("root"));
+    flux.root_module.addImport("zgui", zgui.module("root"));
+    flux.root_module.linkLibrary(zgui.artifact("imgui"));
+    flux.root_module.linkLibrary(zaudio.artifact("miniaudio"));
+    flux.root_module.addImport("tracy", ztracy.module("root"));
+    flux.root_module.linkLibrary(ztracy.artifact("tracy"));
     if (builtin.os.tag == .macos) {
-        zdaw.root_module.addImport("objc", objc.module("mach-objc"));
-        zdaw.root_module.linkFramework("AppKit", .{});
-        zdaw.root_module.linkFramework("Cocoa", .{});
-        zdaw.root_module.linkFramework("CoreGraphics", .{});
-        zdaw.root_module.linkFramework("Foundation", .{});
-        zdaw.root_module.linkFramework("Metal", .{});
-        zdaw.root_module.linkFramework("QuartzCore", .{});
+        flux.root_module.addImport("objc", objc.module("mach-objc"));
+        flux.root_module.linkFramework("AppKit", .{});
+        flux.root_module.linkFramework("Cocoa", .{});
+        flux.root_module.linkFramework("CoreGraphics", .{});
+        flux.root_module.linkFramework("Foundation", .{});
+        flux.root_module.linkFramework("Metal", .{});
+        flux.root_module.linkFramework("QuartzCore", .{});
     }
-    b.installArtifact(zdaw);
+    b.installArtifact(flux);
 
-    const run_daw = b.addRunArtifact(zdaw);
-    const run_daw_step = b.step("run-daw", "Run the zdaw application");
-    run_daw_step.dependOn(&run_daw.step);
+    const run_flux = b.addRunArtifact(flux);
+    const run_flux_step = b.step("run-flux", "Run the flux application");
+    run_flux_step.dependOn(&run_flux.step);
 }
 
 pub const CreateClapPluginStep = struct {
@@ -218,8 +218,8 @@ pub const CreateClapPluginStep = struct {
             switch (builtin.os.tag) {
                 .macos => {
                     _ = try dir.updateFile(io, "zig-out/lib/libzsynth.dylib", dir, "zig-out/lib/ZSynth.clap/Contents/MacOS/ZSynth", .{});
-                    _ = try dir.updateFile(io, "macos/info.plist", dir, "zig-out/lib/ZSynth.clap/Contents/info.plist", .{});
-                    _ = try dir.updateFile(io, "macos/PkgInfo", dir, "zig-out/lib/ZSynth.clap/Contents/PkgInfo", .{});
+                    _ = try dir.updateFile(io, "zsynth/macos/Info.plist", dir, "zig-out/lib/ZSynth.clap/Contents/info.plist", .{});
+                    _ = try dir.updateFile(io, "zsynth/macos/PkgInfo", dir, "zig-out/lib/ZSynth.clap/Contents/PkgInfo", .{});
                     if (builtin.mode == .Debug) {
                         // Also generate dynamic symbols for Tracy
                         var child = try std.process.spawn(io, .{
