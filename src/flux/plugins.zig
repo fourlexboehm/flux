@@ -143,20 +143,40 @@ fn discoverClapEntries(allocator: std.mem.Allocator, io: Io, entries: *std.Array
     }
 
     for (paths.items) |dir_path| {
-        var dir = Dir.openDirAbsolute(io, dir_path, .{ .iterate = true }) catch continue;
-        defer dir.close(io);
-        var it = dir.iterate();
-        while (try it.next(io)) |entry| {
-            if (entry.kind != .directory and entry.kind != .file) continue;
-            if (!std.mem.endsWith(u8, entry.name, ".clap")) continue;
+        scanClapDir(allocator, io, entries, dir_path, full_scan) catch {};
+    }
+}
+
+fn scanClapDir(
+    allocator: std.mem.Allocator,
+    io: Io,
+    entries: *std.ArrayListUnmanaged(PluginEntry),
+    dir_path: []const u8,
+    full_scan: bool,
+) !void {
+    var dir = Dir.openDirAbsolute(io, dir_path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .directory and entry.kind != .file) continue;
+
+        const entry_path = try Dir.path.join(allocator, &[_][]const u8{ dir_path, entry.name });
+        defer allocator.free(entry_path);
+
+        const is_clap = std.mem.endsWith(u8, entry.name, ".clap");
+        if (is_clap) {
             if (std.mem.eql(u8, entry.name, "ZSynth.clap")) continue;
-            const full_path = try Dir.path.join(allocator, &[_][]const u8{ dir_path, entry.name });
-            defer allocator.free(full_path);
             if (full_scan) {
-                discoverPluginEntries(allocator, io, entries, full_path, .clap) catch {};
+                discoverPluginEntries(allocator, io, entries, entry_path, .clap) catch {};
             } else {
-                appendClapBundleEntry(allocator, io, entries, full_path) catch {};
+                appendClapBundleEntry(allocator, io, entries, entry_path) catch {};
             }
+            continue;
+        }
+
+        if (entry.kind == .directory) {
+            scanClapDir(allocator, io, entries, entry_path, full_scan) catch {};
         }
     }
 }
