@@ -115,7 +115,7 @@ fn rebuildItemsZ(catalog: *PluginCatalog) !void {
 fn discoverClapEntries(allocator: std.mem.Allocator, io: Io, entries: *std.ArrayListUnmanaged(PluginEntry)) !void {
     if (builtin.os.tag != .macos) return;
 
-    const full_scan_env = std.c.getenv("ZDAW_CLAP_FULL_SCAN");
+    const full_scan_env = std.c.getenv("FLUX_CLAP_FULL_SCAN");
     const full_scan = if (full_scan_env) |val| val[0] == '1' else false;
 
     var paths: std.ArrayList([]const u8) = .empty;

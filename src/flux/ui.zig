@@ -156,7 +156,7 @@ pub fn draw(state: *State, ui_scale: f32) void {
     pushAbletonStyle();
     defer popAbletonStyle();
 
-    if (zgui.begin("zdaw##root", .{ .flags = .{
+    if (zgui.begin("flux##root", .{ .flags = .{
         .no_collapse = true,
         .no_resize = true,
         .no_move = true,
