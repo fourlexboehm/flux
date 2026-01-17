@@ -12,6 +12,7 @@ pub const SharedState = struct {
     active_index: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     snapshots: []audio_graph.StateSnapshot,
     track_plugins: [ui.track_count]?*const clap.Plugin = [_]?*const clap.Plugin{null} ** ui.track_count,
+    current_processing_plugin: std.atomic.Value(?*const clap.Plugin) = std.atomic.Value(?*const clap.Plugin).init(null),
 
     pub fn init(allocator: std.mem.Allocator) !SharedState {
         var snapshots = try allocator.alloc(audio_graph.StateSnapshot, 2);
@@ -151,7 +152,7 @@ pub const AudioEngine = struct {
         var frame_offset: usize = 0;
         while (frames_left > 0) {
             const chunk: u32 = @min(frames_left, self.max_frames);
-            self.graph.process(snapshot, chunk, self.steady_time);
+            self.graph.process(snapshot, &self.shared, chunk, self.steady_time);
             self.steady_time += chunk;
 
             const master_id = self.graph.master_node orelse break;

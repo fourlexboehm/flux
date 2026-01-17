@@ -1,6 +1,7 @@
 const std = @import("std");
 const clap = @import("clap-bindings");
 const ui = @import("ui.zig");
+const audio_engine = @import("audio_engine.zig");
 
 pub const NodeId = u32;
 pub const max_clip_notes = 256;
@@ -555,7 +556,7 @@ pub const Graph = struct {
         return info.channel_count;
     }
 
-    pub fn process(self: *Graph, snapshot: *const StateSnapshot, frame_count: u32, steady_time: u64) void {
+    pub fn process(self: *Graph, snapshot: *const StateSnapshot, shared: *audio_engine.SharedState, frame_count: u32, steady_time: u64) void {
         var solo_active = false;
         const track_count = @min(snapshot.track_count, ui.track_count);
         for (0..track_count) |t| {
@@ -679,7 +680,9 @@ pub const Graph = struct {
                         .in_events = input_events,
                         .out_events = &node.data.synth.out_events,
                     };
+                    shared.current_processing_plugin.store(plugin, .release);
                     _ = plugin.process(plugin, &clap_process);
+                    shared.current_processing_plugin.store(null, .release);
                 },
                 .gain => {
                     const outputs = self.getAudioOutput(node_id);
