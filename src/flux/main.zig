@@ -8,6 +8,7 @@ const objc = @import("objc");
 
 const ui = @import("ui.zig");
 const audio_engine = @import("audio_engine.zig");
+const thread_pool = @import("thread_pool.zig");
 const zsynth = @import("zsynth-core");
 const plugins = @import("plugins.zig");
 const project = @import("project.zig");
@@ -18,6 +19,12 @@ const MaxFrames = 128;
 
 const Host = struct {
     clap_host: clap.Host,
+    pool: ?*thread_pool.ThreadPool = null,
+    shared_state: ?*audio_engine.SharedState = null,
+
+    const thread_pool_ext = clap.ext.thread_pool.Host{
+        .requestExec = _requestExec,
+    };
 
     pub fn init() Host {
         return .{
@@ -36,8 +43,27 @@ const Host = struct {
         };
     }
 
-    fn _getExtension(_: *const clap.Host, _: [*:0]const u8) callconv(.c) ?*const anyopaque {
+    fn _getExtension(_: *const clap.Host, id: [*:0]const u8) callconv(.c) ?*const anyopaque {
+        if (std.mem.eql(u8, std.mem.span(id), clap.ext.thread_pool.id)) {
+            return &thread_pool_ext;
+        }
         return null;
+    }
+
+    fn _requestExec(host: *const clap.Host, task_count: u32) callconv(.c) bool {
+        if (task_count == 0) return true;
+
+        const self: *Host = @ptrCast(@alignCast(host.host_data));
+        const pool = self.pool orelse return false;
+        const shared = self.shared_state orelse return false;
+
+        const plugin = shared.current_processing_plugin.load(.acquire) orelse return false;
+
+        const ext_raw = plugin.getExtension(plugin, clap.ext.thread_pool.id) orelse return false;
+        const ext: *const clap.ext.thread_pool.Plugin = @ptrCast(@alignCast(ext_raw));
+
+        pool.execute(plugin, ext.exec, task_count);
+        return true;
     }
 
     fn _requestRestart(_: *const clap.Host) callconv(.c) void {}
@@ -227,6 +253,10 @@ pub fn main(init: std.process.Init) !void {
     var host = Host.init();
     host.clap_host.host_data = &host;
 
+    const cpu_count = std.Thread.getCpuCount() catch 4;
+    host.pool = try thread_pool.ThreadPool.init(allocator, cpu_count);
+    defer host.pool.?.deinit();
+
     var track_plugins: [ui.track_count]TrackPlugin = undefined;
     for (&track_plugins) |*track| {
         track.* = .{};
@@ -293,6 +323,7 @@ pub fn main(init: std.process.Init) !void {
 
     var engine = try audio_engine.AudioEngine.init(allocator, SampleRate, MaxFrames);
     defer engine.deinit();
+    host.shared_state = &engine.shared;
     engine.updateFromUi(&state);
     engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
 
