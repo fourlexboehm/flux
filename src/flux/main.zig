@@ -324,6 +324,7 @@ pub fn main(init: std.process.Init) !void {
     var engine = try audio_engine.AudioEngine.init(allocator, SampleRate, MaxFrames);
     defer engine.deinit();
     host.shared_state = &engine.shared;
+    engine.pool = host.pool;
     engine.updateFromUi(&state);
     engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
 
