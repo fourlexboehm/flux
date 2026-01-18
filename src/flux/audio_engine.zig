@@ -11,6 +11,7 @@ const Channels = 2;
 pub const SharedState = struct {
     processing: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     active_index: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    process_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     snapshots: []audio_graph.StateSnapshot,
     track_plugins: [ui.track_count]?*const clap.Plugin = [_]?*const clap.Plugin{null} ** ui.track_count,
 

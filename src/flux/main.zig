@@ -26,6 +26,7 @@ const Host = struct {
     pool: ?*thread_pool.ThreadPool = null,
     shared_state: ?*audio_engine.SharedState = null,
     main_thread_id: std.Thread.Id = undefined,
+    callback_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     const thread_pool_ext = clap.ext.thread_pool.Host{
         .requestExec = _requestExec,
@@ -55,10 +56,9 @@ const Host = struct {
     }
 
     fn _getExtension(_: *const clap.Host, id: [*:0]const u8) callconv(.c) ?*const anyopaque {
-        // Disabled for comparison testing
-        // if (std.mem.eql(u8, std.mem.span(id), clap.ext.thread_pool.id)) {
-        //     return &thread_pool_ext;
-        // }
+        if (std.mem.eql(u8, std.mem.span(id), clap.ext.thread_pool.id)) {
+            return &thread_pool_ext;
+        }
         if (std.mem.eql(u8, std.mem.span(id), clap.ext.thread_check.id)) {
             return &thread_check_ext;
         }
@@ -90,8 +90,28 @@ const Host = struct {
     }
 
     fn _requestRestart(_: *const clap.Host) callconv(.c) void {}
-    fn _requestProcess(_: *const clap.Host) callconv(.c) void {}
-    fn _requestCallback(_: *const clap.Host) callconv(.c) void {}
+    fn _requestProcess(host: *const clap.Host) callconv(.c) void {
+        const self: *Host = @ptrCast(@alignCast(host.host_data));
+        if (self.shared_state) |shared| {
+            shared.process_requested.store(true, .release);
+        }
+    }
+
+    fn _requestCallback(host: *const clap.Host) callconv(.c) void {
+        const self: *Host = @ptrCast(@alignCast(host.host_data));
+        self.callback_requested.store(true, .release);
+    }
+
+    fn pumpMainThreadCallbacks(self: *Host) void {
+        if (!self.callback_requested.swap(false, .acq_rel)) return;
+        const shared = self.shared_state orelse return;
+        const snapshot = shared.snapshot();
+        for (snapshot.track_plugins) |plugin| {
+            if (plugin) |p| {
+                p.onMainThread(p);
+            }
+        }
+    }
 };
 
 const PluginHandle = struct {
@@ -435,6 +455,8 @@ pub fn main(init: std.process.Init) !void {
 
     std.log.info("flux running (Ctrl+C to quit)", .{});
     while (app_window.window.isVisible()) {
+        host.pumpMainThreadCallbacks();
+
         const now = std.time.Instant.now() catch last_time;
         const delta_ns = now.since(last_time);
         last_time = now;
