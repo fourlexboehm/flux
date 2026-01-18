@@ -632,41 +632,75 @@ pub const Graph = struct {
 
             _ = pool; // Unused, keeping for compatibility
 
-            if (jobs) |job_queue| {
-                // Use libz_jobs work-stealing queue
-                const synth_count = self.synth_node_ids.items.len;
-                if (synth_count > 0) {
-                    // Allocate root job that we'll wait on
-                    const RootJob = struct {
-                        pub fn exec(_: *@This()) void {}
-                    };
-                    const root = job_queue.allocate(RootJob{});
+            const synth_count = self.synth_node_ids.items.len;
+            if (synth_count > 0) {
+                var active_tasks: [ui.track_count]u32 = undefined;
+                var active_count: usize = 0;
 
-                    // Allocate and schedule synth jobs
-                    for (0..synth_count) |i| {
-                        const SynthJob = struct {
-                            ctx: *ProcessContext,
-                            task_index: u32,
-                            pub fn exec(job: *@This()) void {
-                                processSynthTaskDirect(job.ctx, job.task_index);
-                            }
-                        };
-                        const synth_job = job_queue.allocate(SynthJob{
-                            .ctx = &ctx,
-                            .task_index = @intCast(i),
-                        });
-                        job_queue.finishWith(synth_job, root);
-                        job_queue.schedule(synth_job);
+                for (self.synth_node_ids.items, 0..) |node_id, i| {
+                    var node = &self.nodes.items[node_id];
+
+                    const plugin = snapshot.track_plugins[node.data.synth.track_index];
+                    if (plugin == null) {
+                        const outputs = self.getAudioOutput(node_id);
+                        @memset(outputs.left[0..frame_count], 0);
+                        @memset(outputs.right[0..frame_count], 0);
+                        node.data.synth.sleeping = false;
+                        continue;
                     }
 
-                    // Schedule root and wait - main thread helps process
-                    job_queue.schedule(root);
-                    job_queue.wait(root);
+                    if (ctx.wake_requested) {
+                        active_tasks[active_count] = @intCast(i);
+                        active_count += 1;
+                        continue;
+                    }
+
+                    const input_events_opt = self.findEventInput(node_id);
+                    const has_input_events = if (input_events_opt) |input_events| input_events.size(input_events) > 0 else false;
+                    if (has_input_events or !node.data.synth.sleeping) {
+                        active_tasks[active_count] = @intCast(i);
+                        active_count += 1;
+                    } else {
+                        const outputs = self.getAudioOutput(node_id);
+                        @memset(outputs.left[0..frame_count], 0);
+                        @memset(outputs.right[0..frame_count], 0);
+                    }
                 }
-            } else {
-                // Sequential fallback
-                for (self.synth_node_ids.items, 0..) |_, i| {
-                    processSynthTask(@ptrCast(&ctx), @intCast(i));
+
+                if (active_count > 0) {
+                    if (jobs) |job_queue| {
+                        // Use libz_jobs work-stealing queue
+                        const RootJob = struct {
+                            pub fn exec(_: *@This()) void {}
+                        };
+                        const root = job_queue.allocate(RootJob{});
+
+                        // Allocate and schedule synth jobs
+                        for (active_tasks[0..active_count]) |task_index| {
+                            const SynthJob = struct {
+                                ctx: *ProcessContext,
+                                task_index: u32,
+                                pub fn exec(job: *@This()) void {
+                                    processSynthTaskDirect(job.ctx, job.task_index);
+                                }
+                            };
+                            const synth_job = job_queue.allocate(SynthJob{
+                                .ctx = &ctx,
+                                .task_index = task_index,
+                            });
+                            job_queue.finishWith(synth_job, root);
+                            job_queue.schedule(synth_job);
+                        }
+
+                        // Schedule root and wait - main thread helps process
+                        job_queue.schedule(root);
+                        job_queue.wait(root);
+                    } else {
+                        // Sequential fallback
+                        for (active_tasks[0..active_count]) |task_index| {
+                            processSynthTask(@ptrCast(&ctx), task_index);
+                        }
+                    }
                 }
             }
         }

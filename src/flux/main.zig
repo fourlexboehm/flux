@@ -455,6 +455,7 @@ pub fn main(init: std.process.Init) !void {
 
     std.log.info("flux running (Ctrl+C to quit)", .{});
     while (app_window.window.isVisible()) {
+        const frame_start = std.time.Instant.now() catch last_time;
         host.pumpMainThreadCallbacks();
 
         const now = std.time.Instant.now() catch last_time;
@@ -542,7 +543,20 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        sleepNs(io, 5 * std.time.ns_per_ms);
+        const any_plugin_gui_open = blk: {
+            for (track_plugins) |track| {
+                if (track.gui_open) break :blk true;
+            }
+            break :blk false;
+        };
+        const interactive = zgui.isAnyItemActive() or zgui.isAnyItemHovered() or zgui.io.getWantCaptureMouse() or wants_keyboard;
+        const target_fps: u32 = if (state.playing or interactive or any_plugin_gui_open) 60 else 20;
+        const target_frame_ns: u64 = std.time.ns_per_s / @as(u64, target_fps);
+        const frame_end = std.time.Instant.now() catch frame_start;
+        const frame_elapsed_ns = frame_end.since(frame_start);
+        if (frame_elapsed_ns < target_frame_ns) {
+            sleepNs(io, target_frame_ns - frame_elapsed_ns);
+        }
     }
 
     if (device.isStarted()) {
