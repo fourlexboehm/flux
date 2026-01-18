@@ -1,12 +1,12 @@
-[submodule "zgui"]
-	path = zgui
-	url = git@github.com:jrachele/zgui.git
-[submodule "zglfw"]
-	path = zglfw
-	url = https://github.com/jrachele/zglfw.git
-[submodule "zopengl"]
-	path = zopengl
-	url = git@github.com:jrachele/zopengl.git
-[submodule "clap-zig-bindings"]
-	path = clap-zig-bindings
-	url = git@git.sr.ht:~juge/clap-zig-bindings
+[submodule "deps/zgui"]
+	path = deps/zgui
+	url = git@github.com:fourlexboehm/zaudio.git
+[submodule "deps/clap-bindings"]
+	path = deps/clap-bindings
+	url = https://codeberg.org/fellowtraveler/clap-zig-bindings.git
+[submodule "deps/regex"]
+	path = deps/regex
+	url = git@github.com:fourlexboehm/zig-regex.git
+[submodule "deps/libz-jobs"]
+	path = deps/libz-jobs
+	url = git@github.com:fourlexboehm/LibZ.Jobs.git
