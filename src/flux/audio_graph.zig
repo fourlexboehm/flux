@@ -8,7 +8,7 @@ const libz_jobs = @import("libz_jobs");
 
 pub const JobQueue = libz_jobs.JobQueue(.{
     .max_jobs_per_thread = 64, // Enough for tracks + root job
-    .max_threads = 8, // Limit workers - most workloads don't benefit from more
+    .max_threads = 16, // Cap at 16, runtime uses min(this, cpu_count - 1)
     .idle_sleep_ns = 500_000, // 500µs idle sleep - adaptive logic will reduce when needed
 });
 
@@ -328,6 +328,8 @@ pub const SynthNode = struct {
         .context = undefined,
         .tryPush = outputEventsTryPush,
     },
+    /// Plugin requested sleep - skip processing until new events arrive
+    sleeping: bool = false,
 
     pub fn init(track_index: usize) SynthNode {
         return SynthNode{ .track_index = track_index };
@@ -749,6 +751,17 @@ pub const Graph = struct {
         };
 
         const input_events = ctx.graph.findEventInput(node_id) orelse &empty_input_events;
+        const has_input_events = input_events.size(input_events) > 0;
+
+        // Wake plugin if it has new events, skip if sleeping with no events
+        if (has_input_events) {
+            node.data.synth.sleeping = false;
+        } else if (node.data.synth.sleeping) {
+            // Plugin requested sleep and no new events - skip processing
+            current_processing_plugin = null;
+            return;
+        }
+
         node.data.synth.out_events_list.count = 0;
 
         const tempo = @as(f64, ctx.snapshot.bpm);
@@ -802,7 +815,12 @@ pub const Graph = struct {
         };
 
         current_processing_plugin = plugin;
-        _ = plugin.process(plugin, &clap_process);
+        const status = plugin.process(plugin, &clap_process);
         current_processing_plugin = null;
+
+        // If plugin requests sleep, skip future processing until new events
+        if (status == .sleep) {
+            node.data.synth.sleeping = true;
+        }
     }
 };
