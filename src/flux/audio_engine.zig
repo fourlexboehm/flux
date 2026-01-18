@@ -101,6 +101,7 @@ pub const AudioEngine = struct {
     track_count: usize,
     rebuilding: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     pool: ?*thread_pool.ThreadPool = null,
+    jobs: ?*audio_graph.JobQueue = null,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -153,7 +154,7 @@ pub const AudioEngine = struct {
         var frame_offset: usize = 0;
         while (frames_left > 0) {
             const chunk: u32 = @min(frames_left, self.max_frames);
-            self.graph.process(snapshot, &self.shared, self.pool, chunk, self.steady_time);
+            self.graph.process(snapshot, &self.shared, self.pool, self.jobs, chunk, self.steady_time);
             self.steady_time += chunk;
 
             const master_id = self.graph.master_node orelse break;

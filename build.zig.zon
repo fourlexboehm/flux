@@ -50,6 +50,9 @@
         .zaudio = .{
             .path = "deps/zaudio",
         },
+        .libz_jobs = .{
+            .path = "deps/libz-jobs",
+        },
     },
 
     .paths = .{
