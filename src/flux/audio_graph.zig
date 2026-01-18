@@ -8,7 +8,7 @@ const libz_jobs = @import("libz_jobs");
 pub const JobQueue = libz_jobs.JobQueue(.{
     .max_jobs_per_thread = 64, // Enough for tracks + root job
     .max_threads = 16, // Cap at 16, runtime uses min(this, cpu_count - 1)
-    .idle_sleep_ns = 500_000, // 500µs idle sleep - adaptive logic will reduce when needed
+    .idle_sleep_ns = 1_500_000,
 });
 
 /// Thread-local storage for tracking which plugin is currently being processed.
@@ -802,10 +802,13 @@ pub const Graph = struct {
         }
 
         // Wake plugin if it has new events, skip if sleeping with no events
+        const was_sleeping = node.data.synth.sleeping;
         if (has_input_events) {
             node.data.synth.sleeping = false;
+            if (was_sleeping) std.debug.print("track {d}: plugin woke (events)\n", .{track_index});
         } else if (ctx.wake_requested) {
             node.data.synth.sleeping = false;
+            if (was_sleeping) std.debug.print("track {d}: plugin woke (requested)\n", .{track_index});
         } else if (node.data.synth.sleeping) {
             // Plugin requested sleep and no new events - skip processing
             current_processing_plugin = null;
@@ -869,7 +872,10 @@ pub const Graph = struct {
         current_processing_plugin = null;
 
         // If plugin requests sleep, skip future processing until new events
-        if (status == .sleep) {
+        if (status == .sleep and !was_sleeping) {
+            node.data.synth.sleeping = true;
+            std.debug.print("track {d}: plugin sleeping\n", .{track_index});
+        } else if (status == .sleep) {
             node.data.synth.sleeping = true;
         }
     }

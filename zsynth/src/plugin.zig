@@ -237,8 +237,14 @@ fn _process(clap_plugin: *const clap.Plugin, clap_process: *const clap.Process) 
         output_buffer_right[i] = 0;
     }
 
-    if (plugin.voices.getVoiceCount() == 0 and clap_process.in_events.size(clap_process.in_events) == 0) {
+    const voice_count = plugin.voices.getVoiceCount();
+    const event_count = clap_process.in_events.size(clap_process.in_events);
+    if (voice_count == 0 and event_count == 0) {
         return clap.Process.Status.sleep;
+    }
+    // Debug: why not sleeping?
+    if (voice_count == 0 and event_count > 0) {
+        std.debug.print("zsynth: not sleeping - {d} events pending\n", .{event_count});
     }
 
     var event_index: u32 = 0;

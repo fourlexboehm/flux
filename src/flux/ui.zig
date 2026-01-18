@@ -76,6 +76,7 @@ pub const State = struct {
     plugin_items: [:0]const u8,
     plugin_divider_index: ?i32,
     live_key_states: [ui.max_tracks][128]bool,
+    keyboard_octave: i8,
 
     pub fn init(allocator: std.mem.Allocator) State {
         var track_plugins_data: [ui.max_tracks]TrackPluginUI = undefined;
@@ -115,6 +116,7 @@ pub const State = struct {
             .plugin_items = plugin_items,
             .plugin_divider_index = null,
             .live_key_states = [_][128]bool{[_]bool{false} ** 128} ** ui.max_tracks,
+            .keyboard_octave = 0,
         };
     }
 
@@ -289,32 +291,45 @@ pub fn tick(state: *State, dt: f64) void {
 }
 
 pub fn updateKeyboardMidi(state: *State) void {
+    // Handle octave change with z/x keys (edge detection, no repeat)
+    if (zgui.isKeyPressed(.z, false)) {
+        state.keyboard_octave = @max(state.keyboard_octave - 1, -5);
+    }
+    if (zgui.isKeyPressed(.x, false)) {
+        state.keyboard_octave = @min(state.keyboard_octave + 1, 5);
+    }
+
     const KeyMapping = struct {
         key: zgui.Key,
-        pitch: u8,
+        offset: u8, // Offset from base pitch
     };
     const mappings = [_]KeyMapping{
-        .{ .key = .a, .pitch = keyboard_base_pitch + 0 },
-        .{ .key = .s, .pitch = keyboard_base_pitch + 2 },
-        .{ .key = .d, .pitch = keyboard_base_pitch + 4 },
-        .{ .key = .f, .pitch = keyboard_base_pitch + 5 },
-        .{ .key = .g, .pitch = keyboard_base_pitch + 7 },
-        .{ .key = .h, .pitch = keyboard_base_pitch + 9 },
-        .{ .key = .j, .pitch = keyboard_base_pitch + 11 },
-        .{ .key = .k, .pitch = keyboard_base_pitch + 12 },
-        .{ .key = .l, .pitch = keyboard_base_pitch + 14 },
-        .{ .key = .semicolon, .pitch = keyboard_base_pitch + 16 },
-        .{ .key = .w, .pitch = keyboard_base_pitch + 1 },
-        .{ .key = .e, .pitch = keyboard_base_pitch + 3 },
-        .{ .key = .t, .pitch = keyboard_base_pitch + 6 },
-        .{ .key = .y, .pitch = keyboard_base_pitch + 8 },
-        .{ .key = .u, .pitch = keyboard_base_pitch + 10 },
+        .{ .key = .a, .offset = 0 }, // C
+        .{ .key = .s, .offset = 2 }, // D
+        .{ .key = .d, .offset = 4 }, // E
+        .{ .key = .f, .offset = 5 }, // F
+        .{ .key = .g, .offset = 7 }, // G
+        .{ .key = .h, .offset = 9 }, // A
+        .{ .key = .j, .offset = 11 }, // B
+        .{ .key = .k, .offset = 12 }, // C (octave up)
+        .{ .key = .l, .offset = 14 }, // D
+        .{ .key = .semicolon, .offset = 16 }, // E
+        .{ .key = .w, .offset = 1 }, // C#
+        .{ .key = .e, .offset = 3 }, // D#
+        .{ .key = .t, .offset = 6 }, // F#
+        .{ .key = .y, .offset = 8 }, // G#
+        .{ .key = .u, .offset = 10 }, // A#
     };
+
+    const octave_offset: i16 = @as(i16, state.keyboard_octave) * 12;
 
     var pressed = [_]bool{false} ** 128;
     for (mappings) |mapping| {
         if (zgui.isKeyDown(mapping.key)) {
-            pressed[mapping.pitch] = true;
+            const pitch: i16 = @as(i16, keyboard_base_pitch) + @as(i16, mapping.offset) + octave_offset;
+            if (pitch >= 0 and pitch <= 127) {
+                pressed[@intCast(pitch)] = true;
+            }
         }
     }
 

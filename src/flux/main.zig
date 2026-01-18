@@ -360,16 +360,27 @@ fn dataCallback(
             const budget_us = @as(u64, frame_count) * 1_000_000 / SampleRate;
             std.debug.print("audio: avg={d}us max={d}us budget={d}us ({d}%)\n", .{ avg_us, perf_max_us, budget_us, avg_us * 100 / budget_us });
 
-            // Adaptive sleep: adjust based on max usage with safety margin
-            // Max sleep capped at 200µs to limit worst-case wake latency on play
+            // Adaptive sleep with hysteresis - scales with buffer size
+            // Larger buffers = more time between callbacks = can sleep longer
             if (engine.jobs) |jobs| {
-                const usage_pct = perf_max_us * 100 / budget_us;
-                const sleep_ns: u64 = if (usage_pct >= 50)
-                    10_000 // 10µs - high load, stay responsive
-                else if (usage_pct >= 30)
-                    50_000 // 50µs
+                const avg_pct = avg_us * 100 / budget_us;
+                const current_sleep = jobs.dynamic_sleep_ns.load(.monotonic);
+                const budget_ns = budget_us * 1000;
+
+                // Sleep targets as fraction of buffer period
+                const max_sleep = budget_ns / 2; // 50% of buffer - idle
+                const mid_sleep = budget_ns / 10; // 10% of buffer - moderate
+                const min_sleep = budget_ns / 100; // 1% of buffer - high load
+
+                const sleep_ns: u64 = if (avg_pct >= 40)
+                    min_sleep
+                else if (avg_pct >= 20)
+                    mid_sleep
+                else if (avg_pct < 5 and current_sleep < max_sleep)
+                    @min(current_sleep * 2, max_sleep) // ramp up slowly
                 else
-                    200_000; // 200µs - idle, but not too long for quick wake
+                    current_sleep; // stay in current state
+
                 jobs.setSleepNs(sleep_ns);
             }
 
