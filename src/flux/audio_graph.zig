@@ -805,10 +805,8 @@ pub const Graph = struct {
         const was_sleeping = node.data.synth.sleeping;
         if (has_input_events) {
             node.data.synth.sleeping = false;
-            if (was_sleeping) std.debug.print("track {d}: plugin woke (events)\n", .{track_index});
         } else if (ctx.wake_requested) {
             node.data.synth.sleeping = false;
-            if (was_sleeping) std.debug.print("track {d}: plugin woke (requested)\n", .{track_index});
         } else if (node.data.synth.sleeping) {
             // Plugin requested sleep and no new events - skip processing
             current_processing_plugin = null;
@@ -874,7 +872,6 @@ pub const Graph = struct {
         // If plugin requests sleep, skip future processing until new events
         if (status == .sleep and !was_sleeping) {
             node.data.synth.sleeping = true;
-            std.debug.print("track {d}: plugin sleeping\n", .{track_index});
         } else if (status == .sleep) {
             node.data.synth.sleeping = true;
         }
