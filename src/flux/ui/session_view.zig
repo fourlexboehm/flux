@@ -106,6 +106,7 @@ pub const SessionView = struct {
     // Playback state
     queued_scene: [max_tracks]?usize = [_]?usize{null} ** max_tracks,
     open_clip_request: ?OpenClipRequest = null,
+    start_playback_request: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) SessionView {
         var self = SessionView{
@@ -950,7 +951,7 @@ pub const SessionView = struct {
                 self.queued_scene[t] = scene;
             }
         } else {
-            // Immediate switch
+            // Immediate switch and start playback
             for (0..self.track_count) |t| {
                 for (0..self.scene_count) |s| {
                     if (self.clips[t][s].state != .empty) {
@@ -958,6 +959,7 @@ pub const SessionView = struct {
                     }
                 }
             }
+            self.start_playback_request = true;
         }
     }
 
@@ -999,12 +1001,13 @@ pub const SessionView = struct {
             slot.state = .queued;
             self.queued_scene[track] = scene;
         } else {
-            // Immediate
+            // Immediate switch and start playback
             for (0..self.scene_count) |s| {
                 if (self.clips[track][s].state != .empty) {
                     self.clips[track][s].state = if (s == scene) .playing else .stopped;
                 }
             }
+            self.start_playback_request = true;
         }
     }
 
