@@ -1,9 +1,0 @@
-*
-!*/
-!.gitignore
-!.build.yml
-!LICENSE
-!README.md
-!/src/**
-!build.zig
-!build.zig.zon
