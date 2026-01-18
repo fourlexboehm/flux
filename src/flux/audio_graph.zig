@@ -3,7 +3,6 @@ const clap = @import("clap-bindings");
 const tracy = @import("tracy");
 const ui = @import("ui.zig");
 const audio_engine = @import("audio_engine.zig");
-const thread_pool = @import("thread_pool.zig");
 const libz_jobs = @import("libz_jobs");
 
 pub const JobQueue = libz_jobs.JobQueue(.{
@@ -591,7 +590,7 @@ pub const Graph = struct {
         wake_requested: bool,
     };
 
-    pub fn process(self: *Graph, snapshot: *const StateSnapshot, shared: *audio_engine.SharedState, pool: ?*thread_pool.ThreadPool, jobs: ?*JobQueue, frame_count: u32, steady_time: u64) void {
+    pub fn process(self: *Graph, snapshot: *const StateSnapshot, shared: *audio_engine.SharedState, jobs: ?*JobQueue, frame_count: u32, steady_time: u64) void {
         const zone = tracy.ZoneN(@src(), "Graph.process");
         defer zone.End();
 
@@ -629,8 +628,6 @@ pub const Graph = struct {
                 .solo_active = solo_active,
                 .wake_requested = shared.process_requested.swap(false, .acq_rel),
             };
-
-            _ = pool; // Unused, keeping for compatibility
 
             const synth_count = self.synth_node_ids.items.len;
             if (synth_count > 0) {
@@ -748,6 +745,8 @@ pub const Graph = struct {
     fn processSynthTaskDirect(ctx: *ProcessContext, task_index: u32) void {
         const main = @import("main.zig");
         main.is_audio_thread = true;
+        main.in_jobs_worker = true;
+        defer main.in_jobs_worker = false;
 
         const zone = tracy.ZoneN(@src(), "Synth task");
         defer zone.End();

@@ -9,7 +9,6 @@ const objc = @import("objc");
 const ui = @import("ui.zig");
 const audio_engine = @import("audio_engine.zig");
 const audio_graph = @import("audio_graph.zig");
-const thread_pool = @import("thread_pool.zig");
 const zsynth = @import("zsynth-core");
 const plugins = @import("plugins.zig");
 const project = @import("project.zig");
@@ -20,10 +19,16 @@ const MaxFrames = 128;
 
 /// Thread-local flag set when we're in an audio processing context
 pub threadlocal var is_audio_thread: bool = false;
+/// Thread-local flag set when running inside libz_jobs worker/help loop.
+/// Used as a reentrancy guard for CLAP thread-pool requests.
+pub threadlocal var in_jobs_worker: bool = false;
+/// Nesting depth for CLAP `thread_pool` requests on this thread.
+pub threadlocal var clap_threadpool_depth: u32 = 0;
 
 const Host = struct {
     clap_host: clap.Host,
-    pool: ?*thread_pool.ThreadPool = null,
+    jobs: ?*audio_graph.JobQueue = null,
+    jobs_fanout: u32 = 0,
     shared_state: ?*audio_engine.SharedState = null,
     main_thread_id: std.Thread.Id = undefined,
     callback_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -78,15 +83,74 @@ const Host = struct {
         if (task_count == 0) return true;
 
         const self: *Host = @ptrCast(@alignCast(host.host_data));
-        const pool = self.pool orelse return false;
 
         const plugin = audio_graph.current_processing_plugin orelse return false;
 
         const ext_raw = plugin.getExtension(plugin, clap.ext.thread_pool.id) orelse return false;
         const ext: *const clap.ext.thread_pool.Plugin = @ptrCast(@alignCast(ext_raw));
 
-        pool.execute(plugin, ext.exec, task_count);
-        return true;
+        // Allow nesting, but cap recursion to avoid pathological behavior.
+        // If we hit the cap, fall back to synchronous execution on this thread.
+        const max_depth: u32 = 4;
+        if (clap_threadpool_depth >= max_depth) {
+            for (0..task_count) |i| ext.exec(plugin, @intCast(i));
+            return true;
+        }
+
+        if (self.jobs) |job_queue| {
+            clap_threadpool_depth += 1;
+            defer clap_threadpool_depth -= 1;
+
+            const base_fanout: u32 = if (self.jobs_fanout > 0) self.jobs_fanout else 1;
+            // When called from within a worker/help loop, keep some headroom to reduce oversubscription.
+            const desired_fanout: u32 = if (in_jobs_worker) @max(1, base_fanout / 2) else base_fanout;
+            const job_count: u32 = @min(task_count, desired_fanout);
+
+            const Shared = struct {
+                plugin: *const clap.Plugin,
+                exec_fn: *const fn (*const clap.Plugin, u32) callconv(.c) void,
+                task_count: u32,
+                next_task: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+            };
+
+            var shared = Shared{
+                .plugin = plugin,
+                .exec_fn = ext.exec,
+                .task_count = task_count,
+                .next_task = std.atomic.Value(u32).init(0),
+            };
+
+            const RootJob = struct {
+                pub fn exec(_: *@This()) void {}
+            };
+            const root = job_queue.allocate(RootJob{});
+
+            const WorkerJob = struct {
+                shared: *Shared,
+                pub fn exec(job: *@This()) void {
+                    is_audio_thread = true;
+                    in_jobs_worker = true;
+                    defer in_jobs_worker = false;
+
+                    while (true) {
+                        const idx = job.shared.next_task.fetchAdd(1, .acq_rel);
+                        if (idx >= job.shared.task_count) break;
+                        job.shared.exec_fn(job.shared.plugin, idx);
+                    }
+                }
+            };
+
+            for (0..job_count) |_| {
+                const worker = job_queue.allocate(WorkerJob{ .shared = &shared });
+                job_queue.finishWith(worker, root);
+                job_queue.schedule(worker);
+            }
+
+            job_queue.schedule(root);
+            job_queue.wait(root);
+            return true;
+        }
+        return false;
     }
 
     fn _requestRestart(_: *const clap.Host) callconv(.c) void {}
@@ -341,8 +405,7 @@ pub fn main(init: std.process.Init) !void {
     host.clap_host.host_data = &host;
 
     const cpu_count = std.Thread.getCpuCount() catch 4;
-    host.pool = try thread_pool.ThreadPool.init(allocator, cpu_count);
-    defer host.pool.?.deinit();
+    host.jobs_fanout = @intCast(if (cpu_count > 1) @min(cpu_count - 1, 16) else 0);
 
     var track_plugins: [ui.track_count]TrackPlugin = undefined;
     for (&track_plugins) |*track| {
@@ -411,7 +474,6 @@ pub fn main(init: std.process.Init) !void {
     var engine = try audio_engine.AudioEngine.init(allocator, SampleRate, MaxFrames);
     defer engine.deinit();
     host.shared_state = &engine.shared;
-    engine.pool = host.pool;
 
     // Initialize libz_jobs work-stealing queue
     var jobs = try audio_graph.JobQueue.init(allocator, io);
@@ -420,6 +482,7 @@ pub fn main(init: std.process.Init) !void {
     defer jobs.stop();
     defer jobs.join();
     engine.jobs = &jobs;
+    host.jobs = &jobs;
 
     engine.updateFromUi(&state);
     engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
