@@ -5,6 +5,10 @@ const ui = @import("ui.zig");
 const audio_engine = @import("audio_engine.zig");
 const thread_pool = @import("thread_pool.zig");
 
+/// Thread-local storage for tracking which plugin is currently being processed.
+/// Used by the CLAP thread_pool extension to identify the calling plugin.
+pub threadlocal var current_processing_plugin: ?*const clap.Plugin = null;
+
 pub const NodeId = u32;
 pub const max_clip_notes = 256;
 
@@ -130,8 +134,8 @@ pub const NoteSource = struct {
                 .flags = .{},
             },
             .note_id = .unspecified,
-            .port_index = .unspecified,
-            .channel = .unspecified,
+            .port_index = @enumFromInt(0),
+            .channel = @enumFromInt(0),
             .key = @enumFromInt(@as(i16, @intCast(pitch))),
             .velocity = 1.0,
         });
@@ -148,8 +152,8 @@ pub const NoteSource = struct {
                 .flags = .{},
             },
             .note_id = .unspecified,
-            .port_index = .unspecified,
-            .channel = .unspecified,
+            .port_index = @enumFromInt(0),
+            .channel = @enumFromInt(0),
             .key = @enumFromInt(@as(i16, @intCast(pitch))),
             .velocity = 0.0,
         });
@@ -568,19 +572,6 @@ pub const Graph = struct {
         return null;
     }
 
-    fn getMainPortChannelCount(_: *Graph, plugin: *const clap.Plugin, is_input: bool) ?u32 {
-        const ext_raw = plugin.getExtension(plugin, clap.ext.audio_ports.id) orelse return null;
-        const ext: *const clap.ext.audio_ports.Plugin = @ptrCast(@alignCast(ext_raw));
-        if (ext.count(plugin, is_input) == 0) {
-            return 0;
-        }
-        var info: clap.ext.audio_ports.Info = undefined;
-        if (!ext.get(plugin, 0, is_input, &info)) {
-            return null;
-        }
-        return info.channel_count;
-    }
-
     const ProcessContext = struct {
         graph: *Graph,
         snapshot: *const StateSnapshot,
@@ -690,8 +681,8 @@ pub const Graph = struct {
         @memset(outputs.right[0..ctx.frame_count], 0);
 
         const plugin = ctx.snapshot.track_plugins[node.data.synth.track_index] orelse return;
-        const output_channels = ctx.graph.getMainPortChannelCount(plugin, false) orelse 2;
-        const output_channel_count: u32 = @min(if (output_channels == 0) 2 else output_channels, 2);
+        // Use stereo output - querying audio_ports from audio thread is not allowed
+        const output_channel_count: u32 = 2;
 
         var channel_ptrs = [2][*]f32{ outputs.left.ptr, outputs.right.ptr };
         var audio_out = clap.AudioBuffer{
@@ -769,8 +760,8 @@ pub const Graph = struct {
             .out_events = &node.data.synth.out_events,
         };
 
-        ctx.shared.current_processing_plugin.store(plugin, .release);
+        current_processing_plugin = plugin;
         _ = plugin.process(plugin, &clap_process);
-        ctx.shared.current_processing_plugin.store(null, .release);
+        current_processing_plugin = null;
     }
 };
