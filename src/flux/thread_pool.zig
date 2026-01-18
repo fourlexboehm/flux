@@ -4,6 +4,7 @@ const tracy = @import("tracy");
 const main = @import("main.zig");
 
 const max_batch_slots = 16; // Max nesting depth
+const spin_count = 64; // Spin iterations before falling back to futex
 
 const BatchSlot = struct {
     exec_fn: ?*const fn (*const clap.Plugin, u32) callconv(.c) void = null,
@@ -139,12 +140,8 @@ pub const ThreadPool = struct {
             }
         }
 
-        // Wait for completion
-        while (true) {
-            const remaining = slot.tasks_remaining.load(.acquire);
-            if (remaining == 0) break;
-            std.Thread.Futex.wait(&slot.tasks_remaining, remaining);
-        }
+        // Wait for completion with spin-before-futex
+        spinWaitCompletion(slot);
     }
 
     /// Execute generic parallel tasks (track-level parallelism)
@@ -191,7 +188,18 @@ pub const ThreadPool = struct {
             }
         }
 
-        // Wait for completion
+        // Wait for completion with spin-before-futex
+        spinWaitCompletion(slot);
+    }
+
+    /// Spin briefly before falling back to futex wait
+    fn spinWaitCompletion(slot: *BatchSlot) void {
+        // Quick spin check first - avoids syscall if tasks complete fast
+        for (0..spin_count) |_| {
+            if (slot.tasks_remaining.load(.acquire) == 0) return;
+            std.atomic.spinLoopHint();
+        }
+        // Fall back to futex if still not done
         while (true) {
             const remaining = slot.tasks_remaining.load(.acquire);
             if (remaining == 0) break;

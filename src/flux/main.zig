@@ -55,9 +55,10 @@ const Host = struct {
     }
 
     fn _getExtension(_: *const clap.Host, id: [*:0]const u8) callconv(.c) ?*const anyopaque {
-        if (std.mem.eql(u8, std.mem.span(id), clap.ext.thread_pool.id)) {
-            return &thread_pool_ext;
-        }
+        // Disabled for comparison testing
+        // if (std.mem.eql(u8, std.mem.span(id), clap.ext.thread_pool.id)) {
+        //     return &thread_pool_ext;
+        // }
         if (std.mem.eql(u8, std.mem.span(id), clap.ext.thread_check.id)) {
             return &thread_check_ext;
         }
@@ -249,12 +250,18 @@ const AppWindow = struct {
     }
 };
 
+var perf_total_us: u64 = 0;
+var perf_max_us: u64 = 0;
+var perf_count: u64 = 0;
+var perf_last_print: ?std.time.Instant = null;
+
 fn dataCallback(
     device: *zaudio.Device,
     output: ?*anyopaque,
     _: ?*const anyopaque,
     frame_count: u32,
 ) callconv(.c) void {
+    const start = std.time.Instant.now() catch null;
     is_audio_thread = true;
     defer is_audio_thread = false;
 
@@ -264,6 +271,41 @@ fn dataCallback(
     const user_data = zaudio.Device.getUserData(device) orelse return;
     const engine: *audio_engine.AudioEngine = @ptrCast(@alignCast(user_data));
     engine.render(device, output, frame_count);
+
+    // Perf timing and adaptive sleep
+    if (start) |s| {
+        const end = std.time.Instant.now() catch return;
+        const elapsed_us = end.since(s) / 1000;
+        perf_total_us += elapsed_us;
+        perf_max_us = @max(perf_max_us, elapsed_us);
+        perf_count += 1;
+
+        const now = end;
+        const should_print = if (perf_last_print) |last| now.since(last) >= std.time.ns_per_s else true;
+        if (should_print and perf_count > 0) {
+            const avg_us = perf_total_us / perf_count;
+            const budget_us = @as(u64, frame_count) * 1_000_000 / SampleRate;
+            std.debug.print("audio: avg={d}us max={d}us budget={d}us ({d}%)\n", .{ avg_us, perf_max_us, budget_us, avg_us * 100 / budget_us });
+
+            // Adaptive sleep: adjust based on max usage with safety margin
+            // Max sleep capped at 200µs to limit worst-case wake latency on play
+            if (engine.jobs) |jobs| {
+                const usage_pct = perf_max_us * 100 / budget_us;
+                const sleep_ns: u64 = if (usage_pct >= 50)
+                    10_000 // 10µs - high load, stay responsive
+                else if (usage_pct >= 30)
+                    50_000 // 50µs
+                else
+                    200_000; // 200µs - idle, but not too long for quick wake
+                jobs.setSleepNs(sleep_ns);
+            }
+
+            perf_total_us = 0;
+            perf_max_us = 0;
+            perf_count = 0;
+            perf_last_print = now;
+        }
+    }
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -350,6 +392,15 @@ pub fn main(init: std.process.Init) !void {
     defer engine.deinit();
     host.shared_state = &engine.shared;
     engine.pool = host.pool;
+
+    // Initialize libz_jobs work-stealing queue
+    var jobs = try audio_graph.JobQueue.init(allocator, io);
+    defer jobs.deinit();
+    try jobs.start();
+    defer jobs.stop();
+    defer jobs.join();
+    engine.jobs = &jobs;
+
     engine.updateFromUi(&state);
     engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
 

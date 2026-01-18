@@ -4,6 +4,13 @@ const tracy = @import("tracy");
 const ui = @import("ui.zig");
 const audio_engine = @import("audio_engine.zig");
 const thread_pool = @import("thread_pool.zig");
+const libz_jobs = @import("libz_jobs");
+
+pub const JobQueue = libz_jobs.JobQueue(.{
+    .max_jobs_per_thread = 64, // Enough for tracks + root job
+    .max_threads = 8, // Limit workers - most workloads don't benefit from more
+    .idle_sleep_ns = 500_000, // 500µs idle sleep - adaptive logic will reduce when needed
+});
 
 /// Thread-local storage for tracking which plugin is currently being processed.
 /// Used by the CLAP thread_pool extension to identify the calling plugin.
@@ -581,7 +588,7 @@ pub const Graph = struct {
         solo_active: bool,
     };
 
-    pub fn process(self: *Graph, snapshot: *const StateSnapshot, shared: *audio_engine.SharedState, pool: ?*thread_pool.ThreadPool, frame_count: u32, steady_time: u64) void {
+    pub fn process(self: *Graph, snapshot: *const StateSnapshot, shared: *audio_engine.SharedState, pool: ?*thread_pool.ThreadPool, jobs: ?*JobQueue, frame_count: u32, steady_time: u64) void {
         const zone = tracy.ZoneN(@src(), "Graph.process");
         defer zone.End();
 
@@ -605,7 +612,7 @@ pub const Graph = struct {
             }
         }
 
-        // Process synths (heavy, parallel if pool available)
+        // Process synths (heavy, parallel if job queue available)
         {
             const synth_zone = tracy.ZoneN(@src(), "Synths");
             defer synth_zone.End();
@@ -619,13 +626,41 @@ pub const Graph = struct {
                 .solo_active = solo_active,
             };
 
-            if (pool) |p| {
-                p.executeMany(
-                    @intCast(self.synth_node_ids.items.len),
-                    @ptrCast(&ctx),
-                    processSynthTask,
-                );
+            _ = pool; // Unused, keeping for compatibility
+
+            if (jobs) |job_queue| {
+                // Use libz_jobs work-stealing queue
+                const synth_count = self.synth_node_ids.items.len;
+                if (synth_count > 0) {
+                    // Allocate root job that we'll wait on
+                    const RootJob = struct {
+                        pub fn exec(_: *@This()) void {}
+                    };
+                    const root = job_queue.allocate(RootJob{});
+
+                    // Allocate and schedule synth jobs
+                    for (0..synth_count) |i| {
+                        const SynthJob = struct {
+                            ctx: *ProcessContext,
+                            task_index: u32,
+                            pub fn exec(job: *@This()) void {
+                                processSynthTaskDirect(job.ctx, job.task_index);
+                            }
+                        };
+                        const synth_job = job_queue.allocate(SynthJob{
+                            .ctx = &ctx,
+                            .task_index = @intCast(i),
+                        });
+                        job_queue.finishWith(synth_job, root);
+                        job_queue.schedule(synth_job);
+                    }
+
+                    // Schedule root and wait - main thread helps process
+                    job_queue.schedule(root);
+                    job_queue.wait(root);
+                }
             } else {
+                // Sequential fallback
                 for (self.synth_node_ids.items, 0..) |_, i| {
                     processSynthTask(@ptrCast(&ctx), @intCast(i));
                 }
@@ -668,10 +703,16 @@ pub const Graph = struct {
     }
 
     fn processSynthTask(ctx_ptr: *anyopaque, task_index: u32) void {
+        const ctx: *ProcessContext = @ptrCast(@alignCast(ctx_ptr));
+        processSynthTaskDirect(ctx, task_index);
+    }
+
+    fn processSynthTaskDirect(ctx: *ProcessContext, task_index: u32) void {
+        const main = @import("main.zig");
+        main.is_audio_thread = true;
+
         const zone = tracy.ZoneN(@src(), "Synth task");
         defer zone.End();
-
-        const ctx: *ProcessContext = @ptrCast(@alignCast(ctx_ptr));
         const node_id = ctx.graph.synth_node_ids.items[task_index];
         var node = &ctx.graph.nodes.items[node_id];
 
