@@ -588,6 +588,7 @@ pub const Graph = struct {
         frame_count: u32,
         steady_time: u64,
         solo_active: bool,
+        wake_requested: bool,
     };
 
     pub fn process(self: *Graph, snapshot: *const StateSnapshot, shared: *audio_engine.SharedState, pool: ?*thread_pool.ThreadPool, jobs: ?*JobQueue, frame_count: u32, steady_time: u64) void {
@@ -626,6 +627,7 @@ pub const Graph = struct {
                 .frame_count = frame_count,
                 .steady_time = steady_time,
                 .solo_active = solo_active,
+                .wake_requested = shared.process_requested.swap(false, .acq_rel),
             };
 
             _ = pool; // Unused, keeping for compatibility
@@ -755,6 +757,8 @@ pub const Graph = struct {
 
         // Wake plugin if it has new events, skip if sleeping with no events
         if (has_input_events) {
+            node.data.synth.sleeping = false;
+        } else if (ctx.wake_requested) {
             node.data.synth.sleeping = false;
         } else if (node.data.synth.sleeping) {
             // Plugin requested sleep and no new events - skip processing
