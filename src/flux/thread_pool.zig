@@ -1,6 +1,7 @@
 const std = @import("std");
 const clap = @import("clap-bindings");
 const tracy = @import("tracy");
+const main = @import("main.zig");
 
 const max_batch_slots = 16; // Max nesting depth
 
@@ -200,6 +201,7 @@ pub const ThreadPool = struct {
 
     fn workerMain(pool: *ThreadPool, tid: *std.Thread.Id) void {
         tid.* = std.Thread.getCurrentId();
+        main.is_audio_thread = true; // Workers are always audio threads
         var last_gen = pool.generation.load(.acquire);
 
         while (!pool.shutdown.load(.acquire)) {

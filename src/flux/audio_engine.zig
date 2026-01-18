@@ -13,7 +13,6 @@ pub const SharedState = struct {
     active_index: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     snapshots: []audio_graph.StateSnapshot,
     track_plugins: [ui.track_count]?*const clap.Plugin = [_]?*const clap.Plugin{null} ** ui.track_count,
-    current_processing_plugin: std.atomic.Value(?*const clap.Plugin) = std.atomic.Value(?*const clap.Plugin).init(null),
 
     pub fn init(allocator: std.mem.Allocator) !SharedState {
         var snapshots = try allocator.alloc(audio_graph.StateSnapshot, 2);

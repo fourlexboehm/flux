@@ -8,6 +8,7 @@ const objc = @import("objc");
 
 const ui = @import("ui.zig");
 const audio_engine = @import("audio_engine.zig");
+const audio_graph = @import("audio_graph.zig");
 const thread_pool = @import("thread_pool.zig");
 const zsynth = @import("zsynth-core");
 const plugins = @import("plugins.zig");
@@ -17,13 +18,22 @@ const SampleRate = 44_100;
 const Channels = 2;
 const MaxFrames = 128;
 
+/// Thread-local flag set when we're in an audio processing context
+pub threadlocal var is_audio_thread: bool = false;
+
 const Host = struct {
     clap_host: clap.Host,
     pool: ?*thread_pool.ThreadPool = null,
     shared_state: ?*audio_engine.SharedState = null,
+    main_thread_id: std.Thread.Id = undefined,
 
     const thread_pool_ext = clap.ext.thread_pool.Host{
         .requestExec = _requestExec,
+    };
+
+    const thread_check_ext = clap.ext.thread_check.Host{
+        .isMainThread = _isMainThread,
+        .isAudioThread = _isAudioThread,
     };
 
     pub fn init() Host {
@@ -40,6 +50,7 @@ const Host = struct {
                 .requestProcess = _requestProcess,
                 .requestCallback = _requestCallback,
             },
+            .main_thread_id = std.Thread.getCurrentId(),
         };
     }
 
@@ -47,7 +58,19 @@ const Host = struct {
         if (std.mem.eql(u8, std.mem.span(id), clap.ext.thread_pool.id)) {
             return &thread_pool_ext;
         }
+        if (std.mem.eql(u8, std.mem.span(id), clap.ext.thread_check.id)) {
+            return &thread_check_ext;
+        }
         return null;
+    }
+
+    fn _isMainThread(host: *const clap.Host) callconv(.c) bool {
+        const self: *Host = @ptrCast(@alignCast(host.host_data));
+        return std.Thread.getCurrentId() == self.main_thread_id;
+    }
+
+    fn _isAudioThread(_: *const clap.Host) callconv(.c) bool {
+        return is_audio_thread;
     }
 
     fn _requestExec(host: *const clap.Host, task_count: u32) callconv(.c) bool {
@@ -55,9 +78,8 @@ const Host = struct {
 
         const self: *Host = @ptrCast(@alignCast(host.host_data));
         const pool = self.pool orelse return false;
-        const shared = self.shared_state orelse return false;
 
-        const plugin = shared.current_processing_plugin.load(.acquire) orelse return false;
+        const plugin = audio_graph.current_processing_plugin orelse return false;
 
         const ext_raw = plugin.getExtension(plugin, clap.ext.thread_pool.id) orelse return false;
         const ext: *const clap.ext.thread_pool.Plugin = @ptrCast(@alignCast(ext_raw));
@@ -233,6 +255,9 @@ fn dataCallback(
     _: ?*const anyopaque,
     frame_count: u32,
 ) callconv(.c) void {
+    is_audio_thread = true;
+    defer is_audio_thread = false;
+
     if (frame_count > MaxFrames) {
         std.log.warn("Audio callback frame_count={} (requested {})", .{ frame_count, MaxFrames });
     }
