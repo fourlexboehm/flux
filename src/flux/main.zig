@@ -451,8 +451,8 @@ pub fn main(init: std.process.Init) !void {
     var jobs = try audio_graph.JobQueue.init(allocator, io);
     defer jobs.deinit();
     try jobs.start();
-    defer jobs.stop();
     defer jobs.join();
+    defer jobs.stop();
     engine.jobs = &jobs;
     host.jobs = &jobs;
 
