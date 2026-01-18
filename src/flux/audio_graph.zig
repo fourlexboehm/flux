@@ -788,6 +788,19 @@ pub const Graph = struct {
         const input_events = ctx.graph.findEventInput(node_id) orelse &empty_input_events;
         const has_input_events = input_events.size(input_events) > 0;
 
+        // Check if plugin needs startProcessing called (must be done from audio thread)
+        const track_index = node.data.synth.track_index;
+        if (ctx.shared.checkAndClearStartProcessing(track_index)) {
+            // Only call startProcessing if not already started
+            if (!ctx.shared.isPluginStarted(track_index)) {
+                if (plugin.startProcessing(plugin)) {
+                    ctx.shared.markPluginStarted(track_index);
+                } else {
+                    std.log.warn("Failed to start processing for track {d} plugin", .{track_index});
+                }
+            }
+        }
+
         // Wake plugin if it has new events, skip if sleeping with no events
         if (has_input_events) {
             node.data.synth.sleeping = false;
