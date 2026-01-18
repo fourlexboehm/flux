@@ -944,8 +944,10 @@ pub const SessionView = struct {
                 }
                 if (self.clips[t][scene].state != .empty) {
                     self.clips[t][scene].state = .queued;
-                    self.queued_scene[t] = scene;
                 }
+                // Always queue the scene switch - this ensures clips in other scenes
+                // are stopped even if this track has no clip in the target scene
+                self.queued_scene[t] = scene;
             }
         } else {
             // Immediate switch

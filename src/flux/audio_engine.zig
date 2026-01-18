@@ -13,6 +13,10 @@ pub const SharedState = struct {
     process_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     snapshots: []audio_graph.StateSnapshot,
     track_plugins: [ui.track_count]?*const clap.Plugin = [_]?*const clap.Plugin{null} ** ui.track_count,
+    /// Tracks which plugins need startProcessing called (done from audio thread)
+    plugins_need_start: [ui.track_count]std.atomic.Value(bool) = [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** ui.track_count,
+    /// Tracks which plugins have had startProcessing called (for stopProcessing on cleanup)
+    plugins_started: [ui.track_count]std.atomic.Value(bool) = [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** ui.track_count,
 
     pub fn init(allocator: std.mem.Allocator) !SharedState {
         var snapshots = try allocator.alloc(audio_graph.StateSnapshot, 2);
@@ -69,6 +73,31 @@ pub const SharedState = struct {
         self.snapshots[next] = self.snapshots[current];
         self.snapshots[next].track_plugins[track_index] = plugin;
         self.active_index.store(next, .release);
+    }
+
+    /// Request that startProcessing be called for a track plugin from the audio thread
+    pub fn requestStartProcessing(self: *SharedState, track_index: usize) void {
+        self.plugins_need_start[track_index].store(true, .release);
+    }
+
+    /// Check and clear the start processing flag (called from audio thread)
+    pub fn checkAndClearStartProcessing(self: *SharedState, track_index: usize) bool {
+        return self.plugins_need_start[track_index].swap(false, .acq_rel);
+    }
+
+    /// Mark a plugin as started (called from audio thread after successful startProcessing)
+    pub fn markPluginStarted(self: *SharedState, track_index: usize) void {
+        self.plugins_started[track_index].store(true, .release);
+    }
+
+    /// Check if a plugin was started (for calling stopProcessing on cleanup)
+    pub fn isPluginStarted(self: *SharedState, track_index: usize) bool {
+        return self.plugins_started[track_index].load(.acquire);
+    }
+
+    /// Clear the started flag when unloading a plugin
+    pub fn clearPluginStarted(self: *SharedState, track_index: usize) void {
+        self.plugins_started[track_index].store(false, .release);
     }
 
     pub fn snapshot(self: *SharedState) *const audio_graph.StateSnapshot {

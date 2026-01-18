@@ -186,7 +186,6 @@ const PluginHandle = struct {
     factory: *const clap.PluginFactory,
     plugin: *const clap.Plugin,
     plugin_path_z: [:0]u8,
-    started: bool,
     activated: bool,
 
     pub fn init(
@@ -230,24 +229,12 @@ const PluginHandle = struct {
             .factory = factory,
             .plugin = plugin,
             .plugin_path_z = plugin_path_z,
-            .started = false,
             .activated = true,
         };
     }
 
-    pub fn startProcessing(self: *PluginHandle) bool {
-        if (self.started) return true;
-        if (!self.plugin.startProcessing(self.plugin)) {
-            return false;
-        }
-        self.started = true;
-        return true;
-    }
-
     pub fn deinit(self: *PluginHandle, allocator: std.mem.Allocator) void {
-        if (self.started) {
-            self.plugin.stopProcessing(self.plugin);
-        }
+        // Note: stopProcessing is called by unloadPlugin before this, using SharedState tracking
         if (self.activated) {
             self.plugin.deactivate(self.plugin);
         }
@@ -456,19 +443,6 @@ pub fn main(init: std.process.Init) !void {
         project.applyDeviceStates(allocator, &parsed.value, loaded_plugins);
     }
 
-    for (synths[0..synth_count]) |plugin| {
-        if (!plugin.plugin.startProcessing(&plugin.plugin)) {
-            std.log.warn("Failed to start processing for built-in synth", .{});
-        }
-    }
-    for (&track_plugins) |*track| {
-        if (track.handle) |*handle| {
-            if (!handle.startProcessing()) {
-                std.log.warn("Failed to start processing for track plugin", .{});
-            }
-        }
-    }
-
     var engine = try audio_engine.AudioEngine.init(allocator, SampleRate, MaxFrames);
     defer engine.deinit();
     host.shared_state = &engine.shared;
@@ -484,6 +458,11 @@ pub fn main(init: std.process.Init) !void {
 
     engine.updateFromUi(&state);
     engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
+
+    // Request startProcessing for all loaded plugins (will be called from audio thread)
+    for (0..ui.track_count) |t| {
+        engine.shared.requestStartProcessing(t);
+    }
 
     var device_config = zaudio.Device.Config.init(.playback);
     device_config.playback.format = zaudio.Format.float32;
@@ -754,8 +733,8 @@ pub fn main(init: std.process.Init) !void {
         std.log.warn("Failed to save project: {}", .{err});
     };
 
-    for (&track_plugins) |*track| {
-        unloadPlugin(track, allocator);
+    for (&track_plugins, 0..) |*track, t| {
+        unloadPlugin(track, allocator, &engine.shared, t);
     }
 }
 
@@ -852,7 +831,7 @@ fn syncTrackPlugins(
             if (track.handle != null) {
                 closePluginGui(track);
                 prepareUnload(shared, t, io);
-                unloadPlugin(track, allocator);
+                unloadPlugin(track, allocator, shared, t);
             }
             track.choice_index = choice;
             continue;
@@ -862,7 +841,7 @@ fn syncTrackPlugins(
             if (track.handle != null) {
                 closePluginGui(track);
                 prepareUnload(shared, t, io);
-                unloadPlugin(track, allocator);
+                unloadPlugin(track, allocator, shared, t);
             }
             track.choice_index = choice;
         }
@@ -871,15 +850,23 @@ fn syncTrackPlugins(
             const path = entry.?.path orelse return error.PluginMissingPath;
             track.handle = try PluginHandle.init(allocator, host, path, entry.?.id);
             track.gui_ext = getGuiExt(track.handle.?);
-        }
-        if (start_processing and track.handle != null) {
-            if (!track.handle.?.startProcessing()) {
-                std.log.warn("Failed to start processing for track plugin", .{});
+            // Request startProcessing from audio thread (CLAP requires audio thread for this call)
+            if (start_processing) {
+                if (shared) |s| {
+                    s.requestStartProcessing(t);
+                }
             }
         }
 
         if (wants_gui and !track.gui_open) {
             if (track.gui_ext) |gui_ext| {
+                // Close all other plugin GUIs first
+                for (track_plugins, 0..) |*other_track, other_t| {
+                    if (other_t != t and other_track.gui_open) {
+                        closePluginGui(other_track);
+                        state.track_plugins[other_t].gui_open = false;
+                    }
+                }
                 openPluginGui(track, gui_ext) catch |err| {
                     std.log.err("Failed to open plugin gui: {}", .{err});
                     state.track_plugins[t].gui_open = false;
@@ -893,8 +880,21 @@ fn syncTrackPlugins(
     }
 }
 
-fn unloadPlugin(track: *TrackPlugin, allocator: std.mem.Allocator) void {
+fn unloadPlugin(track: *TrackPlugin, allocator: std.mem.Allocator, shared: ?*audio_engine.SharedState, track_index: usize) void {
     if (track.handle) |*handle| {
+        // Check if plugin was started via shared state and call stopProcessing if needed
+        if (shared) |s| {
+            if (s.isPluginStarted(track_index)) {
+                // Set audio thread flag for stopProcessing (per CLAP spec, host controls
+                // which thread is "audio thread" and can designate any thread when only
+                // one is active. The audio device is already stopped at this point.)
+                const was_audio = is_audio_thread;
+                is_audio_thread = true;
+                defer is_audio_thread = was_audio;
+                handle.plugin.stopProcessing(handle.plugin);
+                s.clearPluginStarted(track_index);
+            }
+        }
         handle.deinit(allocator);
     }
     track.handle = null;
