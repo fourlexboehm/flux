@@ -821,9 +821,11 @@ fn syncTrackPlugins(
         }
     }.call;
 
+    const selected_track = state.selectedTrack();
     for (track_plugins, 0..) |*track, t| {
         const choice = state.track_plugins[t].choice_index;
-        const wants_gui = state.track_plugins[t].gui_open;
+        // Only show GUI for the selected track (if that track has gui_open enabled)
+        const wants_gui = state.track_plugins[t].gui_open and (t == selected_track);
 
         const entry = catalog.entryForIndex(choice);
         const kind = if (entry) |item| item.kind else .none;
@@ -860,11 +862,10 @@ fn syncTrackPlugins(
 
         if (wants_gui and !track.gui_open) {
             if (track.gui_ext) |gui_ext| {
-                // Close all other plugin GUIs first
-                for (track_plugins, 0..) |*other_track, other_t| {
-                    if (other_t != t and other_track.gui_open) {
+                // Close all other plugin GUI windows first (but keep their gui_open state)
+                for (track_plugins) |*other_track| {
+                    if (other_track.gui_open) {
                         closePluginGui(other_track);
-                        state.track_plugins[other_t].gui_open = false;
                     }
                 }
                 openPluginGui(track, gui_ext) catch |err| {

@@ -414,6 +414,10 @@ fn drawClipGrid(state: *State, ui_scale: f32) void {
         state.bottom_mode = .sequencer;
         state.focused_pane = .bottom;
     }
+    if (state.session.start_playback_request) {
+        state.session.start_playback_request = false;
+        state.playing = true;
+    }
 }
 
 fn drawBottomPanel(state: *State, ui_scale: f32) void {
