@@ -21,6 +21,17 @@ pub fn build(b: *std.Build) void {
         "Disable profiling. This will override the enable profiling flag",
     ) orelse false;
 
+    const use_wayland = b.option(
+        bool,
+        "wayland",
+        "Use Wayland on Linux (default: true)",
+    ) orelse (builtin.os.tag == .linux);
+    const use_x11 = b.option(
+        bool,
+        "x11",
+        "Use X11 on Linux (default: false when wayland=true)",
+    ) orelse (!use_wayland);
+
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const clap_bindings = b.dependency("clap-bindings", .{});
@@ -36,8 +47,8 @@ pub fn build(b: *std.Build) void {
     });
     const zglfw = b.dependency("zglfw", .{
         .shared = false,
-        .x11 = true,
-        .wayland = false,
+        .x11 = use_x11,
+        .wayland = use_wayland,
     });
     const zopengl = b.dependency("zopengl", .{});
     const zaudio = b.dependency("zaudio", .{});
@@ -128,6 +139,16 @@ pub fn build(b: *std.Build) void {
             pkg.root_module.linkFramework("Metal", .{});
             pkg.root_module.linkFramework("QuartzCore", .{});
         }
+        if (builtin.os.tag == .linux) {
+            if (use_wayland) {
+                pkg.root_module.linkSystemLibrary("wayland-client", .{});
+                pkg.root_module.linkSystemLibrary("wayland-cursor", .{});
+                pkg.root_module.linkSystemLibrary("wayland-egl", .{});
+                pkg.root_module.linkSystemLibrary("xkbcommon", .{});
+            } else {
+                pkg.root_module.linkSystemLibrary("X11", .{});
+            }
+        }
     }
 
     zsynth_core.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
@@ -161,6 +182,10 @@ pub fn build(b: *std.Build) void {
     flux.root_module.addImport("zsynth-core", zsynth_core);
     flux.root_module.addImport("zaudio", zaudio.module("root"));
     flux.root_module.addImport("zgui", zgui.module("root"));
+    flux.root_module.addImport("zglfw", zglfw.module("root"));
+    flux.root_module.linkLibrary(zglfw.artifact("glfw"));
+    flux.root_module.addImport("zopengl", zopengl.module("root"));
+    flux.root_module.linkLibrary(zopengl.artifact("zopengl"));
     flux.root_module.linkLibrary(zgui.artifact("imgui"));
     flux.root_module.linkLibrary(zaudio.artifact("miniaudio"));
     flux.root_module.addImport("tracy", ztracy.module("root"));
@@ -174,6 +199,16 @@ pub fn build(b: *std.Build) void {
         flux.root_module.linkFramework("Foundation", .{});
         flux.root_module.linkFramework("Metal", .{});
         flux.root_module.linkFramework("QuartzCore", .{});
+    }
+    if (builtin.os.tag == .linux) {
+        if (use_wayland) {
+            flux.root_module.linkSystemLibrary("wayland-client", .{});
+            flux.root_module.linkSystemLibrary("wayland-cursor", .{});
+            flux.root_module.linkSystemLibrary("wayland-egl", .{});
+            flux.root_module.linkSystemLibrary("xkbcommon", .{});
+        } else {
+            flux.root_module.linkSystemLibrary("X11", .{});
+        }
     }
     b.installArtifact(flux);
 

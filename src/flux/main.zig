@@ -4,7 +4,9 @@ const std = @import("std");
 const clap = @import("clap-bindings");
 const zaudio = @import("zaudio");
 const zgui = @import("zgui");
-const objc = @import("objc");
+const zglfw = @import("zglfw");
+const zopengl = @import("zopengl");
+const objc = if (builtin.os.tag == .macos) @import("objc") else struct {};
 
 const ui = @import("ui.zig");
 const audio_engine = @import("audio_engine.zig");
@@ -259,13 +261,13 @@ const PluginHandle = struct {
 const TrackPlugin = struct {
     handle: ?PluginHandle = null,
     gui_ext: ?*const clap.ext.gui.Plugin = null,
-    gui_window: ?*objc.app_kit.Window = null,
-    gui_view: ?*objc.app_kit.View = null,
+    gui_window: ?*anyopaque = null,
+    gui_view: ?*anyopaque = null,
     gui_open: bool = false,
     choice_index: i32 = -1,
 };
 
-const AppWindow = struct {
+const AppWindow = if (builtin.os.tag == .macos) struct {
     app: *objc.app_kit.Application,
     window: *objc.app_kit.Window,
     view: *objc.app_kit.View,
@@ -332,7 +334,7 @@ const AppWindow = struct {
         self.view.release();
         self.window.release();
     }
-};
+} else struct {};
 
 var perf_total_us: u64 = 0;
 var perf_max_us: u64 = 0;
@@ -396,10 +398,6 @@ pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
     const project_path = project.default_path;
-
-    if (builtin.os.tag != .macos) {
-        return error.UnsupportedOs;
-    }
 
     var host = Host.init();
     host.clap_host.host_data = &host;
@@ -501,125 +499,245 @@ pub fn main(init: std.process.Init) !void {
     defer device.destroy();
     try device.start();
 
-    var app_window = try AppWindow.init("flux", 1280, 720);
-    defer app_window.deinit();
-
     zgui.init(allocator);
     defer zgui.deinit();
     zgui.io.setIniFilename(null);
-    _ = zgui.io.addFontFromMemory(zsynth.font, std.math.floor(16.0 * app_window.scale_factor));
-    zgui.getStyle().scaleAllSizes(app_window.scale_factor);
     zgui.plot.init();
     defer zgui.plot.deinit();
-    zgui.backend.init(app_window.view, app_window.device);
-    defer zgui.backend.deinit();
 
     var last_time = try std.time.Instant.now();
 
     std.log.info("flux running (Ctrl+C to quit)", .{});
-    while (app_window.window.isVisible()) {
-        const frame_start = std.time.Instant.now() catch last_time;
-        host.pumpMainThreadCallbacks();
+    switch (builtin.os.tag) {
+        .macos => {
+            var app_window = try AppWindow.init("flux", 1280, 720);
+            defer app_window.deinit();
 
-        const now = std.time.Instant.now() catch last_time;
-        const delta_ns = now.since(last_time);
-        last_time = now;
-        if (delta_ns > 0) {
-            const dt = @as(f64, @floatFromInt(delta_ns)) / std.time.ns_per_s;
-            ui.tick(&state, dt);
-        }
-        state.zsynth = synths[state.selectedTrack()];
-        updateDeviceState(&state, &catalog, &track_plugins);
-        const wants_keyboard = zgui.io.getWantCaptureKeyboard();
-        const item_active = zgui.isAnyItemActive();
-        if ((!wants_keyboard or !item_active) and zgui.isKeyPressed(.space, false)) {
-            // Avoid macOS "bonk" when handling space outside ImGui widgets.
-            zgui.setNextFrameWantCaptureKeyboard(true);
-            state.playing = !state.playing;
-            state.playhead_beat = 0;
-        }
+            _ = zgui.io.addFontFromMemory(zsynth.font, std.math.floor(16.0 * app_window.scale_factor));
+            zgui.getStyle().scaleAllSizes(app_window.scale_factor);
+            zgui.backend.init(app_window.view, app_window.device);
+            defer zgui.backend.deinit();
 
-        while (app_window.app.nextEventMatchingMask(
-            objc.app_kit.EventMaskAny,
-            objc.app_kit.Date.distantPast(),
-            objc.app_kit.NSDefaultRunLoopMode,
-            true,
-        )) |event| {
-            app_window.app.sendEvent(event);
-        }
+            while (app_window.window.isVisible()) {
+                const frame_start = std.time.Instant.now() catch last_time;
+                host.pumpMainThreadCallbacks();
 
-        const frame = app_window.window.frame();
-        const content = app_window.window.contentRectForFrameRect(frame);
-        const scale: f32 = @floatCast(app_window.window.backingScaleFactor());
-        if (scale != app_window.scale_factor) {
-            app_window.scale_factor = scale;
-        }
-        app_window.view.setFrameSize(content.size);
-        app_window.view.setBoundsOrigin(.{ .x = 0, .y = 0 });
-        app_window.view.setBoundsSize(.{
-            .width = content.size.width * @as(f64, @floatCast(scale)),
-            .height = content.size.height * @as(f64, @floatCast(scale)),
-        });
-        app_window.layer.setDrawableSize(.{
-            .width = content.size.width * @as(f64, @floatCast(scale)),
-            .height = content.size.height * @as(f64, @floatCast(scale)),
-        });
+                const now = std.time.Instant.now() catch last_time;
+                const delta_ns = now.since(last_time);
+                last_time = now;
+                if (delta_ns > 0) {
+                    const dt = @as(f64, @floatFromInt(delta_ns)) / std.time.ns_per_s;
+                    ui.tick(&state, dt);
+                }
+                state.zsynth = synths[state.selectedTrack()];
+                updateDeviceState(&state, &catalog, &track_plugins);
+                const wants_keyboard = zgui.io.getWantCaptureKeyboard();
+                const item_active = zgui.isAnyItemActive();
+                if ((!wants_keyboard or !item_active) and zgui.isKeyPressed(.space, false)) {
+                    // Avoid macOS "bonk" when handling space outside ImGui widgets.
+                    zgui.setNextFrameWantCaptureKeyboard(true);
+                    state.playing = !state.playing;
+                    state.playhead_beat = 0;
+                }
 
-        const fb_width: u32 = @intFromFloat(@max(content.size.width * @as(f64, @floatCast(scale)), 1));
-        const fb_height: u32 = @intFromFloat(@max(content.size.height * @as(f64, @floatCast(scale)), 1));
+                while (app_window.app.nextEventMatchingMask(
+                    objc.app_kit.EventMaskAny,
+                    objc.app_kit.Date.distantPast(),
+                    objc.app_kit.NSDefaultRunLoopMode,
+                    true,
+                )) |event| {
+                    app_window.app.sendEvent(event);
+                }
 
-        const descriptor = objc.metal.RenderPassDescriptor.renderPassDescriptor();
-        const color_attachment = descriptor.colorAttachments().objectAtIndexedSubscript(0);
-        const clear_color = objc.metal.ClearColor.init(0.08, 0.08, 0.1, 1.0);
-        color_attachment.setClearColor(clear_color);
-        const attachment_descriptor = color_attachment.as(objc.metal.RenderPassAttachmentDescriptor);
-        const drawable_opt = app_window.layer.nextDrawable();
-        if (drawable_opt == null) {
-            sleepNs(io, 5 * std.time.ns_per_ms);
-            continue;
-        }
-        const drawable = drawable_opt.?;
-        attachment_descriptor.setTexture(drawable.texture());
-        attachment_descriptor.setLoadAction(objc.metal.LoadActionClear);
-        attachment_descriptor.setStoreAction(objc.metal.StoreActionStore);
+                const frame = app_window.window.frame();
+                const content = app_window.window.contentRectForFrameRect(frame);
+                const scale: f32 = @floatCast(app_window.window.backingScaleFactor());
+                if (scale != app_window.scale_factor) {
+                    app_window.scale_factor = scale;
+                }
+                app_window.view.setFrameSize(content.size);
+                app_window.view.setBoundsOrigin(.{ .x = 0, .y = 0 });
+                app_window.view.setBoundsSize(.{
+                    .width = content.size.width * @as(f64, @floatCast(scale)),
+                    .height = content.size.height * @as(f64, @floatCast(scale)),
+                });
+                app_window.layer.setDrawableSize(.{
+                    .width = content.size.width * @as(f64, @floatCast(scale)),
+                    .height = content.size.height * @as(f64, @floatCast(scale)),
+                });
 
-        const command_buffer = app_window.command_queue.commandBuffer().?;
-        const command_encoder = command_buffer.renderCommandEncoderWithDescriptor(descriptor).?;
+                const fb_width: u32 = @intFromFloat(@max(content.size.width * @as(f64, @floatCast(scale)), 1));
+                const fb_height: u32 = @intFromFloat(@max(content.size.height * @as(f64, @floatCast(scale)), 1));
 
-        zgui.backend.newFrame(fb_width, fb_height, app_window.view, descriptor);
-        zgui.setNextFrameWantCaptureKeyboard(true);
-        ui.updateKeyboardMidi(&state);
-        ui.draw(&state, 1.0);
-        engine.updateFromUi(&state);
-        try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog, &engine.shared, io, true);
-        engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
-        zgui.backend.draw(command_buffer, command_encoder);
-        command_encoder.as(objc.metal.CommandEncoder).endEncoding();
-        command_buffer.presentDrawable(drawable.as(objc.metal.Drawable));
-        command_buffer.commit();
-        command_buffer.waitUntilCompleted();
+                const descriptor = objc.metal.RenderPassDescriptor.renderPassDescriptor();
+                const color_attachment = descriptor.colorAttachments().objectAtIndexedSubscript(0);
+                const clear_color = objc.metal.ClearColor.init(0.08, 0.08, 0.1, 1.0);
+                color_attachment.setClearColor(clear_color);
+                const attachment_descriptor = color_attachment.as(objc.metal.RenderPassAttachmentDescriptor);
+                const drawable_opt = app_window.layer.nextDrawable();
+                if (drawable_opt == null) {
+                    sleepNs(io, 5 * std.time.ns_per_ms);
+                    continue;
+                }
+                const drawable = drawable_opt.?;
+                attachment_descriptor.setTexture(drawable.texture());
+                attachment_descriptor.setLoadAction(objc.metal.LoadActionClear);
+                attachment_descriptor.setStoreAction(objc.metal.StoreActionStore);
 
-        // Update plugin GUIs outside the host ImGui frame to avoid context collisions.
-        for (&track_plugins) |*track| {
-            if (track.gui_open and track.handle != null) {
-                track.handle.?.plugin.onMainThread(track.handle.?.plugin);
+                const command_buffer = app_window.command_queue.commandBuffer().?;
+                const command_encoder = command_buffer.renderCommandEncoderWithDescriptor(descriptor).?;
+
+                zgui.backend.newFrame(fb_width, fb_height, app_window.view, descriptor);
+                zgui.setNextFrameWantCaptureKeyboard(true);
+                ui.updateKeyboardMidi(&state);
+                ui.draw(&state, 1.0);
+                engine.updateFromUi(&state);
+                try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog, &engine.shared, io, true);
+                engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
+                zgui.backend.draw(command_buffer, command_encoder);
+                command_encoder.as(objc.metal.CommandEncoder).endEncoding();
+                command_buffer.presentDrawable(drawable.as(objc.metal.Drawable));
+                command_buffer.commit();
+                command_buffer.waitUntilCompleted();
+
+                // Update plugin GUIs outside the host ImGui frame to avoid context collisions.
+                for (&track_plugins) |*track| {
+                    if (track.gui_open and track.handle != null) {
+                        track.handle.?.plugin.onMainThread(track.handle.?.plugin);
+                    }
+                }
+
+                const any_plugin_gui_open = blk: {
+                    for (track_plugins) |track| {
+                        if (track.gui_open) break :blk true;
+                    }
+                    break :blk false;
+                };
+                const interactive = zgui.isAnyItemActive() or zgui.isAnyItemHovered() or zgui.io.getWantCaptureMouse() or wants_keyboard;
+                const target_fps: u32 = if (state.playing or interactive or any_plugin_gui_open) 60 else 20;
+                const target_frame_ns: u64 = std.time.ns_per_s / @as(u64, target_fps);
+                const frame_end = std.time.Instant.now() catch frame_start;
+                const frame_elapsed_ns = frame_end.since(frame_start);
+                if (frame_elapsed_ns < target_frame_ns) {
+                    sleepNs(io, target_frame_ns - frame_elapsed_ns);
+                }
             }
-        }
+        },
+        .linux => {
+            const gl_major = 4;
+            const gl_minor = 0;
 
-        const any_plugin_gui_open = blk: {
-            for (track_plugins) |track| {
-                if (track.gui_open) break :blk true;
+            try zglfw.init();
+            defer zglfw.terminate();
+
+            zglfw.windowHint(.context_version_major, gl_major);
+            zglfw.windowHint(.context_version_minor, gl_minor);
+            zglfw.windowHint(.opengl_profile, .opengl_core_profile);
+            zglfw.windowHint(.opengl_forward_compat, true);
+            zglfw.windowHint(.client_api, .opengl_api);
+            zglfw.windowHint(.doublebuffer, true);
+
+            const window = try zglfw.Window.create(1280, 720, "flux", null);
+            defer window.destroy();
+            window.setSizeLimits(320, 240, -1, -1);
+
+            zglfw.makeContextCurrent(window);
+            zglfw.swapInterval(1);
+            try zopengl.loadCoreProfile(zglfw.getProcAddress, gl_major, gl_minor);
+
+            // Font/UI scale: Wayland typically already provides logical sizes, so default to 1.0.
+            // Override via `FLUX_UI_SCALE` (e.g. "1.25") if desired.
+            const ui_scale: f32 = blk: {
+                const env = std.c.getenv("FLUX_UI_SCALE") orelse break :blk 1.0;
+                const parsed = std.fmt.parseFloat(f32, std.mem.span(env)) catch break :blk 1.0;
+                break :blk if (parsed > 0) parsed else 1.0;
+            };
+            _ = zgui.io.addFontFromMemory(zsynth.font, std.math.floor(16.0 * ui_scale));
+            if (ui_scale != 1.0) zgui.getStyle().scaleAllSizes(ui_scale);
+
+            zgui.backend.init(window);
+            defer zgui.backend.deinit();
+
+            const gl = zopengl.bindings;
+
+            while (!window.shouldClose()) {
+                const frame_start = std.time.Instant.now() catch last_time;
+                host.pumpMainThreadCallbacks();
+
+                const now = std.time.Instant.now() catch last_time;
+                const delta_ns = now.since(last_time);
+                last_time = now;
+                if (delta_ns > 0) {
+                    const dt = @as(f64, @floatFromInt(delta_ns)) / std.time.ns_per_s;
+                    ui.tick(&state, dt);
+                }
+                state.zsynth = synths[state.selectedTrack()];
+                updateDeviceState(&state, &catalog, &track_plugins);
+                const wants_keyboard = zgui.io.getWantCaptureKeyboard();
+                const item_active = zgui.isAnyItemActive();
+                if ((!wants_keyboard or !item_active) and zgui.isKeyPressed(.space, false)) {
+                    zgui.setNextFrameWantCaptureKeyboard(true);
+                    state.playing = !state.playing;
+                    state.playhead_beat = 0;
+                }
+
+                zglfw.pollEvents();
+                if (window.getKey(.escape) == .press) {
+                    zglfw.setWindowShouldClose(window, true);
+                    continue;
+                }
+
+                gl.clearBufferfv(gl.COLOR, 0, &[_]f32{ 0.08, 0.08, 0.1, 1.0 });
+                const fb_size = window.getFramebufferSize();
+                const fb_width: u32 = @intCast(@max(fb_size[0], 1));
+                const fb_height: u32 = @intCast(@max(fb_size[1], 1));
+
+                // Wayland reports cursor positions in logical units while the framebuffer
+                // is in physical pixels. Feed ImGui the logical size and the framebuffer
+                // scale so mouse clicks/key focus line up.
+                const win_size = window.getSize();
+                const win_width_i: c_int = @max(win_size[0], 1);
+                const win_height_i: c_int = @max(win_size[1], 1);
+                const win_width: u32 = @intCast(win_width_i);
+                const win_height: u32 = @intCast(win_height_i);
+                const scale_x: f32 = @as(f32, @floatFromInt(fb_width)) / @as(f32, @floatFromInt(win_width));
+                const scale_y: f32 = @as(f32, @floatFromInt(fb_height)) / @as(f32, @floatFromInt(win_height));
+
+                zgui.backend.newFrame(win_width, win_height);
+                zgui.io.setDisplayFramebufferScale(scale_x, scale_y);
+                zgui.setNextFrameWantCaptureKeyboard(true);
+                ui.updateKeyboardMidi(&state);
+                ui.draw(&state, 1.0);
+                engine.updateFromUi(&state);
+                try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog, &engine.shared, io, true);
+                engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
+                zgui.backend.draw();
+
+                window.swapBuffers();
+
+                for (&track_plugins) |*track| {
+                    if (track.gui_open and track.handle != null) {
+                        track.handle.?.plugin.onMainThread(track.handle.?.plugin);
+                    }
+                }
+
+                const any_plugin_gui_open = blk: {
+                    for (track_plugins) |track| {
+                        if (track.gui_open) break :blk true;
+                    }
+                    break :blk false;
+                };
+                const interactive = zgui.isAnyItemActive() or zgui.isAnyItemHovered() or zgui.io.getWantCaptureMouse() or wants_keyboard;
+                const target_fps: u32 = if (state.playing or interactive or any_plugin_gui_open) 60 else 20;
+                const target_frame_ns: u64 = std.time.ns_per_s / @as(u64, target_fps);
+                const frame_end = std.time.Instant.now() catch frame_start;
+                const frame_elapsed_ns = frame_end.since(frame_start);
+                if (frame_elapsed_ns < target_frame_ns) {
+                    sleepNs(io, target_frame_ns - frame_elapsed_ns);
+                }
             }
-            break :blk false;
-        };
-        const interactive = zgui.isAnyItemActive() or zgui.isAnyItemHovered() or zgui.io.getWantCaptureMouse() or wants_keyboard;
-        const target_fps: u32 = if (state.playing or interactive or any_plugin_gui_open) 60 else 20;
-        const target_frame_ns: u64 = std.time.ns_per_s / @as(u64, target_fps);
-        const frame_end = std.time.Instant.now() catch frame_start;
-        const frame_elapsed_ns = frame_end.since(frame_start);
-        if (frame_elapsed_ns < target_frame_ns) {
-            sleepNs(io, target_frame_ns - frame_elapsed_ns);
-        }
+        },
+        else => return error.UnsupportedOs,
     }
 
     if (device.isStarted()) {
@@ -797,8 +915,26 @@ fn openPluginGui(track: *TrackPlugin, gui_ext: *const clap.ext.gui.Plugin) !void
 
     const plugin = track.handle.?.plugin;
     var is_floating: bool = false;
-    var api_ptr: [*:0]const u8 = clap.ext.gui.window_api.cocoa;
+    var api_ptr: [*:0]const u8 = switch (builtin.os.tag) {
+        .linux => clap.ext.gui.window_api.wayland,
+        else => clap.ext.gui.window_api.cocoa,
+    };
     _ = gui_ext.getPreferredApi(plugin, &api_ptr, &is_floating);
+
+    // CLAP Wayland embedding isn't supported (floating only), so on Linux force floating and
+    // pick the best supported API (prefer Wayland).
+    if (builtin.os.tag == .linux) {
+        is_floating = true;
+        if (gui_ext.isApiSupported(plugin, clap.ext.gui.window_api.wayland, true)) {
+            api_ptr = clap.ext.gui.window_api.wayland;
+        } else if (gui_ext.isApiSupported(plugin, clap.ext.gui.window_api.x11, true)) {
+            api_ptr = clap.ext.gui.window_api.x11;
+        } else if (gui_ext.isApiSupported(plugin, api_ptr, true)) {
+            // keep plugin preference
+        } else {
+            return error.GuiUnsupported;
+        }
+    }
 
     if (!gui_ext.isApiSupported(plugin, api_ptr, is_floating)) {
         return error.GuiUnsupported;
@@ -851,8 +987,8 @@ fn openPluginGui(track: *TrackPlugin, gui_ext: *const clap.ext.gui.Plugin) !void
                     gui_ext.destroy(plugin);
                     return error.GuiSetParentFailed;
                 }
-                track.gui_window = window;
-                track.gui_view = view;
+                track.gui_window = @ptrCast(window);
+                track.gui_view = @ptrCast(view);
             }
         },
         .linux => {},
@@ -860,14 +996,18 @@ fn openPluginGui(track: *TrackPlugin, gui_ext: *const clap.ext.gui.Plugin) !void
     }
 
     if (!gui_ext.show(plugin)) {
-        if (track.gui_window) |window| {
-            window.setIsVisible(false);
-            window.release();
-            track.gui_window = null;
-        }
-        if (track.gui_view) |view| {
-            view.release();
-            track.gui_view = null;
+        if (builtin.os.tag == .macos) {
+            if (track.gui_window) |window_raw| {
+                const window: *objc.app_kit.Window = @ptrCast(@alignCast(window_raw));
+                window.setIsVisible(false);
+                window.release();
+                track.gui_window = null;
+            }
+            if (track.gui_view) |view_raw| {
+                const view: *objc.app_kit.View = @ptrCast(@alignCast(view_raw));
+                view.release();
+                track.gui_view = null;
+            }
         }
         gui_ext.destroy(plugin);
         return error.GuiShowFailed;
@@ -884,13 +1024,20 @@ fn closePluginGui(track: *TrackPlugin) void {
         _ = gui_ext.hide(plugin);
         gui_ext.destroy(plugin);
     }
-    if (track.gui_window) |window| {
-        window.setIsVisible(false);
-        window.release();
+    if (builtin.os.tag == .macos) {
+        if (track.gui_window) |window_raw| {
+            const window: *objc.app_kit.Window = @ptrCast(@alignCast(window_raw));
+            window.setIsVisible(false);
+            window.release();
+            track.gui_window = null;
+        }
+        if (track.gui_view) |view_raw| {
+            const view: *objc.app_kit.View = @ptrCast(@alignCast(view_raw));
+            view.release();
+            track.gui_view = null;
+        }
+    } else {
         track.gui_window = null;
-    }
-    if (track.gui_view) |view| {
-        view.release();
         track.gui_view = null;
     }
     track.gui_open = false;

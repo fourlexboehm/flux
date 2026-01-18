@@ -46,6 +46,7 @@ pub fn build(b: *std.Build) void {
             .optimize = optimize,
         }),
     });
+    const is_shared = glfw.linkage == .dynamic;
 
     if (options.shared and target.result.os.tag == .windows) {
         glfw.root_module.addCMacro("_GLFW_BUILD_DLL", "");
@@ -55,7 +56,12 @@ pub fn build(b: *std.Build) void {
     glfw.installHeadersDirectory(b.path("libs/glfw/include"), "", .{});
 
     addIncludePaths(b, glfw.root_module, target, options);
-    linkSystemLibs(b, glfw.root_module, target, options);
+    // We still need libc enabled for C compilation (headers like `unistd.h`), but
+    // when producing a static archive (`libglfw.a`) we must not "link" against
+    // non-libc system libs (e.g. `libX11.so`), otherwise Zig will embed the shared
+    // object as an archive member and LLD will reject it when consumers link it.
+    linkLibC(glfw.root_module);
+    if (is_shared) linkPlatformLibs(glfw.root_module, target, options);
 
     const src_dir = "libs/glfw/src/";
     switch (target.result.os.tag) {
@@ -159,7 +165,6 @@ pub fn build(b: *std.Build) void {
                     .flags = &.{},
                 });
                 glfw.root_module.addCMacro("_GLFW_X11", "1");
-                glfw.root_module.linkSystemLibrary("X11", .{});
             }
             if (options.enable_wayland) {
                 glfw.root_module.addCSourceFiles(.{
@@ -188,7 +193,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
     addIncludePaths(b, tests.root_module, target, options);
-    linkSystemLibs(b, tests.root_module, target, options);
+    linkLibC(tests.root_module);
+    linkPlatformLibs(tests.root_module, target, options);
     tests.root_module.addImport("zglfw_options", options_module);
     tests.root_module.linkLibrary(glfw);
     b.installArtifact(tests);
@@ -204,9 +210,11 @@ fn addIncludePaths(b: *std.Build, module: *std.Build.Module, target: std.Build.R
     }
 }
 
-fn linkSystemLibs(b: *std.Build, module: *std.Build.Module, target: std.Build.ResolvedTarget, options: anytype) void {
-    _ = b;
+fn linkLibC(module: *std.Build.Module) void {
     module.linkSystemLibrary("c", .{});
+}
+
+fn linkPlatformLibs(module: *std.Build.Module, target: std.Build.ResolvedTarget, options: anytype) void {
     switch (target.result.os.tag) {
         .windows => {
             module.linkSystemLibrary("gdi32", .{});
@@ -230,6 +238,10 @@ fn linkSystemLibs(b: *std.Build, module: *std.Build.Module, target: std.Build.Re
             }
             if (options.enable_wayland) {
                 module.addCMacro("_GLFW_WAYLAND", "1");
+                module.linkSystemLibrary("wayland-client", .{});
+                module.linkSystemLibrary("wayland-cursor", .{});
+                module.linkSystemLibrary("wayland-egl", .{});
+                module.linkSystemLibrary("xkbcommon", .{});
             }
         },
         else => {},
