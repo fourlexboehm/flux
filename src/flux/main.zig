@@ -37,6 +37,16 @@ const Host = struct {
     main_thread_id: std.Thread.Id = undefined,
     callback_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
+    // Undo state
+    ui_state: ?*ui.State = null,
+    allocator: ?std.mem.Allocator = null,
+    track_plugins_ptr: ?*[ui.track_count]TrackPlugin = null,
+    synths_ptr: ?*[ui.track_count]*zsynth.Plugin = null,
+    catalog_ptr: ?*const plugins.PluginCatalog = null,
+    undo_change_in_progress: bool = false,
+    undo_track_index: ?usize = null, // Track that started the change
+    undo_pre_state: ?[]u8 = null, // State captured at begin_change
+
     const thread_pool_ext = clap.ext.thread_pool.Host{
         .requestExec = _requestExec,
     };
@@ -44,6 +54,21 @@ const Host = struct {
     const thread_check_ext = clap.ext.thread_check.Host{
         .isMainThread = _isMainThread,
         .isAudioThread = _isAudioThread,
+    };
+
+    const undo_ext = clap.ext.undo.Host{
+        .begin_change = _undoBeginChange,
+        .cancel_change = _undoCancelChange,
+        .change_made = _undoChangeMade,
+        .request_undo = _undoRequestUndo,
+        .request_redo = _undoRequestRedo,
+        .set_wants_context_updates = _undoSetWantsContextUpdates,
+    };
+
+    const params_ext = clap.ext.params.Host{
+        .rescan = _paramsRescan,
+        .clear = _paramsClear,
+        .requestFlush = _paramsRequestFlush,
     };
 
     pub fn init() Host {
@@ -70,6 +95,12 @@ const Host = struct {
         }
         if (std.mem.eql(u8, std.mem.span(id), clap.ext.thread_check.id)) {
             return &thread_check_ext;
+        }
+        if (std.mem.eql(u8, std.mem.span(id), clap.ext.undo.id)) {
+            return &undo_ext;
+        }
+        if (std.mem.eql(u8, std.mem.span(id), clap.ext.params.id)) {
+            return &params_ext;
         }
         return null;
     }
@@ -179,6 +210,181 @@ const Host = struct {
                 p.onMainThread(p);
             }
         }
+    }
+
+    // --- Undo extension callbacks ---
+
+    /// Find which track a plugin belongs to
+    fn findTrackForPlugin(self: *Host, caller_plugin: *const clap.Plugin) ?usize {
+        const track_plugins = self.track_plugins_ptr orelse return null;
+        for (track_plugins, 0..) |track, idx| {
+            if (track.handle) |handle| {
+                if (handle.plugin == caller_plugin) {
+                    return idx;
+                }
+            }
+        }
+        return null;
+    }
+
+    /// Get the CLAP plugin for a given track (external or builtin zsynth)
+    fn getPluginForTrack(self: *Host, state: *ui.State, track_idx: usize) ?*const clap.Plugin {
+        if (track_idx >= ui.track_count) return null;
+
+        // Check for external CLAP plugin first
+        if (self.track_plugins_ptr) |track_plugins| {
+            if (track_plugins[track_idx].handle) |handle| {
+                return handle.plugin;
+            }
+        }
+        // Check if track is using builtin zsynth
+        if (self.catalog_ptr) |catalog| {
+            if (self.synths_ptr) |synths| {
+                const choice = state.track_plugins[track_idx].choice_index;
+                const entry = catalog.entryForIndex(choice);
+                if (entry != null and entry.?.kind == .builtin) {
+                    return &synths.*[track_idx].plugin;
+                }
+            }
+        }
+        return null;
+    }
+
+    fn _undoBeginChange(host: *const clap.Host) callconv(.c) void {
+        const self: *Host = @ptrCast(@alignCast(host.host_data));
+        if (self.undo_change_in_progress) {
+            std.log.warn("Plugin called begin_change while change already in progress", .{});
+            return;
+        }
+
+        // Determine which track is making this call (use selected track with open GUI)
+        const state = self.ui_state orelse return;
+        const track_idx = state.selectedTrack();
+        const allocator = self.allocator orelse return;
+
+        // Get the plugin for this track (external or builtin)
+        const plugin = self.getPluginForTrack(state, track_idx) orelse return;
+
+        // Capture the current state before the change
+        if (capturePluginStateForUndo(allocator, plugin)) |pre_state| {
+            self.undo_pre_state = pre_state;
+            self.undo_track_index = track_idx;
+            self.undo_change_in_progress = true;
+        }
+    }
+
+    fn _undoCancelChange(host: *const clap.Host) callconv(.c) void {
+        const self: *Host = @ptrCast(@alignCast(host.host_data));
+        const allocator = self.allocator orelse return;
+
+        // Discard captured state
+        if (self.undo_pre_state) |pre_state| {
+            allocator.free(pre_state);
+        }
+        self.undo_pre_state = null;
+        self.undo_track_index = null;
+        self.undo_change_in_progress = false;
+    }
+
+    fn _undoChangeMade(
+        host: *const clap.Host,
+        name: [*:0]const u8,
+        delta: ?*const anyopaque,
+        delta_size: usize,
+        delta_can_undo: bool,
+    ) callconv(.c) void {
+        _ = delta;
+        _ = delta_size;
+        _ = delta_can_undo;
+
+        const self: *Host = @ptrCast(@alignCast(host.host_data));
+        const state = self.ui_state orelse return;
+        const allocator = self.allocator orelse return;
+
+        // Determine track index - use tracked one from begin_change or selected track
+        const track_idx = self.undo_track_index orelse state.selectedTrack();
+
+        // Get the pre-change state (either from begin_change or capture now)
+        const old_state = if (self.undo_pre_state) |pre| pre else blk: {
+            // No begin_change was called - this is an instant change
+            // We need to capture state, but we're already past the change...
+            // For instant changes without begin_change, we can't provide undo
+            // because we don't have the old state. Log and skip.
+            std.log.debug("Plugin change_made without begin_change: {s}", .{name});
+            break :blk null;
+        };
+
+        if (old_state == null) {
+            // Can't create undo entry without old state
+            self.undo_change_in_progress = false;
+            self.undo_track_index = null;
+            return;
+        }
+
+        // Get the plugin for this track (external or builtin)
+        const plugin = self.getPluginForTrack(state, track_idx) orelse {
+            allocator.free(old_state.?);
+            self.undo_change_in_progress = false;
+            self.undo_track_index = null;
+            return;
+        };
+
+        // Capture the new state after the change
+        if (capturePluginStateForUndo(allocator, plugin)) |new_state| {
+            // Push to undo history
+            state.undo_history.push(.{
+                .plugin_state = .{
+                    .track_index = track_idx,
+                    .old_state = old_state.?,
+                    .new_state = new_state,
+                },
+            });
+            std.log.debug("Plugin undo entry created: {s}", .{name});
+        } else {
+            // Failed to capture new state, free old state
+            allocator.free(old_state.?);
+        }
+
+        // Reset change tracking
+        self.undo_pre_state = null;
+        self.undo_track_index = null;
+        self.undo_change_in_progress = false;
+    }
+
+    fn _undoRequestUndo(host: *const clap.Host) callconv(.c) void {
+        const self: *Host = @ptrCast(@alignCast(host.host_data));
+        const state = self.ui_state orelse return;
+        _ = state.performUndo();
+    }
+
+    fn _undoRequestRedo(host: *const clap.Host) callconv(.c) void {
+        const self: *Host = @ptrCast(@alignCast(host.host_data));
+        const state = self.ui_state orelse return;
+        _ = state.performRedo();
+    }
+
+    fn _undoSetWantsContextUpdates(_: *const clap.Host, _: bool) callconv(.c) void {
+        // TODO: Implement context updates if plugins request them
+        // This would involve calling plugin's set_can_undo/set_can_redo
+        // when the undo state changes
+    }
+
+    // --- Params extension callbacks ---
+
+    fn _paramsRescan(_: *const clap.Host, _: clap.ext.params.Host.RescanFlags) callconv(.c) void {
+        // Plugin is notifying us that parameter values/info changed.
+        // For now this is a no-op; the host UI doesn't currently display
+        // plugin parameter values. In the future this could trigger UI refresh.
+    }
+
+    fn _paramsClear(_: *const clap.Host, _: clap.Id, _: clap.ext.params.Host.ClearFlags) callconv(.c) void {
+        // Plugin is requesting we clear automation/modulation for a parameter.
+        // Not implemented - flux doesn't have parameter automation yet.
+    }
+
+    fn _paramsRequestFlush(_: *const clap.Host) callconv(.c) void {
+        // Plugin is requesting a parameter flush outside of process().
+        // Not implemented - we always process parameters during process().
     }
 };
 
@@ -420,6 +626,11 @@ pub fn main(init: std.process.Init) !void {
     defer state.deinit();
     state.plugin_items = catalog.items_z;
     state.plugin_divider_index = catalog.divider_index;
+
+    // Set up host references for undo support
+    host.ui_state = &state;
+    host.allocator = allocator;
+    host.track_plugins_ptr = &track_plugins;
     var synths: [ui.track_count]*zsynth.Plugin = undefined;
     var synth_count: usize = 0;
     errdefer {
@@ -442,6 +653,8 @@ pub fn main(init: std.process.Init) !void {
         }
     }
     state.zsynth = synths[0];
+    host.synths_ptr = &synths;
+    host.catalog_ptr = &catalog;
 
     const loaded_project = project.load(allocator, io, project_path) catch |err| blk: {
         std.log.warn("Failed to load project: {}", .{err});
@@ -844,7 +1057,8 @@ fn syncTrackPlugins(
 
         const entry = catalog.entryForIndex(choice);
         const kind = if (entry) |item| item.kind else .none;
-        if (kind == .none or kind == .divider) {
+        // Skip none, divider, and builtin (builtin zsynth is handled via synths[] array, not track_plugins)
+        if (kind == .none or kind == .divider or kind == .builtin) {
             if (track.handle != null) {
                 closePluginGui(track);
                 prepareUnload(shared, t, io);
@@ -1117,6 +1331,24 @@ fn handleFileRequests(
             std.log.err("Failed to load project: {}", .{err});
         };
     }
+
+    // Handle plugin state restore request (for undo/redo)
+    if (state.plugin_state_restore_request) |req| {
+        state.plugin_state_restore_request = null;
+        if (req.track_index < ui.track_count) {
+            // Check for external CLAP plugin first
+            if (track_plugins[req.track_index].handle) |handle| {
+                loadPluginStateFromData(handle.plugin, req.state_data);
+            } else {
+                // Check if track is using builtin zsynth
+                const choice = state.track_plugins[req.track_index].choice_index;
+                const entry = catalog.entryForIndex(choice);
+                if (entry != null and entry.?.kind == .builtin) {
+                    loadPluginStateFromData(&synths[req.track_index].plugin, req.state_data);
+                }
+            }
+        }
+    }
 }
 
 fn handleSaveProject(
@@ -1228,6 +1460,45 @@ fn capturePluginStateForDawproject(allocator: std.mem.Allocator, plugin: *const 
         .path = allocator.dupe(u8, plugin_path) catch return null,
         .data = data,
     };
+}
+
+/// Capture plugin state for undo. Uses state_context extension with project context
+/// when available, otherwise falls back to regular state extension.
+pub fn capturePluginStateForUndo(allocator: std.mem.Allocator, plugin: *const clap.Plugin) ?[]u8 {
+    var stream = MemoryOStream.init(allocator);
+    stream.stream.context = &stream;
+
+    // Try state_context extension first (allows plugin to provide optimized state for undo)
+    if (plugin.getExtension(plugin, clap.ext.state_context.id)) |ext_raw| {
+        const ext: *const clap.ext.state_context.Plugin = @ptrCast(@alignCast(ext_raw));
+        if (ext.save(plugin, &stream.stream, .project)) {
+            return allocator.dupe(u8, stream.buffer.items) catch {
+                stream.buffer.deinit(allocator);
+                return null;
+            };
+        }
+        // If state_context.save failed, try regular state extension
+        stream.buffer.clearRetainingCapacity();
+    }
+
+    // Fall back to regular state extension
+    const state_ext_raw = plugin.getExtension(plugin, clap.ext.state.id) orelse {
+        stream.buffer.deinit(allocator);
+        return null;
+    };
+    const state_ext: *const clap.ext.state.Plugin = @ptrCast(@alignCast(state_ext_raw));
+
+    if (!state_ext.save(plugin, &stream.stream)) {
+        stream.buffer.deinit(allocator);
+        return null;
+    }
+
+    const data = allocator.dupe(u8, stream.buffer.items) catch {
+        stream.buffer.deinit(allocator);
+        return null;
+    };
+    stream.buffer.deinit(allocator);
+    return data;
 }
 
 fn applyDawprojectToState(

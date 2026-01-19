@@ -108,6 +108,7 @@ pub fn notifyHostParamsChanged(self: *Plugin) bool {
     }
 
     self.jobs.notify_host_params_changed = true;
+    self.host.requestCallback(self.host);
     return true;
 }
 
@@ -139,8 +140,11 @@ pub fn applyParamChanges(self: *Plugin, notify_host: bool) void {
 }
 
 // Plugin callbacks
-fn _init(_: *const clap.Plugin) callconv(.c) bool {
+fn _init(clap_plugin: *const clap.Plugin) callconv(.c) bool {
     std.log.debug("Plugin initialized!", .{});
+    const plugin = fromClapPlugin(clap_plugin);
+    // Initialize undo extension (cache host's undo interface)
+    extensions.Undo.init(plugin.host);
     return true;
 }
 
