@@ -573,9 +573,11 @@ pub const SessionView = struct {
         zgui.pushStyleColor4f(.{ .idx = .button, .c = colors.Colors.bg_cell });
         zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ 0.25, 0.25, 0.25, 1.0 } });
         zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.accent_dim });
-        if (zgui.button("+##add_track", .{ .w = add_btn_size, .h = add_btn_size })) {
+        zgui.pushStyleVar2f(.{ .idx = .frame_padding, .v = .{ 10.0 * ui_scale, 6.0 * ui_scale } });
+        if (zgui.button("+##add_track", .{})) {
             _ = self.addTrack();
         }
+        zgui.popStyleVar(.{ .count = 1 });
         zgui.popStyleColor(.{ .count = 3 });
 
         // Clip rows
@@ -660,9 +662,11 @@ pub const SessionView = struct {
         zgui.pushStyleColor4f(.{ .idx = .button, .c = colors.Colors.bg_cell });
         zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ 0.25, 0.25, 0.25, 1.0 } });
         zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.accent_dim });
-        if (zgui.button("+##add_scene", .{ .w = add_btn_size, .h = add_btn_size })) {
+        zgui.pushStyleVar2f(.{ .idx = .frame_padding, .v = .{ 10.0 * ui_scale, 6.0 * ui_scale } });
+        if (zgui.button("+##add_scene", .{})) {
             _ = self.addScene();
         }
+        zgui.popStyleVar(.{ .count = 1 });
         zgui.popStyleColor(.{ .count = 3 });
 
         // Handle keyboard shortcuts (only when this pane is focused)
@@ -1023,7 +1027,10 @@ pub const SessionView = struct {
 
         // Row 2: Volume slider (centered, wider)
         zgui.setCursorPosY(base_y + btn_height + spacing);
-        zgui.setCursorPosX(base_x + (width - slider_width) / 2.0);
+        const slider_x = base_x + (width - slider_width) / 2.0;
+        zgui.setCursorPosX(slider_x);
+
+        const slider_screen_pos = zgui.getCursorScreenPos();
 
         var vol_buf: [32]u8 = undefined;
         const vol_id = std.fmt.bufPrintZ(&vol_buf, "##vol{d}", .{track}) catch "##vol";
@@ -1044,6 +1051,18 @@ pub const SessionView = struct {
         });
 
         zgui.popStyleColor(.{ .count = 5 });
+
+        // Draw 0dB marker line (volume = 1.0 is at 1.0/1.5 = 0.667 from bottom)
+        const draw_list = zgui.getWindowDrawList();
+        const zero_db_ratio = 1.0 / 1.5; // 0dB = volume 1.0
+        const zero_db_y = slider_screen_pos[1] + slider_height * (1.0 - zero_db_ratio);
+        // Draw wider marker extending beyond slider
+        draw_list.addLine(.{
+            .p1 = .{ slider_screen_pos[0] - 4.0, zero_db_y },
+            .p2 = .{ slider_screen_pos[0] + slider_width + 4.0, zero_db_y },
+            .col = zgui.colorConvertFloat4ToU32(colors.Colors.text_bright),
+            .thickness = 2.0,
+        });
 
         // Row 3: dB label (centered)
         zgui.setCursorPosY(base_y + btn_height + spacing + slider_height + spacing);

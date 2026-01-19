@@ -350,7 +350,7 @@ pub fn updateKeyboardMidi(state: *State) void {
 }
 
 fn drawTransport(state: *State, ui_scale: f32) void {
-    const transport_h = 48.0 * ui_scale;
+    const transport_h = 52.0 * ui_scale;
     const btn_size = 36.0 * ui_scale;
     const spacing = 20.0 * ui_scale;
 
@@ -421,20 +421,26 @@ fn drawTransport(state: *State, ui_scale: f32) void {
         .items_separated_by_zeros = quantize_items,
     });
 
-    // Load/Save buttons (right-aligned)
+    // Load/Save buttons (right-aligned, centered vertically)
     zgui.sameLine(.{ .spacing = spacing * 2.0 });
 
-    if (zgui.button("Load", .{ .w = 80.0 * ui_scale, .h = 32.0 * ui_scale })) {
+    // Move buttons up to center in transport bar
+    const save_y = zgui.getCursorPosY();
+    zgui.setCursorPosY(save_y - 4.0 * ui_scale);
+
+    zgui.pushStyleVar2f(.{ .idx = .frame_padding, .v = .{ 16.0 * ui_scale, 8.0 * ui_scale } });
+    if (zgui.button("Load", .{})) {
         state.load_project_request = true;
     }
 
     zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
 
-    if (zgui.button("Save", .{ .w = 80.0 * ui_scale, .h = 32.0 * ui_scale })) {
+    if (zgui.button("Save", .{})) {
         state.save_project_request = true;
     }
+    zgui.popStyleVar(.{ .count = 1 });
 
-    zgui.setCursorPosY(zgui.getCursorPosY() + 4.0 * ui_scale);
+    zgui.setCursorPosY(save_y + transport_h - 6.0 * ui_scale);
 }
 
 fn drawClipGrid(state: *State, ui_scale: f32) void {
