@@ -990,9 +990,13 @@ fn openPluginGui(track: *TrackPlugin, gui_ext: *const clap.ext.gui.Plugin) !void
                 window.setReleasedWhenClosed(false);
                 const title = objc.foundation.String.stringWithUTF8String("Plugin");
                 window.setTitle(title);
+                // Set window to floating level so it stays above the main window
+                const NSFloatingWindowLevel: c_long = 3;
+                objc.objc.msgSend(window, "setLevel:", void, .{NSFloatingWindowLevel});
                 const view = objc.app_kit.View.alloc().initWithFrame(rect);
                 window.setContentView(view);
-                window.makeKeyAndOrderFront(null);
+                // Use orderFront instead of makeKeyAndOrderFront to keep keyboard focus on main window
+                objc.objc.msgSend(window, "orderFront:", void, .{@as(?*anyopaque, null)});
                 const window_handle = clap.ext.gui.Window{
                     .api = clap.ext.gui.window_api.cocoa,
                     .data = .{ .cocoa = @ptrCast(view) },

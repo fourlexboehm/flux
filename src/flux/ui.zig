@@ -415,6 +415,10 @@ fn drawTransport(state: *State, ui_scale: f32) void {
 
     zgui.sameLine(.{ .spacing = spacing });
 
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
+    zgui.textUnformatted("Quantize");
+    zgui.popStyleColor(.{ .count = 1 });
+    zgui.sameLine(.{ .spacing = 6.0 * ui_scale });
     zgui.setNextItemWidth(80.0 * ui_scale);
     _ = zgui.combo("##transport_quantize", .{
         .current_item = &state.quantize_index,
@@ -587,7 +591,7 @@ fn drawClapDevice(state: *State, ui_scale: f32) void {
     zgui.sameLine(.{ .spacing = 12.0 * ui_scale });
     const track = &state.track_plugins[state.selectedTrack()];
     const button_label = if (track.gui_open) "Close Window" else "Open Window";
-    if (zgui.button(button_label, .{ .w = 140.0 * ui_scale, .h = 0 })) {
+    if (zgui.button(button_label, .{ .w = 0, .h = 0 })) {
         track.gui_open = !track.gui_open;
     }
 
