@@ -76,6 +76,7 @@ pub const State = struct {
     plugin_items: [:0]const u8,
     plugin_divider_index: ?i32,
     live_key_states: [ui.max_tracks][128]bool,
+    previous_key_states: [ui.max_tracks][128]bool,
     keyboard_octave: i8,
 
     // Project file requests (handled by main.zig)
@@ -120,6 +121,7 @@ pub const State = struct {
             .plugin_items = plugin_items,
             .plugin_divider_index = null,
             .live_key_states = [_][128]bool{[_]bool{false} ** 128} ** ui.max_tracks,
+            .previous_key_states = [_][128]bool{[_]bool{false} ** 128} ** ui.max_tracks,
             .keyboard_octave = 0,
             .load_project_request = false,
             .save_project_request = false,
@@ -172,6 +174,14 @@ pub fn draw(state: *State, ui_scale: f32) void {
         .no_scrollbar = true,
         .no_scroll_with_mouse = true,
     } })) {
+        // Tab key toggles between Device and Clip views
+        if (zgui.isKeyPressed(.tab, false)) {
+            state.bottom_mode = switch (state.bottom_mode) {
+                .device => .sequencer,
+                .sequencer => .device,
+            };
+        }
+
         drawTransport(state, ui_scale);
         zgui.spacing();
         const avail = zgui.getContentRegionAvail();
@@ -272,11 +282,49 @@ fn popAbletonStyle() void {
 }
 
 pub fn tick(state: *State, dt: f64) void {
+    // Handle playhead reset request (for immediate recording start)
+    if (state.session.reset_playhead_request) {
+        state.session.reset_playhead_request = false;
+        state.playhead_beat = 0;
+    }
+
+    // Handle recording finalization request (when manually stopping recording)
+    if (state.session.finalize_recording_track) |track| {
+        if (state.session.finalize_recording_scene) |scene| {
+            // Finalize held notes to the specified clip
+            const piano_clip = &state.piano_clips[track][scene];
+            const rec = &state.session.recording;
+            const clip_length = state.session.clips[track][scene].length_beats;
+
+            // Calculate current position relative to recording start
+            const current_beat = @mod(state.playhead_beat - rec.start_beat + clip_length, clip_length);
+
+            for (0..128) |pitch| {
+                if (rec.note_start_beats[pitch]) |start_beat| {
+                    const p: u8 = @intCast(pitch);
+                    var duration = current_beat - start_beat;
+                    // Handle wrap-around
+                    if (duration < 0) {
+                        duration = duration + clip_length;
+                    }
+                    if (duration > 0.01) {
+                        piano_clip.addNote(p, start_beat, duration) catch {};
+                    }
+                }
+            }
+        }
+        // Clear the request and reset recording state
+        state.session.finalize_recording_track = null;
+        state.session.finalize_recording_scene = null;
+        state.session.recording.reset();
+    }
+
     if (!state.playing) {
+        // Update previous_key_states even when not playing
+        state.previous_key_states = state.live_key_states;
         return;
     }
 
-    const clip = state.currentClip();
     const beats_per_second = state.bpm / 60.0;
     const prev_beat = state.playhead_beat;
     state.playhead_beat += @as(f32, @floatCast(dt)) * @as(f32, @floatCast(beats_per_second));
@@ -288,11 +336,167 @@ pub fn tick(state: *State, dt: f64) void {
 
     if (curr_quantize > prev_quantize) {
         state.session.processQuantizedSwitches();
+
+        // Start queued recording at quantize boundary (not waiting for loop)
+        if (state.session.hasQueuedRecording()) {
+            // Calculate the beat position at the quantize boundary
+            const quantize_boundary = curr_quantize * quantize_beats;
+            state.session.processRecordingQuantize(quantize_boundary);
+        }
     }
 
-    // Loop within clip length
-    if (state.playhead_beat >= clip.length_beats) {
-        state.playhead_beat = @mod(state.playhead_beat, clip.length_beats);
+    // Determine loop length (use recording clip if recording, otherwise current clip)
+    const loop_length = if (state.session.recording.track) |t|
+        if (state.session.recording.scene) |s|
+            state.session.clips[t][s].length_beats
+        else
+            state.currentClip().length_beats
+    else
+        state.currentClip().length_beats;
+
+    // Check if playhead is about to loop
+    const will_loop = state.playhead_beat >= loop_length;
+
+    // Process MIDI recording (before loop so we can finalize held notes at loop point)
+    if (state.session.isActivelyRecording()) {
+        // If about to loop, finalize any held notes at the end of the clip
+        if (will_loop) {
+            finalizeHeldNotesAtPosition(state, loop_length);
+        }
+        processRecordingMidi(state);
+    }
+
+    // Update previous_key_states at end of frame
+    state.previous_key_states = state.live_key_states;
+
+    // Handle playhead looping
+    if (will_loop) {
+        // At clip loop boundary, start queued recording BEFORE wrapping
+        if (state.session.hasQueuedRecording()) {
+            state.session.processRecordingQuantize(0);
+        }
+
+        state.playhead_beat = @mod(state.playhead_beat, loop_length);
+
+        // If actively recording and we just looped
+        if (state.session.recording.track) |track| {
+            if (state.session.recording.scene) |scene| {
+                // Transition from recording to playing (overdub mode)
+                // This allows the clip to play back recorded notes while continuing to record
+                if (state.session.clips[track][scene].state == .recording) {
+                    state.session.clips[track][scene].state = .playing;
+                }
+
+                // Reset recording start beat to 0 for subsequent passes
+                // This ensures notes are recorded at correct positions after the first loop
+                state.session.recording.start_beat = 0;
+
+                // Reset note tracking for new pass - held notes start fresh from beat 0
+                const rec = &state.session.recording;
+                for (0..128) |pitch| {
+                    if (rec.note_start_beats[pitch] != null) {
+                        rec.note_start_beats[pitch] = 0;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Process MIDI note recording from keyboard input
+fn processRecordingMidi(state: *State) void {
+    const rec = &state.session.recording;
+    const track = rec.track orelse return;
+    const scene = rec.scene orelse return;
+
+    const piano_clip = &state.piano_clips[track][scene];
+    const clip_length = state.session.clips[track][scene].length_beats;
+
+    // Calculate position within the clip (relative to recording start)
+    // This ensures notes are placed at the beginning of the clip, not at absolute playhead position
+    const current_beat = @mod(state.playhead_beat - rec.start_beat + clip_length, clip_length);
+
+    // Compare current and previous key states
+    for (0..128) |pitch| {
+        const p: u8 = @intCast(pitch);
+        const is_pressed = state.live_key_states[track][pitch];
+        const was_pressed = state.previous_key_states[track][pitch];
+
+        if (is_pressed and !was_pressed) {
+            // Note on: store start beat (using position within clip)
+            rec.note_start_beats[pitch] = current_beat;
+        } else if (!is_pressed and was_pressed) {
+            // Note off: create note
+            if (rec.note_start_beats[pitch]) |start_beat| {
+                var duration = current_beat - start_beat;
+                // Handle wrap-around (note started near end of clip, ended after loop)
+                if (duration < 0) {
+                    duration = duration + clip_length;
+                }
+                if (duration > 0.01) { // Minimum note duration
+                    piano_clip.addNote(p, start_beat, duration) catch {};
+                }
+                rec.note_start_beats[pitch] = null;
+            }
+        }
+    }
+}
+
+/// Finalize held notes at a specific position (used at loop boundary)
+fn finalizeHeldNotesAtPosition(state: *State, end_beat: f32) void {
+    const rec = &state.session.recording;
+    const track = rec.track orelse return;
+    const scene = rec.scene orelse return;
+
+    const piano_clip = &state.piano_clips[track][scene];
+    const clip_length = state.session.clips[track][scene].length_beats;
+
+    // Calculate end position relative to recording start
+    const relative_end = @mod(end_beat - rec.start_beat + clip_length, clip_length);
+
+    // Finalize all held notes at the specified position
+    for (0..128) |pitch| {
+        if (rec.note_start_beats[pitch]) |start_beat| {
+            const p: u8 = @intCast(pitch);
+            var duration = relative_end - start_beat;
+            // Handle wrap-around
+            if (duration < 0) {
+                duration = duration + clip_length;
+            }
+            if (duration > 0.01) {
+                piano_clip.addNote(p, start_beat, duration) catch {};
+            }
+            // Don't clear note_start_beats here - the loop handler will reset them to 0
+        }
+    }
+}
+
+/// Finalize any notes that are still held when recording stops
+fn finalizeHeldNotes(state: *State) void {
+    const rec = &state.session.recording;
+    const track = rec.track orelse return;
+    const scene = rec.scene orelse return;
+
+    const piano_clip = &state.piano_clips[track][scene];
+    const clip_length = state.session.clips[track][scene].length_beats;
+
+    // Calculate current position relative to recording start
+    const current_beat = @mod(state.playhead_beat - rec.start_beat + clip_length, clip_length);
+
+    // Finalize all held notes at current position
+    for (0..128) |pitch| {
+        if (rec.note_start_beats[pitch]) |start_beat| {
+            const p: u8 = @intCast(pitch);
+            var duration = current_beat - start_beat;
+            // Handle wrap-around
+            if (duration < 0) {
+                duration = duration + clip_length;
+            }
+            if (duration > 0.01) {
+                piano_clip.addNote(p, start_beat, duration) catch {};
+            }
+            rec.note_start_beats[pitch] = null;
+        }
     }
 }
 
@@ -339,9 +543,10 @@ pub fn updateKeyboardMidi(state: *State) void {
         }
     }
 
-    const selected = state.selectedTrack();
+    // Route keyboard to armed track if one is armed, otherwise to selected track
+    const target_track = state.session.armed_track orelse state.selectedTrack();
     for (0..ui.max_tracks) |track_index| {
-        if (track_index == selected) {
+        if (track_index == target_track) {
             state.live_key_states[track_index] = pressed;
         } else {
             state.live_key_states[track_index] = [_]bool{false} ** 128;
@@ -451,13 +656,18 @@ fn drawTransport(state: *State, ui_scale: f32) void {
 fn drawClipGrid(state: *State, ui_scale: f32) void {
     // Draw session view
     const is_focused = state.focused_pane == .session;
-    state.session.draw(ui_scale, state.playing, is_focused);
+    state.session.draw(ui_scale, state.playing, is_focused, state.playhead_beat);
     if (state.session.open_clip_request) |req| {
         state.session.open_clip_request = null;
         state.session.primary_track = req.track;
         state.session.primary_scene = req.scene;
         state.bottom_mode = .sequencer;
         state.focused_pane = .bottom;
+    }
+    // Handle request to clear piano clip (when starting new recording on empty slot)
+    if (state.session.clear_piano_clip_request) |req| {
+        state.session.clear_piano_clip_request = null;
+        state.piano_clips[req.track][req.scene].clear();
     }
     if (state.session.start_playback_request) {
         state.session.start_playback_request = false;
