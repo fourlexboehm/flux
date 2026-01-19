@@ -176,6 +176,268 @@ pub const State = struct {
     pub fn currentClipLabel(self: *const State) []const u8 {
         return self.session.scenes[self.selectedScene()].getName();
     }
+
+    /// Perform undo operation
+    pub fn performUndo(self: *State) bool {
+        const cmd = self.undo_history.popForUndo() orelse return false;
+        self.executeUndo(cmd);
+        self.undo_history.confirmUndo();
+        return true;
+    }
+
+    /// Perform redo operation
+    pub fn performRedo(self: *State) bool {
+        const cmd = self.undo_history.popForRedo() orelse return false;
+        self.executeRedo(cmd);
+        self.undo_history.confirmRedo();
+        return true;
+    }
+
+    /// Execute the undo action for a command
+    fn executeUndo(self: *State, cmd: *const undo.Command) void {
+        switch (cmd.*) {
+            .clip_create => |c| {
+                // Undo create = delete
+                self.session.clips[c.track][c.scene] = .{};
+                self.piano_clips[c.track][c.scene].clear();
+            },
+            .clip_delete => |c| {
+                // Undo delete = restore
+                self.session.clips[c.track][c.scene] = .{
+                    .state = .stopped,
+                    .length_beats = c.length_beats,
+                };
+                self.piano_clips[c.track][c.scene].notes.clearRetainingCapacity();
+                for (c.notes) |note| {
+                    self.piano_clips[c.track][c.scene].addNote(note.pitch, note.start, note.duration) catch {};
+                }
+            },
+            .note_add => |c| {
+                // Undo add = remove
+                const clip = &self.piano_clips[c.track][c.scene];
+                if (c.note_index < clip.notes.items.len) {
+                    _ = clip.notes.orderedRemove(c.note_index);
+                }
+            },
+            .note_remove => |c| {
+                // Undo remove = add back
+                const clip = &self.piano_clips[c.track][c.scene];
+                clip.notes.insert(clip.allocator, c.note_index, c.note) catch {
+                    clip.addNote(c.note.pitch, c.note.start, c.note.duration) catch {};
+                };
+            },
+            .note_move => |c| {
+                // Undo move = restore old position
+                const clip = &self.piano_clips[c.track][c.scene];
+                if (c.note_index < clip.notes.items.len) {
+                    clip.notes.items[c.note_index].start = c.old_start;
+                    clip.notes.items[c.note_index].pitch = c.old_pitch;
+                }
+            },
+            .note_resize => |c| {
+                // Undo resize = restore old duration
+                const clip = &self.piano_clips[c.track][c.scene];
+                if (c.note_index < clip.notes.items.len) {
+                    clip.notes.items[c.note_index].duration = c.old_duration;
+                }
+            },
+            .note_batch => |c| {
+                // Undo batch = remove added notes
+                const clip = &self.piano_clips[c.track][c.scene];
+                const remove_count = @min(c.notes.len, clip.notes.items.len);
+                clip.notes.shrinkRetainingCapacity(clip.notes.items.len - remove_count);
+            },
+            .track_add => {
+                // Undo add = remove last track
+                if (self.session.track_count > 1) {
+                    self.session.track_count -= 1;
+                }
+            },
+            .track_rename => |c| {
+                // Undo rename = restore old name
+                self.session.tracks[c.track_index].name = c.old_name;
+                self.session.tracks[c.track_index].name_len = c.old_len;
+            },
+            .track_volume => |c| {
+                self.session.tracks[c.track_index].volume = c.old_volume;
+            },
+            .track_mute => |c| {
+                self.session.tracks[c.track_index].mute = c.old_mute;
+            },
+            .track_solo => |c| {
+                self.session.tracks[c.track_index].solo = c.old_solo;
+            },
+            .scene_add => {
+                // Undo add = remove last scene
+                if (self.session.scene_count > 1) {
+                    self.session.scene_count -= 1;
+                }
+            },
+            .scene_rename => |c| {
+                // Undo rename = restore old name
+                self.session.scenes[c.scene_index].name = c.old_name;
+                self.session.scenes[c.scene_index].name_len = c.old_len;
+            },
+            .bpm_change => |c| {
+                self.bpm = c.old_bpm;
+            },
+            .quantize_change => |c| {
+                self.quantize_index = c.old_index;
+                self.quantize_last = c.old_index;
+            },
+            .clip_move => |c| {
+                // Undo move = move back from dst to src (in reverse order)
+                var i = c.moves.len;
+                while (i > 0) {
+                    i -= 1;
+                    const m = c.moves[i];
+                    // Move clip back
+                    self.session.clips[m.src_track][m.src_scene] = self.session.clips[m.dst_track][m.dst_scene];
+                    self.session.clips[m.dst_track][m.dst_scene] = .{};
+                    // Move piano notes back
+                    const temp_notes = self.piano_clips[m.dst_track][m.dst_scene];
+                    self.piano_clips[m.src_track][m.src_scene] = temp_notes;
+                    self.piano_clips[m.dst_track][m.dst_scene] = ui.piano_roll.PianoRollClip.init(self.allocator);
+                }
+            },
+            .clip_resize => |c| {
+                // Undo resize = restore old length
+                self.session.clips[c.track][c.scene].length_beats = c.old_length;
+                self.piano_clips[c.track][c.scene].length_beats = c.old_length;
+            },
+            .plugin_state => |c| {
+                // Undo plugin change = restore old state
+                self.plugin_state_restore_request = .{
+                    .track_index = c.track_index,
+                    .state_data = c.old_state,
+                };
+            },
+            // Complex commands not yet implemented
+            .track_delete, .scene_delete => {},
+        }
+    }
+
+    /// Execute the redo action for a command
+    fn executeRedo(self: *State, cmd: *const undo.Command) void {
+        switch (cmd.*) {
+            .clip_create => |c| {
+                // Redo create
+                self.session.clips[c.track][c.scene] = .{
+                    .state = .stopped,
+                    .length_beats = c.length_beats,
+                };
+            },
+            .clip_delete => |c| {
+                // Redo delete
+                self.session.clips[c.track][c.scene] = .{};
+                self.piano_clips[c.track][c.scene].clear();
+            },
+            .note_add => |c| {
+                // Redo add
+                const clip = &self.piano_clips[c.track][c.scene];
+                clip.addNote(c.note.pitch, c.note.start, c.note.duration) catch {};
+            },
+            .note_remove => |c| {
+                // Redo remove
+                const clip = &self.piano_clips[c.track][c.scene];
+                if (c.note_index < clip.notes.items.len) {
+                    _ = clip.notes.orderedRemove(c.note_index);
+                }
+            },
+            .note_move => |c| {
+                // Redo move = apply new position
+                const clip = &self.piano_clips[c.track][c.scene];
+                if (c.note_index < clip.notes.items.len) {
+                    clip.notes.items[c.note_index].start = c.new_start;
+                    clip.notes.items[c.note_index].pitch = c.new_pitch;
+                }
+            },
+            .note_resize => |c| {
+                // Redo resize = apply new duration
+                const clip = &self.piano_clips[c.track][c.scene];
+                if (c.note_index < clip.notes.items.len) {
+                    clip.notes.items[c.note_index].duration = c.new_duration;
+                }
+            },
+            .note_batch => |c| {
+                // Redo batch = add notes again
+                const clip = &self.piano_clips[c.track][c.scene];
+                for (c.notes) |note| {
+                    clip.addNote(note.pitch, note.start, note.duration) catch {};
+                }
+            },
+            .track_add => |c| {
+                // Redo add track
+                if (self.session.track_count < ui.max_tracks) {
+                    self.session.tracks[self.session.track_count] = .{};
+                    self.session.tracks[self.session.track_count].name = c.name;
+                    self.session.tracks[self.session.track_count].name_len = c.name_len;
+                    self.session.track_count += 1;
+                }
+            },
+            .track_rename => |c| {
+                // Redo rename = apply new name
+                self.session.tracks[c.track_index].name = c.new_name;
+                self.session.tracks[c.track_index].name_len = c.new_len;
+            },
+            .track_volume => |c| {
+                self.session.tracks[c.track_index].volume = c.new_volume;
+            },
+            .track_mute => |c| {
+                self.session.tracks[c.track_index].mute = c.new_mute;
+            },
+            .track_solo => |c| {
+                self.session.tracks[c.track_index].solo = c.new_solo;
+            },
+            .scene_add => |c| {
+                // Redo add scene
+                if (self.session.scene_count < ui.max_scenes) {
+                    self.session.scenes[self.session.scene_count] = .{};
+                    self.session.scenes[self.session.scene_count].name = c.name;
+                    self.session.scenes[self.session.scene_count].name_len = c.name_len;
+                    self.session.scene_count += 1;
+                }
+            },
+            .scene_rename => |c| {
+                // Redo rename = apply new name
+                self.session.scenes[c.scene_index].name = c.new_name;
+                self.session.scenes[c.scene_index].name_len = c.new_len;
+            },
+            .bpm_change => |c| {
+                self.bpm = c.new_bpm;
+            },
+            .quantize_change => |c| {
+                self.quantize_index = c.new_index;
+                self.quantize_last = c.new_index;
+            },
+            .clip_move => |c| {
+                // Redo move = move from src to dst (in forward order)
+                for (c.moves) |m| {
+                    // Move clip
+                    self.session.clips[m.dst_track][m.dst_scene] = self.session.clips[m.src_track][m.src_scene];
+                    self.session.clips[m.src_track][m.src_scene] = .{};
+                    // Move piano notes
+                    const temp_notes = self.piano_clips[m.src_track][m.src_scene];
+                    self.piano_clips[m.dst_track][m.dst_scene] = temp_notes;
+                    self.piano_clips[m.src_track][m.src_scene] = ui.piano_roll.PianoRollClip.init(self.allocator);
+                }
+            },
+            .clip_resize => |c| {
+                // Redo resize = apply new length
+                self.session.clips[c.track][c.scene].length_beats = c.new_length;
+                self.piano_clips[c.track][c.scene].length_beats = c.new_length;
+            },
+            .plugin_state => |c| {
+                // Redo plugin change = restore new state
+                self.plugin_state_restore_request = .{
+                    .track_index = c.track_index,
+                    .state_data = c.new_state,
+                };
+            },
+            // Complex commands not yet implemented
+            .track_delete, .scene_delete => {},
+        }
+    }
 };
 
 const quantize_items: [:0]const u8 = "1/4\x001/2\x001\x002\x004\x00";
@@ -961,6 +1223,8 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
                     state.quantize_index,
                     ui_scale,
                     is_focused,
+                    state.selectedTrack(),
+                    state.selectedScene(),
                 );
             }
         },

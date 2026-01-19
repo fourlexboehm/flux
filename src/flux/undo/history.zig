@@ -1,9 +1,11 @@
 //! Undo history manager - maintains stacks of commands for undo/redo.
+//!
+//! Note: Actual command execution is handled by the caller (ui.zig)
+//! to avoid circular dependencies.
 
 const std = @import("std");
 const command = @import("command.zig");
 const Command = command.Command;
-const ui = @import("../ui.zig");
 
 /// Configuration for undo history
 pub const Config = struct {
@@ -23,8 +25,8 @@ pub const HistoryEntry = struct {
 /// Undo history manager
 pub const UndoHistory = struct {
     allocator: std.mem.Allocator,
-    undo_stack: std.ArrayList(HistoryEntry),
-    redo_stack: std.ArrayList(HistoryEntry),
+    undo_stack: std.ArrayListUnmanaged(HistoryEntry),
+    redo_stack: std.ArrayListUnmanaged(HistoryEntry),
     save_point: usize,
     max_commands: usize,
     coalesce_time_ms: u64,
@@ -38,8 +40,8 @@ pub const UndoHistory = struct {
     pub fn initWithConfig(allocator: std.mem.Allocator, config: Config) Self {
         return .{
             .allocator = allocator,
-            .undo_stack = std.ArrayList(HistoryEntry).init(allocator),
-            .redo_stack = std.ArrayList(HistoryEntry).init(allocator),
+            .undo_stack = .empty,
+            .redo_stack = .empty,
             .save_point = 0,
             .max_commands = config.max_commands,
             .coalesce_time_ms = config.coalesce_time_ms,
@@ -48,22 +50,24 @@ pub const UndoHistory = struct {
 
     pub fn deinit(self: *Self) void {
         for (self.undo_stack.items) |*entry| {
-            var cmd = entry.cmd;
-            cmd.deinit(self.allocator);
+            var cmd_copy = entry.cmd;
+            cmd_copy.deinit(self.allocator);
         }
-        self.undo_stack.deinit();
+        self.undo_stack.deinit(self.allocator);
 
         for (self.redo_stack.items) |*entry| {
-            var cmd = entry.cmd;
-            cmd.deinit(self.allocator);
+            var cmd_copy = entry.cmd;
+            cmd_copy.deinit(self.allocator);
         }
-        self.redo_stack.deinit();
+        self.redo_stack.deinit(self.allocator);
     }
 
-    /// Push a new command onto the undo stack
-    /// The command should already have been executed
+    /// Push a new command onto the undo stack.
+    /// The command should already have been executed by the caller.
     pub fn push(self: *Self, cmd: Command) void {
-        self.pushWithTimestamp(cmd, std.time.milliTimestamp());
+        // Use timestamp = 0 to disable coalescing for now
+        // Real time-based coalescing can be added later
+        self.pushWithTimestamp(cmd, 0);
     }
 
     /// Push a command with a specific timestamp (for testing or serialization)
@@ -95,7 +99,7 @@ pub const UndoHistory = struct {
         }
 
         // Add new entry
-        self.undo_stack.append(.{
+        self.undo_stack.append(self.allocator, .{
             .cmd = cmd,
             .timestamp = timestamp,
         }) catch return;
@@ -111,33 +115,40 @@ pub const UndoHistory = struct {
         }
     }
 
-    /// Undo the most recent command
-    pub fn undo(self: *Self, state: *ui.State) bool {
-        if (self.undo_stack.items.len == 0) return false;
-
-        var entry = self.undo_stack.pop();
-        entry.cmd.undo(state);
-
-        self.redo_stack.append(entry) catch {
-            // If we can't push to redo, free the command
-            entry.cmd.deinit(self.allocator);
-        };
-
-        return true;
+    /// Pop and return the most recent command for undo.
+    /// Returns null if nothing to undo.
+    /// Caller must execute the undo operation, then call confirmUndo().
+    pub fn popForUndo(self: *Self) ?*const Command {
+        if (self.undo_stack.items.len == 0) return null;
+        return &self.undo_stack.items[self.undo_stack.items.len - 1].cmd;
     }
 
-    /// Redo the most recently undone command
-    pub fn redo(self: *Self, state: *ui.State) bool {
-        if (self.redo_stack.items.len == 0) return false;
-
-        var entry = self.redo_stack.pop();
-        entry.cmd.execute(state);
-
-        self.undo_stack.append(entry) catch {
-            entry.cmd.deinit(self.allocator);
+    /// Confirm the undo was executed - moves command to redo stack.
+    pub fn confirmUndo(self: *Self) void {
+        if (self.undo_stack.items.len == 0) return;
+        const entry = self.undo_stack.pop() orelse return;
+        self.redo_stack.append(self.allocator, entry) catch {
+            var cmd_copy = entry.cmd;
+            cmd_copy.deinit(self.allocator);
         };
+    }
 
-        return true;
+    /// Pop and return the most recent undone command for redo.
+    /// Returns null if nothing to redo.
+    /// Caller must execute the redo operation, then call confirmRedo().
+    pub fn popForRedo(self: *Self) ?*const Command {
+        if (self.redo_stack.items.len == 0) return null;
+        return &self.redo_stack.items[self.redo_stack.items.len - 1].cmd;
+    }
+
+    /// Confirm the redo was executed - moves command back to undo stack.
+    pub fn confirmRedo(self: *Self) void {
+        if (self.redo_stack.items.len == 0) return;
+        const entry = self.redo_stack.pop() orelse return;
+        self.undo_stack.append(self.allocator, entry) catch {
+            var cmd_copy = entry.cmd;
+            cmd_copy.deinit(self.allocator);
+        };
     }
 
     /// Check if undo is available
@@ -184,14 +195,14 @@ pub const UndoHistory = struct {
     /// Clear all history
     pub fn clear(self: *Self) void {
         for (self.undo_stack.items) |*entry| {
-            var cmd = entry.cmd;
-            cmd.deinit(self.allocator);
+            var cmd_copy = entry.cmd;
+            cmd_copy.deinit(self.allocator);
         }
         self.undo_stack.clearRetainingCapacity();
 
         for (self.redo_stack.items) |*entry| {
-            var cmd = entry.cmd;
-            cmd.deinit(self.allocator);
+            var cmd_copy = entry.cmd;
+            cmd_copy.deinit(self.allocator);
         }
         self.redo_stack.clearRetainingCapacity();
 
@@ -228,191 +239,3 @@ pub const UndoHistory = struct {
         self.save_point = point;
     }
 };
-
-// ============================================================================
-// Helper functions for creating commands
-// ============================================================================
-
-/// Create a clip create command and push to history
-pub fn recordClipCreate(history: *UndoHistory, track: usize, scene: usize, length_beats: f32) void {
-    history.push(.{
-        .clip_create = .{
-            .track = track,
-            .scene = scene,
-            .length_beats = length_beats,
-        },
-    });
-}
-
-/// Create a clip delete command (captures current state) and push to history
-pub fn recordClipDelete(
-    history: *UndoHistory,
-    state: *const ui.State,
-    track: usize,
-    scene: usize,
-) void {
-    const clip = &state.piano_clips[track][scene];
-    const notes = history.allocator.dupe(ui.Note, clip.notes.items) catch &.{};
-
-    history.push(.{
-        .clip_delete = .{
-            .track = track,
-            .scene = scene,
-            .length_beats = state.session.clips[track][scene].length_beats,
-            .notes = notes,
-        },
-    });
-}
-
-/// Create a note add command and push to history
-pub fn recordNoteAdd(
-    history: *UndoHistory,
-    track: usize,
-    scene: usize,
-    note: ui.Note,
-    note_index: usize,
-) void {
-    history.push(.{
-        .note_add = .{
-            .track = track,
-            .scene = scene,
-            .note = note,
-            .note_index = note_index,
-        },
-    });
-}
-
-/// Create a note remove command and push to history
-pub fn recordNoteRemove(
-    history: *UndoHistory,
-    track: usize,
-    scene: usize,
-    note: ui.Note,
-    note_index: usize,
-) void {
-    history.push(.{
-        .note_remove = .{
-            .track = track,
-            .scene = scene,
-            .note = note,
-            .note_index = note_index,
-        },
-    });
-}
-
-/// Create a note move command and push to history
-pub fn recordNoteMove(
-    history: *UndoHistory,
-    track: usize,
-    scene: usize,
-    note_index: usize,
-    old_start: f32,
-    old_pitch: u8,
-    new_start: f32,
-    new_pitch: u8,
-) void {
-    history.push(.{
-        .note_move = .{
-            .track = track,
-            .scene = scene,
-            .note_index = note_index,
-            .old_start = old_start,
-            .old_pitch = old_pitch,
-            .new_start = new_start,
-            .new_pitch = new_pitch,
-        },
-    });
-}
-
-/// Create a note resize command and push to history
-pub fn recordNoteResize(
-    history: *UndoHistory,
-    track: usize,
-    scene: usize,
-    note_index: usize,
-    old_duration: f32,
-    new_duration: f32,
-) void {
-    history.push(.{
-        .note_resize = .{
-            .track = track,
-            .scene = scene,
-            .note_index = note_index,
-            .old_duration = old_duration,
-            .new_duration = new_duration,
-        },
-    });
-}
-
-/// Create a track add command and push to history
-pub fn recordTrackAdd(history: *UndoHistory, track_index: usize, name: []const u8) void {
-    var name_buf: [32]u8 = undefined;
-    const len = @min(name.len, name_buf.len);
-    @memcpy(name_buf[0..len], name[0..len]);
-
-    history.push(.{
-        .track_add = .{
-            .track_index = track_index,
-            .name = name_buf,
-            .name_len = len,
-        },
-    });
-}
-
-/// Create a scene add command and push to history
-pub fn recordSceneAdd(history: *UndoHistory, scene_index: usize, name: []const u8) void {
-    var name_buf: [32]u8 = undefined;
-    const len = @min(name.len, name_buf.len);
-    @memcpy(name_buf[0..len], name[0..len]);
-
-    history.push(.{
-        .scene_add = .{
-            .scene_index = scene_index,
-            .name = name_buf,
-            .name_len = len,
-        },
-    });
-}
-
-/// Create a BPM change command and push to history
-pub fn recordBpmChange(history: *UndoHistory, old_bpm: f32, new_bpm: f32) void {
-    history.push(.{
-        .bpm_change = .{
-            .old_bpm = old_bpm,
-            .new_bpm = new_bpm,
-        },
-    });
-}
-
-/// Create a track volume change command and push to history
-pub fn recordTrackVolume(history: *UndoHistory, track_index: usize, old_volume: f32, new_volume: f32) void {
-    history.push(.{
-        .track_volume = .{
-            .track_index = track_index,
-            .old_volume = old_volume,
-            .new_volume = new_volume,
-        },
-    });
-}
-
-/// Create a track mute toggle command and push to history
-pub fn recordTrackMute(history: *UndoHistory, track_index: usize, old_mute: bool, new_mute: bool) void {
-    history.push(.{
-        .track_mute = .{
-            .track_index = track_index,
-            .old_mute = old_mute,
-            .new_mute = new_mute,
-        },
-    });
-}
-
-/// Create a track solo toggle command and push to history
-pub fn recordTrackSolo(history: *UndoHistory, track_index: usize, old_solo: bool, new_solo: bool) void {
-    history.push(.{
-        .track_solo = .{
-            .track_index = track_index,
-            .old_solo = old_solo,
-            .new_solo = new_solo,
-        },
-    });
-}
