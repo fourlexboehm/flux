@@ -87,7 +87,7 @@ pub const PianoRollState = struct {
     // View state
     scroll_x: f32 = 0,
     scroll_y: f32 = 50 * 20.0, // Start around C4
-    beats_per_pixel: f32 = 0.02,
+    beats_per_pixel: f32 = 0.5,
 
     pub fn init(allocator: std.mem.Allocator) PianoRollState {
         return .{ .allocator = allocator };

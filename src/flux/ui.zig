@@ -350,7 +350,7 @@ pub fn updateKeyboardMidi(state: *State) void {
 }
 
 fn drawTransport(state: *State, ui_scale: f32) void {
-    const transport_h = 40.0 * ui_scale;
+    const transport_h = 48.0 * ui_scale;
     const btn_size = 36.0 * ui_scale;
     const spacing = 20.0 * ui_scale;
 
@@ -424,13 +424,13 @@ fn drawTransport(state: *State, ui_scale: f32) void {
     // Load/Save buttons (right-aligned)
     zgui.sameLine(.{ .spacing = spacing * 2.0 });
 
-    if (zgui.button("Load", .{ .w = 60.0 * ui_scale, .h = 24.0 * ui_scale })) {
+    if (zgui.button("Load", .{ .w = 80.0 * ui_scale, .h = 32.0 * ui_scale })) {
         state.load_project_request = true;
     }
 
     zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
 
-    if (zgui.button("Save", .{ .w = 60.0 * ui_scale, .h = 24.0 * ui_scale })) {
+    if (zgui.button("Save", .{ .w = 80.0 * ui_scale, .h = 32.0 * ui_scale })) {
         state.save_project_request = true;
     }
 

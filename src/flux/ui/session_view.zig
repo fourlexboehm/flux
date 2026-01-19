@@ -442,9 +442,9 @@ pub const SessionView = struct {
     pub fn draw(self: *SessionView, ui_scale: f32, playing: bool, is_focused: bool) void {
         const row_height = 52.0 * ui_scale;
         const header_height = 32.0 * ui_scale;
-        const scene_col_w = 100.0 * ui_scale; // Wider for button + name
+        const scene_col_w = 130.0 * ui_scale; // Wider for button + name
         const track_col_w = 160.0 * ui_scale;
-        const add_btn_size = 24.0 * ui_scale;
+        const add_btn_size = 32.0 * ui_scale;
 
         const grid_pos = zgui.getCursorScreenPos();
         const mouse = zgui.getMousePos();
@@ -531,13 +531,15 @@ pub const SessionView = struct {
             }
         }
 
+        // Calculate mixer height for later
+        const mixer_height = 200.0 * ui_scale;
+
         if (!zgui.beginTable("session_grid", .{
             .column = @intCast(self.track_count + 2), // scenes + tracks + add button
             .flags = .{ .borders = .{ .inner_v = true }, .row_bg = false, .sizing = .fixed_fit },
         })) {
             return;
         }
-        defer zgui.endTable();
 
         // Setup columns
         zgui.tableSetupColumn("##scenes", .{ .flags = .{ .width_fixed = true }, .init_width_or_height = scene_col_w });
@@ -768,6 +770,39 @@ pub const SessionView = struct {
             self.drag_select.draw(dl);
             dl.popClipRect();
         }
+
+        zgui.endTable();
+
+        // Draw mixer strip at bottom of view
+        const avail = zgui.getContentRegionAvail();
+        if (avail[1] > mixer_height) {
+            zgui.setCursorPosY(zgui.getCursorPosY() + avail[1] - mixer_height);
+        }
+
+        // Draw mixer using a table to guarantee alignment with grid
+        zgui.pushStyleColor4f(.{ .idx = .table_row_bg, .c = colors.Colors.bg_header });
+        if (zgui.beginTable("mixer_strip", .{
+            .column = @intCast(self.track_count + 2),
+            .flags = .{ .borders = .{ .inner_v = true }, .row_bg = true, .sizing = .fixed_fit },
+        })) {
+            // Setup columns to match grid exactly
+            zgui.tableSetupColumn("##mix_scenes", .{ .flags = .{ .width_fixed = true }, .init_width_or_height = scene_col_w });
+            for (0..self.track_count) |_| {
+                zgui.tableSetupColumn("##mix_track", .{ .flags = .{ .width_fixed = true }, .init_width_or_height = track_col_w });
+            }
+            zgui.tableSetupColumn("##mix_add", .{ .flags = .{ .width_fixed = true }, .init_width_or_height = add_btn_size + 8.0 });
+
+            zgui.tableNextRow(.{ .min_row_height = mixer_height - 8.0 * ui_scale });
+            _ = zgui.tableNextColumn(); // Empty scene column
+
+            for (0..self.track_count) |t| {
+                _ = zgui.tableNextColumn();
+                self.drawTrackMixer(t, track_col_w, mixer_height - 8.0 * ui_scale, ui_scale);
+            }
+
+            zgui.endTable();
+        }
+        zgui.popStyleColor(.{ .count = 1 });
     }
 
     fn drawClipSlot(self: *SessionView, track: usize, scene: usize, width: f32, height: f32, ui_scale: f32, playing: bool) void {
@@ -932,6 +967,95 @@ pub const SessionView = struct {
                 .col = zgui.colorConvertFloat4ToU32(colors.Colors.text_dim),
             });
         }
+    }
+
+    fn drawTrackMixer(self: *SessionView, track: usize, width: f32, height: f32, ui_scale: f32) void {
+        const padding = 4.0 * ui_scale;
+        const spacing = 4.0 * ui_scale;
+        const usable_width = width - padding * 2;
+        const btn_width = (usable_width - spacing) / 2.0;
+        const btn_height = 36.0 * ui_scale;
+        const slider_width = 28.0 * ui_scale;
+        const label_height = 24.0 * ui_scale;
+        const slider_height = height - btn_height - spacing * 2 - label_height - 4.0 * ui_scale;
+
+        const base_x = zgui.getCursorPosX();
+        const base_y = zgui.getCursorPosY();
+
+        // Row 1: M and S buttons side by side (fill track width)
+        zgui.setCursorPosX(base_x + padding);
+
+        // Mute button
+        var mute_buf: [32]u8 = undefined;
+        const mute_id = std.fmt.bufPrintZ(&mute_buf, "M##mute{d}", .{track}) catch "M";
+
+        const mute_bg = if (self.tracks[track].mute) colors.Colors.clip_stopped else colors.Colors.bg_cell;
+        const mute_text = if (self.tracks[track].mute) colors.Colors.text_bright else colors.Colors.text_dim;
+
+        zgui.pushStyleColor4f(.{ .idx = .button, .c = mute_bg });
+        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ mute_bg[0] + 0.1, mute_bg[1] + 0.1, mute_bg[2] + 0.1, 1.0 } });
+        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.accent_dim });
+        zgui.pushStyleColor4f(.{ .idx = .text, .c = mute_text });
+
+        if (zgui.button(mute_id, .{ .w = btn_width, .h = btn_height })) {
+            self.tracks[track].mute = !self.tracks[track].mute;
+        }
+        zgui.popStyleColor(.{ .count = 4 });
+
+        zgui.sameLine(.{ .spacing = spacing });
+
+        // Solo button
+        var solo_buf: [32]u8 = undefined;
+        const solo_id = std.fmt.bufPrintZ(&solo_buf, "S##solo{d}", .{track}) catch "S";
+
+        const solo_bg = if (self.tracks[track].solo) colors.Colors.clip_queued else colors.Colors.bg_cell;
+        const solo_text = if (self.tracks[track].solo) [4]f32{ 0.1, 0.1, 0.1, 1.0 } else colors.Colors.text_dim;
+
+        zgui.pushStyleColor4f(.{ .idx = .button, .c = solo_bg });
+        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ solo_bg[0] + 0.1, solo_bg[1] + 0.1, solo_bg[2] + 0.1, 1.0 } });
+        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.accent_dim });
+        zgui.pushStyleColor4f(.{ .idx = .text, .c = solo_text });
+
+        if (zgui.button(solo_id, .{ .w = btn_width, .h = btn_height })) {
+            self.tracks[track].solo = !self.tracks[track].solo;
+        }
+        zgui.popStyleColor(.{ .count = 4 });
+
+        // Row 2: Volume slider (centered, wider)
+        zgui.setCursorPosY(base_y + btn_height + spacing);
+        zgui.setCursorPosX(base_x + (width - slider_width) / 2.0);
+
+        var vol_buf: [32]u8 = undefined;
+        const vol_id = std.fmt.bufPrintZ(&vol_buf, "##vol{d}", .{track}) catch "##vol";
+
+        zgui.pushStyleColor4f(.{ .idx = .frame_bg, .c = colors.Colors.bg_cell });
+        zgui.pushStyleColor4f(.{ .idx = .frame_bg_hovered, .c = .{ 0.22, 0.22, 0.22, 1.0 } });
+        zgui.pushStyleColor4f(.{ .idx = .frame_bg_active, .c = .{ 0.25, 0.25, 0.25, 1.0 } });
+        zgui.pushStyleColor4f(.{ .idx = .slider_grab, .c = colors.Colors.accent });
+        zgui.pushStyleColor4f(.{ .idx = .slider_grab_active, .c = .{ 1.0, 0.6, 0.2, 1.0 } });
+
+        _ = zgui.vsliderFloat(vol_id, .{
+            .w = slider_width,
+            .h = slider_height,
+            .v = &self.tracks[track].volume,
+            .min = 0.0,
+            .max = 1.5,
+            .cfmt = "",
+        });
+
+        zgui.popStyleColor(.{ .count = 5 });
+
+        // Row 3: dB label (centered)
+        zgui.setCursorPosY(base_y + btn_height + spacing + slider_height + spacing);
+        zgui.setCursorPosX(base_x + padding);
+
+        const db = if (self.tracks[track].volume > 0.0001)
+            20.0 * @log10(self.tracks[track].volume)
+        else
+            -60.0;
+        var label_buf: [16]u8 = undefined;
+        const label = std.fmt.bufPrintZ(&label_buf, "{d:.0}dB", .{db}) catch "";
+        zgui.textColored(colors.Colors.text_dim, "{s}", .{label});
     }
 
     fn launchScene(self: *SessionView, scene: usize, playing: bool) void {

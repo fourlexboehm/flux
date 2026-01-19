@@ -1164,6 +1164,15 @@ pub fn save(
     const daw_project = try fromFluxProject(arena.allocator(), state, catalog);
     const xml = try toXml(arena.allocator(), &daw_project);
 
+    // Debug: also write raw XML for inspection
+    if (std.Io.Dir.cwd().createFile(io, "debug_project.xml", .{ .truncate = true })) |*debug_file| {
+        defer debug_file.close(io);
+        var dbuf: [8192]u8 = undefined;
+        var dw = debug_file.writer(io, &dbuf);
+        dw.interface.writeAll(xml) catch {};
+        dw.interface.flush() catch {};
+    } else |_| {}
+
     // Build ZIP in memory
     var zip_writer = ZipWriter.init(arena.allocator());
     defer zip_writer.deinit();
@@ -1306,6 +1315,7 @@ fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Project 
     var time_sig_den: u8 = 4;
 
     var tracks_list = std.ArrayList(Track).empty;
+    var master_track: ?Track = null; // Separate master track
     var scenes_list = std.ArrayList(Scene).empty;
     var lanes_list = std.ArrayList(Lanes).empty; // Child track lanes
 
@@ -1504,7 +1514,13 @@ fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Project 
                 } else if (std.mem.eql(u8, elem_name, "Track") and state == .track) {
                     state = .structure;
                     if (current_track) |track| {
-                        try tracks_list.append(allocator, track);
+                        // Check if this is the master track (channel role = master)
+                        const is_master = if (track.channel) |ch| ch.role == .master else false;
+                        if (is_master) {
+                            master_track = track;
+                        } else {
+                            try tracks_list.append(allocator, track);
+                        }
                     }
                     current_track = null;
                 } else if (std.mem.eql(u8, elem_name, "Channel") and state == .channel) {
@@ -1589,8 +1605,9 @@ fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Project 
         },
     };
 
-    // Set parsed tracks and scenes
+    // Set parsed tracks, master track, and scenes
     proj.tracks = try tracks_list.toOwnedSlice(allocator);
+    proj.master_track = master_track;
     proj.scenes = try scenes_list.toOwnedSlice(allocator);
 
     // Set arrangement with lanes
