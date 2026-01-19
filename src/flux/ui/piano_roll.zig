@@ -85,8 +85,6 @@ pub const PianoRollDrag = struct {
     grab_offset_pitch: i32 = 0,
     original_start: f32 = 0,
     original_pitch: u8 = 0,
-    select_start_x: f32 = 0,
-    select_start_y: f32 = 0,
     // For undo tracking
     drag_start_start: f32 = 0, // Start position when drag began
     drag_start_pitch: u8 = 0, // Pitch when drag began
@@ -105,6 +103,7 @@ pub const PianoRollState = struct {
 
     // Drag state
     drag: PianoRollDrag = .{},
+    drag_select: selection.DragSelectState = .{},
 
     // Context menu state
     context_note_index: ?usize = null,
@@ -570,10 +569,11 @@ pub fn drawSequencer(
         if (!shift_down) {
             state.clearSelection();
         }
+        state.drag_select.begin(mouse, shift_down);
+        state.drag_select.active = true;
+        state.drag_select.pending = false;
         state.drag = .{
             .mode = .select_rect,
-            .select_start_x = mouse[0],
-            .select_start_y = mouse[1],
         };
     }
 
@@ -630,7 +630,8 @@ pub fn drawSequencer(
                     }
                 },
                 .select_rect => {
-                    finalizeRectSelection(state, clip, mouse, grid_window_pos, pixels_per_beat, row_height, state.scroll_x, state.scroll_y);
+                    finalizeRectSelection(state, clip, grid_window_pos, pixels_per_beat, row_height, state.scroll_x, state.scroll_y);
+                    state.drag_select.reset();
                 },
                 .resize_clip => {
                     // Clip was resized - emit resize request if length changed
@@ -654,7 +655,7 @@ pub fn drawSequencer(
 
     // Draw selection rectangle
     if (state.drag.mode == .select_rect) {
-        drawSelectionRect(state, mouse, grid_window_pos, grid_view_width, grid_view_height, draw_list);
+        drawSelectionRect(state, grid_window_pos, grid_view_width, grid_view_height, draw_list);
     }
 
     // Context menu
@@ -929,24 +930,27 @@ fn handleDrag(
                 note.duration = new_end - note.start;
             }
         },
-        .select_rect, .none => {},
+        .select_rect => {
+            state.drag_select.update(mouse);
+        },
+        .none => {},
     }
 }
 
 fn finalizeRectSelection(
     state: *PianoRollState,
     clip: *const PianoRollClip,
-    mouse: [2]f32,
     grid_pos: [2]f32,
     pixels_per_beat: f32,
     row_height: f32,
     scroll_x: f32,
     scroll_y: f32,
 ) void {
-    const sel_x1 = @min(state.drag.select_start_x, mouse[0]);
-    const sel_y1 = @min(state.drag.select_start_y, mouse[1]);
-    const sel_x2 = @max(state.drag.select_start_x, mouse[0]);
-    const sel_y2 = @max(state.drag.select_start_y, mouse[1]);
+    const rect = state.drag_select.getRect();
+    const sel_x1 = rect.min[0];
+    const sel_y1 = rect.min[1];
+    const sel_x2 = rect.max[0];
+    const sel_y2 = rect.max[1];
 
     for (clip.notes.items, 0..) |note, idx| {
         const note_row = 127 - @as(usize, note.pitch);
@@ -962,16 +966,16 @@ fn finalizeRectSelection(
 
 fn drawSelectionRect(
     state: *const PianoRollState,
-    mouse: [2]f32,
     grid_pos: [2]f32,
     grid_width: f32,
     grid_height: f32,
     draw_list: zgui.DrawList,
 ) void {
-    const sel_x1 = @min(state.drag.select_start_x, mouse[0]);
-    const sel_y1 = @min(state.drag.select_start_y, mouse[1]);
-    const sel_x2 = @max(state.drag.select_start_x, mouse[0]);
-    const sel_y2 = @max(state.drag.select_start_y, mouse[1]);
+    const rect = state.drag_select.getRect();
+    const sel_x1 = rect.min[0];
+    const sel_y1 = rect.min[1];
+    const sel_x2 = rect.max[0];
+    const sel_y2 = rect.max[1];
 
     const clipped_x1 = @max(sel_x1, grid_pos[0]);
     const clipped_y1 = @max(sel_y1, grid_pos[1]);
