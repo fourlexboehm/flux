@@ -1032,7 +1032,9 @@ fn drawPianoKeys(
         if (note_in_octave == 0) {
             var buf: [8]u8 = undefined;
             const label = std.fmt.bufPrintZ(&buf, "C{d}", .{oct}) catch "";
-            draw_list.addText(.{ x + 4, ky + 2 }, zgui.colorConvertFloat4ToU32(colors.Colors.text_bright), "{s}", .{label});
+            // Center text vertically in row (font is ~13px, center it)
+            const text_y = ky + (row_height - 10.0) / 2.0;
+            draw_list.addText(.{ x + 6, text_y }, zgui.colorConvertFloat4ToU32(colors.Colors.text_bright), "{s}", .{label});
         }
     }
 
