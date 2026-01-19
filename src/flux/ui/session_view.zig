@@ -13,6 +13,8 @@ pub const ClipState = enum {
     stopped,
     queued,
     playing,
+    recording,
+    record_queued,
 };
 
 pub const ClipSlot = struct {
@@ -77,6 +79,27 @@ pub const OpenClipRequest = struct {
     scene: usize,
 };
 
+/// Tracks the state of an active MIDI recording session
+pub const RecordingState = struct {
+    track: ?usize = null,
+    scene: ?usize = null,
+    start_beat: f32 = 0,
+    target_length_beats: f32 = default_clip_bars * beats_per_bar, // 4 bars
+    note_start_beats: [128]?f32 = [_]?f32{null} ** 128, // Track held notes
+
+    pub fn isRecording(self: *const RecordingState) bool {
+        return self.track != null;
+    }
+
+    pub fn reset(self: *RecordingState) void {
+        self.track = null;
+        self.scene = null;
+        self.start_beat = 0;
+        self.target_length_beats = default_clip_bars * beats_per_bar;
+        self.note_start_beats = [_]?f32{null} ** 128;
+    }
+};
+
 pub const SessionView = struct {
     allocator: std.mem.Allocator,
 
@@ -102,11 +125,28 @@ pub const SessionView = struct {
     drag_moving: bool = false,
     drag_start_track: usize = 0,
     drag_start_scene: usize = 0,
+    drag_target_track: ?usize = null, // Where clips will move to (preview)
+    drag_target_scene: ?usize = null,
+    // Cell positions for accurate ghost rendering (updated during clip rendering)
+    cell_positions: [max_tracks][max_scenes][2]f32 = [_][max_scenes][2]f32{[_][2]f32{.{ 0, 0 }} ** max_scenes} ** max_tracks,
 
     // Playback state
     queued_scene: [max_tracks]?usize = [_]?usize{null} ** max_tracks,
     open_clip_request: ?OpenClipRequest = null,
     start_playback_request: bool = false,
+    reset_playhead_request: bool = false,
+
+    // Recording state
+    recording: RecordingState = .{},
+    armed_track: ?usize = null, // Track armed for recording (only one at a time)
+    finalize_recording_track: ?usize = null, // Track to finalize notes on
+    finalize_recording_scene: ?usize = null, // Scene to finalize notes on
+    clear_piano_clip_request: ?OpenClipRequest = null, // Request to clear piano clip notes (for new recordings)
+
+    // Render-time hover tracking (updated during clip slot rendering for accurate hit detection)
+    render_hover_track: ?usize = null,
+    render_hover_scene: ?usize = null,
+    render_hover_has_content: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) SessionView {
         var self = SessionView{
@@ -481,7 +521,7 @@ pub const SessionView = struct {
         self.drag_start_scene = self.primary_scene;
     }
 
-    pub fn draw(self: *SessionView, ui_scale: f32, playing: bool, is_focused: bool) void {
+    pub fn draw(self: *SessionView, ui_scale: f32, playing: bool, is_focused: bool, playhead_beat: f32) void {
         const row_height = 52.0 * ui_scale;
         const header_height = 32.0 * ui_scale;
         const scene_col_w = 130.0 * ui_scale; // Wider for button + name
@@ -499,30 +539,32 @@ pub const SessionView = struct {
         const in_grid = mouse[0] >= grid_pos[0] and mouse[0] < grid_pos[0] + grid_width and
             mouse[1] >= grid_pos[1] and mouse[1] < grid_pos[1] + grid_height;
 
-        // Calculate which clip cell the mouse is over (if any)
-        const cell_x = mouse[0] - grid_pos[0] - scene_col_w;
-        const cell_y = mouse[1] - grid_pos[1] - header_height;
-        const mouse_over_clip_area = cell_x >= 0 and cell_y >= 0;
+        // Use render-time hover from previous frame for accurate hit detection
+        // (updated during clip slot rendering to match actual cell positions)
+        const hover_track = self.render_hover_track;
+        const hover_scene = self.render_hover_scene;
+        const hover_has_content = self.render_hover_has_content;
 
-        var hover_track: ?usize = null;
-        var hover_scene: ?usize = null;
-        var hover_has_content = false;
+        // Reset render-time hover tracking (will be updated during this frame's clip slot rendering)
+        self.render_hover_track = null;
+        self.render_hover_scene = null;
+        self.render_hover_has_content = false;
 
-        if (mouse_over_clip_area) {
-            const t = @as(usize, @intFromFloat(cell_x / track_col_w));
-            const s = @as(usize, @intFromFloat(cell_y / row_height));
-            if (t < self.track_count and s < self.scene_count) {
-                hover_track = t;
-                hover_scene = s;
-                hover_has_content = self.clips[t][s].state != .empty;
-            }
-        }
-
-        // Handle mouse release - reset all drag state
+        // Handle mouse release - complete drag move and reset all drag state
         if (!zgui.isMouseDown(.left)) {
+            // If we were dragging clips and have a valid target, do the actual move now
+            if (self.drag_moving and self.drag_target_track != null and self.drag_target_scene != null) {
+                const delta_track = @as(i32, @intCast(self.drag_target_track.?)) - @as(i32, @intCast(self.drag_start_track));
+                const delta_scene = @as(i32, @intCast(self.drag_target_scene.?)) - @as(i32, @intCast(self.drag_start_scene));
+                if (delta_track != 0 or delta_scene != 0) {
+                    self.moveSelectedClips(delta_track, delta_scene);
+                }
+            }
             self.drag_select.active = false;
             self.drag_select.pending = false;
             self.drag_moving = false;
+            self.drag_target_track = null;
+            self.drag_target_scene = null;
         }
 
         // On click, decide: drag move (if over clip with content) or drag select (if over empty)
@@ -561,15 +603,13 @@ pub const SessionView = struct {
             self.drag_select.pending = false;
         }
 
-        // Handle drag moving
+        // Handle drag moving - track target position for preview (actual move happens on release)
         if (self.drag_moving and zgui.isMouseDragging(.left, 4.0)) {
             zgui.setMouseCursor(.resize_all);
             if (hover_track != null and hover_scene != null) {
-                const delta_track = @as(i32, @intCast(hover_track.?)) - @as(i32, @intCast(self.drag_start_track));
-                const delta_scene = @as(i32, @intCast(hover_scene.?)) - @as(i32, @intCast(self.drag_start_scene));
-                if (delta_track != 0 or delta_scene != 0) {
-                    self.moveSelectedClips(delta_track, delta_scene);
-                }
+                // Just track the target, don't actually move yet
+                self.drag_target_track = hover_track;
+                self.drag_target_scene = hover_scene;
             }
         }
 
@@ -702,7 +742,7 @@ pub const SessionView = struct {
             // Clip slots
             for (0..self.track_count) |track_idx| {
                 _ = zgui.tableNextColumn();
-                self.drawClipSlot(track_idx, scene_idx, track_col_w - 8.0 * ui_scale, row_height - 6.0 * ui_scale, ui_scale, playing);
+                self.drawClipSlot(track_idx, scene_idx, track_col_w - 8.0 * ui_scale, row_height - 6.0 * ui_scale, ui_scale, playing, playhead_beat);
             }
 
             // Empty cell for add track column
@@ -875,20 +915,30 @@ pub const SessionView = struct {
         zgui.popStyleColor(.{ .count = 1 });
     }
 
-    fn drawClipSlot(self: *SessionView, track: usize, scene: usize, width: f32, height: f32, ui_scale: f32, playing: bool) void {
+    fn drawClipSlot(self: *SessionView, track: usize, scene: usize, width: f32, height: f32, ui_scale: f32, playing: bool, playhead_beat: f32) void {
         const draw_list = zgui.getWindowDrawList();
         const pos = zgui.getCursorScreenPos();
         const mouse = zgui.getMousePos();
 
+        // Store cell position for ghost rendering
+        self.cell_positions[track][scene] = pos;
+
         const slot = &self.clips[track][scene];
         const is_selected = self.isSelected(track, scene);
 
+        // Check if this clip is being overdubbed (playing + recording)
+        const is_overdub_clip = slot.state == .playing and self.recording.track == track and self.recording.scene == scene;
+
         // Clip colors based on state
-        const clip_color = switch (slot.state) {
+        const clip_color = if (is_overdub_clip)
+            colors.Colors.clip_recording // Use recording color for overdub
+        else switch (slot.state) {
             .empty => colors.Colors.clip_empty,
             .stopped => colors.Colors.clip_stopped,
             .queued => colors.Colors.clip_queued,
             .playing => colors.Colors.clip_playing,
+            .recording => colors.Colors.clip_recording,
+            .record_queued => colors.Colors.clip_queued,
         };
 
         // Play button dimensions
@@ -936,10 +986,78 @@ pub const SessionView = struct {
                 .flags = zgui.DrawFlags.round_corners_all,
                 .thickness = 2.0,
             });
+
+            // Draw ghost outline at drag target position (if dragging)
+            if (self.drag_moving and self.drag_target_track != null and self.drag_target_scene != null) {
+                const target_t = self.drag_target_track.?;
+                const target_s = self.drag_target_scene.?;
+                if (target_t != track or target_s != scene) {
+                    // Calculate where this clip would end up relative to the drag target
+                    const rel_track = @as(i32, @intCast(track)) - @as(i32, @intCast(self.drag_start_track));
+                    const rel_scene = @as(i32, @intCast(scene)) - @as(i32, @intCast(self.drag_start_scene));
+                    const final_track = @as(i32, @intCast(target_t)) + rel_track;
+                    const final_scene = @as(i32, @intCast(target_s)) + rel_scene;
+
+                    // Only draw if target is in bounds
+                    if (final_track >= 0 and final_track < @as(i32, @intCast(self.track_count)) and
+                        final_scene >= 0 and final_scene < @as(i32, @intCast(self.scene_count)))
+                    {
+                        const ghost_pos = self.cell_positions[@intCast(final_track)][@intCast(final_scene)];
+                        const ghost_min = ghost_pos;
+                        const ghost_max = [2]f32{ ghost_min[0] + clip_w, ghost_min[1] + height };
+
+                        // Draw on foreground so it appears on top
+                        const fg_draw_list = zgui.getForegroundDrawList();
+                        fg_draw_list.addRectFilled(.{
+                            .pmin = ghost_min,
+                            .pmax = ghost_max,
+                            .col = zgui.colorConvertFloat4ToU32(.{ colors.Colors.selected[0], colors.Colors.selected[1], colors.Colors.selected[2], 0.4 }),
+                            .rounding = rounding,
+                            .flags = zgui.DrawFlags.round_corners_all,
+                        });
+                        fg_draw_list.addRect(.{
+                            .pmin = ghost_min,
+                            .pmax = ghost_max,
+                            .col = zgui.colorConvertFloat4ToU32(colors.Colors.selected),
+                            .rounding = rounding,
+                            .flags = zgui.DrawFlags.round_corners_all,
+                            .thickness = 2.0,
+                        });
+                    }
+                }
+            }
         }
 
-        // Clip content indicator (bars)
-        if (slot.state != .empty) {
+        // Check if we're overdubbing this clip
+        const clip_is_overdubbing = slot.state == .playing and self.recording.track == track and self.recording.scene == scene;
+
+        // Clip content indicator (bars) or recording progress
+        if (slot.state == .recording) {
+            // Show "REC" label for recording clips
+            const text_color = zgui.colorConvertFloat4ToU32(.{ 1.0, 1.0, 1.0, 1.0 });
+            draw_list.addText(.{ pos[0] + 8.0 * ui_scale, pos[1] + height / 2.0 - 8.0 }, text_color, "REC", .{});
+
+            // Draw progress bar at bottom of clip
+            if (self.recording.track == track and self.recording.scene == scene) {
+                const progress_height = 4.0 * ui_scale;
+                const elapsed = playhead_beat - self.recording.start_beat;
+                const progress = @min(1.0, @max(0.0, elapsed / self.recording.target_length_beats));
+                const progress_width = clip_w * progress;
+                draw_list.addRectFilled(.{
+                    .pmin = .{ pos[0], pos[1] + height - progress_height },
+                    .pmax = .{ pos[0] + progress_width, pos[1] + height },
+                    .col = zgui.colorConvertFloat4ToU32(.{ 1.0, 0.3, 0.3, 1.0 }),
+                });
+            }
+        } else if (clip_is_overdubbing) {
+            // Show "OVERDUB" label when playing and recording
+            const text_color = zgui.colorConvertFloat4ToU32(.{ 1.0, 1.0, 1.0, 1.0 });
+            draw_list.addText(.{ pos[0] + 4.0 * ui_scale, pos[1] + height / 2.0 - 8.0 }, text_color, "OVERDUB", .{});
+        } else if (slot.state == .record_queued) {
+            // Show "ARMED" label for queued recording
+            const text_color = zgui.colorConvertFloat4ToU32(.{ 0.1, 0.1, 0.1, 1.0 });
+            draw_list.addText(.{ pos[0] + 8.0 * ui_scale, pos[1] + height / 2.0 - 8.0 }, text_color, "ARMED", .{});
+        } else if (slot.state != .empty) {
             const bars = slot.length_beats / beats_per_bar;
             var buf: [16]u8 = undefined;
             const label = std.fmt.bufPrintZ(&buf, "{d:.0} bars", .{bars}) catch "";
@@ -955,8 +1073,20 @@ pub const SessionView = struct {
         const over_clip = mouse[0] >= pos[0] and mouse[0] < pos[0] + clip_w and
             mouse[1] >= pos[1] and mouse[1] < pos[1] + height;
 
-        // Show move cursor when hovering over a clip with content
-        if (over_clip and slot.state != .empty and !self.drag_moving) {
+        // Check if mouse is over the entire cell (clip + play button)
+        const over_cell = mouse[0] >= pos[0] and mouse[0] < pos[0] + width and
+            mouse[1] >= pos[1] and mouse[1] < pos[1] + height;
+
+        // Update render-time hover tracking for accurate hit detection next frame
+        if (over_cell) {
+            self.render_hover_track = track;
+            self.render_hover_scene = scene;
+            self.render_hover_has_content = slot.state != .empty;
+        }
+
+        // Show move cursor when hovering over a clip with content (but not recording clips)
+        const is_recording_state = slot.state == .recording or slot.state == .record_queued;
+        if (over_clip and slot.state != .empty and !is_recording_state and !self.drag_moving) {
             zgui.setMouseCursor(.resize_all);
         }
 
@@ -974,30 +1104,79 @@ pub const SessionView = struct {
 
         zgui.sameLine(.{ .spacing = 4.0 * ui_scale });
 
-        // Play button
+        // Play/Record button
         const play_pos = zgui.getCursorScreenPos();
         var play_buf: [32]u8 = undefined;
         const play_id = std.fmt.bufPrintZ(&play_buf, "##play_t{d}s{d}", .{ track, scene }) catch "##play";
 
         const is_playing_clip = slot.state == .playing;
         const is_queued = slot.state == .queued;
-        const play_bg = if (is_playing_clip) colors.Colors.clip_playing else if (is_queued) colors.Colors.clip_queued else colors.Colors.bg_cell;
+        const is_recording = slot.state == .recording;
+        const is_record_queued = slot.state == .record_queued;
+        const is_empty = slot.state == .empty;
+        const is_armed_track = self.armed_track != null and self.armed_track.? == track;
+        // Check if we're overdubbing (playing + recording on this clip)
+        const is_overdubbing = is_playing_clip and self.recording.track == track and self.recording.scene == scene;
+
+        // Determine button background color
+        // For armed track: show record button style for empty slots or stopped clips
+        // For recording/record_queued/overdubbing: show recording color
+        // Otherwise: normal play button style
+        const play_bg = if (is_recording or is_record_queued or is_overdubbing)
+            colors.Colors.record_armed
+        else if (is_playing_clip)
+            colors.Colors.clip_playing
+        else if (is_queued)
+            colors.Colors.clip_queued
+        else if (is_armed_track and (is_empty or slot.state == .stopped))
+            colors.Colors.record_armed
+        else
+            colors.Colors.bg_cell;
+
+        const hover_bg = if (is_recording or is_record_queued or is_overdubbing or (is_armed_track and (is_empty or slot.state == .stopped)))
+            colors.Colors.record_armed_hover
+        else
+            [4]f32{ play_bg[0] + 0.08, play_bg[1] + 0.08, play_bg[2] + 0.08, 1.0 };
 
         zgui.pushStyleColor4f(.{ .idx = .button, .c = play_bg });
-        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ play_bg[0] + 0.08, play_bg[1] + 0.08, play_bg[2] + 0.08, 1.0 } });
+        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = hover_bg });
         zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.accent_dim });
         if (zgui.button(play_id, .{ .w = play_btn_w, .h = height })) {
-            self.toggleClipPlayback(track, scene, playing);
+            // Handle button click based on state
+            if (is_recording or is_record_queued or is_overdubbing) {
+                // Click on recording/queued/overdubbing clip -> stop recording
+                self.armed_track = null;
+                if (is_recording) {
+                    self.stopRecording();
+                } else if (is_overdubbing) {
+                    // Stop overdub - just clear recording state, clip keeps playing
+                    self.recording.reset();
+                } else {
+                    self.cancelRecording();
+                }
+            } else if (is_armed_track and (is_empty or slot.state == .stopped)) {
+                // Click record button on armed track -> start recording
+                self.startRecording(track, scene, playing);
+            } else {
+                // Normal play/stop behavior
+                self.toggleClipPlayback(track, scene, playing);
+            }
         }
         zgui.popStyleColor(.{ .count = 3 });
 
-        // Draw play/stop icon
+        // Draw play/stop/record icon
         const icon_size = 10.0 * ui_scale;
         const cx = play_pos[0] + play_btn_w / 2.0;
         const cy = play_pos[1] + height / 2.0;
-        const is_empty = slot.state == .empty;
 
-        if (is_playing_clip) {
+        if (is_recording or is_record_queued or is_overdubbing) {
+            // Filled record circle during recording/queued/overdubbing
+            draw_list.addCircleFilled(.{
+                .p = .{ cx, cy },
+                .r = icon_size / 2.0,
+                .col = zgui.colorConvertFloat4ToU32(.{ 1.0, 1.0, 1.0, 1.0 }),
+            });
+        } else if (is_playing_clip) {
             // Stop square (for playing clip)
             draw_list.addRectFilled(.{
                 .pmin = .{ cx - icon_size / 2.0, cy - icon_size / 2.0 },
@@ -1019,8 +1198,15 @@ pub const SessionView = struct {
                 .col = zgui.colorConvertFloat4ToU32(colors.Colors.clip_queued),
                 .thickness = 2.0,
             });
+        } else if (is_armed_track and (is_empty or slot.state == .stopped)) {
+            // Record circle for armed track (empty or stopped clips)
+            draw_list.addCircleFilled(.{
+                .p = .{ cx, cy },
+                .r = icon_size / 2.0,
+                .col = zgui.colorConvertFloat4ToU32(.{ 1.0, 1.0, 1.0, 1.0 }),
+            });
         } else if (is_empty) {
-            // Stop square for empty slot (stops this track)
+            // Stop square for empty slot on non-armed track
             draw_list.addRectFilled(.{
                 .pmin = .{ cx - icon_size / 2.0, cy - icon_size / 2.0 },
                 .pmax = .{ cx + icon_size / 2.0, cy + icon_size / 2.0 },
@@ -1041,7 +1227,7 @@ pub const SessionView = struct {
         const padding = 4.0 * ui_scale;
         const spacing = 4.0 * ui_scale;
         const usable_width = width - padding * 2;
-        const btn_width = (usable_width - spacing) / 2.0;
+        const btn_width = (usable_width - spacing * 2) / 3.0; // 3 buttons: M, S, R
         const btn_height = 36.0 * ui_scale;
         const slider_width = 28.0 * ui_scale;
         const label_height = 24.0 * ui_scale;
@@ -1050,7 +1236,7 @@ pub const SessionView = struct {
         const base_x = zgui.getCursorPosX();
         const base_y = zgui.getCursorPosY();
 
-        // Row 1: M and S buttons side by side (fill track width)
+        // Row 1: M, S, R buttons side by side (fill track width)
         zgui.setCursorPosX(base_x + padding);
 
         // Mute button
@@ -1086,6 +1272,38 @@ pub const SessionView = struct {
 
         if (zgui.button(solo_id, .{ .w = btn_width, .h = btn_height })) {
             self.tracks[track].solo = !self.tracks[track].solo;
+        }
+        zgui.popStyleColor(.{ .count = 4 });
+
+        zgui.sameLine(.{ .spacing = spacing });
+
+        // Record Arm button
+        var arm_buf: [32]u8 = undefined;
+        const arm_id = std.fmt.bufPrintZ(&arm_buf, "R##arm{d}", .{track}) catch "R";
+
+        const is_armed = self.armed_track != null and self.armed_track.? == track;
+        const arm_bg = if (is_armed) colors.Colors.record_armed else colors.Colors.bg_cell;
+        const arm_text = if (is_armed) [4]f32{ 1.0, 1.0, 1.0, 1.0 } else colors.Colors.text_dim;
+
+        zgui.pushStyleColor4f(.{ .idx = .button, .c = arm_bg });
+        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = if (is_armed) colors.Colors.record_armed_hover else .{ arm_bg[0] + 0.1, arm_bg[1] + 0.1, arm_bg[2] + 0.1, 1.0 } });
+        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.accent_dim });
+        zgui.pushStyleColor4f(.{ .idx = .text, .c = arm_text });
+
+        if (zgui.button(arm_id, .{ .w = btn_width, .h = btn_height })) {
+            if (is_armed) {
+                // Disarm - also stop any active recording
+                if (self.recording.isRecording()) {
+                    self.stopRecording();
+                }
+                self.armed_track = null;
+            } else {
+                // Arm this track (disarm any other)
+                if (self.recording.isRecording()) {
+                    self.stopRecording();
+                }
+                self.armed_track = track;
+            }
         }
         zgui.popStyleColor(.{ .count = 4 });
 
@@ -1231,12 +1449,169 @@ pub const SessionView = struct {
         for (0..self.track_count) |track| {
             if (self.queued_scene[track]) |queued| {
                 for (0..self.scene_count) |scene| {
-                    if (self.clips[track][scene].state != .empty) {
+                    const state = self.clips[track][scene].state;
+                    // Don't touch empty, recording, or record_queued clips
+                    if (state != .empty and state != .recording and state != .record_queued) {
                         self.clips[track][scene].state = if (scene == queued) .playing else .stopped;
                     }
                 }
                 self.queued_scene[track] = null;
             }
         }
+    }
+
+    /// Start recording on a clip slot
+    pub fn startRecording(self: *SessionView, track: usize, scene: usize, playing: bool) void {
+        // If already recording somewhere else, stop it first
+        if (self.recording.isRecording()) {
+            self.stopRecording();
+        }
+
+        // Create clip if empty, set to recording state
+        if (self.clips[track][scene].state == .empty) {
+            self.clips[track][scene] = .{
+                .state = if (playing) .record_queued else .recording,
+                .length_beats = default_clip_bars * beats_per_bar,
+            };
+            // Request to clear any old notes in the piano clip (new recording, not overdub)
+            self.clear_piano_clip_request = .{ .track = track, .scene = scene };
+        } else {
+            // Overdub mode - don't clear existing notes
+            self.clips[track][scene].state = if (playing) .record_queued else .recording;
+        }
+
+        // Set up recording state
+        self.recording.track = track;
+        self.recording.scene = scene;
+        self.recording.target_length_beats = self.clips[track][scene].length_beats;
+        self.recording.note_start_beats = [_]?f32{null} ** 128;
+        self.recording.start_beat = 0;
+
+        if (!playing) {
+            // Start immediately - playhead will be reset to 0
+            self.start_playback_request = true;
+            self.reset_playhead_request = true;
+        }
+
+        // Stop any other playing clips on this track and queue this scene
+        for (0..self.scene_count) |s| {
+            if (s != scene and self.clips[track][s].state == .playing) {
+                self.clips[track][s].state = .stopped;
+            }
+        }
+        self.queued_scene[track] = scene;
+
+        // Select and focus this clip
+        self.selectOnly(track, scene);
+        self.primary_track = track;
+        self.primary_scene = scene;
+
+        // Open clip viewer to see recording
+        self.open_clip_request = .{ .track = track, .scene = scene };
+    }
+
+    /// Stop recording and finalize the clip
+    pub fn stopRecording(self: *SessionView) void {
+        if (self.recording.track) |track| {
+            if (self.recording.scene) |scene| {
+                // Request finalization of held notes (handled in ui.zig tick)
+                if (self.clips[track][scene].state == .recording) {
+                    self.finalize_recording_track = track;
+                    self.finalize_recording_scene = scene;
+                    self.clips[track][scene].state = .stopped;
+                    // Don't reset recording state yet - tick() will handle it after finalizing notes
+                    return;
+                } else if (self.clips[track][scene].state == .record_queued) {
+                    // If still queued, just go back to stopped (no notes to finalize)
+                    self.clips[track][scene].state = .stopped;
+                }
+            }
+        }
+        // Reset recording state immediately if not actively recording
+        self.recording.reset();
+    }
+
+    /// Cancel recording without finalizing
+    pub fn cancelRecording(self: *SessionView) void {
+        if (self.recording.track) |track| {
+            if (self.recording.scene) |scene| {
+                // If the clip was empty before, reset it
+                if (self.clips[track][scene].state == .record_queued) {
+                    self.clips[track][scene].state = .empty;
+                } else if (self.clips[track][scene].state == .recording) {
+                    self.clips[track][scene].state = .stopped;
+                }
+            }
+        }
+        self.recording.reset();
+    }
+
+    /// Process quantized recording start (called from tick at quantize boundary)
+    pub fn processRecordingQuantize(self: *SessionView, playhead_beat: f32) void {
+        if (self.recording.track) |track| {
+            if (self.recording.scene) |scene| {
+                if (self.clips[track][scene].state == .record_queued) {
+                    // Transition to recording state
+                    self.clips[track][scene].state = .recording;
+                    self.recording.start_beat = playhead_beat;
+                }
+            }
+        }
+    }
+
+    /// Check if recording has completed (4 bars elapsed)
+    pub fn checkRecordingComplete(self: *SessionView, playhead_beat: f32) bool {
+        if (!self.recording.isRecording()) return false;
+        if (self.recording.track) |track| {
+            if (self.recording.scene) |scene| {
+                if (self.clips[track][scene].state == .recording) {
+                    const elapsed = playhead_beat - self.recording.start_beat;
+                    if (elapsed >= self.recording.target_length_beats) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    /// Get elapsed recording beats for progress display
+    pub fn getRecordingProgress(self: *SessionView, playhead_beat: f32) f32 {
+        if (!self.recording.isRecording()) return 0;
+        if (self.clips[self.recording.track.?][self.recording.scene.?].state != .recording) return 0;
+        const elapsed = playhead_beat - self.recording.start_beat;
+        return @min(1.0, elapsed / self.recording.target_length_beats);
+    }
+
+    /// Check if we have a recording in record_queued state
+    pub fn hasQueuedRecording(self: *SessionView) bool {
+        if (self.recording.track) |track| {
+            if (self.recording.scene) |scene| {
+                return self.clips[track][scene].state == .record_queued;
+            }
+        }
+        return false;
+    }
+
+    /// Check if we're actively recording (includes overdub mode where clip is playing)
+    pub fn isActivelyRecording(self: *SessionView) bool {
+        if (self.recording.track) |track| {
+            if (self.recording.scene) |scene| {
+                const state = self.clips[track][scene].state;
+                // Recording is active if clip is in recording state OR playing with overdub
+                return state == .recording or (state == .playing and self.recording.track != null);
+            }
+        }
+        return false;
+    }
+
+    /// Check if we're overdubbing (playing + recording)
+    pub fn isOverdubbing(self: *SessionView) bool {
+        if (self.recording.track) |track| {
+            if (self.recording.scene) |scene| {
+                return self.clips[track][scene].state == .playing;
+            }
+        }
+        return false;
     }
 };

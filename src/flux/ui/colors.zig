@@ -32,4 +32,9 @@ pub const Colors = struct {
     pub const playhead_bg: [4]f32 = .{ 0.25, 0.35, 0.45, 0.6 };
     pub const selection_rect: [4]f32 = .{ 0.4, 0.6, 0.9, 0.3 };
     pub const selection_rect_border: [4]f32 = .{ 0.5, 0.7, 1.0, 0.8 };
+
+    // Recording
+    pub const record_armed: [4]f32 = .{ 0.85, 0.25, 0.25, 1.0 };
+    pub const record_armed_hover: [4]f32 = .{ 0.95, 0.35, 0.35, 1.0 };
+    pub const clip_recording: [4]f32 = .{ 0.75, 0.25, 0.25, 0.9 };
 };
