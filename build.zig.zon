@@ -53,6 +53,11 @@
         .libz_jobs = .{
             .path = "deps/libz-jobs",
         },
+        // DAWproject support
+        .@"zig-xml" = .{
+            .url = "git+https://github.com/carlmontanari/zig-xml#chore/zig-0.16.0-dev-support",
+            .hash = "xml-0.1.0-ZTbP35UoAgBojaHeY1SNlU1m8p9F82i1Qxgiulrp2v4E",
+        },
     },
 
     .paths = .{

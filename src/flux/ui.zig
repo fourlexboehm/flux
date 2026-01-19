@@ -78,6 +78,10 @@ pub const State = struct {
     live_key_states: [ui.max_tracks][128]bool,
     keyboard_octave: i8,
 
+    // Project file requests (handled by main.zig)
+    load_project_request: bool,
+    save_project_request: bool,
+
     pub fn init(allocator: std.mem.Allocator) State {
         var track_plugins_data: [ui.max_tracks]TrackPluginUI = undefined;
         for (&track_plugins_data) |*plugin| {
@@ -117,6 +121,8 @@ pub const State = struct {
             .plugin_divider_index = null,
             .live_key_states = [_][128]bool{[_]bool{false} ** 128} ** ui.max_tracks,
             .keyboard_octave = 0,
+            .load_project_request = false,
+            .save_project_request = false,
         };
     }
 
@@ -414,6 +420,19 @@ fn drawTransport(state: *State, ui_scale: f32) void {
         .current_item = &state.quantize_index,
         .items_separated_by_zeros = quantize_items,
     });
+
+    // Load/Save buttons (right-aligned)
+    zgui.sameLine(.{ .spacing = spacing * 2.0 });
+
+    if (zgui.button("Load", .{ .w = 60.0 * ui_scale, .h = 24.0 * ui_scale })) {
+        state.load_project_request = true;
+    }
+
+    zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
+
+    if (zgui.button("Save", .{ .w = 60.0 * ui_scale, .h = 24.0 * ui_scale })) {
+        state.save_project_request = true;
+    }
 
     zgui.setCursorPosY(zgui.getCursorPosY() + 4.0 * ui_scale);
 }

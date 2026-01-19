@@ -14,6 +14,8 @@ const audio_graph = @import("audio_graph.zig");
 const zsynth = @import("zsynth-core");
 const plugins = @import("plugins.zig");
 const project = @import("project.zig");
+const dawproject = @import("dawproject.zig");
+const file_dialog = @import("file_dialog.zig");
 
 const SampleRate = 44_100;
 const Channels = 2;
@@ -581,6 +583,7 @@ pub fn main(init: std.process.Init) !void {
                 zgui.setNextFrameWantCaptureKeyboard(true);
                 ui.updateKeyboardMidi(&state);
                 ui.draw(&state, 1.0);
+                handleFileRequests(allocator, io, &state, &catalog, &track_plugins, &host.clap_host, &engine.shared, synths);
                 engine.updateFromUi(&state);
                 try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog, &engine.shared, io, true);
                 engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
@@ -698,6 +701,7 @@ pub fn main(init: std.process.Init) !void {
                 zgui.setNextFrameWantCaptureKeyboard(true);
                 ui.updateKeyboardMidi(&state);
                 ui.draw(&state, 1.0);
+                handleFileRequests(allocator, io, &state, &catalog, &track_plugins, &host.clap_host, &engine.shared, synths);
                 engine.updateFromUi(&state);
                 try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog, &engine.shared, io, true);
                 engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
@@ -1054,3 +1058,375 @@ fn closePluginGui(track: *TrackPlugin) void {
     }
     track.gui_open = false;
 }
+
+// ============================================================================
+// DAWproject File Handling
+// ============================================================================
+
+const dawproject_file_types = [_]file_dialog.FileType{
+    .{ .name = "DAWproject", .extensions = &.{"dawproject"} },
+};
+
+fn handleFileRequests(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    state: *ui.State,
+    catalog: *const plugins.PluginCatalog,
+    track_plugins: *[ui.track_count]TrackPlugin,
+    host: *const clap.Host,
+    shared: ?*audio_engine.SharedState,
+    synths: [ui.track_count]*zsynth.Plugin,
+) void {
+    // Handle save request
+    if (state.save_project_request) {
+        state.save_project_request = false;
+        handleSaveProject(allocator, io, state, catalog, track_plugins) catch |err| {
+            std.log.err("Failed to save project: {}", .{err});
+        };
+    }
+
+    // Handle load request
+    if (state.load_project_request) {
+        state.load_project_request = false;
+        handleLoadProject(allocator, io, state, catalog, track_plugins, host, shared, synths) catch |err| {
+            std.log.err("Failed to load project: {}", .{err});
+        };
+    }
+}
+
+fn handleSaveProject(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    state: *const ui.State,
+    catalog: *const plugins.PluginCatalog,
+    track_plugins: *const [ui.track_count]TrackPlugin,
+) !void {
+    // Show save dialog
+    const path = file_dialog.saveFile(
+        allocator,
+        io,
+        "Save DAWproject",
+        "project.dawproject",
+        &dawproject_file_types,
+    ) catch |err| {
+        std.log.err("File dialog error: {}", .{err});
+        return;
+    };
+
+    if (path == null) {
+        // User cancelled
+        return;
+    }
+    defer allocator.free(path.?);
+
+    // Collect plugin states
+    var plugin_states: std.ArrayList(dawproject.PluginStateFile) = .empty;
+    defer plugin_states.deinit(allocator);
+
+    for (track_plugins, 0..) |track, t| {
+        if (track.handle) |handle| {
+            if (capturePluginStateForDawproject(allocator, handle.plugin, t)) |ps| {
+                plugin_states.append(allocator, ps) catch continue;
+            }
+        }
+    }
+
+    // Save the project
+    dawproject.save(allocator, io, path.?, state, catalog, plugin_states.items) catch |err| {
+        std.log.err("Failed to write dawproject: {}", .{err});
+        return;
+    };
+
+    std.log.info("Saved project to: {s}", .{path.?});
+}
+
+fn handleLoadProject(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    state: *ui.State,
+    catalog: *const plugins.PluginCatalog,
+    track_plugins: *[ui.track_count]TrackPlugin,
+    host: *const clap.Host,
+    shared: ?*audio_engine.SharedState,
+    synths: [ui.track_count]*zsynth.Plugin,
+) !void {
+    // Show open dialog
+    const path = file_dialog.openFile(
+        allocator,
+        io,
+        "Open DAWproject",
+        &dawproject_file_types,
+    ) catch |err| {
+        std.log.err("File dialog error: {}", .{err});
+        return;
+    };
+
+    if (path == null) {
+        // User cancelled
+        return;
+    }
+    defer allocator.free(path.?);
+
+    // Load the project
+    var loaded = dawproject.load(allocator, io, path.?) catch |err| {
+        std.log.err("Failed to load dawproject: {}", .{err});
+        return;
+    };
+    defer loaded.deinit();
+
+    // Apply to state
+    applyDawprojectToState(allocator, &loaded, state, catalog, track_plugins, host, shared, io, synths) catch |err| {
+        std.log.err("Failed to apply dawproject: {}", .{err});
+        return;
+    };
+
+    std.log.info("Loaded project from: {s}", .{path.?});
+}
+
+fn capturePluginStateForDawproject(allocator: std.mem.Allocator, plugin: *const clap.Plugin, track_index: usize) ?dawproject.PluginStateFile {
+    const ext_raw = plugin.getExtension(plugin, clap.ext.state.id) orelse return null;
+    const ext: *const clap.ext.state.Plugin = @ptrCast(@alignCast(ext_raw));
+
+    var stream = MemoryOStream.init(allocator);
+    stream.stream.context = &stream;
+    defer stream.buffer.deinit(allocator);
+
+    if (!ext.save(plugin, &stream.stream)) {
+        return null;
+    }
+
+    const data = allocator.dupe(u8, stream.buffer.items) catch return null;
+    var path_buf: [64]u8 = undefined;
+    const plugin_path = std.fmt.bufPrint(&path_buf, "plugins/track{d}.clap-preset", .{track_index}) catch return null;
+
+    return .{
+        .path = allocator.dupe(u8, plugin_path) catch return null,
+        .data = data,
+    };
+}
+
+fn applyDawprojectToState(
+    allocator: std.mem.Allocator,
+    loaded: *dawproject.LoadedProject,
+    state: *ui.State,
+    catalog: *const plugins.PluginCatalog,
+    track_plugins: *[ui.track_count]TrackPlugin,
+    host: *const clap.Host,
+    shared: ?*audio_engine.SharedState,
+    io: std.Io,
+    synths: [ui.track_count]*zsynth.Plugin,
+) !void {
+    const proj = &loaded.project;
+
+    // Stop playback
+    state.playing = false;
+    state.playhead_beat = 0;
+
+    // Apply transport settings
+    if (proj.transport) |transport| {
+        if (transport.tempo) |tempo| {
+            state.bpm = @floatCast(tempo.value);
+        }
+    }
+
+    // Reset session
+    state.session.deinit();
+    state.session = ui.SessionView.init(state.allocator);
+
+    // Apply tracks
+    const track_count = @min(proj.tracks.len, ui.track_count);
+    state.session.track_count = track_count;
+
+    for (0..track_count) |t| {
+        const track = proj.tracks[t];
+        state.session.tracks[t].setName(track.name);
+
+        if (track.channel) |channel| {
+            if (channel.volume) |vol| {
+                state.session.tracks[t].volume = @floatCast(vol.value);
+            }
+            if (channel.mute) |mute| {
+                state.session.tracks[t].mute = mute.value;
+            }
+            state.session.tracks[t].solo = channel.solo;
+
+            // Handle CLAP plugins
+            if (channel.devices.len > 0) {
+                const device = channel.devices[0];
+                // Find matching plugin in catalog
+                const choice = findPluginInCatalog(catalog, device.device_id);
+                state.track_plugins[t].choice_index = choice;
+                state.track_plugins[t].last_valid_choice = choice;
+            }
+        }
+    }
+
+    // Apply scenes
+    const scene_count = @min(proj.scenes.len, ui.scene_count);
+    state.session.scene_count = scene_count;
+
+    for (0..scene_count) |s| {
+        state.session.scenes[s].setName(proj.scenes[s].name);
+    }
+
+    // Clear piano clips
+    for (&state.piano_clips) |*track_clips| {
+        for (track_clips) |*clip| {
+            clip.clear();
+        }
+    }
+
+    // Apply arrangement lanes (clips)
+    if (proj.arrangement) |arr| {
+        if (arr.lanes) |root_lanes| {
+            try applyLanes(state, &root_lanes, proj.tracks);
+        }
+    }
+
+    // Sync track plugins after state update
+    try syncTrackPlugins(allocator, host, track_plugins, state, catalog, shared, io, true);
+
+    // Load plugin states from dawproject
+    for (0..track_count) |t| {
+        if (track_plugins[t].handle) |handle| {
+            const track = proj.tracks[t];
+            if (track.channel) |channel| {
+                if (channel.devices.len > 0) {
+                    const device = channel.devices[0];
+                    if (device.state) |state_ref| {
+                        if (loaded.plugin_states.get(state_ref.path)) |state_data| {
+                            loadPluginStateFromData(handle.plugin, state_data);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    _ = synths;
+}
+
+fn findPluginInCatalog(catalog: *const plugins.PluginCatalog, device_id: []const u8) i32 {
+    for (catalog.entries.items, 0..) |entry, idx| {
+        if (entry.id) |id| {
+            if (std.mem.eql(u8, id, device_id)) {
+                return @intCast(idx);
+            }
+        }
+    }
+    return 0; // Default to "None"
+}
+
+fn applyLanes(state: *ui.State, lanes: *const dawproject.Lanes, tracks: []const dawproject.Track) !void {
+    // Find track index for this lane
+    var track_idx: ?usize = null;
+    if (lanes.track) |track_id| {
+        for (tracks, 0..) |track, t| {
+            if (std.mem.eql(u8, track.id, track_id)) {
+                track_idx = t;
+                break;
+            }
+        }
+    }
+
+    // Process clips in this lane
+    if (lanes.clips) |clips| {
+        if (track_idx) |t| {
+            if (t < ui.track_count) {
+                for (clips.clips, 0..) |clip, s| {
+                    if (s >= ui.scene_count) break;
+
+                    // Set clip slot state
+                    state.session.clips[t][s] = .{
+                        .state = .stopped,
+                        .length_beats = @floatCast(clip.duration),
+                    };
+
+                    // Add notes
+                    if (clip.notes) |notes| {
+                        var piano = &state.piano_clips[t][s];
+                        piano.length_beats = @floatCast(clip.duration);
+                        piano.notes.clearRetainingCapacity();
+
+                        for (notes.notes) |note| {
+                            piano.notes.append(state.allocator, .{
+                                .pitch = @intCast(note.key),
+                                .start = @floatCast(note.time),
+                                .duration = @floatCast(note.duration),
+                            }) catch continue;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Recurse into child lanes
+    for (lanes.children) |child| {
+        try applyLanes(state, &child, tracks);
+    }
+}
+
+fn loadPluginStateFromData(plugin: *const clap.Plugin, data: []const u8) void {
+    const ext_raw = plugin.getExtension(plugin, clap.ext.state.id) orelse return;
+    const ext: *const clap.ext.state.Plugin = @ptrCast(@alignCast(ext_raw));
+
+    var stream = MemoryIStream.init(data);
+    stream.stream.context = &stream;
+    _ = ext.load(plugin, &stream.stream);
+}
+
+const MemoryOStream = struct {
+    allocator: std.mem.Allocator,
+    buffer: std.ArrayList(u8),
+    stream: clap.OStream,
+
+    pub fn init(allocator: std.mem.Allocator) MemoryOStream {
+        return .{
+            .allocator = allocator,
+            .buffer = .empty,
+            .stream = .{
+                .context = undefined,
+                .write = write,
+            },
+        };
+    }
+
+    fn write(stream: *const clap.OStream, buffer: *const anyopaque, size: u64) callconv(.c) clap.OStream.Result {
+        const self: *MemoryOStream = @ptrCast(@alignCast(stream.context));
+        const bytes = @as([*]const u8, @ptrCast(buffer))[0..@intCast(size)];
+        self.buffer.appendSlice(self.allocator, bytes) catch return .write_error;
+        return @enumFromInt(@as(i64, @intCast(bytes.len)));
+    }
+};
+
+const MemoryIStream = struct {
+    data: []const u8,
+    offset: usize,
+    stream: clap.IStream,
+
+    pub fn init(data: []const u8) MemoryIStream {
+        return .{
+            .data = data,
+            .offset = 0,
+            .stream = .{
+                .context = undefined,
+                .read = read,
+            },
+        };
+    }
+
+    fn read(stream: *const clap.IStream, buffer: *anyopaque, size: u64) callconv(.c) clap.IStream.Result {
+        const self: *MemoryIStream = @ptrCast(@alignCast(stream.context));
+        if (self.offset >= self.data.len) {
+            return .end_of_file;
+        }
+
+        const remaining = self.data.len - self.offset;
+        const to_read = @min(remaining, @as(usize, @intCast(size)));
+        const dest = @as([*]u8, @ptrCast(buffer))[0..to_read];
+        @memcpy(dest, self.data[self.offset..][0..to_read]);
+        self.offset += to_read;
+        return @enumFromInt(@as(i64, @intCast(to_read)));
+    }
+};

@@ -590,7 +590,7 @@ pub const Graph = struct {
         wake_requested: bool,
     };
 
-    pub fn process(self: *Graph, snapshot: *const StateSnapshot, shared: *audio_engine.SharedState, jobs: ?*JobQueue, frame_count: u32, steady_time: u64) void {
+    pub fn process(self: *Graph, snapshot: *const StateSnapshot, shared: *audio_engine.SharedState, jobs: *JobQueue, frame_count: u32, steady_time: u64) void {
         const zone = tracy.ZoneN(@src(), "Graph.process");
         defer zone.End();
 
@@ -665,39 +665,32 @@ pub const Graph = struct {
                 }
 
                 if (active_count > 0) {
-                    if (jobs) |job_queue| {
-                        // Use libz_jobs work-stealing queue
-                        const RootJob = struct {
-                            pub fn exec(_: *@This()) void {}
+                    // Use libz_jobs work-stealing queue
+                    const RootJob = struct {
+                        pub fn exec(_: *@This()) void {}
+                    };
+                    const root = jobs.allocate(RootJob{});
+
+                    // Allocate and schedule synth jobs
+                    for (active_tasks[0..active_count]) |task_index| {
+                        const SynthJob = struct {
+                            ctx: *ProcessContext,
+                            task_index: u32,
+                            pub fn exec(job: *@This()) void {
+                                processSynthTaskDirect(job.ctx, job.task_index);
+                            }
                         };
-                        const root = job_queue.allocate(RootJob{});
-
-                        // Allocate and schedule synth jobs
-                        for (active_tasks[0..active_count]) |task_index| {
-                            const SynthJob = struct {
-                                ctx: *ProcessContext,
-                                task_index: u32,
-                                pub fn exec(job: *@This()) void {
-                                    processSynthTaskDirect(job.ctx, job.task_index);
-                                }
-                            };
-                            const synth_job = job_queue.allocate(SynthJob{
-                                .ctx = &ctx,
-                                .task_index = task_index,
-                            });
-                            job_queue.finishWith(synth_job, root);
-                            job_queue.schedule(synth_job);
-                        }
-
-                        // Schedule root and wait - main thread helps process
-                        job_queue.schedule(root);
-                        job_queue.wait(root);
-                    } else {
-                        // Sequential fallback
-                        for (active_tasks[0..active_count]) |task_index| {
-                            processSynthTask(@ptrCast(&ctx), task_index);
-                        }
+                        const synth_job = jobs.allocate(SynthJob{
+                            .ctx = &ctx,
+                            .task_index = task_index,
+                        });
+                        jobs.finishWith(synth_job, root);
+                        jobs.schedule(synth_job);
                     }
+
+                    // Schedule root and wait - main thread helps process
+                    jobs.schedule(root);
+                    jobs.wait(root);
                 }
             }
         }
@@ -735,11 +728,6 @@ pub const Graph = struct {
                 }
             }
         }
-    }
-
-    fn processSynthTask(ctx_ptr: *anyopaque, task_index: u32) void {
-        const ctx: *ProcessContext = @ptrCast(@alignCast(ctx_ptr));
-        processSynthTaskDirect(ctx, task_index);
     }
 
     fn processSynthTaskDirect(ctx: *ProcessContext, task_index: u32) void {
