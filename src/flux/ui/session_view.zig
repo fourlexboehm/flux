@@ -303,13 +303,29 @@ pub const SessionView = struct {
         return true;
     }
 
-    /// Delete the last scene (if > 1)
-    pub fn deleteLastScene(self: *SessionView) bool {
+    /// Delete a specific scene (if > 1)
+    pub fn deleteScene(self: *SessionView, scene: usize) bool {
         if (self.scene_count <= 1) return false;
+        if (scene >= self.scene_count) return false;
 
         // Clear selection in this scene
         for (0..self.track_count) |t| {
-            self.deselectClip(t, self.scene_count - 1);
+            self.deselectClip(t, scene);
+        }
+
+        // Shift all subsequent scenes down
+        for (scene..self.scene_count - 1) |s| {
+            self.scenes[s] = self.scenes[s + 1];
+            for (0..max_tracks) |t| {
+                self.clips[t][s] = self.clips[t][s + 1];
+                self.clip_selected[t][s] = self.clip_selected[t][s + 1];
+            }
+        }
+
+        // Clear the last scene slot
+        for (0..max_tracks) |t| {
+            self.clips[t][self.scene_count - 1] = .{};
+            self.clip_selected[t][self.scene_count - 1] = false;
         }
 
         self.scene_count -= 1;
@@ -319,13 +335,34 @@ pub const SessionView = struct {
         return true;
     }
 
-    /// Delete the last track (if > 1)
-    pub fn deleteLastTrack(self: *SessionView) bool {
+    /// Delete the last scene (if > 1)
+    pub fn deleteLastScene(self: *SessionView) bool {
+        return self.deleteScene(self.scene_count - 1);
+    }
+
+    /// Delete a specific track (if > 1)
+    pub fn deleteTrack(self: *SessionView, track: usize) bool {
         if (self.track_count <= 1) return false;
+        if (track >= self.track_count) return false;
 
         // Clear selection in this track
         for (0..self.scene_count) |s| {
-            self.deselectClip(self.track_count - 1, s);
+            self.deselectClip(track, s);
+        }
+
+        // Shift all subsequent tracks left
+        for (track..self.track_count - 1) |t| {
+            self.tracks[t] = self.tracks[t + 1];
+            for (0..max_scenes) |s| {
+                self.clips[t][s] = self.clips[t + 1][s];
+                self.clip_selected[t][s] = self.clip_selected[t + 1][s];
+            }
+        }
+
+        // Clear the last track slot
+        for (0..max_scenes) |s| {
+            self.clips[self.track_count - 1][s] = .{};
+            self.clip_selected[self.track_count - 1][s] = false;
         }
 
         self.track_count -= 1;
@@ -333,6 +370,11 @@ pub const SessionView = struct {
             self.primary_track = self.track_count - 1;
         }
         return true;
+    }
+
+    /// Delete the last track (if > 1)
+    pub fn deleteLastTrack(self: *SessionView) bool {
+        return self.deleteTrack(self.track_count - 1);
     }
 
     /// Check if any clip exists in a scene
@@ -565,6 +607,11 @@ pub const SessionView = struct {
                 self.primary_track = t;
                 self.clearSelection();
             }
+            // Right-click on track header opens context menu
+            if (zgui.isItemClicked(.right)) {
+                self.primary_track = t;
+                zgui.openPopup("session_ctx", .{});
+            }
             zgui.popStyleColor(.{ .count = 1 });
         }
 
@@ -588,8 +635,10 @@ pub const SessionView = struct {
             _ = zgui.tableNextColumn();
             const draw_list = zgui.getWindowDrawList();
 
-            // Scene launch button first (left side)
+            // Scene launch button first (left side), vertically centered
             const launch_size = 24.0 * ui_scale;
+            const vertical_padding = (row_height - launch_size) / 2.0;
+            zgui.setCursorPosY(zgui.getCursorPosY() + vertical_padding);
             const launch_pos = zgui.getCursorScreenPos();
             var launch_buf: [32]u8 = undefined;
             const launch_id = std.fmt.bufPrintZ(&launch_buf, "##scene_launch{d}", .{scene_idx}) catch "##launch";
@@ -643,6 +692,11 @@ pub const SessionView = struct {
                 self.primary_scene = scene_idx;
                 self.clearSelection();
             }
+            // Right-click on scene label opens context menu
+            if (zgui.isItemClicked(.right)) {
+                self.primary_scene = scene_idx;
+                zgui.openPopup("session_ctx", .{});
+            }
             zgui.popStyleColor(.{ .count = 1 });
 
             // Clip slots
@@ -689,7 +743,7 @@ pub const SessionView = struct {
                 self.paste();
             }
 
-            // Delete
+            // Delete selected clips
             if (zgui.isKeyPressed(.delete, false) or zgui.isKeyPressed(.back_space, false)) {
                 self.deleteSelected();
             }
@@ -759,6 +813,18 @@ pub const SessionView = struct {
                         }
                     }
                 }
+            }
+            zgui.separator();
+            // Delete track/scene options
+            var track_label_buf: [48]u8 = undefined;
+            const track_del_label = std.fmt.bufPrintZ(&track_label_buf, "Delete Track \"{s}\"", .{self.tracks[self.primary_track].getName()}) catch "Delete Track";
+            if (zgui.menuItem(track_del_label, .{ .enabled = self.track_count > 1 })) {
+                _ = self.deleteTrack(self.primary_track);
+            }
+            var scene_label_buf: [48]u8 = undefined;
+            const scene_del_label = std.fmt.bufPrintZ(&scene_label_buf, "Delete Scene \"{s}\"", .{self.scenes[self.primary_scene].getName()}) catch "Delete Scene";
+            if (zgui.menuItem(scene_del_label, .{ .enabled = self.scene_count > 1 })) {
+                _ = self.deleteScene(self.primary_scene);
             }
             zgui.endPopup();
         }
@@ -877,10 +943,8 @@ pub const SessionView = struct {
             const bars = slot.length_beats / beats_per_bar;
             var buf: [16]u8 = undefined;
             const label = std.fmt.bufPrintZ(&buf, "{d:.0} bars", .{bars}) catch "";
-            const text_color = if (slot.state == .playing or slot.state == .queued)
-                zgui.colorConvertFloat4ToU32(.{ 0.1, 0.1, 0.1, 1.0 })
-            else
-                zgui.colorConvertFloat4ToU32(colors.Colors.text_dim);
+            // Use dark text for all non-empty clips (better contrast on colored backgrounds)
+            const text_color = zgui.colorConvertFloat4ToU32(.{ 0.1, 0.1, 0.1, 1.0 });
             draw_list.addText(.{ pos[0] + 8.0 * ui_scale, pos[1] + height / 2.0 - 8.0 }, text_color, "{s}", .{label});
         }
 
@@ -1052,16 +1116,24 @@ pub const SessionView = struct {
 
         zgui.popStyleColor(.{ .count = 5 });
 
-        // Draw 0dB marker line (volume = 1.0 is at 1.0/1.5 = 0.667 from bottom)
+        // Draw 0dB tick marks on the sides AFTER the slider (so they're visible)
+        // Volume = 1.0 is at 1.0/1.5 = 0.667 from bottom
         const draw_list = zgui.getWindowDrawList();
         const zero_db_ratio = 1.0 / 1.5; // 0dB = volume 1.0
         const zero_db_y = slider_screen_pos[1] + slider_height * (1.0 - zero_db_ratio);
-        // Draw wider marker extending beyond slider
-        draw_list.addLine(.{
-            .p1 = .{ slider_screen_pos[0] - 4.0, zero_db_y },
-            .p2 = .{ slider_screen_pos[0] + slider_width + 4.0, zero_db_y },
+        const tick_width = 6.0 * ui_scale;
+        const tick_height = 3.0 * ui_scale;
+        // Left tick mark
+        draw_list.addRectFilled(.{
+            .pmin = .{ slider_screen_pos[0] - tick_width - 2.0, zero_db_y - tick_height / 2.0 },
+            .pmax = .{ slider_screen_pos[0] - 2.0, zero_db_y + tick_height / 2.0 },
             .col = zgui.colorConvertFloat4ToU32(colors.Colors.text_bright),
-            .thickness = 2.0,
+        });
+        // Right tick mark
+        draw_list.addRectFilled(.{
+            .pmin = .{ slider_screen_pos[0] + slider_width + 2.0, zero_db_y - tick_height / 2.0 },
+            .pmax = .{ slider_screen_pos[0] + slider_width + tick_width + 2.0, zero_db_y + tick_height / 2.0 },
+            .col = zgui.colorConvertFloat4ToU32(colors.Colors.text_bright),
         });
 
         // Row 3: dB label (centered)
