@@ -8,6 +8,30 @@ pub const total_pitches = 128;
 pub const beats_per_bar = session_view.beats_per_bar;
 pub const default_clip_bars = session_view.default_clip_bars;
 
+/// Undo request kinds for piano roll operations
+pub const UndoRequestKind = enum {
+    note_add,
+    note_remove,
+    note_move,
+    note_resize,
+    clip_resize,
+};
+
+/// Undo request for piano roll operations
+pub const UndoRequest = struct {
+    kind: UndoRequestKind,
+    track: usize = 0,
+    scene: usize = 0,
+    note_index: usize = 0,
+    note: Note = .{ .pitch = 0, .start = 0, .duration = 0 },
+    old_start: f32 = 0,
+    old_pitch: u8 = 0,
+    new_start: f32 = 0,
+    new_pitch: u8 = 0,
+    old_duration: f32 = 0,
+    new_duration: f32 = 0,
+};
+
 pub const Note = struct {
     pitch: u8, // MIDI pitch 0-127
     start: f32, // Start time in beats
@@ -63,6 +87,10 @@ pub const PianoRollDrag = struct {
     original_pitch: u8 = 0,
     select_start_x: f32 = 0,
     select_start_y: f32 = 0,
+    // For undo tracking
+    drag_start_start: f32 = 0, // Start position when drag began
+    drag_start_pitch: u8 = 0, // Pitch when drag began
+    drag_start_duration: f32 = 0, // Duration when drag began
 };
 
 pub const PianoRollState = struct {
@@ -88,6 +116,10 @@ pub const PianoRollState = struct {
     scroll_x: f32 = 0,
     scroll_y: f32 = 50 * 20.0, // Start around C4
     beats_per_pixel: f32 = 0.5,
+
+    // Undo requests (processed by ui.zig)
+    undo_requests: [16]UndoRequest = undefined,
+    undo_request_count: usize = 0,
 
     pub fn init(allocator: std.mem.Allocator) PianoRollState {
         return .{ .allocator = allocator };
@@ -128,6 +160,13 @@ pub const PianoRollState = struct {
         self.selectNote(index);
     }
 
+    pub fn emitUndoRequest(self: *PianoRollState, request: UndoRequest) void {
+        if (self.undo_request_count < self.undo_requests.len) {
+            self.undo_requests[self.undo_request_count] = request;
+            self.undo_request_count += 1;
+        }
+    }
+
     pub fn handleNoteClick(self: *PianoRollState, index: usize, shift_held: bool) void {
         if (shift_held) {
             if (self.isNoteSelected(index)) {
@@ -152,6 +191,8 @@ pub fn drawSequencer(
     quantize_index: i32,
     ui_scale: f32,
     is_focused: bool,
+    track_index: usize,
+    scene_index: usize,
 ) void {
     const key_width = 56.0 * ui_scale;
     const ruler_height = 24.0 * ui_scale;
@@ -295,6 +336,7 @@ pub fn drawSequencer(
             state.drag = .{
                 .mode = .resize_clip,
                 .original_start = clip.length_beats,
+                .drag_start_duration = clip.length_beats,
             };
         }
     } else if (state.drag.mode == .resize_clip) {
@@ -406,6 +448,10 @@ pub fn drawSequencer(
                     .grab_offset_beats = grab_beat - note.start,
                     .original_start = note.start,
                     .original_pitch = note.pitch,
+                    // Save original values for undo
+                    .drag_start_start = note.start,
+                    .drag_start_pitch = note.pitch,
+                    .drag_start_duration = note.duration,
                 };
                 left_click_note = true;
             }
@@ -442,7 +488,7 @@ pub fn drawSequencer(
 
         if (modifier_down and zgui.isKeyPressed(.x, false)) {
             copyNotes(state, clip);
-            deleteSelectedNotes(state, clip);
+            deleteSelectedNotes(state, clip, track_index, scene_index);
         }
 
         if (modifier_down and zgui.isKeyPressed(.v, false)) {
@@ -452,7 +498,7 @@ pub fn drawSequencer(
         }
 
         if (zgui.isKeyPressed(.delete, false) or zgui.isKeyPressed(.back_space, false)) {
-            deleteSelectedNotes(state, clip);
+            deleteSelectedNotes(state, clip, track_index, scene_index);
         }
 
         if (modifier_down and zgui.isKeyPressed(.a, false)) {
@@ -534,8 +580,71 @@ pub fn drawSequencer(
     // Handle ongoing drag
     if (state.drag.mode != .none) {
         if (!mouse_down) {
-            if (state.drag.mode == .select_rect) {
-                finalizeRectSelection(state, clip, mouse, grid_window_pos, pixels_per_beat, row_height, state.scroll_x, state.scroll_y);
+            // Emit undo request when drag ends
+            switch (state.drag.mode) {
+                .create => {
+                    // Note was created - emit add request
+                    if (state.drag.note_index < clip.notes.items.len) {
+                        const note = clip.notes.items[state.drag.note_index];
+                        state.emitUndoRequest(.{
+                            .kind = .note_add,
+                            .track = track_index,
+                            .scene = scene_index,
+                            .note_index = state.drag.note_index,
+                            .note = note,
+                        });
+                    }
+                },
+                .move => {
+                    // Note was moved - emit move request if position changed
+                    if (state.drag.note_index < clip.notes.items.len) {
+                        const note = clip.notes.items[state.drag.note_index];
+                        if (note.start != state.drag.drag_start_start or note.pitch != state.drag.drag_start_pitch) {
+                            state.emitUndoRequest(.{
+                                .kind = .note_move,
+                                .track = track_index,
+                                .scene = scene_index,
+                                .note_index = state.drag.note_index,
+                                .old_start = state.drag.drag_start_start,
+                                .old_pitch = state.drag.drag_start_pitch,
+                                .new_start = note.start,
+                                .new_pitch = note.pitch,
+                            });
+                        }
+                    }
+                },
+                .resize_right => {
+                    // Note was resized - emit resize request if duration changed
+                    if (state.drag.note_index < clip.notes.items.len) {
+                        const note = clip.notes.items[state.drag.note_index];
+                        if (note.duration != state.drag.drag_start_duration) {
+                            state.emitUndoRequest(.{
+                                .kind = .note_resize,
+                                .track = track_index,
+                                .scene = scene_index,
+                                .note_index = state.drag.note_index,
+                                .old_duration = state.drag.drag_start_duration,
+                                .new_duration = note.duration,
+                            });
+                        }
+                    }
+                },
+                .select_rect => {
+                    finalizeRectSelection(state, clip, mouse, grid_window_pos, pixels_per_beat, row_height, state.scroll_x, state.scroll_y);
+                },
+                .resize_clip => {
+                    // Clip was resized - emit resize request if length changed
+                    if (clip.length_beats != state.drag.drag_start_duration) {
+                        state.emitUndoRequest(.{
+                            .kind = .clip_resize,
+                            .track = track_index,
+                            .scene = scene_index,
+                            .old_duration = state.drag.drag_start_duration,
+                            .new_duration = clip.length_beats,
+                        });
+                    }
+                },
+                .none => {},
             }
             state.drag.mode = .none;
         } else {
@@ -549,7 +658,7 @@ pub fn drawSequencer(
     }
 
     // Context menu
-    drawContextMenu(state, clip, min_note_duration);
+    drawContextMenu(state, clip, min_note_duration, track_index, scene_index);
 
     // Draw ruler
     drawRuler(draw_list, grid_area_x, base_pos[1], grid_view_width, ruler_height, state.scroll_x, pixels_per_beat, max_beats, ui_scale);
@@ -651,7 +760,7 @@ fn copyNotes(state: *PianoRollState, clip: *const PianoRollClip) void {
     }
 }
 
-fn deleteSelectedNotes(state: *PianoRollState, clip: *PianoRollClip) void {
+fn deleteSelectedNotes(state: *PianoRollState, clip: *PianoRollClip, track_index: usize, scene_index: usize) void {
     if (!state.hasSelection()) return;
 
     var indices: std.ArrayListUnmanaged(usize) = .{};
@@ -662,6 +771,15 @@ fn deleteSelectedNotes(state: *PianoRollState, clip: *PianoRollClip) void {
     selection.sortDescending(indices.items);
     for (indices.items) |idx| {
         if (idx < clip.notes.items.len) {
+            const note = clip.notes.items[idx];
+            // Emit undo request before removing
+            state.emitUndoRequest(.{
+                .kind = .note_remove,
+                .track = track_index,
+                .scene = scene_index,
+                .note_index = idx,
+                .note = note,
+            });
             _ = clip.notes.orderedRemove(idx);
         }
     }
@@ -875,7 +993,7 @@ fn drawSelectionRect(
     }
 }
 
-fn drawContextMenu(state: *PianoRollState, clip: *PianoRollClip, min_duration: f32) void {
+fn drawContextMenu(state: *PianoRollState, clip: *PianoRollClip, min_duration: f32, track_index: usize, scene_index: usize) void {
     if (zgui.beginPopup("piano_roll_ctx", .{})) {
         const has_selection = state.hasSelection();
         const can_paste = state.clipboard.items.len > 0 and state.context_in_grid;
@@ -886,7 +1004,7 @@ fn drawContextMenu(state: *PianoRollState, clip: *PianoRollClip, min_duration: f
 
         if (zgui.menuItem("Cut", .{ .shortcut = "Cmd/Ctrl+X", .enabled = has_selection })) {
             copyNotes(state, clip);
-            deleteSelectedNotes(state, clip);
+            deleteSelectedNotes(state, clip, track_index, scene_index);
         }
 
         if (zgui.menuItem("Paste", .{ .shortcut = "Cmd/Ctrl+V", .enabled = can_paste })) {
@@ -910,7 +1028,7 @@ fn drawContextMenu(state: *PianoRollState, clip: *PianoRollClip, min_duration: f
         }
 
         if (zgui.menuItem("Delete", .{ .shortcut = "Del", .enabled = has_selection })) {
-            deleteSelectedNotes(state, clip);
+            deleteSelectedNotes(state, clip, track_index, scene_index);
         }
 
         zgui.separator();
