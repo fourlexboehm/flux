@@ -434,6 +434,7 @@ fn drawTransport(state: *State, ui_scale: f32) void {
     }
 
     zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
+    zgui.setCursorPosY(save_y - 4.0 * ui_scale);
 
     if (zgui.button("Save", .{})) {
         state.save_project_request = true;
