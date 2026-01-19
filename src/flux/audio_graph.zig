@@ -250,7 +250,8 @@ pub const NoteSource = struct {
         const beats_per_second = @as(f64, snapshot.bpm) / 60.0;
         const beats_per_sample = beats_per_second / @as(f64, sample_rate);
         const block_beats = beats_per_sample * @as(f64, frame_count);
-        const beat_start = self.current_beat;
+        // Wrap current_beat to clip bounds in case clip was shortened while playing
+        const beat_start = @mod(self.current_beat, clip_len);
         const beat_end = beat_start + block_beats;
 
         self.updateNotesAtBeat(clip, @floatCast(beat_start), 0, live_should);
