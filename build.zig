@@ -54,6 +54,7 @@ pub fn build(b: *std.Build) void {
     const zaudio = b.dependency("zaudio", .{});
     const objc = b.dependency("mach-objc", .{});
     const libz_jobs = b.dependency("libz_jobs", .{});
+    const zig_xml = b.dependency("zig-xml", .{});
 
     const ztracy = b.dependency("ztracy", .{
         .enable_ztracy = (builtin.mode == .Debug or profiling == true) and !disable_profiling,
@@ -191,6 +192,7 @@ pub fn build(b: *std.Build) void {
     flux.root_module.addImport("tracy", ztracy.module("root"));
     flux.root_module.linkLibrary(ztracy.artifact("tracy"));
     flux.root_module.addImport("libz_jobs", libz_jobs.module("libz_jobs"));
+    flux.root_module.addImport("xml", zig_xml.module("xml"));
     if (builtin.os.tag == .macos) {
         flux.root_module.addImport("objc", objc.module("mach-objc"));
         flux.root_module.linkFramework("AppKit", .{});
