@@ -56,6 +56,17 @@ pub const PianoRollClip = struct {
     }
 
     pub fn addNote(self: *PianoRollClip, pitch: u8, start: f32, duration: f32) !void {
+        // Trim any existing notes at the same pitch that overlap with the new note's start
+        // This handles the case where a new note-on comes while a note is already playing
+        for (self.notes.items) |*existing| {
+            if (existing.pitch == pitch) {
+                const existing_end = existing.start + existing.duration;
+                // If existing note spans the new note's start point, trim it
+                if (existing.start < start and existing_end > start) {
+                    existing.duration = start - existing.start;
+                }
+            }
+        }
         try self.notes.append(self.allocator, .{ .pitch = pitch, .start = start, .duration = duration });
     }
 

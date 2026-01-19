@@ -808,6 +808,16 @@ fn finalizeHeldNotes(state: *State) void {
 }
 
 pub fn updateKeyboardMidi(state: *State) void {
+    // Skip keyboard MIDI when text input is active (e.g., renaming tracks/scenes)
+    // This prevents piano keys from triggering while typing
+    if (zgui.io.getWantTextInput()) {
+        // Clear all key states when text input is active to release any held notes
+        for (0..ui.max_tracks) |track_index| {
+            state.live_key_states[track_index] = [_]bool{false} ** 128;
+        }
+        return;
+    }
+
     // Handle octave change with z/x keys (edge detection, no repeat)
     if (zgui.isKeyPressed(.z, false)) {
         state.keyboard_octave = @max(state.keyboard_octave - 1, -5);
