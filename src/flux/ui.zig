@@ -80,6 +80,7 @@ pub const State = struct {
     plugin_divider_index: ?i32,
     live_key_states: [ui.max_tracks][128]bool,
     previous_key_states: [ui.max_tracks][128]bool,
+    midi_note_states: [128]bool,
     keyboard_octave: i8,
 
     // Project file requests (handled by main.zig)
@@ -143,6 +144,7 @@ pub const State = struct {
             .plugin_divider_index = null,
             .live_key_states = [_][128]bool{[_]bool{false} ** 128} ** ui.max_tracks,
             .previous_key_states = [_][128]bool{[_]bool{false} ** 128} ** ui.max_tracks,
+            .midi_note_states = [_]bool{false} ** 128,
             .keyboard_octave = 0,
             .load_project_request = false,
             .save_project_request = false,
@@ -312,8 +314,12 @@ pub const State = struct {
                     .state_data = c.old_state,
                 };
             },
-            // Complex commands not yet implemented
-            .track_delete, .scene_delete => {},
+            .track_delete => |c| {
+                insertTrackInState(self, &c);
+            },
+            .scene_delete => |c| {
+                insertSceneInState(self, &c);
+            },
         }
     }
 
@@ -434,8 +440,12 @@ pub const State = struct {
                     .state_data = c.new_state,
                 };
             },
-            // Complex commands not yet implemented
-            .track_delete, .scene_delete => {},
+            .track_delete => |c| {
+                deleteTrackInState(self, c.track_index);
+            },
+            .scene_delete => |c| {
+                deleteSceneInState(self, c.scene_index);
+            },
         }
     }
 };
@@ -839,6 +849,11 @@ pub fn updateKeyboardMidi(state: *State) void {
             }
         }
     }
+    for (0..128) |pitch| {
+        if (state.midi_note_states[pitch]) {
+            pressed[pitch] = true;
+        }
+    }
 
     // Route keyboard to armed track if one is armed, otherwise to selected track
     const target_track = state.session.armed_track orelse state.selectedTrack();
@@ -1046,6 +1061,43 @@ fn processUndoRequests(state: *State) void {
                     },
                 });
             },
+            .track_delete => {
+                var clips: [ui.max_scenes]undo.ClipSlotData = undefined;
+                for (0..ui.max_scenes) |s| {
+                    clips[s] = .{
+                        .has_clip = req.track_clips[s].has_clip,
+                        .length_beats = req.track_clips[s].length_beats,
+                    };
+                }
+
+                if (state.allocator.alloc([]const undo.Note, ui.max_scenes)) |notes| {
+                    for (0..ui.max_scenes) |s| {
+                        if (req.track_clips[s].has_clip) {
+                            const note_items = state.piano_clips[req.track][s].notes.items;
+                            notes[s] = state.allocator.dupe(undo.Note, note_items) catch &.{};
+                        } else {
+                            notes[s] = &.{};
+                        }
+                    }
+                    state.undo_history.push(.{
+                        .track_delete = .{
+                            .track_index = req.track,
+                            .track_data = .{
+                                .name = req.track_data.name,
+                                .name_len = req.track_data.name_len,
+                                .volume = req.track_data.volume,
+                                .mute = req.track_data.mute,
+                                .solo = req.track_data.solo,
+                            },
+                            .clips = clips,
+                            .notes = notes,
+                        },
+                    });
+                } else |_| {}
+
+                const old_track_count = @min(state.session.track_count + 1, ui.max_tracks);
+                deleteTrackPianoClips(state, req.track, old_track_count);
+            },
             .scene_add => {
                 const scene = &state.session.scenes[req.scene];
                 state.undo_history.push(.{
@@ -1055,6 +1107,40 @@ fn processUndoRequests(state: *State) void {
                         .name_len = scene.name_len,
                     },
                 });
+            },
+            .scene_delete => {
+                var clips: [ui.max_tracks]undo.ClipSlotData = undefined;
+                for (0..ui.max_tracks) |t| {
+                    clips[t] = .{
+                        .has_clip = req.scene_clips[t].has_clip,
+                        .length_beats = req.scene_clips[t].length_beats,
+                    };
+                }
+
+                if (state.allocator.alloc([]const undo.Note, ui.max_tracks)) |notes| {
+                    for (0..ui.max_tracks) |t| {
+                        if (req.scene_clips[t].has_clip) {
+                            const note_items = state.piano_clips[t][req.scene].notes.items;
+                            notes[t] = state.allocator.dupe(undo.Note, note_items) catch &.{};
+                        } else {
+                            notes[t] = &.{};
+                        }
+                    }
+                    state.undo_history.push(.{
+                        .scene_delete = .{
+                            .scene_index = req.scene,
+                            .scene_data = .{
+                                .name = req.scene_data.name,
+                                .name_len = req.scene_data.name_len,
+                            },
+                            .clips = clips,
+                            .notes = notes,
+                        },
+                    });
+                } else |_| {}
+
+                const old_scene_count = @min(state.session.scene_count + 1, ui.max_scenes);
+                deleteScenePianoClips(state, req.scene, old_scene_count);
             },
             .track_volume => {
                 state.undo_history.push(.{
@@ -1164,6 +1250,175 @@ fn processPianoRollUndoRequests(state: *State) void {
         }
     }
     state.piano_state.undo_request_count = 0; // Clear processed requests
+}
+
+fn deleteTrackPianoClips(state: *State, track: usize, old_track_count: usize) void {
+    if (track >= old_track_count) return;
+    for (0..ui.max_scenes) |s| {
+        state.piano_clips[track][s].deinit();
+    }
+    if (track + 1 > old_track_count - 1) return;
+    for (track..old_track_count - 1) |t| {
+        for (0..ui.max_scenes) |s| {
+            state.piano_clips[t][s] = state.piano_clips[t + 1][s];
+            state.piano_clips[t + 1][s] = ui.piano_roll.PianoRollClip.init(state.allocator);
+        }
+    }
+}
+
+fn deleteScenePianoClips(state: *State, scene: usize, old_scene_count: usize) void {
+    if (scene >= old_scene_count) return;
+    for (0..ui.max_tracks) |t| {
+        state.piano_clips[t][scene].deinit();
+    }
+    if (scene + 1 > old_scene_count - 1) return;
+    for (0..ui.max_tracks) |t| {
+        for (scene..old_scene_count - 1) |s| {
+            state.piano_clips[t][s] = state.piano_clips[t][s + 1];
+            state.piano_clips[t][s + 1] = ui.piano_roll.PianoRollClip.init(state.allocator);
+        }
+    }
+}
+
+fn deleteTrackInState(state: *State, track: usize) void {
+    if (state.session.track_count <= 1) return;
+    if (track >= state.session.track_count) return;
+
+    const old_track_count = state.session.track_count;
+    for (0..state.session.scene_count) |s| {
+        state.session.deselectClip(track, s);
+    }
+    for (track..state.session.track_count - 1) |t| {
+        state.session.tracks[t] = state.session.tracks[t + 1];
+        for (0..ui.max_scenes) |s| {
+            state.session.clips[t][s] = state.session.clips[t + 1][s];
+            state.session.clip_selected[t][s] = state.session.clip_selected[t + 1][s];
+        }
+    }
+    for (0..ui.max_scenes) |s| {
+        state.session.clips[state.session.track_count - 1][s] = .{};
+        state.session.clip_selected[state.session.track_count - 1][s] = false;
+    }
+    state.session.track_count -= 1;
+    if (state.session.primary_track >= state.session.track_count) {
+        state.session.primary_track = state.session.track_count - 1;
+    }
+
+    deleteTrackPianoClips(state, track, old_track_count);
+}
+
+fn deleteSceneInState(state: *State, scene: usize) void {
+    if (state.session.scene_count <= 1) return;
+    if (scene >= state.session.scene_count) return;
+
+    const old_scene_count = state.session.scene_count;
+    for (0..state.session.track_count) |t| {
+        state.session.deselectClip(t, scene);
+    }
+    for (scene..state.session.scene_count - 1) |s| {
+        state.session.scenes[s] = state.session.scenes[s + 1];
+        for (0..ui.max_tracks) |t| {
+            state.session.clips[t][s] = state.session.clips[t][s + 1];
+            state.session.clip_selected[t][s] = state.session.clip_selected[t][s + 1];
+        }
+    }
+    for (0..ui.max_tracks) |t| {
+        state.session.clips[t][state.session.scene_count - 1] = .{};
+        state.session.clip_selected[t][state.session.scene_count - 1] = false;
+    }
+    state.session.scene_count -= 1;
+    if (state.session.primary_scene >= state.session.scene_count) {
+        state.session.primary_scene = state.session.scene_count - 1;
+    }
+
+    deleteScenePianoClips(state, scene, old_scene_count);
+}
+
+fn insertTrackInState(state: *State, cmd: *const undo.command.TrackDeleteCmd) void {
+    if (state.session.track_count >= ui.max_tracks) return;
+
+    var t = state.session.track_count;
+    while (t > cmd.track_index) : (t -= 1) {
+        state.session.tracks[t] = state.session.tracks[t - 1];
+        for (0..ui.max_scenes) |s| {
+            state.session.clips[t][s] = state.session.clips[t - 1][s];
+            state.session.clip_selected[t][s] = state.session.clip_selected[t - 1][s];
+            state.piano_clips[t][s] = state.piano_clips[t - 1][s];
+            state.piano_clips[t - 1][s] = ui.piano_roll.PianoRollClip.init(state.allocator);
+        }
+    }
+
+    state.session.tracks[cmd.track_index] = .{
+        .name = cmd.track_data.name,
+        .name_len = cmd.track_data.name_len,
+        .volume = cmd.track_data.volume,
+        .mute = cmd.track_data.mute,
+        .solo = cmd.track_data.solo,
+    };
+    for (0..ui.max_scenes) |s| {
+        const slot = cmd.clips[s];
+        state.session.clips[cmd.track_index][s] = if (slot.has_clip) .{
+            .state = .stopped,
+            .length_beats = slot.length_beats,
+        } else .{};
+        state.session.clip_selected[cmd.track_index][s] = false;
+        state.piano_clips[cmd.track_index][s].clear();
+        if (slot.has_clip) {
+            state.piano_clips[cmd.track_index][s].length_beats = slot.length_beats;
+            if (s < cmd.notes.len) {
+                for (cmd.notes[s]) |note| {
+                    state.piano_clips[cmd.track_index][s].addNote(note.pitch, note.start, note.duration) catch {};
+                }
+            }
+        }
+    }
+
+    state.session.track_count += 1;
+    if (state.session.primary_track >= state.session.track_count) {
+        state.session.primary_track = state.session.track_count - 1;
+    }
+}
+
+fn insertSceneInState(state: *State, cmd: *const undo.command.SceneDeleteCmd) void {
+    if (state.session.scene_count >= ui.max_scenes) return;
+
+    var s = state.session.scene_count;
+    while (s > cmd.scene_index) : (s -= 1) {
+        state.session.scenes[s] = state.session.scenes[s - 1];
+        for (0..ui.max_tracks) |t| {
+            state.session.clips[t][s] = state.session.clips[t][s - 1];
+            state.session.clip_selected[t][s] = state.session.clip_selected[t][s - 1];
+            state.piano_clips[t][s] = state.piano_clips[t][s - 1];
+            state.piano_clips[t][s - 1] = ui.piano_roll.PianoRollClip.init(state.allocator);
+        }
+    }
+
+    state.session.scenes[cmd.scene_index] = .{
+        .name = cmd.scene_data.name,
+        .name_len = cmd.scene_data.name_len,
+    };
+    for (0..ui.max_tracks) |t| {
+        const slot = cmd.clips[t];
+        state.session.clips[t][cmd.scene_index] = if (slot.has_clip) .{
+            .state = .stopped,
+            .length_beats = slot.length_beats,
+        } else .{};
+        state.session.clip_selected[t][cmd.scene_index] = false;
+        state.piano_clips[t][cmd.scene_index].clear();
+        if (slot.has_clip) {
+            state.piano_clips[t][cmd.scene_index].length_beats = slot.length_beats;
+            if (t < cmd.notes.len) {
+                for (cmd.notes[t]) |note| {
+                    state.piano_clips[t][cmd.scene_index].addNote(note.pitch, note.start, note.duration) catch {};
+                }
+            }
+        }
+    }
+
+    state.session.scene_count += 1;
+    if (state.session.primary_scene >= state.session.scene_count) {
+        state.session.primary_scene = state.session.scene_count - 1;
+    }
 }
 
 fn drawBottomPanel(state: *State, ui_scale: f32) void {

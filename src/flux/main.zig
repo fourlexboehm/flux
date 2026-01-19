@@ -16,6 +16,7 @@ const plugins = @import("plugins.zig");
 const project = @import("project.zig");
 const dawproject = @import("dawproject.zig");
 const file_dialog = @import("file_dialog.zig");
+const midi_input = @import("midi_input.zig");
 
 const SampleRate = 44_100;
 const Channels = 2;
@@ -710,6 +711,13 @@ pub fn main(init: std.process.Init) !void {
     zgui.plot.init();
     defer zgui.plot.deinit();
 
+    var midi = midi_input.MidiInput{};
+    midi.init(allocator) catch |err| {
+        std.log.warn("MIDI input disabled: {}", .{err});
+        midi.disable();
+    };
+    defer midi.deinit();
+
     var last_time = try std.time.Instant.now();
 
     std.log.info("flux running (Ctrl+C to quit)", .{});
@@ -736,6 +744,8 @@ pub fn main(init: std.process.Init) !void {
                 }
                 state.zsynth = synths[state.selectedTrack()];
                 updateDeviceState(&state, &catalog, &track_plugins);
+                midi.poll();
+                state.midi_note_states = midi.note_states;
                 const wants_keyboard = zgui.io.getWantCaptureKeyboard();
                 const item_active = zgui.isAnyItemActive();
                 if ((!wants_keyboard or !item_active) and zgui.isKeyPressed(.space, false)) {
@@ -879,6 +889,8 @@ pub fn main(init: std.process.Init) !void {
                 }
                 state.zsynth = synths[state.selectedTrack()];
                 updateDeviceState(&state, &catalog, &track_plugins);
+                midi.poll();
+                state.midi_note_states = midi.note_states;
                 const wants_keyboard = zgui.io.getWantCaptureKeyboard();
                 const item_active = zgui.isAnyItemActive();
                 if ((!wants_keyboard or !item_active) and zgui.isKeyPressed(.space, false)) {
