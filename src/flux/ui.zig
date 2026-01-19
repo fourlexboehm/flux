@@ -6,6 +6,9 @@ const zsynth_view = zsynth.View;
 
 // Import UI modules
 pub const ui = @import("ui/root.zig");
+
+// Import undo system
+pub const undo = @import("undo/root.zig");
 pub const Colors = ui.Colors;
 pub const SessionView = ui.SessionView;
 pub const PianoRollClip = ui.PianoRollClip;
@@ -83,6 +86,24 @@ pub const State = struct {
     load_project_request: bool,
     save_project_request: bool,
 
+    // Undo/redo history
+    undo_history: undo.UndoHistory,
+
+    // BPM drag tracking for undo
+    bpm_drag_active: bool = false,
+    bpm_drag_start: f32 = 0,
+
+    // Quantize tracking for undo
+    quantize_last: i32 = 2,
+
+    // Plugin state restore request (processed by main.zig)
+    plugin_state_restore_request: ?PluginStateRestoreRequest = null,
+
+    pub const PluginStateRestoreRequest = struct {
+        track_index: usize,
+        state_data: []const u8,
+    };
+
     pub fn init(allocator: std.mem.Allocator) State {
         var track_plugins_data: [ui.max_tracks]TrackPluginUI = undefined;
         for (&track_plugins_data) |*plugin| {
@@ -125,10 +146,12 @@ pub const State = struct {
             .keyboard_octave = 0,
             .load_project_request = false,
             .save_project_request = false,
+            .undo_history = undo.UndoHistory.init(allocator),
         };
     }
 
     pub fn deinit(self: *State) void {
+        self.undo_history.deinit();
         for (&self.piano_clips) |*track_clips| {
             for (track_clips) |*clip| {
                 clip.deinit();
@@ -244,6 +267,18 @@ pub fn draw(state: *State, ui_scale: f32) void {
         }
         zgui.endChild();
     }
+
+    // Undo/Redo shortcuts (Cmd+Z / Cmd+Shift+Z on Mac, Ctrl+Z / Ctrl+Shift+Z on other platforms)
+    // Placed at end of frame so undo requests from this frame are already processed
+    const mod_down = ui.selection.isModifierDown();
+    if (mod_down and zgui.isKeyPressed(.z, false)) {
+        if (ui.selection.isShiftDown()) {
+            _ = state.performRedo();
+        } else {
+            _ = state.performUndo();
+        }
+    }
+
     zgui.end();
 }
 
@@ -611,12 +646,32 @@ fn drawTransport(state: *State, ui_scale: f32) void {
     zgui.popStyleColor(.{ .count = 1 });
     zgui.sameLine(.{ .spacing = 6.0 * ui_scale });
     zgui.setNextItemWidth(100.0 * ui_scale);
+    const bpm_before = state.bpm;
     _ = zgui.sliderFloat("##transport_bpm", .{
         .v = &state.bpm,
         .min = 40.0,
         .max = 200.0,
         .cfmt = "%.0f",
     });
+
+    // Track BPM drag for undo
+    if (zgui.isItemActive()) {
+        if (!state.bpm_drag_active) {
+            state.bpm_drag_active = true;
+            state.bpm_drag_start = bpm_before;
+        }
+    } else if (state.bpm_drag_active) {
+        // Drag ended - emit undo if changed
+        if (state.bpm != state.bpm_drag_start) {
+            state.undo_history.push(.{
+                .bpm_change = .{
+                    .old_bpm = state.bpm_drag_start,
+                    .new_bpm = state.bpm,
+                },
+            });
+        }
+        state.bpm_drag_active = false;
+    }
 
     zgui.sameLine(.{ .spacing = spacing });
 
@@ -629,6 +684,17 @@ fn drawTransport(state: *State, ui_scale: f32) void {
         .current_item = &state.quantize_index,
         .items_separated_by_zeros = quantize_items,
     });
+
+    // Track quantize change for undo
+    if (state.quantize_index != state.quantize_last) {
+        state.undo_history.push(.{
+            .quantize_change = .{
+                .old_index = state.quantize_last,
+                .new_index = state.quantize_index,
+            },
+        });
+        state.quantize_last = state.quantize_index;
+    }
 
     // Load/Save buttons (right-aligned, centered vertically)
     zgui.sameLine(.{ .spacing = spacing * 2.0 });
@@ -673,6 +739,169 @@ fn drawClipGrid(state: *State, ui_scale: f32) void {
         state.session.start_playback_request = false;
         state.playing = true;
     }
+
+    // Process undo requests from session view and piano roll operations
+    processUndoRequests(state);
+    processPianoRollUndoRequests(state);
+}
+
+fn processUndoRequests(state: *State) void {
+    for (state.session.undo_requests[0..state.session.undo_request_count]) |req| {
+        switch (req.kind) {
+            .clip_create => {
+                state.undo_history.push(.{
+                    .clip_create = .{
+                        .track = req.track,
+                        .scene = req.scene,
+                        .length_beats = req.length_beats,
+                    },
+                });
+            },
+            .clip_delete => {
+                // Capture notes before they're lost (they may already be cleared)
+                const notes = state.allocator.dupe(
+                    undo.Note,
+                    state.piano_clips[req.track][req.scene].notes.items,
+                ) catch &.{};
+                state.undo_history.push(.{
+                    .clip_delete = .{
+                        .track = req.track,
+                        .scene = req.scene,
+                        .length_beats = req.length_beats,
+                        .notes = notes,
+                    },
+                });
+                // Clear the piano clip notes
+                state.piano_clips[req.track][req.scene].clear();
+            },
+            .track_add => {
+                const track = &state.session.tracks[req.track];
+                state.undo_history.push(.{
+                    .track_add = .{
+                        .track_index = req.track,
+                        .name = track.name,
+                        .name_len = track.name_len,
+                    },
+                });
+            },
+            .scene_add => {
+                const scene = &state.session.scenes[req.scene];
+                state.undo_history.push(.{
+                    .scene_add = .{
+                        .scene_index = req.scene,
+                        .name = scene.name,
+                        .name_len = scene.name_len,
+                    },
+                });
+            },
+            .track_volume => {
+                state.undo_history.push(.{
+                    .track_volume = .{
+                        .track_index = req.track,
+                        .old_volume = req.old_volume,
+                        .new_volume = req.new_volume,
+                    },
+                });
+            },
+        }
+    }
+    state.session.undo_request_count = 0; // Clear processed requests
+
+    // Process clip move requests (separate since it involves multiple clips)
+    if (state.session.clip_move_count > 0) {
+        // First, move the piano clips (session_view already moved the clip slots)
+        if (state.session.pending_piano_moves) {
+            for (state.session.clip_move_requests[0..state.session.clip_move_count]) |req| {
+                // Swap piano clips from src to dst
+                const temp = state.piano_clips[req.src_track][req.src_scene];
+                state.piano_clips[req.dst_track][req.dst_scene] = temp;
+                state.piano_clips[req.src_track][req.src_scene] = ui.piano_roll.PianoRollClip.init(state.allocator);
+            }
+            state.session.pending_piano_moves = false;
+        }
+
+        // Allocate and copy the moves for undo
+        if (state.allocator.alloc(undo.command.ClipMoveCmd.ClipMove, state.session.clip_move_count)) |moves| {
+            for (state.session.clip_move_requests[0..state.session.clip_move_count], 0..) |req, i| {
+                moves[i] = .{
+                    .src_track = req.src_track,
+                    .src_scene = req.src_scene,
+                    .dst_track = req.dst_track,
+                    .dst_scene = req.dst_scene,
+                };
+            }
+            state.undo_history.push(.{
+                .clip_move = .{
+                    .moves = moves,
+                },
+            });
+        } else |_| {}
+        state.session.clip_move_count = 0;
+    }
+}
+
+fn processPianoRollUndoRequests(state: *State) void {
+    for (state.piano_state.undo_requests[0..state.piano_state.undo_request_count]) |req| {
+        switch (req.kind) {
+            .note_add => {
+                state.undo_history.push(.{
+                    .note_add = .{
+                        .track = req.track,
+                        .scene = req.scene,
+                        .note = req.note,
+                        .note_index = req.note_index,
+                    },
+                });
+            },
+            .note_remove => {
+                state.undo_history.push(.{
+                    .note_remove = .{
+                        .track = req.track,
+                        .scene = req.scene,
+                        .note = req.note,
+                        .note_index = req.note_index,
+                    },
+                });
+            },
+            .note_move => {
+                state.undo_history.push(.{
+                    .note_move = .{
+                        .track = req.track,
+                        .scene = req.scene,
+                        .note_index = req.note_index,
+                        .old_start = req.old_start,
+                        .old_pitch = req.old_pitch,
+                        .new_start = req.new_start,
+                        .new_pitch = req.new_pitch,
+                    },
+                });
+            },
+            .note_resize => {
+                state.undo_history.push(.{
+                    .note_resize = .{
+                        .track = req.track,
+                        .scene = req.scene,
+                        .note_index = req.note_index,
+                        .old_duration = req.old_duration,
+                        .new_duration = req.new_duration,
+                    },
+                });
+            },
+            .clip_resize => {
+                // Also sync the session clip length
+                state.session.clips[req.track][req.scene].length_beats = req.new_duration;
+                state.undo_history.push(.{
+                    .clip_resize = .{
+                        .track = req.track,
+                        .scene = req.scene,
+                        .old_length = req.old_duration,
+                        .new_length = req.new_duration,
+                    },
+                });
+            },
+        }
+    }
+    state.piano_state.undo_request_count = 0; // Clear processed requests
 }
 
 fn drawBottomPanel(state: *State, ui_scale: f32) void {
