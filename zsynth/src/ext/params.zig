@@ -131,6 +131,9 @@ pub fn set(self: *Params, param: Parameter, val: ParameterValue, flags: ParamSet
     self.mutex.lock();
     defer self.mutex.unlock();
     self.values.set(param, val);
+    // Debug: verify value was actually set
+    const readback = self.values.get(param);
+    std.log.debug("Params.set: {} = {} (readback: {}) [params@{x}]", .{ param, val, readback, @intFromPtr(self) });
 
     if (flags.should_notify_host) {
         // Add to the event queue to notify the DAW on the audio thread
@@ -154,8 +157,6 @@ pub fn set(self: *Params, param: Parameter, val: ParameterValue, flags: ParamSet
 
         try self.events.append(self.allocator, event);
     }
-
-    std.log.debug("Changed param value of {} to {}", .{ param, val });
 }
 
 pub inline fn create() clap.ext.params.Plugin {

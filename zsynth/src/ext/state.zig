@@ -23,6 +23,7 @@ fn _save(clap_plugin: *const clap.Plugin, stream: *const clap.OStream) callconv(
     // Ensure thread safety by locking the params first before reading them
     const locked = plugin.params.mutex.tryLock();
     if (!locked) {
+        std.log.debug("_save: couldn't get lock!", .{});
         return false;
     }
 
@@ -50,7 +51,7 @@ fn _load(clap_plugin: *const clap.Plugin, stream: *const clap.IStream) callconv(
     const zone = tracy.ZoneN(@src(), "State loading");
     defer zone.End();
 
-    std.log.debug("State._load called from plugin host", .{});
+    std.log.debug("Loading plugin state...", .{});
     const plugin = Plugin.fromClapPlugin(clap_plugin);
 
     var param_data_buf = std.ArrayList(u8).empty;
@@ -76,6 +77,7 @@ fn _load(clap_plugin: *const clap.Plugin, stream: *const clap.IStream) callconv(
         // Read some more data in
         bytes_read = @intFromEnum(stream.read(stream, &buf, MAX_BUF_SIZE));
     }
+    std.log.debug("Plugin data loaded: {s}", .{param_data_buf.items});
 
     const params = createParamsFromBuffer(plugin.allocator, param_data_buf.items);
     if (params == null) {
@@ -85,12 +87,16 @@ fn _load(clap_plugin: *const clap.Plugin, stream: *const clap.IStream) callconv(
 
     // Mutate the overall plugin params now that they are properly loaded
     if (plugin.params.mutex.tryLock()) {
-        defer plugin.params.mutex.unlock();
-
         plugin.params.values = params.?;
+        plugin.params.mutex.unlock();
+
+        // Apply param changes to audio engine and notify host so UI updates after undo/load
+        plugin.applyParamChanges(true);
+        std.log.debug("Plugin state restored successfully", .{});
         return true;
     }
 
+    std.log.warn("_load: couldn't get params lock!", .{});
     return false;
 }
 // Load the JSON state from a complete buffer.
