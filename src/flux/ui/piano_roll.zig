@@ -134,6 +134,7 @@ pub const PianoRollState = struct {
     scroll_x: f32 = 0,
     scroll_y: f32 = 50 * 20.0, // Start around C4
     beats_per_pixel: f32 = 0.5,
+    key_pan_active: bool = false,
 
     // Undo requests (processed by ui.zig)
     undo_requests: [16]UndoRequest = undefined,
@@ -533,6 +534,39 @@ pub fn drawSequencer(
         if (state.drag.mode == .none and state.hasSelection()) {
             handleArrowKeys(state, clip, shift_down, quantize_beats, min_note_duration);
         }
+    }
+
+    const cursor_local_before = zgui.getCursorPos();
+    const window_pos = zgui.getWindowPos();
+    const key_local_pos: [2]f32 = .{ base_pos[0] - window_pos[0], grid_area_y - window_pos[1] };
+    zgui.setCursorPos(key_local_pos);
+    _ = zgui.invisibleButton("##piano_keys_drag", .{ .w = key_width, .h = grid_view_height });
+    const keys_hovered = zgui.isItemHovered(.{});
+    zgui.setCursorPos(cursor_local_before);
+
+    if (keys_hovered and zgui.isMouseClicked(.right)) {
+        state.key_pan_active = true;
+    }
+
+    if (state.key_pan_active) {
+        if (zgui.isMouseDown(.right)) {
+            const delta = zgui.getMouseDragDelta(.right, .{});
+            if (delta[1] != 0) {
+                state.scroll_y = std.math.clamp(state.scroll_y - delta[1], 0, max_scroll_y);
+                zgui.resetMouseDragDelta(.right);
+            }
+            zgui.setMouseCursor(.resize_ns);
+        } else {
+            state.key_pan_active = false;
+        }
+    } else if (keys_hovered) {
+        zgui.setMouseCursor(.resize_ns);
+    }
+
+    const wheel_y = zgui.io.getMouseWheel();
+    if ((keys_hovered or in_grid) and wheel_y != 0) {
+        const scroll_step = row_height * 3.0;
+        state.scroll_y = std.math.clamp(state.scroll_y - wheel_y * scroll_step, 0, max_scroll_y);
     }
 
     // Middle mouse pan
