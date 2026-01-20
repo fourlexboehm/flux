@@ -1,5 +1,5 @@
-//! XML serialization for undo history in metadata.xml
-//! Stores undo history in DAWproject files for session recovery.
+//! XML serialization for undo history stored in DAWproject archives.
+//! Keeps undo data separate from the main project.xml payload.
 
 const std = @import("std");
 const command = @import("command.zig");
@@ -139,7 +139,7 @@ pub const MetadataWriter = struct {
                     try self.buffer.appendSlice(self.allocator, "</flux:Command>\n");
                 }
             },
-            .note_add, .note_remove => |c| {
+            inline .note_add, .note_remove => |c| {
                 try self.writeAttrInt("track", c.track);
                 try self.writeAttrInt("scene", c.scene);
                 try self.writeAttrInt("noteIndex", c.note_index);
@@ -256,6 +256,25 @@ pub const MetadataWriter = struct {
                     try self.writeIndent();
                     try self.buffer.appendSlice(self.allocator, "</flux:Command>\n");
                 }
+            },
+            .clip_resize => |c| {
+                try self.writeAttrInt("track", c.track);
+                try self.writeAttrInt("scene", c.scene);
+                try self.writeAttrFloat("oldLength", c.old_length);
+                try self.writeAttrFloat("newLength", c.new_length);
+                try self.buffer.appendSlice(self.allocator, "/>\n");
+            },
+            .quantize_change => |c| {
+                try self.writeAttrInt("oldIndex", c.old_index);
+                try self.writeAttrInt("newIndex", c.new_index);
+                try self.buffer.appendSlice(self.allocator, "/>\n");
+            },
+            .plugin_state => |c| {
+                try self.writeAttrInt("trackIndex", c.track_index);
+                // Plugin state is binary - store lengths only, actual data not serialized to XML
+                try self.writeAttrInt("oldStateLen", c.old_state.len);
+                try self.writeAttrInt("newStateLen", c.new_state.len);
+                try self.buffer.appendSlice(self.allocator, "/>\n");
             },
         }
     }

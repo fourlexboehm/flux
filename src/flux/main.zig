@@ -13,7 +13,6 @@ const audio_engine = @import("audio_engine.zig");
 const audio_graph = @import("audio_graph.zig");
 const zsynth = @import("zsynth-core");
 const plugins = @import("plugins.zig");
-const project = @import("project.zig");
 const dawproject = @import("dawproject.zig");
 const file_dialog = @import("file_dialog.zig");
 const midi_input = @import("midi_input.zig");
@@ -604,7 +603,6 @@ fn dataCallback(
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
-    const project_path = project.default_path;
 
     var host = Host.init();
     host.clap_host.host_data = &host;
@@ -656,19 +654,6 @@ pub fn main(init: std.process.Init) !void {
     state.zsynth = synths[0];
     host.synths_ptr = &synths;
     host.catalog_ptr = &catalog;
-
-    const loaded_project = project.load(allocator, io, project_path) catch |err| blk: {
-        std.log.warn("Failed to load project: {}", .{err});
-        break :blk null;
-    };
-    if (loaded_project) |parsed| {
-        defer parsed.deinit();
-        try project.apply(&parsed.value, &state, &catalog);
-        state.zsynth = synths[state.selectedTrack()];
-        try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog, null, io, false);
-        const loaded_plugins = collectTrackPlugins(&catalog, &track_plugins, &state, synths);
-        project.applyDeviceStates(allocator, &parsed.value, loaded_plugins);
-    }
 
     var engine = try audio_engine.AudioEngine.init(allocator, SampleRate, MaxFrames);
     defer engine.deinit();
@@ -967,11 +952,6 @@ pub fn main(init: std.process.Init) !void {
     for (&track_plugins) |*track| {
         closePluginGui(track);
     }
-
-    const plugins_for_save = collectTrackPlugins(&catalog, &track_plugins, &state, synths);
-    project.save(allocator, io, project_path, &state, &catalog, plugins_for_save) catch |err| {
-        std.log.warn("Failed to save project: {}", .{err});
-    };
 
     for (&track_plugins, 0..) |*track, t| {
         unloadPlugin(track, allocator, &engine.shared, t);
@@ -1331,8 +1311,19 @@ fn handleFileRequests(
     // Handle save request
     if (state.save_project_request) {
         state.save_project_request = false;
-        handleSaveProject(allocator, io, state, catalog, track_plugins) catch |err| {
-            std.log.err("Failed to save project: {}", .{err});
+        if (state.project_path == null) {
+            state.save_project_as_request = true;
+        } else {
+            handleSaveProject(allocator, io, state, catalog, track_plugins) catch |err| {
+                std.log.err("Failed to save project: {}", .{err});
+            };
+        }
+    }
+
+    if (state.save_project_as_request) {
+        state.save_project_as_request = false;
+        handleSaveProjectAs(allocator, io, state, catalog, track_plugins) catch |err| {
+            std.log.err("Failed to save project as: {}", .{err});
         };
     }
 
@@ -1370,12 +1361,24 @@ fn handleSaveProject(
     catalog: *const plugins.PluginCatalog,
     track_plugins: *const [ui.track_count]TrackPlugin,
 ) !void {
-    // Show save dialog
+    const path = state.project_path orelse return;
+    try saveProjectToPath(allocator, io, path, state, catalog, track_plugins);
+}
+
+fn handleSaveProjectAs(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    state: *ui.State,
+    catalog: *const plugins.PluginCatalog,
+    track_plugins: *const [ui.track_count]TrackPlugin,
+) !void {
+    const default_name = if (state.project_path) |path| std.fs.path.basename(path) else "project.dawproject";
+
     const path = file_dialog.saveFile(
         allocator,
         io,
         "Save DAWproject",
-        "project.dawproject",
+        default_name,
         &dawproject_file_types,
     ) catch |err| {
         std.log.err("File dialog error: {}", .{err});
@@ -1383,30 +1386,50 @@ fn handleSaveProject(
     };
 
     if (path == null) {
-        // User cancelled
         return;
     }
     defer allocator.free(path.?);
 
-    // Collect plugin states
+    try saveProjectToPath(allocator, io, path.?, state, catalog, track_plugins);
+    try state.setProjectPath(path.?);
+}
+
+fn saveProjectToPath(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    state: *const ui.State,
+    catalog: *const plugins.PluginCatalog,
+    track_plugins: *const [ui.track_count]TrackPlugin,
+) !void {
+    // Collect plugin states and plugin info
     var plugin_states: std.ArrayList(dawproject.PluginStateFile) = .empty;
     defer plugin_states.deinit(allocator);
 
+    var track_plugin_info: [ui.track_count]dawproject.TrackPluginInfo = undefined;
+    for (&track_plugin_info) |*info| {
+        info.* = .{};
+    }
+
     for (track_plugins, 0..) |track, t| {
         if (track.handle) |handle| {
+            // Get the plugin ID from the loaded plugin's descriptor
+            track_plugin_info[t].plugin_id = std.mem.span(handle.plugin.descriptor.id);
+
             if (capturePluginStateForDawproject(allocator, handle.plugin, t)) |ps| {
+                track_plugin_info[t].state_path = ps.path;
                 plugin_states.append(allocator, ps) catch continue;
             }
         }
     }
 
     // Save the project
-    dawproject.save(allocator, io, path.?, state, catalog, plugin_states.items) catch |err| {
+    dawproject.save(allocator, io, path, state, catalog, plugin_states.items, &track_plugin_info) catch |err| {
         std.log.err("Failed to write dawproject: {}", .{err});
         return;
     };
 
-    std.log.info("Saved project to: {s}", .{path.?});
+    std.log.info("Saved project to: {s}", .{path});
 }
 
 fn handleLoadProject(
@@ -1449,6 +1472,7 @@ fn handleLoadProject(
         return;
     };
 
+    try state.setProjectPath(path.?);
     std.log.info("Loaded project from: {s}", .{path.?});
 }
 
