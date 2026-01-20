@@ -1331,9 +1331,31 @@ fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Project 
     var current_clip: ?Clip = null;
     var current_notes: ?Notes = null;
     var notes_list = std.ArrayList(Note).empty;
+    var current_scene: ?Scene = null;
+    var current_clip_slot: ?ClipSlot = null;
+    var clip_slots_list = std.ArrayList(ClipSlot).empty;
+    const ClipContext = enum { arrangement, clip_slot };
+    var clip_context: ?ClipContext = null;
 
     // Parse state stack
-    const ParseState = enum { root, structure, track, channel, devices, device, arrangement, root_lanes, track_lanes, clips, clip, notes, scenes };
+    const ParseState = enum {
+        root,
+        structure,
+        track,
+        channel,
+        devices,
+        device,
+        arrangement,
+        root_lanes,
+        track_lanes,
+        clips,
+        clip,
+        notes,
+        scenes,
+        scene,
+        scene_lanes,
+        clip_slot,
+    };
     var state: ParseState = .root;
 
     while (true) {
@@ -1454,13 +1476,27 @@ fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Project 
                 } else if (std.mem.eql(u8, elem_name, "Scenes")) {
                     state = .scenes;
                 } else if (std.mem.eql(u8, elem_name, "Scene") and state == .scenes) {
-                    // Note: We don't fully parse ClipSlots yet, just basic scene info
-                    try scenes_list.append(allocator, .{
+                    state = .scene;
+                    current_scene = .{
                         .id = try allocator.dupe(u8, getAttr(reader, "id") orelse ""),
                         .name = try allocator.dupe(u8, getAttr(reader, "name") orelse ""),
-                        .lanes_id = "", // Not parsed yet
-                        .clip_slots = &.{}, // Not parsed yet
-                    });
+                        .lanes_id = "",
+                        .clip_slots = &.{},
+                    };
+                    clip_slots_list = std.ArrayList(ClipSlot).empty;
+                } else if (std.mem.eql(u8, elem_name, "Lanes") and state == .scene) {
+                    state = .scene_lanes;
+                    if (current_scene) |*scene| {
+                        scene.lanes_id = try allocator.dupe(u8, getAttr(reader, "id") orelse "");
+                    }
+                } else if (std.mem.eql(u8, elem_name, "ClipSlot") and state == .scene_lanes) {
+                    state = .clip_slot;
+                    current_clip_slot = .{
+                        .id = try allocator.dupe(u8, getAttr(reader, "id") orelse ""),
+                        .track = try allocator.dupe(u8, getAttr(reader, "track") orelse ""),
+                        .has_stop = parseBool(getAttr(reader, "hasStop")),
+                        .clip = null,
+                    };
                 } else if (std.mem.eql(u8, elem_name, "Arrangement")) {
                     state = .arrangement;
                 } else if (std.mem.eql(u8, elem_name, "Lanes") and state == .arrangement) {
@@ -1483,11 +1519,13 @@ fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Project 
                         .id = try allocator.dupe(u8, getAttr(reader, "id") orelse ""),
                         .clips = &.{}, // Will be filled in on element_end
                     };
-                } else if (std.mem.eql(u8, elem_name, "Clip") and state == .clips) {
+                } else if (std.mem.eql(u8, elem_name, "Clip") and (state == .clips or state == .clip_slot)) {
+                    clip_context = if (state == .clips) .arrangement else .clip_slot;
                     state = .clip;
                     current_clip = .{
                         .time = parseFloatAttr(getAttr(reader, "time")) orelse 0.0,
                         .duration = parseFloatAttr(getAttr(reader, "duration")) orelse 4.0,
+                        .play_start = parseFloatAttr(getAttr(reader, "playStart")) orelse 0.0,
                         .name = if (getAttr(reader, "name")) |n| try allocator.dupe(u8, n) else null,
                     };
                 } else if (std.mem.eql(u8, elem_name, "Notes") and state == .clip) {
@@ -1544,6 +1582,23 @@ fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Project 
                     current_device = null;
                 } else if (std.mem.eql(u8, elem_name, "Scenes")) {
                     state = .root;
+                } else if (std.mem.eql(u8, elem_name, "Scene") and state == .scene) {
+                    if (current_scene) |scene| {
+                        var scene_copy = scene;
+                        scene_copy.clip_slots = try clip_slots_list.toOwnedSlice(allocator);
+                        try scenes_list.append(allocator, scene_copy);
+                    }
+                    current_scene = null;
+                    clip_slots_list = std.ArrayList(ClipSlot).empty;
+                    state = .scenes;
+                } else if (std.mem.eql(u8, elem_name, "Lanes") and state == .scene_lanes) {
+                    state = .scene;
+                } else if (std.mem.eql(u8, elem_name, "ClipSlot") and state == .clip_slot) {
+                    if (current_clip_slot) |slot| {
+                        try clip_slots_list.append(allocator, slot);
+                    }
+                    current_clip_slot = null;
+                    state = .scene_lanes;
                 } else if (std.mem.eql(u8, elem_name, "Arrangement")) {
                     state = .root;
                 } else if (std.mem.eql(u8, elem_name, "Lanes") and state == .root_lanes) {
@@ -1569,10 +1624,17 @@ fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Project 
                     state = .track_lanes;
                 } else if (std.mem.eql(u8, elem_name, "Clip") and state == .clip) {
                     if (current_clip) |clip| {
-                        try clips_list.append(allocator, clip);
+                        if (clip_context == .arrangement) {
+                            try clips_list.append(allocator, clip);
+                        } else if (clip_context == .clip_slot) {
+                            if (current_clip_slot) |*slot| {
+                                slot.clip = clip;
+                            }
+                        }
                     }
                     current_clip = null;
-                    state = .clips;
+                    state = if (clip_context == .clip_slot) .clip_slot else .clips;
+                    clip_context = null;
                 } else if (std.mem.eql(u8, elem_name, "Notes") and state == .notes) {
                     if (current_notes) |notes| {
                         if (current_clip) |*clip| {

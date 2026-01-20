@@ -1584,8 +1584,20 @@ fn applyDawprojectToState(
         }
     }
 
-    // Apply arrangement lanes (clips)
-    if (proj.arrangement) |arr| {
+    // Apply session clips from scenes when available, otherwise fall back to arrangement lanes.
+    var applied_scene_clips = false;
+    if (proj.scenes.len > 0) {
+        for (proj.scenes) |scene| {
+            if (scene.clip_slots.len > 0) {
+                applied_scene_clips = true;
+                break;
+            }
+        }
+    }
+
+    if (applied_scene_clips) {
+        try applyScenes(state, proj.scenes, proj.tracks, proj.master_track);
+    } else if (proj.arrangement) |arr| {
         if (arr.lanes) |root_lanes| {
             try applyLanes(state, &root_lanes, proj.tracks);
         }
@@ -1651,17 +1663,12 @@ fn applyLanes(state: *ui.State, lanes: *const dawproject.Lanes, tracks: []const 
                     };
 
                     // Add notes
+                    var piano = &state.piano_clips[t][s];
+                    piano.length_beats = @floatCast(clip.duration);
+                    piano.notes.clearRetainingCapacity();
                     if (clip.notes) |notes| {
-                        var piano = &state.piano_clips[t][s];
-                        piano.length_beats = @floatCast(clip.duration);
-                        piano.notes.clearRetainingCapacity();
-
                         for (notes.notes) |note| {
-                            piano.notes.append(state.allocator, .{
-                                .pitch = @intCast(note.key),
-                                .start = @floatCast(note.time),
-                                .duration = @floatCast(note.duration),
-                            }) catch continue;
+                            piano.addNote(@intCast(note.key), @floatCast(note.time), @floatCast(note.duration)) catch continue;
                         }
                     }
                 }
@@ -1672,6 +1679,50 @@ fn applyLanes(state: *ui.State, lanes: *const dawproject.Lanes, tracks: []const 
     // Recurse into child lanes
     for (lanes.children) |child| {
         try applyLanes(state, &child, tracks);
+    }
+}
+
+fn applyScenes(
+    state: *ui.State,
+    scenes: []const dawproject.Scene,
+    tracks: []const dawproject.Track,
+    master_track: ?dawproject.Track,
+) !void {
+    const scene_count = @min(scenes.len, ui.scene_count);
+    for (0..scene_count) |s| {
+        const scene = scenes[s];
+        for (scene.clip_slots) |slot| {
+            var track_idx: ?usize = null;
+            for (tracks, 0..) |track, t| {
+                if (std.mem.eql(u8, track.id, slot.track)) {
+                    track_idx = t;
+                    break;
+                }
+            }
+            if (track_idx == null and master_track != null) {
+                if (std.mem.eql(u8, master_track.?.id, slot.track)) {
+                    continue;
+                }
+            }
+            if (track_idx) |t| {
+                if (t >= ui.track_count) continue;
+                if (slot.clip) |clip| {
+                    state.session.clips[t][s] = .{
+                        .state = .stopped,
+                        .length_beats = @floatCast(clip.duration),
+                    };
+
+                    var piano = &state.piano_clips[t][s];
+                    piano.length_beats = @floatCast(clip.duration);
+                    piano.notes.clearRetainingCapacity();
+                    if (clip.notes) |notes| {
+                        for (notes.notes) |note| {
+                            piano.addNote(@intCast(note.key), @floatCast(note.time), @floatCast(note.duration)) catch continue;
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
