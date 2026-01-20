@@ -810,7 +810,7 @@ fn finalizeHeldNotes(state: *State) void {
 pub fn updateKeyboardMidi(state: *State) void {
     // Skip keyboard MIDI when text input is active (e.g., renaming tracks/scenes)
     // This prevents piano keys from triggering while typing
-    if (zgui.io.getWantTextInput()) {
+    if (zgui.io.getWantTextInput() and zgui.isAnyItemActive()) {
         // Clear all key states when text input is active to release any held notes
         for (0..ui.max_tracks) |track_index| {
             state.live_key_states[track_index] = [_]bool{false} ** 128;
@@ -966,7 +966,11 @@ fn drawTransport(state: *State, ui_scale: f32) void {
     zgui.textUnformatted("Quantize");
     zgui.popStyleColor(.{ .count = 1 });
     zgui.sameLine(.{ .spacing = 6.0 * ui_scale });
-    zgui.setNextItemWidth(80.0 * ui_scale);
+    const quantize_label_size = zgui.calcTextSize("1/4", .{});
+    const frame_height = zgui.getFrameHeight();
+    const frame_padding = zgui.getStyle().frame_padding;
+    const quantize_width = quantize_label_size[0] + frame_height + frame_padding[0] * 2.0 + 6.0 * ui_scale;
+    zgui.setNextItemWidth(quantize_width);
     _ = zgui.combo("##transport_quantize", .{
         .current_item = &state.quantize_index,
         .items_separated_by_zeros = quantize_items,

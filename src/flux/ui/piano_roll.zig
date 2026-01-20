@@ -58,14 +58,22 @@ pub const PianoRollClip = struct {
     pub fn addNote(self: *PianoRollClip, pitch: u8, start: f32, duration: f32) !void {
         // Trim any existing notes at the same pitch that overlap with the new note's start
         // This handles the case where a new note-on comes while a note is already playing
-        for (self.notes.items) |*existing| {
+        var i: usize = 0;
+        while (i < self.notes.items.len) {
+            var existing = &self.notes.items[i];
             if (existing.pitch == pitch) {
                 const existing_end = existing.start + existing.duration;
                 // If existing note spans the new note's start point, trim it
-                if (existing.start < start and existing_end > start) {
-                    existing.duration = start - existing.start;
+                if (existing.start <= start and existing_end > start) {
+                    const new_duration = start - existing.start;
+                    if (new_duration <= 0) {
+                        _ = self.notes.orderedRemove(i);
+                        continue;
+                    }
+                    existing.duration = new_duration;
                 }
             }
+            i += 1;
         }
         try self.notes.append(self.allocator, .{ .pitch = pitch, .start = start, .duration = duration });
     }
@@ -1073,7 +1081,10 @@ fn drawRuler(
     max_beats: f32,
     ui_scale: f32,
 ) void {
-    _ = ui_scale;
+    const font_size = zgui.getFontSize();
+    const max_label_size = height - 4.0 * ui_scale;
+    const label_font_size = @min(font_size, @max(0.0, max_label_size));
+    const label_y = y + (height - label_font_size) / 2.0;
 
     draw_list.addRectFilled(.{
         .pmin = .{ x, y },
@@ -1093,11 +1104,17 @@ fn drawRuler(
         const beat_int = @as(i32, @intFromFloat(beat));
         const is_bar = @mod(beat_int, beats_per_bar) == 0;
 
-        if (is_bar) {
+        if (is_bar and label_font_size >= 6.0) {
             const bar_num = @divFloor(beat_int, beats_per_bar) + 1;
             var buf: [8]u8 = undefined;
             const label = std.fmt.bufPrintZ(&buf, "{d}", .{bar_num}) catch "";
-            draw_list.addText(.{ bx + 4, y + 4 }, zgui.colorConvertFloat4ToU32(colors.Colors.text_bright), "{s}", .{label});
+            draw_list.addTextExtended(
+                .{ bx + 4, label_y },
+                zgui.colorConvertFloat4ToU32(colors.Colors.text_bright),
+                "{s}",
+                .{label},
+                .{ .font = null, .font_size = label_font_size },
+            );
         }
 
         const tick_height: f32 = if (is_bar) height * 0.6 else height * 0.3;
@@ -1122,7 +1139,9 @@ fn drawPianoKeys(
     row_height: f32,
     ui_scale: f32,
 ) void {
-    _ = ui_scale;
+    const font_size = zgui.getFontSize();
+    const max_label_size = row_height - 2.0 * ui_scale;
+    const label_font_size = @min(font_size, @max(0.0, max_label_size));
 
     const is_black_key = [_]bool{ false, true, false, true, false, false, true, false, true, false, true, false };
 
@@ -1162,12 +1181,17 @@ fn drawPianoKeys(
             .col = key_color,
         });
 
-        if (note_in_octave == 0) {
+        if (note_in_octave == 0 and label_font_size >= 6.0) {
             var buf: [8]u8 = undefined;
             const label = std.fmt.bufPrintZ(&buf, "C{d}", .{oct}) catch "";
-            // Center text vertically in row (font is ~13px, center it)
-            const text_y = ky + (row_height - 10.0) / 2.0;
-            draw_list.addText(.{ x + 6, text_y }, zgui.colorConvertFloat4ToU32(colors.Colors.text_bright), "{s}", .{label});
+            const text_y = ky + (row_height - label_font_size) / 2.0;
+            draw_list.addTextExtended(
+                .{ x + 6, text_y },
+                zgui.colorConvertFloat4ToU32(colors.Colors.text_bright),
+                "{s}",
+                .{label},
+                .{ .font = null, .font_size = label_font_size },
+            );
         }
     }
 
