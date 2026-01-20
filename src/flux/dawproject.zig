@@ -1180,6 +1180,23 @@ pub fn save(
     // Add project.xml
     try zip_writer.addFile("project.xml", xml);
 
+    // Bitwig expects metadata.xml to exist; include an empty template.
+    const metadata_xml =
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" ++
+        "<MetaData>\n" ++
+        "    <Title></Title>\n" ++
+        "    <Artist></Artist>\n" ++
+        "    <Album></Album>\n" ++
+        "    <OriginalArtist></OriginalArtist>\n" ++
+        "    <Songwriter></Songwriter>\n" ++
+        "    <Producer></Producer>\n" ++
+        "    <Year></Year>\n" ++
+        "    <Genre></Genre>\n" ++
+        "    <Copyright></Copyright>\n" ++
+        "    <Comment></Comment>\n" ++
+        "</MetaData>\n";
+    try zip_writer.addFile("metadata.xml", metadata_xml);
+
     // Add plugin state files
     for (plugin_states) |ps| {
         try zip_writer.addFile(ps.path, ps.data);
