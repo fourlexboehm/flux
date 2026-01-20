@@ -86,6 +86,8 @@ pub const State = struct {
     // Project file requests (handled by main.zig)
     load_project_request: bool,
     save_project_request: bool,
+    save_project_as_request: bool,
+    project_path: ?[]u8,
 
     // Undo/redo history
     undo_history: undo.UndoHistory,
@@ -148,11 +150,16 @@ pub const State = struct {
             .keyboard_octave = 0,
             .load_project_request = false,
             .save_project_request = false,
+            .save_project_as_request = false,
+            .project_path = null,
             .undo_history = undo.UndoHistory.init(allocator),
         };
     }
 
     pub fn deinit(self: *State) void {
+        if (self.project_path) |path| {
+            self.allocator.free(path);
+        }
         self.undo_history.deinit();
         for (&self.piano_clips) |*track_clips| {
             for (track_clips) |*clip| {
@@ -177,6 +184,13 @@ pub const State = struct {
 
     pub fn currentClipLabel(self: *const State) []const u8 {
         return self.session.scenes[self.selectedScene()].getName();
+    }
+
+    pub fn setProjectPath(self: *State, path: []const u8) !void {
+        if (self.project_path) |old_path| {
+            self.allocator.free(old_path);
+        }
+        self.project_path = try self.allocator.dupe(u8, path);
     }
 
     /// Perform undo operation
@@ -1004,6 +1018,13 @@ fn drawTransport(state: *State, ui_scale: f32) void {
 
     if (zgui.button("Save", .{})) {
         state.save_project_request = true;
+    }
+
+    zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
+    zgui.setCursorPosY(save_y - 4.0 * ui_scale);
+
+    if (zgui.button("Save As", .{})) {
+        state.save_project_as_request = true;
     }
     zgui.popStyleVar(.{ .count = 1 });
 

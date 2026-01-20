@@ -6,8 +6,8 @@
 
 const std = @import("std");
 const ui = @import("ui.zig");
-const project = @import("project.zig");
 const plugins = @import("plugins.zig");
+const undo = @import("undo/root.zig");
 
 // ============================================================================
 // DAWproject Types (subset matching project.xsd)
@@ -756,6 +756,7 @@ pub fn fromFluxProject(
     allocator: std.mem.Allocator,
     state: *const ui.State,
     catalog: *const plugins.PluginCatalog,
+    track_plugin_info: []const TrackPluginInfo,
 ) !Project {
     var ids = IdGenerator{ .allocator = allocator };
 
@@ -780,10 +781,15 @@ pub fn fromFluxProject(
                 const device_id = try ids.next();
                 const enabled_id = try ids.next();
 
+                // Get plugin ID and state path from track_plugin_info if available
+                const info = if (t < track_plugin_info.len) track_plugin_info[t] else TrackPluginInfo{};
+                // Prefer plugin ID from loaded plugin, fall back to catalog entry
+                const clap_plugin_id = info.plugin_id orelse entry.id orelse "";
+
                 try devices.append(allocator, .{
                     .id = device_id,
                     .name = try allocator.dupe(u8, entry.name),
-                    .device_id = try allocator.dupe(u8, entry.id orelse ""),
+                    .device_id = try allocator.dupe(u8, clap_plugin_id),
                     .device_name = try allocator.dupe(u8, entry.name),
                     .device_role = .instrument,
                     .enabled = .{
@@ -791,8 +797,9 @@ pub fn fromFluxProject(
                         .name = "On/Off",
                         .value = true,
                     },
-                    // Note: state file would be written separately to ZIP
-                    .state = null,
+                    .state = if (info.state_path) |sp| .{
+                        .path = try allocator.dupe(u8, sp),
+                    } else null,
                 });
             }
         }
@@ -1143,6 +1150,12 @@ pub const PluginStateFile = struct {
     data: []const u8, // raw binary state
 };
 
+/// Plugin info for a track, used when building the DAWproject
+pub const TrackPluginInfo = struct {
+    plugin_id: ?[]const u8 = null, // CLAP plugin ID, e.g. "com.digital-suburban.dexed"
+    state_path: ?[]const u8 = null, // Path in ZIP, e.g. "plugins/track0.clap-preset"
+};
+
 /// Save project to a .dawproject file (ZIP archive)
 /// Structure:
 ///   myproject.dawproject (ZIP)
@@ -1157,11 +1170,12 @@ pub fn save(
     state: *const ui.State,
     catalog: *const plugins.PluginCatalog,
     plugin_states: []const PluginStateFile,
+    track_plugin_info: []const TrackPluginInfo,
 ) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const daw_project = try fromFluxProject(arena.allocator(), state, catalog);
+    const daw_project = try fromFluxProject(arena.allocator(), state, catalog, track_plugin_info);
     const xml = try toXml(arena.allocator(), &daw_project);
 
     // Debug: also write raw XML for inspection
@@ -1196,6 +1210,14 @@ pub fn save(
         "    <Comment></Comment>\n" ++
         "</MetaData>\n";
     try zip_writer.addFile("metadata.xml", metadata_xml);
+
+    const undo_xml = undo.serializeToXml(arena.allocator(), &state.undo_history) catch |err| blk: {
+        std.log.warn("Failed to serialize undo history: {}", .{err});
+        break :blk null;
+    };
+    if (undo_xml) |data| {
+        try zip_writer.addFile("flux_undo.xml", data);
+    }
 
     // Add plugin state files
     for (plugin_states) |ps| {

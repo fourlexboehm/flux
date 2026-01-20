@@ -71,6 +71,7 @@ pub fn discover(allocator: std.mem.Allocator, io: Io) !PluginCatalog {
     discoverClapEntries(allocator, io, &clap_entries) catch {};
 
     if (clap_entries.items.len > 0) {
+        std.mem.sort(PluginEntry, clap_entries.items, {}, pluginEntryLessThan);
         try appendStaticEntry(&catalog, .divider, "---- CLAP ----", null, null);
         catalog.divider_index = @intCast(catalog.entries.items.len - 1);
         try catalog.entries.appendSlice(allocator, clap_entries.items);
@@ -110,6 +111,10 @@ fn rebuildItemsZ(catalog: *PluginCatalog) !void {
 
     const items = try catalog.allocator.dupeZ(u8, buffer.items);
     catalog.items_z = items;
+}
+
+fn pluginEntryLessThan(_: void, a: PluginEntry, b: PluginEntry) bool {
+    return std.ascii.lessThanIgnoreCase(a.name, b.name);
 }
 
 fn discoverClapEntries(allocator: std.mem.Allocator, io: Io, entries: *std.ArrayListUnmanaged(PluginEntry)) !void {
