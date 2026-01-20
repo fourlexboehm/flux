@@ -1488,13 +1488,42 @@ fn capturePluginStateForDawproject(allocator: std.mem.Allocator, plugin: *const 
         return null;
     }
 
-    const data = allocator.dupe(u8, stream.buffer.items) catch return null;
+    // Build clap-preset container format:
+    // [4 bytes: "clap" magic]
+    // [4 bytes: plugin ID length (big-endian)]
+    // [N bytes: plugin ID string]
+    // [remaining: raw plugin state]
+    const plugin_id = std.mem.span(plugin.descriptor.id);
+    const plugin_id_len: u32 = @intCast(plugin_id.len);
+    const header_size = 4 + 4 + plugin_id.len;
+    const total_size = header_size + stream.buffer.items.len;
+
+    var container = allocator.alloc(u8, total_size) catch return null;
+
+    // Write magic "clap"
+    container[0] = 'c';
+    container[1] = 'l';
+    container[2] = 'a';
+    container[3] = 'p';
+
+    // Write plugin ID length (big-endian)
+    container[4] = @intCast((plugin_id_len >> 24) & 0xFF);
+    container[5] = @intCast((plugin_id_len >> 16) & 0xFF);
+    container[6] = @intCast((plugin_id_len >> 8) & 0xFF);
+    container[7] = @intCast(plugin_id_len & 0xFF);
+
+    // Write plugin ID
+    @memcpy(container[8..][0..plugin_id.len], plugin_id);
+
+    // Write raw plugin state
+    @memcpy(container[header_size..], stream.buffer.items);
+
     var path_buf: [64]u8 = undefined;
     const plugin_path = std.fmt.bufPrint(&path_buf, "plugins/track{d}.clap-preset", .{track_index}) catch return null;
 
     return .{
         .path = allocator.dupe(u8, plugin_path) catch return null,
-        .data = data,
+        .data = container,
     };
 }
 
