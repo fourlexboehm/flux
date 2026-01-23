@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const zgui = @import("zgui");
 const colors = @import("colors.zig");
 const selection = @import("selection.zig");
@@ -1005,7 +1006,22 @@ pub const SessionView = struct {
         }
 
         // Right-click context menu
-        if (in_grid and zgui.isMouseClicked(.right)) {
+        const ctrl_click = zgui.isMouseClicked(.left) and zgui.io.getKeyCtrl();
+        if (in_grid and (zgui.isMouseClicked(.right) or (builtin.os.tag == .macos and ctrl_click))) {
+            if (hover_track != null and hover_scene != null) {
+                if (hover_has_content) {
+                    if (!self.isSelected(hover_track.?, hover_scene.?)) {
+                        self.selectOnly(hover_track.?, hover_scene.?);
+                    } else {
+                        self.primary_track = hover_track.?;
+                        self.primary_scene = hover_scene.?;
+                    }
+                } else {
+                    self.clearSelection();
+                    self.primary_track = hover_track.?;
+                    self.primary_scene = hover_scene.?;
+                }
+            }
             zgui.openPopup("session_ctx", .{});
         }
 
