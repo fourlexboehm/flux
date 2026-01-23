@@ -168,13 +168,15 @@ pub const DragSelectState = struct {
 
 /// Helper to check if modifier key (Cmd/Ctrl) is pressed
 pub fn isModifierDown() bool {
-    return zgui.isKeyDown(.left_super) or zgui.isKeyDown(.right_super) or
+    return zgui.io.getKeySuper() or zgui.io.getKeyCtrl() or
+        zgui.isKeyDown(.left_super) or zgui.isKeyDown(.right_super) or
         zgui.isKeyDown(.left_ctrl) or zgui.isKeyDown(.right_ctrl);
 }
 
 /// Helper to check if shift is pressed
 pub fn isShiftDown() bool {
-    return zgui.isKeyDown(.left_shift) or zgui.isKeyDown(.right_shift);
+    return zgui.io.getKeyShift() or
+        zgui.isKeyDown(.left_shift) or zgui.isKeyDown(.right_shift);
 }
 
 /// Snap a value to a grid step

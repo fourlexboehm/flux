@@ -534,7 +534,7 @@ pub fn drawSequencer(
 
         // Arrow key handling
         if (state.drag.mode == .none and state.hasSelection()) {
-            handleArrowKeys(state, clip, shift_down, quantize_beats, min_note_duration);
+            handleArrowKeys(state, clip, shift_down, quantize_beats, min_note_duration, track_index, scene_index);
         }
     }
 
@@ -876,7 +876,15 @@ fn pasteNotes(
     }
 }
 
-fn handleArrowKeys(state: *PianoRollState, clip: *PianoRollClip, shift_down: bool, quantize_beats: f32, min_duration: f32) void {
+fn handleArrowKeys(
+    state: *PianoRollState,
+    clip: *PianoRollClip,
+    shift_down: bool,
+    quantize_beats: f32,
+    min_duration: f32,
+    track_index: usize,
+    scene_index: usize,
+) void {
     if (shift_down) {
         if (zgui.isKeyPressed(.left_arrow, true)) {
             for (state.selected_notes.keys()) |idx| {
@@ -891,6 +899,50 @@ fn handleArrowKeys(state: *PianoRollState, clip: *PianoRollClip, shift_down: boo
                 if (idx < clip.notes.items.len) {
                     const note = &clip.notes.items[idx];
                     note.duration = @min(clip.length_beats - note.start, note.duration + quantize_beats);
+                }
+            }
+        }
+        if (zgui.isKeyPressed(.up_arrow, true)) {
+            for (state.selected_notes.keys()) |idx| {
+                if (idx < clip.notes.items.len) {
+                    const note = &clip.notes.items[idx];
+                    const old_pitch = note.pitch;
+                    const new_pitch_i = @min(127, @as(i32, old_pitch) + 12);
+                    if (new_pitch_i != old_pitch) {
+                        note.pitch = @intCast(new_pitch_i);
+                        state.emitUndoRequest(.{
+                            .kind = .note_move,
+                            .track = track_index,
+                            .scene = scene_index,
+                            .note_index = idx,
+                            .old_start = note.start,
+                            .old_pitch = old_pitch,
+                            .new_start = note.start,
+                            .new_pitch = note.pitch,
+                        });
+                    }
+                }
+            }
+        }
+        if (zgui.isKeyPressed(.down_arrow, true)) {
+            for (state.selected_notes.keys()) |idx| {
+                if (idx < clip.notes.items.len) {
+                    const note = &clip.notes.items[idx];
+                    const old_pitch = note.pitch;
+                    const new_pitch_i = @max(0, @as(i32, old_pitch) - 12);
+                    if (new_pitch_i != old_pitch) {
+                        note.pitch = @intCast(new_pitch_i);
+                        state.emitUndoRequest(.{
+                            .kind = .note_move,
+                            .track = track_index,
+                            .scene = scene_index,
+                            .note_index = idx,
+                            .old_start = note.start,
+                            .old_pitch = old_pitch,
+                            .new_start = note.start,
+                            .new_pitch = note.pitch,
+                        });
+                    }
                 }
             }
         }
