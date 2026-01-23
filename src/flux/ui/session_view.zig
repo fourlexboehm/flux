@@ -142,6 +142,7 @@ pub const RecordingState = struct {
     start_beat: f32 = 0,
     target_length_beats: f32 = default_clip_bars * beats_per_bar, // 4 bars
     note_start_beats: [128]?f32 = [_]?f32{null} ** 128, // Track held notes
+    is_new_clip: bool = false,
 
     pub fn isRecording(self: *const RecordingState) bool {
         return self.track != null;
@@ -153,7 +154,13 @@ pub const RecordingState = struct {
         self.start_beat = 0;
         self.target_length_beats = default_clip_bars * beats_per_bar;
         self.note_start_beats = [_]?f32{null} ** 128;
+        self.is_new_clip = false;
     }
+};
+
+const StopRecordingMode = enum {
+    stop,
+    loop,
 };
 
 pub const SessionView = struct {
@@ -808,7 +815,7 @@ pub const SessionView = struct {
         for (0..self.track_count) |t| {
             _ = zgui.tableNextColumn();
             const is_track_selected = self.primary_track == t;
-            const text_color = if (is_track_selected) colors.Colors.text_bright else colors.Colors.text_dim;
+            const text_color = if (is_track_selected) colors.Colors.current.text_bright else colors.Colors.current.text_dim;
             zgui.pushStyleColor4f(.{ .idx = .text, .c = text_color });
 
             // Make track header clickable
@@ -828,9 +835,9 @@ pub const SessionView = struct {
 
         // Add track button in header
         _ = zgui.tableNextColumn();
-        zgui.pushStyleColor4f(.{ .idx = .button, .c = colors.Colors.bg_cell });
-        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ 0.25, 0.25, 0.25, 1.0 } });
-        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.accent_dim });
+        zgui.pushStyleColor4f(.{ .idx = .button, .c = colors.Colors.current.bg_cell });
+        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = colors.Colors.current.bg_cell_hover });
+        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.current.accent_dim });
         zgui.pushStyleVar2f(.{ .idx = .frame_padding, .v = .{ 10.0 * ui_scale, 6.0 * ui_scale } });
         if (zgui.button("+##add_track", .{})) {
             _ = self.addTrack();
@@ -844,12 +851,13 @@ pub const SessionView = struct {
 
             // Scene column
             _ = zgui.tableNextColumn();
+            const row_start_y = zgui.getCursorPosY();
             const draw_list = zgui.getWindowDrawList();
 
             // Scene launch button first (left side), vertically centered
             const launch_size = 24.0 * ui_scale;
             const vertical_padding = (row_height - launch_size) / 2.0;
-            zgui.setCursorPosY(zgui.getCursorPosY() + vertical_padding);
+            zgui.setCursorPosY(row_start_y + vertical_padding);
             const launch_pos = zgui.getCursorScreenPos();
             var launch_buf: [32]u8 = undefined;
             const launch_id = std.fmt.bufPrintZ(&launch_buf, "##scene_launch{d}", .{scene_idx}) catch "##launch";
@@ -857,9 +865,9 @@ pub const SessionView = struct {
             // Check if any clip exists in this scene
             const has_clip_in_scene = self.hasClipInScene(scene_idx);
 
-            zgui.pushStyleColor4f(.{ .idx = .button, .c = colors.Colors.bg_panel });
-            zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ 0.22, 0.22, 0.22, 1.0 } });
-            zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.accent_dim });
+            zgui.pushStyleColor4f(.{ .idx = .button, .c = colors.Colors.current.bg_panel });
+            zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = colors.Colors.current.bg_cell_hover });
+            zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.current.accent_dim });
             if (zgui.button(launch_id, .{ .w = launch_size, .h = launch_size })) {
                 if (has_clip_in_scene) {
                     self.launchScene(scene_idx, playing);
@@ -879,14 +887,14 @@ pub const SessionView = struct {
                     .p1 = .{ cx - icon_size / 2.0, cy - icon_size / 2.0 },
                     .p2 = .{ cx - icon_size / 2.0, cy + icon_size / 2.0 },
                     .p3 = .{ cx + icon_size / 2.0, cy },
-                    .col = zgui.colorConvertFloat4ToU32(colors.Colors.accent),
+                    .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.accent),
                 });
             } else {
                 // Stop square
                 draw_list.addRectFilled(.{
                     .pmin = .{ cx - icon_size / 2.0, cy - icon_size / 2.0 },
                     .pmax = .{ cx + icon_size / 2.0, cy + icon_size / 2.0 },
-                    .col = zgui.colorConvertFloat4ToU32(colors.Colors.text_dim),
+                    .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_dim),
                 });
             }
 
@@ -894,11 +902,14 @@ pub const SessionView = struct {
 
             // Scene name (clickable to select scene)
             const is_scene_selected = self.primary_scene == scene_idx;
-            const scene_text_color = if (is_scene_selected) colors.Colors.text_bright else colors.Colors.text_dim;
+            const scene_text_color = if (is_scene_selected) colors.Colors.current.text_bright else colors.Colors.current.text_dim;
             zgui.pushStyleColor4f(.{ .idx = .text, .c = scene_text_color });
 
             var scene_buf: [48]u8 = undefined;
-            const scene_label = std.fmt.bufPrintZ(&scene_buf, "{s}##scene_hdr{d}", .{ self.scenes[scene_idx].getName(), scene_idx }) catch "Scene";
+            const scene_name = self.scenes[scene_idx].getName();
+            const scene_text_size = zgui.calcTextSize(scene_name, .{});
+            zgui.setCursorPosY(row_start_y + (row_height - scene_text_size[1]) / 2.0);
+            const scene_label = std.fmt.bufPrintZ(&scene_buf, "{s}##scene_hdr{d}", .{ scene_name, scene_idx }) catch "Scene";
             if (zgui.selectable(scene_label, .{ .selected = is_scene_selected, .w = scene_col_w - launch_size - 12.0 * ui_scale })) {
                 self.primary_scene = scene_idx;
                 self.clearSelection();
@@ -924,9 +935,9 @@ pub const SessionView = struct {
         zgui.tableNextRow(.{ .min_row_height = add_btn_size + 8.0 });
         _ = zgui.tableNextColumn();
 
-        zgui.pushStyleColor4f(.{ .idx = .button, .c = colors.Colors.bg_cell });
-        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ 0.25, 0.25, 0.25, 1.0 } });
-        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.accent_dim });
+        zgui.pushStyleColor4f(.{ .idx = .button, .c = colors.Colors.current.bg_cell });
+        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = colors.Colors.current.bg_cell_hover });
+        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.current.accent_dim });
         zgui.pushStyleVar2f(.{ .idx = .frame_padding, .v = .{ 10.0 * ui_scale, 6.0 * ui_scale } });
         if (zgui.button("+##add_scene", .{})) {
             _ = self.addScene();
@@ -1061,7 +1072,7 @@ pub const SessionView = struct {
         }
 
         // Draw mixer using a table to guarantee alignment with grid
-        zgui.pushStyleColor4f(.{ .idx = .table_row_bg, .c = colors.Colors.bg_header });
+        zgui.pushStyleColor4f(.{ .idx = .table_row_bg, .c = colors.Colors.current.bg_header });
         if (zgui.beginTable("mixer_strip", .{
             .column = @intCast(self.track_count + 2),
             .flags = .{ .borders = .{ .inner_v = true }, .row_bg = true, .sizing = .fixed_fit },
@@ -1102,14 +1113,14 @@ pub const SessionView = struct {
 
         // Clip colors based on state
         const clip_color = if (is_overdub_clip)
-            colors.Colors.clip_recording // Use recording color for overdub
+            colors.Colors.current.clip_recording // Use recording color for overdub
         else switch (slot.state) {
-            .empty => colors.Colors.clip_empty,
-            .stopped => colors.Colors.clip_stopped,
-            .queued => colors.Colors.clip_queued,
-            .playing => colors.Colors.clip_playing,
-            .recording => colors.Colors.clip_recording,
-            .record_queued => colors.Colors.clip_queued,
+            .empty => colors.Colors.current.clip_empty,
+            .stopped => colors.Colors.current.clip_stopped,
+            .queued => colors.Colors.current.clip_queued,
+            .playing => colors.Colors.current.clip_playing,
+            .recording => colors.Colors.current.clip_recording,
+            .record_queued => colors.Colors.current.clip_queued,
         };
 
         // Play button dimensions
@@ -1152,7 +1163,7 @@ pub const SessionView = struct {
             draw_list.addRect(.{
                 .pmin = pos,
                 .pmax = .{ pos[0] + clip_w, pos[1] + height },
-                .col = zgui.colorConvertFloat4ToU32(colors.Colors.selected),
+                .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.selected),
                 .rounding = rounding,
                 .flags = zgui.DrawFlags.round_corners_all,
                 .thickness = 2.0,
@@ -1182,14 +1193,14 @@ pub const SessionView = struct {
                         fg_draw_list.addRectFilled(.{
                             .pmin = ghost_min,
                             .pmax = ghost_max,
-                            .col = zgui.colorConvertFloat4ToU32(.{ colors.Colors.selected[0], colors.Colors.selected[1], colors.Colors.selected[2], 0.4 }),
+                            .col = zgui.colorConvertFloat4ToU32(.{ colors.Colors.current.selected[0], colors.Colors.current.selected[1], colors.Colors.current.selected[2], 0.4 }),
                             .rounding = rounding,
                             .flags = zgui.DrawFlags.round_corners_all,
                         });
                         fg_draw_list.addRect(.{
                             .pmin = ghost_min,
                             .pmax = ghost_max,
-                            .col = zgui.colorConvertFloat4ToU32(colors.Colors.selected),
+                            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.selected),
                             .rounding = rounding,
                             .flags = zgui.DrawFlags.round_corners_all,
                             .thickness = 2.0,
@@ -1205,8 +1216,10 @@ pub const SessionView = struct {
         // Clip content indicator (bars) or recording progress
         if (slot.state == .recording) {
             // Show "REC" label for recording clips
-            const text_color = zgui.colorConvertFloat4ToU32(.{ 1.0, 1.0, 1.0, 1.0 });
-            draw_list.addText(.{ pos[0] + 8.0 * ui_scale, pos[1] + height / 2.0 - 8.0 }, text_color, "REC", .{});
+            const text_color = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright);
+            const rec_label = "REC";
+            const rec_size = zgui.calcTextSize(rec_label, .{});
+            draw_list.addText(.{ pos[0] + 8.0 * ui_scale, pos[1] + (height - rec_size[1]) / 2.0 }, text_color, rec_label, .{});
 
             // Draw progress bar at bottom of clip
             if (self.recording.track == track and self.recording.scene == scene) {
@@ -1217,24 +1230,29 @@ pub const SessionView = struct {
                 draw_list.addRectFilled(.{
                     .pmin = .{ pos[0], pos[1] + height - progress_height },
                     .pmax = .{ pos[0] + progress_width, pos[1] + height },
-                    .col = zgui.colorConvertFloat4ToU32(.{ 1.0, 0.3, 0.3, 1.0 }),
+                    .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.clip_recording),
                 });
             }
         } else if (clip_is_overdubbing) {
             // Show "OVERDUB" label when playing and recording
-            const text_color = zgui.colorConvertFloat4ToU32(.{ 1.0, 1.0, 1.0, 1.0 });
-            draw_list.addText(.{ pos[0] + 4.0 * ui_scale, pos[1] + height / 2.0 - 8.0 }, text_color, "OVERDUB", .{});
+            const text_color = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright);
+            const overdub_label = "OVERDUB";
+            const overdub_size = zgui.calcTextSize(overdub_label, .{});
+            draw_list.addText(.{ pos[0] + 4.0 * ui_scale, pos[1] + (height - overdub_size[1]) / 2.0 }, text_color, overdub_label, .{});
         } else if (slot.state == .record_queued) {
             // Show "ARMED" label for queued recording
-            const text_color = zgui.colorConvertFloat4ToU32(.{ 0.1, 0.1, 0.1, 1.0 });
-            draw_list.addText(.{ pos[0] + 8.0 * ui_scale, pos[1] + height / 2.0 - 8.0 }, text_color, "ARMED", .{});
+            const text_color = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright);
+            const armed_label = "ARMED";
+            const armed_size = zgui.calcTextSize(armed_label, .{});
+            draw_list.addText(.{ pos[0] + 8.0 * ui_scale, pos[1] + (height - armed_size[1]) / 2.0 }, text_color, armed_label, .{});
         } else if (slot.state != .empty) {
             const bars = slot.length_beats / beats_per_bar;
             var buf: [16]u8 = undefined;
             const label = std.fmt.bufPrintZ(&buf, "{d:.0} bars", .{bars}) catch "";
             // Use dark text for all non-empty clips (better contrast on colored backgrounds)
-            const text_color = zgui.colorConvertFloat4ToU32(.{ 0.1, 0.1, 0.1, 1.0 });
-            draw_list.addText(.{ pos[0] + 8.0 * ui_scale, pos[1] + height / 2.0 - 8.0 }, text_color, "{s}", .{label});
+            const text_color = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright);
+            const label_size = zgui.calcTextSize(label, .{});
+            draw_list.addText(.{ pos[0] + 8.0 * ui_scale, pos[1] + (height - label_size[1]) / 2.0 }, text_color, "{s}", .{label});
         }
 
         // Invisible button for clip interaction
@@ -1294,31 +1312,31 @@ pub const SessionView = struct {
         // For recording/record_queued/overdubbing: show recording color
         // Otherwise: normal play button style
         const play_bg = if (is_recording or is_record_queued or is_overdubbing)
-            colors.Colors.record_armed
+            colors.Colors.current.record_armed
         else if (is_playing_clip)
-            colors.Colors.clip_playing
+            colors.Colors.current.clip_playing
         else if (is_queued)
-            colors.Colors.clip_queued
+            colors.Colors.current.clip_queued
         else if (is_armed_track and (is_empty or slot.state == .stopped))
-            colors.Colors.record_armed
+            colors.Colors.current.record_armed
         else
-            colors.Colors.bg_cell;
+            colors.Colors.current.bg_cell;
 
         const hover_bg = if (is_recording or is_record_queued or is_overdubbing or (is_armed_track and (is_empty or slot.state == .stopped)))
-            colors.Colors.record_armed_hover
+            colors.Colors.current.record_armed_hover
         else
             [4]f32{ play_bg[0] + 0.08, play_bg[1] + 0.08, play_bg[2] + 0.08, 1.0 };
 
         zgui.pushStyleColor4f(.{ .idx = .button, .c = play_bg });
         zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = hover_bg });
-        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.accent_dim });
+        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.current.accent_dim });
         if (zgui.button(play_id, .{ .w = play_btn_w, .h = height })) {
             // Handle button click based on state
             if (is_recording or is_record_queued or is_overdubbing) {
                 // Click on recording/queued/overdubbing clip -> stop recording
                 self.armed_track = null;
                 if (is_recording) {
-                    self.stopRecording();
+                    self.stopRecording(.loop);
                 } else if (is_overdubbing) {
                     // Stop overdub - just clear recording state, clip keeps playing
                     self.recording.reset();
@@ -1345,28 +1363,28 @@ pub const SessionView = struct {
             draw_list.addCircleFilled(.{
                 .p = .{ cx, cy },
                 .r = icon_size / 2.0,
-                .col = zgui.colorConvertFloat4ToU32(.{ 1.0, 1.0, 1.0, 1.0 }),
-            });
+            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright),
+        });
         } else if (is_playing_clip) {
             // Stop square (for playing clip)
             draw_list.addRectFilled(.{
                 .pmin = .{ cx - icon_size / 2.0, cy - icon_size / 2.0 },
                 .pmax = .{ cx + icon_size / 2.0, cy + icon_size / 2.0 },
-                .col = zgui.colorConvertFloat4ToU32(.{ 0.1, 0.1, 0.1, 1.0 }),
-            });
+            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright),
+        });
         } else if (is_queued) {
             // Queued indicator
             draw_list.addTriangleFilled(.{
                 .p1 = .{ cx - icon_size / 2.0, cy - icon_size / 2.0 },
                 .p2 = .{ cx - icon_size / 2.0, cy + icon_size / 2.0 },
                 .p3 = .{ cx + icon_size / 2.0 + 1.0, cy },
-                .col = zgui.colorConvertFloat4ToU32(.{ 0.3, 0.18, 0.03, 1.0 }),
+                .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.clip_queued),
             });
             draw_list.addTriangle(.{
                 .p1 = .{ cx - icon_size / 2.0, cy - icon_size / 2.0 },
                 .p2 = .{ cx - icon_size / 2.0, cy + icon_size / 2.0 },
                 .p3 = .{ cx + icon_size / 2.0 + 1.0, cy },
-                .col = zgui.colorConvertFloat4ToU32(colors.Colors.clip_queued),
+                .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.clip_queued),
                 .thickness = 2.0,
             });
         } else if (is_armed_track and (is_empty or slot.state == .stopped)) {
@@ -1374,14 +1392,14 @@ pub const SessionView = struct {
             draw_list.addCircleFilled(.{
                 .p = .{ cx, cy },
                 .r = icon_size / 2.0,
-                .col = zgui.colorConvertFloat4ToU32(.{ 1.0, 1.0, 1.0, 1.0 }),
-            });
+            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright),
+        });
         } else if (is_empty) {
             // Stop square for empty slot on non-armed track
             draw_list.addRectFilled(.{
                 .pmin = .{ cx - icon_size / 2.0, cy - icon_size / 2.0 },
                 .pmax = .{ cx + icon_size / 2.0, cy + icon_size / 2.0 },
-                .col = zgui.colorConvertFloat4ToU32(colors.Colors.text_dim),
+                .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_dim),
             });
         } else {
             // Play triangle (for stopped clip with content)
@@ -1389,7 +1407,7 @@ pub const SessionView = struct {
                 .p1 = .{ cx - icon_size / 2.0, cy - icon_size / 2.0 },
                 .p2 = .{ cx - icon_size / 2.0, cy + icon_size / 2.0 },
                 .p3 = .{ cx + icon_size / 2.0 + 1.0, cy },
-                .col = zgui.colorConvertFloat4ToU32(colors.Colors.text_dim),
+                .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_dim),
             });
         }
     }
@@ -1403,23 +1421,27 @@ pub const SessionView = struct {
         const slider_width = 28.0 * ui_scale;
         const label_height = 24.0 * ui_scale;
         const slider_height = height - btn_height - spacing * 2 - label_height - 4.0 * ui_scale;
+        const frame_padding = zgui.getStyle().frame_padding;
+        const text_height = zgui.getFontSize();
+        const centered_pad_y = @max(0.0, (btn_height - text_height) / 2.0);
 
         const base_x = zgui.getCursorPosX();
         const base_y = zgui.getCursorPosY();
 
         // Row 1: M, S, R buttons side by side (fill track width)
         zgui.setCursorPosX(base_x + padding);
+        zgui.pushStyleVar2f(.{ .idx = .frame_padding, .v = .{ frame_padding[0], centered_pad_y } });
 
         // Mute button
         var mute_buf: [32]u8 = undefined;
         const mute_id = std.fmt.bufPrintZ(&mute_buf, "M##mute{d}", .{track}) catch "M";
 
-        const mute_bg = if (self.tracks[track].mute) colors.Colors.clip_stopped else colors.Colors.bg_cell;
-        const mute_text = if (self.tracks[track].mute) colors.Colors.text_bright else colors.Colors.text_dim;
+        const mute_bg = if (self.tracks[track].mute) colors.Colors.current.clip_stopped else colors.Colors.current.bg_cell;
+        const mute_text = if (self.tracks[track].mute) colors.Colors.current.text_bright else colors.Colors.current.text_dim;
 
         zgui.pushStyleColor4f(.{ .idx = .button, .c = mute_bg });
         zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ mute_bg[0] + 0.1, mute_bg[1] + 0.1, mute_bg[2] + 0.1, 1.0 } });
-        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.accent_dim });
+        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.current.accent_dim });
         zgui.pushStyleColor4f(.{ .idx = .text, .c = mute_text });
 
         if (zgui.button(mute_id, .{ .w = btn_width, .h = btn_height })) {
@@ -1433,12 +1455,12 @@ pub const SessionView = struct {
         var solo_buf: [32]u8 = undefined;
         const solo_id = std.fmt.bufPrintZ(&solo_buf, "S##solo{d}", .{track}) catch "S";
 
-        const solo_bg = if (self.tracks[track].solo) colors.Colors.clip_queued else colors.Colors.bg_cell;
-        const solo_text = if (self.tracks[track].solo) [4]f32{ 0.1, 0.1, 0.1, 1.0 } else colors.Colors.text_dim;
+        const solo_bg = if (self.tracks[track].solo) colors.Colors.current.clip_queued else colors.Colors.current.bg_cell;
+        const solo_text = if (self.tracks[track].solo) colors.Colors.current.text_bright else colors.Colors.current.text_dim;
 
         zgui.pushStyleColor4f(.{ .idx = .button, .c = solo_bg });
         zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ solo_bg[0] + 0.1, solo_bg[1] + 0.1, solo_bg[2] + 0.1, 1.0 } });
-        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.accent_dim });
+        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.current.accent_dim });
         zgui.pushStyleColor4f(.{ .idx = .text, .c = solo_text });
 
         if (zgui.button(solo_id, .{ .w = btn_width, .h = btn_height })) {
@@ -1453,30 +1475,31 @@ pub const SessionView = struct {
         const arm_id = std.fmt.bufPrintZ(&arm_buf, "R##arm{d}", .{track}) catch "R";
 
         const is_armed = self.armed_track != null and self.armed_track.? == track;
-        const arm_bg = if (is_armed) colors.Colors.record_armed else colors.Colors.bg_cell;
-        const arm_text = if (is_armed) [4]f32{ 1.0, 1.0, 1.0, 1.0 } else colors.Colors.text_dim;
+        const arm_bg = if (is_armed) colors.Colors.current.record_armed else colors.Colors.current.bg_cell;
+        const arm_text = if (is_armed) colors.Colors.current.text_bright else colors.Colors.current.text_dim;
 
         zgui.pushStyleColor4f(.{ .idx = .button, .c = arm_bg });
-        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = if (is_armed) colors.Colors.record_armed_hover else .{ arm_bg[0] + 0.1, arm_bg[1] + 0.1, arm_bg[2] + 0.1, 1.0 } });
-        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.accent_dim });
+        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = if (is_armed) colors.Colors.current.record_armed_hover else .{ arm_bg[0] + 0.1, arm_bg[1] + 0.1, arm_bg[2] + 0.1, 1.0 } });
+        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.current.accent_dim });
         zgui.pushStyleColor4f(.{ .idx = .text, .c = arm_text });
 
         if (zgui.button(arm_id, .{ .w = btn_width, .h = btn_height })) {
             if (is_armed) {
                 // Disarm - also stop any active recording
                 if (self.recording.isRecording()) {
-                    self.stopRecording();
+                    self.stopRecording(.stop);
                 }
                 self.armed_track = null;
             } else {
                 // Arm this track (disarm any other)
                 if (self.recording.isRecording()) {
-                    self.stopRecording();
+                    self.stopRecording(.stop);
                 }
                 self.armed_track = track;
             }
         }
         zgui.popStyleColor(.{ .count = 4 });
+        zgui.popStyleVar(.{ .count = 1 });
 
         // Row 2: Volume slider (centered, wider)
         zgui.setCursorPosY(base_y + btn_height + spacing);
@@ -1488,11 +1511,11 @@ pub const SessionView = struct {
         var vol_buf: [32]u8 = undefined;
         const vol_id = std.fmt.bufPrintZ(&vol_buf, "##vol{d}", .{track}) catch "##vol";
 
-        zgui.pushStyleColor4f(.{ .idx = .frame_bg, .c = colors.Colors.bg_cell });
-        zgui.pushStyleColor4f(.{ .idx = .frame_bg_hovered, .c = .{ 0.22, 0.22, 0.22, 1.0 } });
-        zgui.pushStyleColor4f(.{ .idx = .frame_bg_active, .c = .{ 0.25, 0.25, 0.25, 1.0 } });
-        zgui.pushStyleColor4f(.{ .idx = .slider_grab, .c = colors.Colors.accent });
-        zgui.pushStyleColor4f(.{ .idx = .slider_grab_active, .c = .{ 1.0, 0.6, 0.2, 1.0 } });
+        zgui.pushStyleColor4f(.{ .idx = .frame_bg, .c = colors.Colors.current.bg_cell });
+        zgui.pushStyleColor4f(.{ .idx = .frame_bg_hovered, .c = colors.Colors.current.bg_cell_hover });
+        zgui.pushStyleColor4f(.{ .idx = .frame_bg_active, .c = colors.Colors.current.bg_cell_active });
+        zgui.pushStyleColor4f(.{ .idx = .slider_grab, .c = colors.Colors.current.accent });
+        zgui.pushStyleColor4f(.{ .idx = .slider_grab_active, .c = colors.Colors.current.accent_dim });
 
         const volume_before = self.tracks[track].volume;
         _ = zgui.vsliderFloat(vol_id, .{
@@ -1540,13 +1563,13 @@ pub const SessionView = struct {
         draw_list.addRectFilled(.{
             .pmin = .{ slider_screen_pos[0] - tick_width - 2.0, zero_db_y - tick_height / 2.0 },
             .pmax = .{ slider_screen_pos[0] - 2.0, zero_db_y + tick_height / 2.0 },
-            .col = zgui.colorConvertFloat4ToU32(colors.Colors.text_bright),
+            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright),
         });
         // Right tick mark
         draw_list.addRectFilled(.{
             .pmin = .{ slider_screen_pos[0] + slider_width + 2.0, zero_db_y - tick_height / 2.0 },
             .pmax = .{ slider_screen_pos[0] + slider_width + tick_width + 2.0, zero_db_y + tick_height / 2.0 },
-            .col = zgui.colorConvertFloat4ToU32(colors.Colors.text_bright),
+            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright),
         });
 
         // Row 3: dB label (centered)
@@ -1559,13 +1582,20 @@ pub const SessionView = struct {
             -60.0;
         var label_buf: [16]u8 = undefined;
         const label = std.fmt.bufPrintZ(&label_buf, "{d:.0}dB", .{db}) catch "";
-        zgui.textColored(colors.Colors.text_dim, "{s}", .{label});
+        zgui.textColored(colors.Colors.current.text_dim, "{s}", .{label});
     }
 
     fn launchScene(self: *SessionView, scene: usize, playing: bool) void {
         if (playing) {
             // Queue all tracks
             for (0..self.track_count) |t| {
+                if (self.recording.track) |rec_track| {
+                    if (self.recording.scene) |rec_scene| {
+                        if (rec_track == t and rec_scene != scene) {
+                            self.stopRecording(.stop);
+                        }
+                    }
+                }
                 for (0..self.scene_count) |s| {
                     if (self.clips[t][s].state == .queued) {
                         self.clips[t][s].state = .stopped;
@@ -1581,6 +1611,13 @@ pub const SessionView = struct {
         } else {
             // Immediate switch and start playback
             for (0..self.track_count) |t| {
+                if (self.recording.track) |rec_track| {
+                    if (self.recording.scene) |rec_scene| {
+                        if (rec_track == t and rec_scene != scene) {
+                            self.stopRecording(.stop);
+                        }
+                    }
+                }
                 for (0..self.scene_count) |s| {
                     if (self.clips[t][s].state != .empty) {
                         self.clips[t][s].state = if (s == scene) .playing else .stopped;
@@ -1592,6 +1629,14 @@ pub const SessionView = struct {
     }
 
     fn toggleClipPlayback(self: *SessionView, track: usize, scene: usize, playing: bool) void {
+        if (self.recording.track) |rec_track| {
+            if (self.recording.scene) |rec_scene| {
+                if (rec_track == track and rec_scene != scene) {
+                    self.stopRecording(.stop);
+                }
+            }
+        }
+
         const slot = &self.clips[track][scene];
 
         self.primary_track = track;
@@ -1659,7 +1704,7 @@ pub const SessionView = struct {
     pub fn startRecording(self: *SessionView, track: usize, scene: usize, playing: bool) void {
         // If already recording somewhere else, stop it first
         if (self.recording.isRecording()) {
-            self.stopRecording();
+            self.stopRecording(.stop);
         }
 
         // Create clip if empty, set to recording state
@@ -1670,9 +1715,11 @@ pub const SessionView = struct {
             };
             // Request to clear any old notes in the piano clip (new recording, not overdub)
             self.clear_piano_clip_request = .{ .track = track, .scene = scene };
+            self.recording.is_new_clip = true;
         } else {
             // Overdub mode - don't clear existing notes
             self.clips[track][scene].state = if (playing) .record_queued else .recording;
+            self.recording.is_new_clip = false;
         }
 
         // Set up recording state
@@ -1706,14 +1753,14 @@ pub const SessionView = struct {
     }
 
     /// Stop recording and finalize the clip
-    pub fn stopRecording(self: *SessionView) void {
+    pub fn stopRecording(self: *SessionView, mode: StopRecordingMode) void {
         if (self.recording.track) |track| {
             if (self.recording.scene) |scene| {
                 // Request finalization of held notes (handled in ui.zig tick)
                 if (self.clips[track][scene].state == .recording) {
                     self.finalize_recording_track = track;
                     self.finalize_recording_scene = scene;
-                    self.clips[track][scene].state = .stopped;
+                    self.clips[track][scene].state = if (mode == .loop) .playing else .stopped;
                     // Don't reset recording state yet - tick() will handle it after finalizing notes
                     return;
                 } else if (self.clips[track][scene].state == .record_queued) {

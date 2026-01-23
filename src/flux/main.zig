@@ -19,7 +19,63 @@ const midi_input = @import("midi_input.zig");
 
 const SampleRate = 44_100;
 const Channels = 2;
-const MaxFrames = 128;
+
+const Theme = ui.Colors.Theme;
+
+fn containsInsensitive(hay: []const u8, needle: []const u8) bool {
+    if (needle.len == 0 or hay.len < needle.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= hay.len) : (i += 1) {
+        var j: usize = 0;
+        while (j < needle.len) : (j += 1) {
+            if (std.ascii.toLower(hay[i + j]) != std.ascii.toLower(needle[j])) break;
+        }
+        if (j == needle.len) return true;
+    }
+    return false;
+}
+
+fn resolveTheme() Theme {
+    if (std.c.getenv("FLUX_THEME")) |env| {
+        const value = std.mem.span(env);
+        if (std.ascii.eqlIgnoreCase(value, "light")) return .light;
+        if (std.ascii.eqlIgnoreCase(value, "dark")) return .dark;
+        if (std.ascii.eqlIgnoreCase(value, "system")) return detectSystemTheme();
+    }
+    return detectSystemTheme();
+}
+
+fn detectSystemTheme() Theme {
+    return switch (builtin.os.tag) {
+        .macos => detectMacTheme(),
+        .linux => detectLinuxTheme(),
+        else => .light,
+    };
+}
+
+fn detectMacTheme() Theme {
+    if (builtin.os.tag == .macos) {
+        const app = objc.app_kit.Application.sharedApplication();
+        const appearance = objc.objc.msgSend(app, "effectiveAppearance", ?*objc.app_kit.Appearance, .{});
+        if (appearance) |ap| {
+            const name = objc.objc.msgSend(ap, "name", *objc.foundation.String, .{});
+            const dark_name = objc.foundation.String.stringWithUTF8String("NSAppearanceNameDarkAqua");
+            if (name.isEqualToString(dark_name)) {
+                return .dark;
+            }
+        }
+    }
+    return .light;
+}
+
+fn detectLinuxTheme() Theme {
+    if (builtin.os.tag == .linux) {
+        if (std.c.getenv("GTK_THEME")) |env| {
+            if (containsInsensitive(std.mem.span(env), "dark")) return .dark;
+        }
+    }
+    return .light;
+}
 
 /// Thread-local flag set when we're in an audio processing context
 pub threadlocal var is_audio_thread: bool = false;
@@ -401,6 +457,7 @@ const PluginHandle = struct {
         host: *const clap.Host,
         plugin_path: []const u8,
         plugin_id: ?[]const u8,
+        max_frames: u32,
     ) !PluginHandle {
         const plugin_path_z = try allocator.dupeZ(u8, plugin_path);
         errdefer allocator.free(plugin_path_z);
@@ -429,7 +486,7 @@ const PluginHandle = struct {
 
         if (!plugin.init(plugin)) return error.PluginInitFailed;
 
-        if (!plugin.activate(plugin, SampleRate, 1, MaxFrames)) return error.PluginActivateFailed;
+        if (!plugin.activate(plugin, SampleRate, 1, max_frames)) return error.PluginActivateFailed;
 
         return .{
             .lib = lib,
@@ -546,11 +603,12 @@ fn dataCallback(
     is_audio_thread = true;
     defer is_audio_thread = false;
 
-    if (frame_count > MaxFrames) {
-        std.log.warn("Audio callback frame_count={} (requested {})", .{ frame_count, MaxFrames });
-    }
     const user_data = zaudio.Device.getUserData(device) orelse return;
     const engine: *audio_engine.AudioEngine = @ptrCast(@alignCast(user_data));
+    const max_frames = engine.max_frames;
+    if (frame_count > max_frames) {
+        std.log.warn("Audio callback frame_count={} (requested {})", .{ frame_count, max_frames });
+    }
     engine.render(device, output, frame_count);
 
     // Perf timing and adaptive sleep
@@ -567,6 +625,8 @@ fn dataCallback(
         // Adaptive sleep - update every callback for responsiveness
         if (engine.jobs) |jobs| {
             const usage_pct = elapsed_us * 100 / budget_us;
+            const usage_pct_clamped: u32 = @intCast(@min(usage_pct, 999));
+            engine.dsp_load_pct.store(usage_pct_clamped, .release);
             const current_sleep = jobs.dynamic_sleep_ns.load(.monotonic);
 
             // Sleep targets as fraction of buffer period
@@ -600,6 +660,59 @@ fn dataCallback(
     }
 }
 
+fn applyBufferFramesChange(
+    io: std.Io,
+    device: **zaudio.Device,
+    device_config: *zaudio.Device.Config,
+    engine: *audio_engine.AudioEngine,
+    shared: *audio_engine.SharedState,
+    track_plugins: *[ui.track_count]TrackPlugin,
+    state: *ui.State,
+    catalog: *const plugins.PluginCatalog,
+    synths: [ui.track_count]*zsynth.Plugin,
+    new_frames: u32,
+) !void {
+    if (new_frames == engine.max_frames) return;
+
+    if (device.*.isStarted()) {
+        device.*.stop() catch |err| {
+            std.log.warn("Failed to stop audio device: {}", .{err});
+        };
+    }
+    shared.waitForIdle(io);
+
+    const was_audio = is_audio_thread;
+    is_audio_thread = true;
+    defer is_audio_thread = was_audio;
+
+    const plugins_for_tracks = collectTrackPlugins(catalog, track_plugins, state, synths);
+    for (0..ui.track_count) |t| {
+        if (shared.isPluginStarted(t)) {
+            if (plugins_for_tracks[t]) |plugin| {
+                plugin.stopProcessing(plugin);
+            }
+            shared.clearPluginStarted(t);
+        }
+    }
+
+    for (0..ui.track_count) |t| {
+        if (plugins_for_tracks[t]) |plugin| {
+            plugin.deactivate(plugin);
+            if (!plugin.activate(plugin, SampleRate, 1, new_frames)) {
+                std.log.warn("Failed to activate plugin for track {d}", .{t});
+            } else {
+                shared.requestStartProcessing(t);
+            }
+        }
+    }
+
+    try engine.setMaxFrames(new_frames);
+    device_config.period_size_in_frames = new_frames;
+    device.*.destroy();
+    device.* = try zaudio.Device.create(null, device_config.*);
+    try device.*.start();
+}
+
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
@@ -625,6 +738,7 @@ pub fn main(init: std.process.Init) !void {
     defer state.deinit();
     state.plugin_items = catalog.items_z;
     state.plugin_divider_index = catalog.divider_index;
+    var buffer_frames: u32 = state.buffer_frames;
 
     // Set up host references for undo support
     host.ui_state = &state;
@@ -640,7 +754,7 @@ pub fn main(init: std.process.Init) !void {
     for (0..ui.track_count) |track_index| {
         const plugin = try zsynth.Plugin.init(allocator, &host.clap_host);
         if (!plugin.plugin.init(&plugin.plugin)) return error.PluginInitFailed;
-        if (!plugin.plugin.activate(&plugin.plugin, SampleRate, 1, MaxFrames)) {
+        if (!plugin.plugin.activate(&plugin.plugin, SampleRate, 1, buffer_frames)) {
             return error.PluginActivateFailed;
         }
         synths[track_index] = plugin;
@@ -655,7 +769,7 @@ pub fn main(init: std.process.Init) !void {
     host.synths_ptr = &synths;
     host.catalog_ptr = &catalog;
 
-    var engine = try audio_engine.AudioEngine.init(allocator, SampleRate, MaxFrames);
+    var engine = try audio_engine.AudioEngine.init(allocator, SampleRate, buffer_frames);
     defer engine.deinit();
     host.shared_state = &engine.shared;
 
@@ -680,7 +794,7 @@ pub fn main(init: std.process.Init) !void {
     device_config.playback.format = zaudio.Format.float32;
     device_config.playback.channels = Channels;
     device_config.sample_rate = SampleRate;
-    device_config.period_size_in_frames = MaxFrames;
+    device_config.period_size_in_frames = buffer_frames;
     device_config.performance_profile = .low_latency;
     device_config.periods = 2;
     device_config.data_callback = dataCallback;
@@ -696,6 +810,8 @@ pub fn main(init: std.process.Init) !void {
     zgui.plot.init();
     defer zgui.plot.deinit();
 
+    ui.Colors.setTheme(resolveTheme());
+
     var midi = midi_input.MidiInput{};
     midi.init(allocator) catch |err| {
         std.log.warn("MIDI input disabled: {}", .{err});
@@ -704,6 +820,7 @@ pub fn main(init: std.process.Init) !void {
     defer midi.deinit();
 
     var last_time = try std.time.Instant.now();
+    var dsp_last_update = last_time;
 
     std.log.info("flux running (Ctrl+C to quit)", .{});
     switch (builtin.os.tag) {
@@ -711,7 +828,7 @@ pub fn main(init: std.process.Init) !void {
             var app_window = try AppWindow.init("flux", 1280, 720);
             defer app_window.deinit();
 
-            _ = zgui.io.addFontFromMemory(zsynth.font, std.math.floor(16.0 * app_window.scale_factor));
+            _ = zgui.io.addFontFromFile("assets/Roboto-Medium.ttf", std.math.floor(16.0 * app_window.scale_factor));
             zgui.getStyle().scaleAllSizes(app_window.scale_factor);
             zgui.backend.init(app_window.view, app_window.device);
             defer zgui.backend.deinit();
@@ -731,6 +848,10 @@ pub fn main(init: std.process.Init) !void {
                 updateDeviceState(&state, &catalog, &track_plugins);
                 midi.poll();
                 state.midi_note_states = midi.note_states;
+                if (now.since(dsp_last_update) >= 250 * std.time.ns_per_ms) {
+                    state.dsp_load_pct = engine.dsp_load_pct.load(.acquire);
+                    dsp_last_update = now;
+                }
                 const wants_keyboard = zgui.io.getWantCaptureKeyboard();
                 const item_active = zgui.isAnyItemActive();
                 if ((!wants_keyboard or !item_active) and zgui.isKeyPressed(.space, false)) {
@@ -791,9 +912,33 @@ pub fn main(init: std.process.Init) !void {
                 zgui.setNextFrameWantCaptureKeyboard(true);
                 ui.updateKeyboardMidi(&state);
                 ui.draw(&state, 1.0);
+                if (state.buffer_frames_requested) {
+                    const requested_frames = state.buffer_frames;
+                    state.buffer_frames_requested = false;
+                    if (requested_frames != buffer_frames) {
+                        applyBufferFramesChange(
+                            io,
+                            &device,
+                            &device_config,
+                            &engine,
+                            &engine.shared,
+                            &track_plugins,
+                            &state,
+                            &catalog,
+                            synths,
+                            requested_frames,
+                        ) catch |err| {
+                            std.log.warn("Failed to apply buffer size {d}: {}", .{ requested_frames, err });
+                            state.buffer_frames = buffer_frames;
+                        };
+                        if (state.buffer_frames == requested_frames) {
+                            buffer_frames = requested_frames;
+                        }
+                    }
+                }
                 handleFileRequests(allocator, io, &state, &catalog, &track_plugins, &host.clap_host, &engine.shared, synths);
                 engine.updateFromUi(&state);
-                try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog, &engine.shared, io, true);
+                try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
                 zgui.backend.draw(command_buffer, command_encoder);
                 command_encoder.as(objc.metal.CommandEncoder).endEncoding();
@@ -853,7 +998,7 @@ pub fn main(init: std.process.Init) !void {
                 const parsed = std.fmt.parseFloat(f32, std.mem.span(env)) catch break :blk 1.0;
                 break :blk if (parsed > 0) parsed else 1.0;
             };
-            _ = zgui.io.addFontFromMemory(zsynth.font, std.math.floor(16.0 * ui_scale));
+            _ = zgui.io.addFontFromFile("assets/Roboto-Medium.ttf", std.math.floor(16.0 * ui_scale));
             if (ui_scale != 1.0) zgui.getStyle().scaleAllSizes(ui_scale);
 
             zgui.backend.init(window);
@@ -876,6 +1021,10 @@ pub fn main(init: std.process.Init) !void {
                 updateDeviceState(&state, &catalog, &track_plugins);
                 midi.poll();
                 state.midi_note_states = midi.note_states;
+                if (now.since(dsp_last_update) >= 250 * std.time.ns_per_ms) {
+                    state.dsp_load_pct = engine.dsp_load_pct.load(.acquire);
+                    dsp_last_update = now;
+                }
                 const wants_keyboard = zgui.io.getWantCaptureKeyboard();
                 const item_active = zgui.isAnyItemActive();
                 if ((!wants_keyboard or !item_active) and zgui.isKeyPressed(.space, false)) {
@@ -890,7 +1039,7 @@ pub fn main(init: std.process.Init) !void {
                     continue;
                 }
 
-                gl.clearBufferfv(gl.COLOR, 0, &[_]f32{ 0.08, 0.08, 0.1, 1.0 });
+                gl.clearBufferfv(gl.COLOR, 0, &ui.Colors.current.bg_dark);
                 const fb_size = window.getFramebufferSize();
                 const fb_width: u32 = @intCast(@max(fb_size[0], 1));
                 const fb_height: u32 = @intCast(@max(fb_size[1], 1));
@@ -911,9 +1060,33 @@ pub fn main(init: std.process.Init) !void {
                 zgui.setNextFrameWantCaptureKeyboard(true);
                 ui.updateKeyboardMidi(&state);
                 ui.draw(&state, 1.0);
+                if (state.buffer_frames_requested) {
+                    const requested_frames = state.buffer_frames;
+                    state.buffer_frames_requested = false;
+                    if (requested_frames != buffer_frames) {
+                        applyBufferFramesChange(
+                            io,
+                            &device,
+                            &device_config,
+                            &engine,
+                            &engine.shared,
+                            &track_plugins,
+                            &state,
+                            &catalog,
+                            synths,
+                            requested_frames,
+                        ) catch |err| {
+                            std.log.warn("Failed to apply buffer size {d}: {}", .{ requested_frames, err });
+                            state.buffer_frames = buffer_frames;
+                        };
+                        if (state.buffer_frames == requested_frames) {
+                            buffer_frames = requested_frames;
+                        }
+                    }
+                }
                 handleFileRequests(allocator, io, &state, &catalog, &track_plugins, &host.clap_host, &engine.shared, synths);
                 engine.updateFromUi(&state);
-                try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog, &engine.shared, io, true);
+                try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
                 zgui.backend.draw();
 
@@ -1030,6 +1203,7 @@ fn syncTrackPlugins(
     catalog: *const plugins.PluginCatalog,
     shared: ?*audio_engine.SharedState,
     io: std.Io,
+    max_frames: u32,
     start_processing: bool,
 ) !void {
     const prepareUnload = struct {
@@ -1071,7 +1245,7 @@ fn syncTrackPlugins(
 
         if (track.handle == null) {
             const path = entry.?.path orelse return error.PluginMissingPath;
-            track.handle = try PluginHandle.init(allocator, host, path, entry.?.id);
+            track.handle = try PluginHandle.init(allocator, host, path, entry.?.id, max_frames);
             track.gui_ext = getGuiExt(track.handle.?);
             // Request startProcessing from audio thread (CLAP requires audio thread for this call)
             if (start_processing) {
@@ -1657,7 +1831,7 @@ fn applyDawprojectToState(
     }
 
     // Sync track plugins after state update
-    try syncTrackPlugins(allocator, host, track_plugins, state, catalog, shared, io, true);
+    try syncTrackPlugins(allocator, host, track_plugins, state, catalog, shared, io, state.buffer_frames, true);
 
     // Load plugin states from dawproject
     for (0..track_count) |t| {

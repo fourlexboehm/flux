@@ -25,6 +25,8 @@ pub const beats_per_bar = ui.beats_per_bar;
 pub const default_clip_bars = ui.default_clip_bars;
 pub const total_pitches = ui.total_pitches;
 pub const quantizeIndexToBeats = ui.quantizeIndexToBeats;
+pub const buffer_frame_options = [_]u32{ 64, 128, 256, 512, 1024 };
+pub const default_buffer_frames: u32 = buffer_frame_options[1];
 
 pub const BottomMode = enum {
     device,
@@ -49,12 +51,16 @@ pub const TrackPluginUI = struct {
 };
 
 const keyboard_base_pitch: u8 = 60; // Middle C (C4)
+const buffer_items = "64\x00128\x00256\x00512\x001024\x00\x00";
 
 pub const State = struct {
     allocator: std.mem.Allocator,
     playing: bool,
     bpm: f32,
     quantize_index: i32,
+    buffer_frames: u32,
+    buffer_frames_requested: bool,
+    dsp_load_pct: u32,
     bottom_mode: BottomMode,
     bottom_panel_height: f32,
     splitter_drag_start: f32,
@@ -129,6 +135,9 @@ pub const State = struct {
             .playing = false,
             .bpm = 120.0,
             .quantize_index = 2,
+            .buffer_frames = default_buffer_frames,
+            .buffer_frames_requested = false,
+            .dsp_load_pct = 0,
             .bottom_mode = .device,
             .bottom_panel_height = 300.0,
             .splitter_drag_start = 0.0,
@@ -472,6 +481,7 @@ pub fn draw(state: *State, ui_scale: f32) void {
     zgui.setNextWindowPos(.{ .x = 0, .y = 0, .cond = .always });
     zgui.setNextWindowSize(.{ .w = display[0], .h = display[1], .cond = .always });
 
+    applyMinimalStyle(ui_scale);
     pushAbletonStyle();
     defer popAbletonStyle();
 
@@ -524,11 +534,11 @@ pub fn draw(state: *State, ui_scale: f32) void {
         }
 
         const splitter_color = if (is_active)
-            Colors.accent
+            Colors.current.accent
         else if (is_hovered)
-            Colors.accent_dim
+            Colors.current.accent_dim
         else
-            Colors.border;
+            Colors.current.border;
         draw_list.addRectFilled(.{
             .pmin = splitter_pos,
             .pmax = .{ splitter_pos[0] + avail_w, splitter_pos[1] + splitter_h },
@@ -569,37 +579,57 @@ pub fn draw(state: *State, ui_scale: f32) void {
 }
 
 fn pushAbletonStyle() void {
-    zgui.pushStyleColor4f(.{ .idx = .window_bg, .c = Colors.bg_dark });
-    zgui.pushStyleColor4f(.{ .idx = .child_bg, .c = Colors.bg_panel });
-    zgui.pushStyleColor4f(.{ .idx = .popup_bg, .c = Colors.bg_panel });
-    zgui.pushStyleColor4f(.{ .idx = .frame_bg, .c = Colors.bg_cell });
-    zgui.pushStyleColor4f(.{ .idx = .frame_bg_hovered, .c = .{ 0.22, 0.22, 0.22, 1.0 } });
-    zgui.pushStyleColor4f(.{ .idx = .frame_bg_active, .c = .{ 0.25, 0.25, 0.25, 1.0 } });
-    zgui.pushStyleColor4f(.{ .idx = .header, .c = Colors.bg_header });
-    zgui.pushStyleColor4f(.{ .idx = .header_hovered, .c = .{ 0.18, 0.18, 0.18, 1.0 } });
-    zgui.pushStyleColor4f(.{ .idx = .header_active, .c = Colors.accent_dim });
-    zgui.pushStyleColor4f(.{ .idx = .button, .c = Colors.bg_cell });
-    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ 0.25, 0.25, 0.25, 1.0 } });
-    zgui.pushStyleColor4f(.{ .idx = .button_active, .c = Colors.accent_dim });
-    zgui.pushStyleColor4f(.{ .idx = .slider_grab, .c = Colors.accent });
-    zgui.pushStyleColor4f(.{ .idx = .slider_grab_active, .c = Colors.accent });
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_bright });
-    zgui.pushStyleColor4f(.{ .idx = .text_disabled, .c = Colors.text_dim });
-    zgui.pushStyleColor4f(.{ .idx = .border, .c = Colors.border });
-    zgui.pushStyleColor4f(.{ .idx = .separator, .c = Colors.border });
-    zgui.pushStyleColor4f(.{ .idx = .table_header_bg, .c = Colors.bg_header });
-    zgui.pushStyleColor4f(.{ .idx = .table_row_bg, .c = Colors.bg_panel });
-    zgui.pushStyleColor4f(.{ .idx = .table_row_bg_alt, .c = Colors.bg_dark });
-    zgui.pushStyleColor4f(.{ .idx = .table_border_strong, .c = Colors.border });
-    zgui.pushStyleColor4f(.{ .idx = .table_border_light, .c = .{ 0.20, 0.20, 0.20, 1.0 } });
-    zgui.pushStyleColor4f(.{ .idx = .scrollbar_bg, .c = Colors.bg_dark });
-    zgui.pushStyleColor4f(.{ .idx = .scrollbar_grab, .c = .{ 0.30, 0.30, 0.30, 1.0 } });
-    zgui.pushStyleColor4f(.{ .idx = .scrollbar_grab_hovered, .c = .{ 0.40, 0.40, 0.40, 1.0 } });
-    zgui.pushStyleColor4f(.{ .idx = .scrollbar_grab_active, .c = Colors.accent_dim });
+    zgui.pushStyleColor4f(.{ .idx = .window_bg, .c = Colors.current.bg_dark });
+    zgui.pushStyleColor4f(.{ .idx = .child_bg, .c = Colors.current.bg_panel });
+    zgui.pushStyleColor4f(.{ .idx = .popup_bg, .c = Colors.current.bg_panel });
+    zgui.pushStyleColor4f(.{ .idx = .frame_bg, .c = Colors.current.bg_cell });
+    zgui.pushStyleColor4f(.{ .idx = .frame_bg_hovered, .c = Colors.current.bg_cell_hover });
+    zgui.pushStyleColor4f(.{ .idx = .frame_bg_active, .c = Colors.current.bg_cell_active });
+    zgui.pushStyleColor4f(.{ .idx = .header, .c = Colors.current.bg_header });
+    zgui.pushStyleColor4f(.{ .idx = .header_hovered, .c = Colors.current.bg_cell_hover });
+    zgui.pushStyleColor4f(.{ .idx = .header_active, .c = Colors.current.accent_dim });
+    zgui.pushStyleColor4f(.{ .idx = .button, .c = Colors.current.bg_cell });
+    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = Colors.current.bg_cell_hover });
+    zgui.pushStyleColor4f(.{ .idx = .button_active, .c = Colors.current.accent_dim });
+    zgui.pushStyleColor4f(.{ .idx = .slider_grab, .c = Colors.current.accent });
+    zgui.pushStyleColor4f(.{ .idx = .slider_grab_active, .c = Colors.current.accent });
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_bright });
+    zgui.pushStyleColor4f(.{ .idx = .text_disabled, .c = Colors.current.text_dim });
+    zgui.pushStyleColor4f(.{ .idx = .border, .c = Colors.current.border });
+    zgui.pushStyleColor4f(.{ .idx = .separator, .c = Colors.current.border });
+    zgui.pushStyleColor4f(.{ .idx = .table_header_bg, .c = Colors.current.bg_header });
+    zgui.pushStyleColor4f(.{ .idx = .table_row_bg, .c = Colors.current.bg_panel });
+    zgui.pushStyleColor4f(.{ .idx = .table_row_bg_alt, .c = Colors.current.bg_dark });
+    zgui.pushStyleColor4f(.{ .idx = .table_border_strong, .c = Colors.current.border });
+    zgui.pushStyleColor4f(.{ .idx = .table_border_light, .c = Colors.current.border_light });
+    zgui.pushStyleColor4f(.{ .idx = .scrollbar_bg, .c = Colors.current.bg_dark });
+    zgui.pushStyleColor4f(.{ .idx = .scrollbar_grab, .c = Colors.current.bg_cell_active });
+    zgui.pushStyleColor4f(.{ .idx = .scrollbar_grab_hovered, .c = Colors.current.bg_cell_hover });
+    zgui.pushStyleColor4f(.{ .idx = .scrollbar_grab_active, .c = Colors.current.accent_dim });
 }
 
 fn popAbletonStyle() void {
     zgui.popStyleColor(.{ .count = 27 });
+}
+
+fn applyMinimalStyle(ui_scale: f32) void {
+    const style = zgui.getStyle();
+    const scale = if (ui_scale > 0) ui_scale else 1.0;
+    style.window_rounding = 6.0 * scale;
+    style.child_rounding = 6.0 * scale;
+    style.popup_rounding = 6.0 * scale;
+    style.frame_rounding = 6.0 * scale;
+    style.scrollbar_rounding = 6.0 * scale;
+    style.grab_rounding = 6.0 * scale;
+    style.tab_rounding = 6.0 * scale;
+    style.window_border_size = 1.0 * scale;
+    style.child_border_size = 1.0 * scale;
+    style.popup_border_size = 1.0 * scale;
+    style.frame_border_size = 1.0 * scale;
+    style.item_spacing = .{ 10.0 * scale, 8.0 * scale };
+    style.frame_padding = .{ 10.0 * scale, 6.0 * scale };
+    style.window_padding = .{ 12.0 * scale, 12.0 * scale };
+    style.cell_padding = .{ 8.0 * scale, 6.0 * scale };
 }
 
 pub fn tick(state: *State, dt: f64) void {
@@ -667,7 +697,7 @@ pub fn tick(state: *State, dt: f64) void {
     }
 
     // Determine loop length (use recording clip if recording, otherwise current clip)
-    const loop_length = if (state.session.recording.track) |t|
+    var loop_length = if (state.session.recording.track) |t|
         if (state.session.recording.scene) |s|
             state.session.clips[t][s].length_beats
         else
@@ -676,7 +706,25 @@ pub fn tick(state: *State, dt: f64) void {
         state.currentClip().length_beats;
 
     // Check if playhead is about to loop
-    const will_loop = state.playhead_beat >= loop_length;
+    var will_loop = state.playhead_beat >= loop_length;
+
+    // Grow new recording clips instead of looping at the default length.
+    if (will_loop) {
+        if (state.session.recording.track) |track| {
+            if (state.session.recording.scene) |scene| {
+                if (state.session.recording.is_new_clip and state.session.clips[track][scene].state == .recording) {
+                    const extend_beats = default_clip_bars * beats_per_bar;
+                    while (state.playhead_beat >= loop_length) {
+                        loop_length += extend_beats;
+                    }
+                    state.session.clips[track][scene].length_beats = loop_length;
+                    state.piano_clips[track][scene].length_beats = loop_length;
+                    state.session.recording.target_length_beats = loop_length;
+                    will_loop = false;
+                }
+            }
+        }
+    }
 
     // Process MIDI recording (before loop so we can finalize held notes at loop point)
     if (state.session.isActivelyRecording()) {
@@ -704,7 +752,7 @@ pub fn tick(state: *State, dt: f64) void {
             if (state.session.recording.scene) |scene| {
                 // Transition from recording to playing (overdub mode)
                 // This allows the clip to play back recorded notes while continuing to record
-                if (state.session.clips[track][scene].state == .recording) {
+                if (state.session.clips[track][scene].state == .recording and !state.session.recording.is_new_clip) {
                     state.session.clips[track][scene].state = .playing;
                 }
 
@@ -901,16 +949,16 @@ fn drawTransport(state: *State, ui_scale: f32) void {
     draw_list.addRectFilled(.{
         .pmin = .{ pos[0], pos[1] },
         .pmax = .{ pos[0] + avail_w, pos[1] + transport_h },
-        .col = zgui.colorConvertFloat4ToU32(Colors.bg_header),
+        .col = zgui.colorConvertFloat4ToU32(Colors.current.bg_header),
     });
 
     zgui.setCursorPosY(zgui.getCursorPosY() + 6.0 * ui_scale);
     zgui.setCursorPosX(zgui.getCursorPosX() + 8.0 * ui_scale);
 
-    const play_color = if (state.playing) Colors.transport_play else Colors.text_dim;
-    zgui.pushStyleColor4f(.{ .idx = .button, .c = Colors.bg_header });
-    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ 0.20, 0.20, 0.20, 1.0 } });
-    zgui.pushStyleColor4f(.{ .idx = .button_active, .c = .{ 0.25, 0.25, 0.25, 1.0 } });
+    const play_color = if (state.playing) Colors.current.transport_play else Colors.current.text_dim;
+    zgui.pushStyleColor4f(.{ .idx = .button, .c = Colors.current.bg_header });
+    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = Colors.current.bg_cell_hover });
+    zgui.pushStyleColor4f(.{ .idx = .button_active, .c = Colors.current.bg_cell_active });
     defer zgui.popStyleColor(.{ .count = 3 });
 
     const btn_pos = zgui.getCursorScreenPos();
@@ -942,7 +990,7 @@ fn drawTransport(state: *State, ui_scale: f32) void {
 
     zgui.sameLine(.{ .spacing = spacing });
 
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
     zgui.textUnformatted("BPM");
     zgui.popStyleColor(.{ .count = 1 });
     zgui.sameLine(.{ .spacing = 6.0 * ui_scale });
@@ -976,7 +1024,7 @@ fn drawTransport(state: *State, ui_scale: f32) void {
 
     zgui.sameLine(.{ .spacing = spacing });
 
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
     zgui.textUnformatted("Quantize");
     zgui.popStyleColor(.{ .count = 1 });
     zgui.sameLine(.{ .spacing = 6.0 * ui_scale });
@@ -1000,6 +1048,36 @@ fn drawTransport(state: *State, ui_scale: f32) void {
         });
         state.quantize_last = state.quantize_index;
     }
+
+    zgui.sameLine(.{ .spacing = spacing });
+
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
+    zgui.textUnformatted("Buffer");
+    zgui.popStyleColor(.{ .count = 1 });
+    zgui.sameLine(.{ .spacing = 6.0 * ui_scale });
+    var buffer_index: i32 = 0;
+    for (buffer_frame_options, 0..) |frames, idx| {
+        if (state.buffer_frames == frames) {
+            buffer_index = @intCast(idx);
+            break;
+        }
+    }
+    zgui.setNextItemWidth(80.0 * ui_scale);
+    if (zgui.combo("##transport_buffer", .{
+        .current_item = &buffer_index,
+        .items_separated_by_zeros = buffer_items,
+    })) {
+        const new_frames = buffer_frame_options[@intCast(buffer_index)];
+        if (new_frames != state.buffer_frames) {
+            state.buffer_frames = new_frames;
+            state.buffer_frames_requested = true;
+        }
+    }
+
+    zgui.sameLine(.{ .spacing = 10.0 * ui_scale });
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
+    zgui.text("DSP {d}%", .{state.dsp_load_pct});
+    zgui.popStyleColor(.{ .count = 1 });
 
     // Load/Save buttons (right-aligned, centered vertically)
     zgui.sameLine(.{ .spacing = spacing * 2.0 });
@@ -1459,10 +1537,10 @@ fn insertSceneInState(state: *State, cmd: *const undo.command.SceneDeleteCmd) vo
 fn drawBottomPanel(state: *State, ui_scale: f32) void {
     // Device tab
     const device_active = state.bottom_mode == .device;
-    const device_color = if (device_active) Colors.accent else Colors.bg_header;
+    const device_color = if (device_active) Colors.current.accent else Colors.current.bg_header;
     zgui.pushStyleColor4f(.{ .idx = .button, .c = device_color });
-    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = if (device_active) Colors.accent else .{ 0.20, 0.20, 0.20, 1.0 } });
-    zgui.pushStyleColor4f(.{ .idx = .button_active, .c = Colors.accent_dim });
+    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = if (device_active) Colors.current.accent else Colors.current.bg_cell_hover });
+    zgui.pushStyleColor4f(.{ .idx = .button_active, .c = Colors.current.accent_dim });
     if (zgui.button("Device", .{})) {
         state.bottom_mode = .device;
     }
@@ -1472,17 +1550,17 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
 
     // Clip tab
     const seq_active = state.bottom_mode == .sequencer;
-    const seq_color = if (seq_active) Colors.accent else Colors.bg_header;
+    const seq_color = if (seq_active) Colors.current.accent else Colors.current.bg_header;
     zgui.pushStyleColor4f(.{ .idx = .button, .c = seq_color });
-    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = if (seq_active) Colors.accent else .{ 0.20, 0.20, 0.20, 1.0 } });
-    zgui.pushStyleColor4f(.{ .idx = .button_active, .c = Colors.accent_dim });
+    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = if (seq_active) Colors.current.accent else Colors.current.bg_cell_hover });
+    zgui.pushStyleColor4f(.{ .idx = .button_active, .c = Colors.current.accent_dim });
     if (zgui.button("Clip", .{})) {
         state.bottom_mode = .sequencer;
     }
     zgui.popStyleColor(.{ .count = 3 });
 
     zgui.sameLine(.{});
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
     var track_buf: [64]u8 = undefined;
     const track_info = std.fmt.bufPrintZ(&track_buf, "  Track {d} / Scene {d}", .{ state.selectedTrack() + 1, state.selectedScene() + 1 }) catch "";
     zgui.textUnformatted(track_info);
@@ -1499,7 +1577,7 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
             const clip_slot = state.session.clips[state.selectedTrack()][state.selectedScene()];
             if (clip_slot.state == .empty) {
                 zgui.spacing();
-                zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
+                zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
                 zgui.textUnformatted("No clip. Double-click in session view to create one.");
                 zgui.popStyleColor(.{ .count = 1 });
             } else {
@@ -1523,7 +1601,7 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
 
 fn drawDevicePanel(state: *State, ui_scale: f32) void {
     // Track device selector
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
     zgui.textUnformatted("Device:");
     zgui.popStyleColor(.{ .count = 1 });
 
@@ -1566,7 +1644,7 @@ fn drawDevicePanel(state: *State, ui_scale: f32) void {
 
 fn drawNoDevice() void {
     zgui.spacing();
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_dim });
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
     zgui.textUnformatted("No device loaded. Select a plugin from the track header.");
     zgui.popStyleColor(.{ .count = 1 });
 }
@@ -1577,7 +1655,7 @@ fn drawClapDevice(state: *State, ui_scale: f32) void {
         return;
     };
 
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.text_bright });
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_bright });
     zgui.text("CLAP: {s}", .{state.device_clap_name});
     zgui.popStyleColor(.{ .count = 1 });
 

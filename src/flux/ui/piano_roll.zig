@@ -227,12 +227,12 @@ pub fn drawSequencer(
     const mouse_down = zgui.isMouseDown(.left);
 
     // Header
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = colors.Colors.text_bright });
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = colors.Colors.current.text_bright });
     zgui.text("{s}", .{clip_label});
     zgui.popStyleColor(.{ .count = 1 });
 
     zgui.sameLine(.{ .spacing = 20.0 * ui_scale });
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = colors.Colors.text_dim });
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = colors.Colors.current.text_dim });
     zgui.text("{d:.0} bars", .{clip.length_beats / beats_per_bar});
     zgui.popStyleColor(.{ .count = 1 });
 
@@ -292,11 +292,13 @@ pub fn drawSequencer(
 
         const note_in_octave = pitch % 12;
         const row_color = if (is_black_key[note_in_octave])
-            zgui.colorConvertFloat4ToU32(.{ 0.10, 0.10, 0.10, 1.0 })
+            zgui.colorConvertFloat4ToU32(colors.Colors.current.grid_row_black)
         else if (note_in_octave == 0)
-            zgui.colorConvertFloat4ToU32(.{ 0.18, 0.18, 0.18, 1.0 })
+            zgui.colorConvertFloat4ToU32(colors.Colors.current.grid_row_root)
+        else if (@mod(row, 2) == 0)
+            zgui.colorConvertFloat4ToU32(colors.Colors.current.grid_row_light)
         else
-            zgui.colorConvertFloat4ToU32(.{ 0.14, 0.14, 0.14, 1.0 });
+            zgui.colorConvertFloat4ToU32(colors.Colors.current.grid_row_dark);
 
         draw_list.addRectFilled(.{
             .pmin = .{ grid_window_pos[0], y },
@@ -305,9 +307,9 @@ pub fn drawSequencer(
         });
 
         const line_col = if (note_in_octave == 0)
-            zgui.colorConvertFloat4ToU32(.{ 0.30, 0.30, 0.30, 1.0 })
+            zgui.colorConvertFloat4ToU32(colors.Colors.current.grid_line_beat)
         else
-            zgui.colorConvertFloat4ToU32(.{ 0.20, 0.20, 0.20, 1.0 });
+            zgui.colorConvertFloat4ToU32(colors.Colors.current.grid_line_16th);
         draw_list.addLine(.{
             .p1 = .{ grid_window_pos[0], y + row_height },
             .p2 = .{ grid_window_pos[0] + content_width, y + row_height },
@@ -326,13 +328,13 @@ pub fn drawSequencer(
         const is_8th = @mod(beat_16th, 2) == 0;
 
         const line_color = if (is_bar)
-            zgui.colorConvertFloat4ToU32(.{ 0.45, 0.45, 0.45, 1.0 })
+            zgui.colorConvertFloat4ToU32(colors.Colors.current.grid_line_bar)
         else if (is_beat)
-            zgui.colorConvertFloat4ToU32(.{ 0.32, 0.32, 0.32, 1.0 })
+            zgui.colorConvertFloat4ToU32(colors.Colors.current.grid_line_beat)
         else if (is_8th)
-            zgui.colorConvertFloat4ToU32(.{ 0.24, 0.24, 0.24, 1.0 })
+            zgui.colorConvertFloat4ToU32(colors.Colors.current.grid_line_8th)
         else
-            zgui.colorConvertFloat4ToU32(.{ 0.18, 0.18, 0.18, 1.0 });
+            zgui.colorConvertFloat4ToU32(colors.Colors.current.grid_line_16th);
 
         draw_list.addLine(.{
             .p1 = .{ x, grid_window_pos[1] },
@@ -367,14 +369,14 @@ pub fn drawSequencer(
             draw_list.addRectFilled(.{
                 .pmin = .{ clip_end_x, grid_window_pos[1] },
                 .pmax = .{ grid_window_pos[0] + grid_view_width, grid_window_pos[1] + grid_view_height },
-                .col = zgui.colorConvertFloat4ToU32(.{ 0.0, 0.0, 0.0, 0.4 }),
+                .col = zgui.colorConvertFloat4ToU32(.{ colors.Colors.current.border[0], colors.Colors.current.border[1], colors.Colors.current.border[2], 0.35 }),
             });
         }
 
         const end_color = if (clip_end_hovered or state.drag.mode == .resize_clip)
-            colors.Colors.accent
+            colors.Colors.current.accent
         else
-            colors.Colors.accent_dim;
+            colors.Colors.current.accent_dim;
         draw_list.addLine(.{
             .p1 = .{ clip_end_x, grid_window_pos[1] },
             .p2 = .{ clip_end_x, grid_window_pos[1] + grid_view_height },
@@ -397,7 +399,7 @@ pub fn drawSequencer(
             draw_list.addLine(.{
                 .p1 = .{ playhead_x, grid_window_pos[1] },
                 .p2 = .{ playhead_x, grid_window_pos[1] + grid_view_height },
-                .col = zgui.colorConvertFloat4ToU32(colors.Colors.accent),
+                .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.accent),
                 .thickness = 2.0,
             });
         }
@@ -420,7 +422,7 @@ pub fn drawSequencer(
 
         const is_selected = state.isNoteSelected(note_idx);
 
-        const note_color = if (is_selected) colors.Colors.note_selected else colors.Colors.note_color;
+        const note_color = if (is_selected) colors.Colors.current.note_selected else colors.Colors.current.note_color;
         draw_list.addRectFilled(.{
             .pmin = .{ note_x + 1, note_y + 1 },
             .pmax = .{ note_x + note_w - 1, note_y + row_height - 1 },
@@ -432,7 +434,7 @@ pub fn drawSequencer(
             draw_list.addRect(.{
                 .pmin = .{ note_x, note_y },
                 .pmax = .{ note_x + note_w, note_y + row_height },
-                .col = zgui.colorConvertFloat4ToU32(.{ 1.0, 1.0, 1.0, 0.8 }),
+                .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.note_border),
                 .rounding = 3.0,
                 .thickness = 2.0,
             });
@@ -440,7 +442,7 @@ pub fn drawSequencer(
 
         // Resize handle
         const handle_x = note_x + note_w - resize_handle_width;
-        const handle_color = if (is_selected) [4]f32{ 0.45, 0.75, 0.55, 1.0 } else [4]f32{ 0.28, 0.58, 0.38, 1.0 };
+        const handle_color = if (is_selected) colors.Colors.current.note_handle_selected else colors.Colors.current.note_handle;
         draw_list.addRectFilled(.{
             .pmin = .{ @max(note_x + 1, handle_x), note_y + 1 },
             .pmax = .{ note_x + note_w - 1, note_y + row_height - 1 },
@@ -724,7 +726,7 @@ pub fn drawSequencer(
     draw_list.addRectFilled(.{
         .pmin = .{ base_pos[0], base_pos[1] },
         .pmax = .{ base_pos[0] + key_width, base_pos[1] + ruler_height },
-        .col = zgui.colorConvertFloat4ToU32(colors.Colors.bg_dark),
+        .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.bg_header),
     });
 
     zgui.dummy(.{ .w = total_width, .h = total_height });
@@ -753,11 +755,11 @@ fn drawScrollZoomBar(state: *PianoRollState, pixels_per_beat: f32, key_width: f3
 
     const draw_list = zgui.getWindowDrawList();
     const bar_color = if (bar_active)
-        zgui.colorConvertFloat4ToU32(.{ 0.4, 0.4, 0.5, 1.0 })
+        zgui.colorConvertFloat4ToU32(colors.Colors.current.bg_cell_active)
     else if (bar_hovered)
-        zgui.colorConvertFloat4ToU32(.{ 0.35, 0.35, 0.4, 1.0 })
+        zgui.colorConvertFloat4ToU32(colors.Colors.current.bg_cell_hover)
     else
-        zgui.colorConvertFloat4ToU32(.{ 0.25, 0.25, 0.3, 1.0 });
+        zgui.colorConvertFloat4ToU32(colors.Colors.current.bg_cell);
 
     draw_list.addRectFilled(.{
         .pmin = bar_pos,
@@ -784,12 +786,12 @@ fn drawScrollZoomBar(state: *PianoRollState, pixels_per_beat: f32, key_width: f3
     draw_list.addRectFilled(.{
         .pmin = .{ thumb_x, bar_pos[1] + 2 },
         .pmax = .{ thumb_x + thumb_width, bar_pos[1] + scrollbar_height - 2 },
-        .col = zgui.colorConvertFloat4ToU32(colors.Colors.accent),
+        .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.accent),
         .rounding = 3.0,
     });
 
     zgui.sameLine(.{ .spacing = 10.0 * ui_scale });
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = colors.Colors.text_dim });
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = colors.Colors.current.text_dim });
     const zoom_pct = (1.0 - state.beats_per_pixel) / (1.0 - 0.005) * 100;
     zgui.text("{d:.0}%", .{zoom_pct});
     zgui.popStyleColor(.{ .count = 1 });
@@ -1039,12 +1041,12 @@ fn drawSelectionRect(
         draw_list.addRectFilled(.{
             .pmin = .{ clipped_x1, clipped_y1 },
             .pmax = .{ clipped_x2, clipped_y2 },
-            .col = zgui.colorConvertFloat4ToU32(colors.Colors.selection_rect),
+            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.selection_rect),
         });
         draw_list.addRect(.{
             .pmin = .{ clipped_x1, clipped_y1 },
             .pmax = .{ clipped_x2, clipped_y2 },
-            .col = zgui.colorConvertFloat4ToU32(colors.Colors.selection_rect_border),
+            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.selection_rect_border),
             .thickness = 1.0,
         });
     }
@@ -1123,7 +1125,7 @@ fn drawRuler(
     draw_list.addRectFilled(.{
         .pmin = .{ x, y },
         .pmax = .{ x + width, y + height },
-        .col = zgui.colorConvertFloat4ToU32(colors.Colors.bg_header),
+        .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.bg_header),
     });
 
     draw_list.pushClipRect(.{
@@ -1144,7 +1146,7 @@ fn drawRuler(
             const label = std.fmt.bufPrintZ(&buf, "{d}", .{bar_num}) catch "";
             draw_list.addTextExtended(
                 .{ bx + 4, label_y },
-                zgui.colorConvertFloat4ToU32(colors.Colors.text_bright),
+                zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright),
                 "{s}",
                 .{label},
                 .{ .font = null, .font_size = label_font_size },
@@ -1155,7 +1157,7 @@ fn drawRuler(
         draw_list.addLine(.{
             .p1 = .{ bx, y + height - tick_height },
             .p2 = .{ bx, y + height },
-            .col = zgui.colorConvertFloat4ToU32(if (is_bar) colors.Colors.text_dim else .{ 0.3, 0.3, 0.3, 1.0 }),
+            .col = zgui.colorConvertFloat4ToU32(if (is_bar) colors.Colors.current.ruler_tick else colors.Colors.current.text_soft),
             .thickness = if (is_bar) 1.5 else 1.0,
         });
     }
@@ -1182,7 +1184,7 @@ fn drawPianoKeys(
     draw_list.addRectFilled(.{
         .pmin = .{ x, y },
         .pmax = .{ x + width, y + height },
-        .col = zgui.colorConvertFloat4ToU32(colors.Colors.bg_dark),
+        .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.bg_panel),
     });
 
     draw_list.pushClipRect(.{
@@ -1205,9 +1207,9 @@ fn drawPianoKeys(
 
         const is_black = is_black_key[note_in_octave];
         const key_color = if (is_black)
-            zgui.colorConvertFloat4ToU32(.{ 0.08, 0.08, 0.08, 1.0 })
+            zgui.colorConvertFloat4ToU32(colors.Colors.current.piano_key_black)
         else
-            zgui.colorConvertFloat4ToU32(.{ 0.20, 0.20, 0.20, 1.0 });
+            zgui.colorConvertFloat4ToU32(colors.Colors.current.piano_key_white);
 
         draw_list.addRectFilled(.{
             .pmin = .{ x, ky },
@@ -1221,7 +1223,7 @@ fn drawPianoKeys(
             const text_y = ky + (row_height - label_font_size) / 2.0;
             draw_list.addTextExtended(
                 .{ x + 6, text_y },
-                zgui.colorConvertFloat4ToU32(colors.Colors.text_bright),
+                zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright),
                 "{s}",
                 .{label},
                 .{ .font = null, .font_size = label_font_size },
