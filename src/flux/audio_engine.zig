@@ -129,6 +129,7 @@ pub const AudioEngine = struct {
     max_frames: u32,
     track_count: usize,
     rebuilding: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    dsp_load_pct: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     jobs: ?*audio_graph.JobQueue = null,
 
     pub fn init(
@@ -156,11 +157,17 @@ pub const AudioEngine = struct {
 
     pub fn updateFromUi(self: *AudioEngine, state: *const ui.State) void {
         if (state.session.track_count != self.track_count) {
-            self.rebuildGraph(state.session.track_count) catch |err| {
+            self.rebuildGraph(state.session.track_count, false) catch |err| {
                 std.log.warn("Failed to rebuild graph: {}", .{err});
             };
         }
         self.shared.updateFromUi(state);
+    }
+
+    pub fn setMaxFrames(self: *AudioEngine, max_frames: u32) !void {
+        if (max_frames == self.max_frames) return;
+        self.max_frames = max_frames;
+        try self.rebuildGraph(self.track_count, true);
     }
 
     pub fn updatePlugins(self: *AudioEngine, plugins: [ui.track_count]?*const clap.Plugin) void {
@@ -199,8 +206,8 @@ pub const AudioEngine = struct {
         _ = device;
     }
 
-    fn rebuildGraph(self: *AudioEngine, track_count: usize) !void {
-        if (track_count == self.track_count) return;
+    fn rebuildGraph(self: *AudioEngine, track_count: usize, force: bool) !void {
+        if (!force and track_count == self.track_count) return;
         self.rebuilding.store(1, .release);
         while (self.shared.processing.load(.acquire) != 0) {
             std.atomic.spinLoopHint();

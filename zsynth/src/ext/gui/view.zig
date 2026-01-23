@@ -327,7 +327,23 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
                 Undo.changeMade(value_text);
             }
         },
-        .FilterEnable, .ScaleVoices, .DebugBool1, .DebugBool2 => {
+        .FilterEnable => {
+            var val: bool = plugin.params.get(param_type).Bool;
+            if (zgui.checkbox(value_text, .{
+                .v = &val,
+            })) {
+                // Instant change: begin + complete immediately
+                Undo.beginChange();
+                plugin.params.set(param_type, .{ .Bool = val }, .{
+                    .should_notify_host = options.notify_host,
+                }) catch return;
+                if (!options.notify_host) {
+                    plugin.applyParamChanges(false);
+                }
+                Undo.changeMade(value_text);
+            }
+        },
+        .ScaleVoices, .DebugBool1, .DebugBool2 => {
             if (builtin.mode == .Debug) {
                 var val: bool = plugin.params.get(param_type).Bool;
                 if (zgui.checkbox(value_text, .{

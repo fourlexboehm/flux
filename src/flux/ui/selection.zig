@@ -147,12 +147,12 @@ pub const DragSelectState = struct {
 
         const rect = self.getRect();
         const fill_color = zgui.colorConvertFloat4ToU32(.{
-            colors.Colors.selected[0],
-            colors.Colors.selected[1],
-            colors.Colors.selected[2],
+            colors.Colors.current.selected[0],
+            colors.Colors.current.selected[1],
+            colors.Colors.current.selected[2],
             0.2,
         });
-        const border_color = zgui.colorConvertFloat4ToU32(colors.Colors.selected);
+        const border_color = zgui.colorConvertFloat4ToU32(colors.Colors.current.selected);
 
         draw_list.addRectFilled(.{ .pmin = rect.min, .pmax = rect.max, .col = fill_color });
         draw_list.addRect(.{ .pmin = rect.min, .pmax = rect.max, .col = border_color, .thickness = 1.0 });
