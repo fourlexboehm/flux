@@ -477,6 +477,9 @@ const quantize_items: [:0]const u8 = "1/4\x001/2\x001\x002\x004\x00";
 const plugin_items: [:0]const u8 = "None\x00ZSynth\x00";
 
 pub fn draw(state: *State, ui_scale: f32) void {
+    state.piano_state.preview_pitch = null;
+    state.piano_state.preview_track = null;
+
     const display = zgui.io.getDisplaySize();
     zgui.setNextWindowPos(.{ .x = 0, .y = 0, .cond = .always });
     zgui.setNextWindowSize(.{ .w = display[0], .h = display[1], .cond = .always });
@@ -1062,7 +1065,17 @@ fn drawTransport(state: *State, ui_scale: f32) void {
             break;
         }
     }
-    zgui.setNextItemWidth(80.0 * ui_scale);
+    var max_buffer_label_w: f32 = 0.0;
+    var label_buf: [16]u8 = undefined;
+    for (buffer_frame_options) |frames| {
+        const label = std.fmt.bufPrint(&label_buf, "{d}", .{frames}) catch unreachable;
+        const label_size = zgui.calcTextSize(label, .{});
+        if (label_size[0] > max_buffer_label_w) {
+            max_buffer_label_w = label_size[0];
+        }
+    }
+    const buffer_width = max_buffer_label_w + frame_height + frame_padding[0] * 2.0 + 6.0 * ui_scale;
+    zgui.setNextItemWidth(buffer_width);
     if (zgui.combo("##transport_buffer", .{
         .current_item = &buffer_index,
         .items_separated_by_zeros = buffer_items,
@@ -1594,6 +1607,13 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
                     state.selectedTrack(),
                     state.selectedScene(),
                 );
+                if (state.piano_state.preview_pitch) |pitch| {
+                    if (state.piano_state.preview_track) |track| {
+                        if (track < ui.max_tracks) {
+                            state.live_key_states[track][pitch] = true;
+                        }
+                    }
+                }
             }
         },
     }

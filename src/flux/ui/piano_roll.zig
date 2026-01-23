@@ -130,6 +130,10 @@ pub const PianoRollState = struct {
     context_pitch: u8 = 60,
     context_in_grid: bool = false,
 
+    // Note preview (audition) state
+    preview_pitch: ?u8 = null,
+    preview_track: ?usize = null,
+
     // View state
     scroll_x: f32 = 0,
     scroll_y: f32 = 50 * 20.0, // Start around C4
@@ -218,6 +222,8 @@ pub fn drawSequencer(
     const min_note_duration: f32 = 0.0625;
     const resize_handle_width = 8.0 * ui_scale;
     const clip_end_handle_width = 10.0 * ui_scale;
+    state.preview_pitch = null;
+    state.preview_track = null;
     const quantize_beats = quantizeIndexToBeats(quantize_index);
 
     const pixels_per_beat = 60.0 / state.beats_per_pixel;
@@ -609,6 +615,8 @@ pub fn drawSequencer(
                 clip.addNote(click_pitch, snapped_start, note_duration) catch {};
                 const new_idx = clip.notes.items.len - 1;
                 state.selectOnly(new_idx);
+                state.preview_pitch = click_pitch;
+                state.preview_track = track_index;
                 state.drag = .{
                     .mode = .create,
                     .note_index = new_idx,
@@ -705,6 +713,10 @@ pub fn drawSequencer(
             state.drag.mode = .none;
         } else {
             handleDrag(state, clip, mouse, grid_window_pos, pixels_per_beat, row_height, min_note_duration);
+            if ((state.drag.mode == .move or state.drag.mode == .create) and state.drag.note_index < clip.notes.items.len) {
+                state.preview_pitch = clip.notes.items[state.drag.note_index].pitch;
+                state.preview_track = track_index;
+            }
         }
     }
 
@@ -903,6 +915,8 @@ fn handleArrowKeys(
             }
         }
         if (zgui.isKeyPressed(.up_arrow, true)) {
+            var preview_pitch: ?u8 = null;
+            var moved = false;
             for (state.selected_notes.keys()) |idx| {
                 if (idx < clip.notes.items.len) {
                     const note = &clip.notes.items[idx];
@@ -910,6 +924,10 @@ fn handleArrowKeys(
                     const new_pitch_i = @min(127, @as(i32, old_pitch) + 12);
                     if (new_pitch_i != old_pitch) {
                         note.pitch = @intCast(new_pitch_i);
+                        if (preview_pitch == null) {
+                            preview_pitch = note.pitch;
+                        }
+                        moved = true;
                         state.emitUndoRequest(.{
                             .kind = .note_move,
                             .track = track_index,
@@ -923,8 +941,14 @@ fn handleArrowKeys(
                     }
                 }
             }
+            if (moved and preview_pitch != null) {
+                state.preview_pitch = preview_pitch;
+                state.preview_track = track_index;
+            }
         }
         if (zgui.isKeyPressed(.down_arrow, true)) {
+            var preview_pitch: ?u8 = null;
+            var moved = false;
             for (state.selected_notes.keys()) |idx| {
                 if (idx < clip.notes.items.len) {
                     const note = &clip.notes.items[idx];
@@ -932,6 +956,10 @@ fn handleArrowKeys(
                     const new_pitch_i = @max(0, @as(i32, old_pitch) - 12);
                     if (new_pitch_i != old_pitch) {
                         note.pitch = @intCast(new_pitch_i);
+                        if (preview_pitch == null) {
+                            preview_pitch = note.pitch;
+                        }
+                        moved = true;
                         state.emitUndoRequest(.{
                             .kind = .note_move,
                             .track = track_index,
@@ -945,38 +973,96 @@ fn handleArrowKeys(
                     }
                 }
             }
+            if (moved and preview_pitch != null) {
+                state.preview_pitch = preview_pitch;
+                state.preview_track = track_index;
+            }
         }
     } else {
         if (zgui.isKeyPressed(.left_arrow, true)) {
+            var preview_pitch: ?u8 = null;
+            var moved = false;
             for (state.selected_notes.keys()) |idx| {
                 if (idx < clip.notes.items.len) {
                     const note = &clip.notes.items[idx];
+                    const old_start = note.start;
                     note.start = @max(0, note.start - quantize_beats);
+                    if (note.start != old_start) {
+                        if (preview_pitch == null) {
+                            preview_pitch = note.pitch;
+                        }
+                        moved = true;
+                    }
                 }
+            }
+            if (moved and preview_pitch != null) {
+                state.preview_pitch = preview_pitch;
+                state.preview_track = track_index;
             }
         }
         if (zgui.isKeyPressed(.right_arrow, true)) {
+            var preview_pitch: ?u8 = null;
+            var moved = false;
             for (state.selected_notes.keys()) |idx| {
                 if (idx < clip.notes.items.len) {
                     const note = &clip.notes.items[idx];
+                    const old_start = note.start;
                     note.start = @min(clip.length_beats - note.duration, note.start + quantize_beats);
+                    if (note.start != old_start) {
+                        if (preview_pitch == null) {
+                            preview_pitch = note.pitch;
+                        }
+                        moved = true;
+                    }
                 }
+            }
+            if (moved and preview_pitch != null) {
+                state.preview_pitch = preview_pitch;
+                state.preview_track = track_index;
             }
         }
         if (zgui.isKeyPressed(.up_arrow, true)) {
+            var preview_pitch: ?u8 = null;
+            var moved = false;
             for (state.selected_notes.keys()) |idx| {
                 if (idx < clip.notes.items.len) {
                     const note = &clip.notes.items[idx];
-                    note.pitch = @intCast(@min(127, @as(i32, note.pitch) + 1));
+                    const old_pitch = note.pitch;
+                    const new_pitch: u8 = @intCast(@min(127, @as(i32, note.pitch) + 1));
+                    if (new_pitch != old_pitch) {
+                        note.pitch = new_pitch;
+                        if (preview_pitch == null) {
+                            preview_pitch = note.pitch;
+                        }
+                        moved = true;
+                    }
                 }
+            }
+            if (moved and preview_pitch != null) {
+                state.preview_pitch = preview_pitch;
+                state.preview_track = track_index;
             }
         }
         if (zgui.isKeyPressed(.down_arrow, true)) {
+            var preview_pitch: ?u8 = null;
+            var moved = false;
             for (state.selected_notes.keys()) |idx| {
                 if (idx < clip.notes.items.len) {
                     const note = &clip.notes.items[idx];
-                    note.pitch = @intCast(@max(0, @as(i32, note.pitch) - 1));
+                    const old_pitch = note.pitch;
+                    const new_pitch: u8 = @intCast(@max(0, @as(i32, note.pitch) - 1));
+                    if (new_pitch != old_pitch) {
+                        note.pitch = new_pitch;
+                        if (preview_pitch == null) {
+                            preview_pitch = note.pitch;
+                        }
+                        moved = true;
+                    }
                 }
+            }
+            if (moved and preview_pitch != null) {
+                state.preview_pitch = preview_pitch;
+                state.preview_track = track_index;
             }
         }
     }
