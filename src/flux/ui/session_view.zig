@@ -1695,6 +1695,9 @@ pub const SessionView = struct {
                         self.clips[track][scene].state = if (scene == queued) .playing else .stopped;
                     }
                 }
+                if (track == self.primary_track and queued == self.primary_scene) {
+                    self.reset_playhead_request = true;
+                }
                 self.queued_scene[track] = null;
             }
         }
