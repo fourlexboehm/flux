@@ -822,7 +822,9 @@ pub const SessionView = struct {
             // Make track header clickable
             var track_buf: [32]u8 = undefined;
             const track_label = std.fmt.bufPrintZ(&track_buf, "{s}##track_hdr{d}", .{ self.tracks[t].getName(), t }) catch "Track";
-            if (zgui.selectable(track_label, .{ .selected = is_track_selected, .w = track_col_w - 16.0 * ui_scale })) {
+            const track_pad = 4.0 * ui_scale;
+            zgui.setCursorPosX(zgui.getCursorPosX() + track_pad);
+            if (zgui.selectable(track_label, .{ .selected = is_track_selected, .w = track_col_w - track_pad * 2.0 })) {
                 self.primary_track = t;
                 self.clearSelection();
             }
@@ -925,7 +927,9 @@ pub const SessionView = struct {
             // Clip slots
             for (0..self.track_count) |track_idx| {
                 _ = zgui.tableNextColumn();
-                self.drawClipSlot(track_idx, scene_idx, track_col_w - 8.0 * ui_scale, row_height - 6.0 * ui_scale, ui_scale, playing, playhead_beat);
+                const track_pad = 4.0 * ui_scale;
+                zgui.setCursorPosX(zgui.getCursorPosX() + track_pad);
+                self.drawClipSlot(track_idx, scene_idx, track_col_w - track_pad * 2.0, row_height - 6.0 * ui_scale, ui_scale, playing, playhead_beat);
             }
 
             // Empty cell for add track column
