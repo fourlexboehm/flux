@@ -25,10 +25,12 @@
     // internet connectivity.
     .dependencies = .{
         .regex = .{
-            .path = "deps/regex",
+            .url = "git+https://github.com/fourlexboehm/zig-regex#af30324f5ae23a203c2f074bc4c32e8f1c367a9c",
+            .hash = "regex-0.1.3-axC35-HYAQAjUXGzwsZQucpNWl9RtVkv65bbQKg2WxaK",
         },
         .@"clap-bindings" = .{
-            .path = "deps/clap-bindings",
+            .url = "git+https://codeberg.org/fellowtraveler/clap-zig-bindings#87696f8d3da55a2f5dd5b05ce5e53eb9dbe32e9a",
+            .hash = "clap_bindings-1.0.3-9TIcDV9LAQCFHwmA0O4166YWAhcLiunCcjUGANcBxynG",
         },
         .zopengl = .{
             .url = "git+https://github.com/fourlexboehm/zopengl#update-for-zig-0-16",
@@ -51,7 +53,8 @@
             .path = "deps/zaudio",
         },
         .libz_jobs = .{
-            .path = "deps/libz-jobs",
+            .url = "git+https://github.com/fourlexboehm/LibZ.Jobs#06025ae410ba855a14f4cee6cadbe47dde459c9a",
+            .hash = "libz_jobs-0.0.0-WDIbgXiIAAAwCKdI97qqcjcvna1YHJeBruqqOsAAVlCT",
         },
         // DAWproject support
         .@"zig-xml" = .{
