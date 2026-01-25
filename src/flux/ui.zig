@@ -21,6 +21,7 @@ pub const Track = ui.Track;
 // Re-export constants for compatibility
 pub const track_count = ui.max_tracks;
 pub const scene_count = ui.max_scenes;
+pub const max_fx_slots = 4;
 pub const beats_per_bar = ui.beats_per_bar;
 pub const default_clip_bars = ui.default_clip_bars;
 pub const total_pitches = ui.total_pitches;
@@ -42,6 +43,11 @@ pub const DeviceKind = enum {
     none,
     builtin,
     clap,
+};
+
+pub const DeviceTargetKind = enum {
+    instrument,
+    fx,
 };
 
 pub const TrackPluginUI = struct {
@@ -68,6 +74,9 @@ pub const State = struct {
     device_kind: DeviceKind,
     device_clap_plugin: ?*const clap.Plugin,
     device_clap_name: []const u8,
+    device_target_kind: DeviceTargetKind,
+    device_target_track: usize,
+    device_target_fx: usize,
     playhead_beat: f32,
     focused_pane: FocusedPane,
 
@@ -82,7 +91,13 @@ pub const State = struct {
 
     // Track plugin UI state
     track_plugins: [ui.max_tracks]TrackPluginUI,
+    track_fx: [ui.max_tracks][max_fx_slots]TrackPluginUI,
+    track_fx_slot_count: [ui.max_tracks]usize,
     plugin_items: [:0]const u8,
+    plugin_fx_items: [:0]const u8,
+    plugin_fx_indices: []i32,
+    plugin_instrument_items: [:0]const u8,
+    plugin_instrument_indices: []i32,
     plugin_divider_index: ?i32,
     live_key_states: [ui.max_tracks][128]bool,
     previous_key_states: [ui.max_tracks][128]bool,
@@ -122,6 +137,16 @@ pub const State = struct {
                 .last_valid_choice = 0,
             };
         }
+        var track_fx_data: [ui.max_tracks][max_fx_slots]TrackPluginUI = undefined;
+        for (&track_fx_data) |*track| {
+            for (track) |*plugin| {
+                plugin.* = .{
+                    .choice_index = 0,
+                    .gui_open = false,
+                    .last_valid_choice = 0,
+                };
+            }
+        }
 
         var piano_clips_data: [ui.max_tracks][ui.max_scenes]PianoRollClip = undefined;
         for (&piano_clips_data) |*track_clips| {
@@ -145,13 +170,22 @@ pub const State = struct {
             .device_kind = .none,
             .device_clap_plugin = null,
             .device_clap_name = "",
+            .device_target_kind = .instrument,
+            .device_target_track = 0,
+            .device_target_fx = 0,
             .playhead_beat = 0,
             .focused_pane = .session,
             .session = SessionView.init(allocator),
             .piano_state = PianoRollState.init(allocator),
             .piano_clips = piano_clips_data,
             .track_plugins = track_plugins_data,
+            .track_fx = track_fx_data,
+            .track_fx_slot_count = [_]usize{1} ** ui.max_tracks,
             .plugin_items = plugin_items,
+            .plugin_fx_items = &[_:0]u8{},
+            .plugin_fx_indices = &[_]i32{},
+            .plugin_instrument_items = &[_:0]u8{},
+            .plugin_instrument_indices = &[_]i32{},
             .plugin_divider_index = null,
             .live_key_states = [_][128]bool{[_]bool{false} ** 128} ** ui.max_tracks,
             .previous_key_states = [_][128]bool{[_]bool{false} ** 128} ** ui.max_tracks,
@@ -696,6 +730,19 @@ pub fn tick(state: *State, dt: f64) void {
             // Calculate the beat position at the quantize boundary
             const quantize_boundary = curr_quantize * quantize_beats;
             state.session.processRecordingQuantize(quantize_boundary);
+        }
+    }
+
+    // Fallback: ensure queued recordings start at the next quantize boundary after being armed.
+    if (state.session.hasQueuedRecording()) {
+        if (state.session.recording.track) |track| {
+            if (state.session.recording.scene) |scene| {
+                const queued_at = state.session.recording.queued_at_beat;
+                const next_boundary = (@floor(queued_at / quantize_beats) + 1) * quantize_beats;
+                if (state.session.clips[track][scene].state == .record_queued and state.playhead_beat >= next_boundary) {
+                    state.session.processRecordingQuantize(next_boundary);
+                }
+            }
         }
     }
 
@@ -1623,26 +1670,123 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
 fn drawDevicePanel(state: *State, ui_scale: f32) void {
     // Track device selector
     zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
-    zgui.textUnformatted("Device:");
+    zgui.textUnformatted("Instrument:");
     zgui.popStyleColor(.{ .count = 1 });
 
     zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
     zgui.setNextItemWidth(200.0 * ui_scale);
 
     const track_idx = state.selectedTrack();
+    if (state.device_target_track != track_idx) {
+        state.device_target_track = track_idx;
+        state.device_target_kind = .instrument;
+        state.device_target_fx = 0;
+    }
     const track_plugin = &state.track_plugins[track_idx];
 
+    // Convert catalog index to instrument list index for display
+    var instrument_list_index: i32 = 0;
+    for (state.plugin_instrument_indices, 0..) |catalog_index, list_index| {
+        if (catalog_index == track_plugin.choice_index) {
+            instrument_list_index = @intCast(list_index);
+            break;
+        }
+    }
+
     if (zgui.combo("##device_select", .{
-        .current_item = &track_plugin.choice_index,
-        .items_separated_by_zeros = state.plugin_items,
+        .current_item = &instrument_list_index,
+        .items_separated_by_zeros = state.plugin_instrument_items,
     })) {
-        // Selection changed
-        track_plugin.gui_open = false;
+        // Selection changed - convert back to catalog index
+        if (state.plugin_instrument_indices.len > 0) {
+            const new_choice = state.plugin_instrument_indices[@intCast(instrument_list_index)];
+            track_plugin.choice_index = new_choice;
+            track_plugin.gui_open = false;
+            state.device_target_kind = .instrument;
+            state.device_target_fx = 0;
+        }
     }
 
     zgui.sameLine(.{ .spacing = 20.0 * ui_scale });
     zgui.separator();
 
+    zgui.spacing();
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
+    zgui.textUnformatted("Audio FX:");
+    zgui.popStyleColor(.{ .count = 1 });
+
+    // Dynamic FX slots - show only the number of slots currently in use for this track
+    const fx_slot_count = state.track_fx_slot_count[track_idx];
+    for (0..fx_slot_count) |fx_index| {
+        var fx_slot = &state.track_fx[track_idx][fx_index];
+        var fx_label_buf: [16]u8 = undefined;
+        const fx_label = std.fmt.bufPrintZ(&fx_label_buf, "FX {d}", .{fx_index + 1}) catch "FX";
+        zgui.textUnformatted(fx_label);
+        zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
+        var label_buf: [32]u8 = undefined;
+        const label = std.fmt.bufPrintZ(&label_buf, "##fx{d}", .{fx_index}) catch "##fx";
+        zgui.setNextItemWidth(200.0 * ui_scale);
+        var fx_list_index: i32 = 0;
+        for (state.plugin_fx_indices, 0..) |catalog_index, list_index| {
+            if (catalog_index == fx_slot.choice_index) {
+                fx_list_index = @intCast(list_index);
+                break;
+            }
+        }
+        if (zgui.combo(label, .{
+            .current_item = &fx_list_index,
+            .items_separated_by_zeros = state.plugin_fx_items,
+        })) {
+            if (state.plugin_fx_indices.len > 0) {
+                const new_choice = state.plugin_fx_indices[@intCast(fx_list_index)];
+                fx_slot.choice_index = new_choice;
+                fx_slot.gui_open = false;
+                state.device_target_kind = .fx;
+                state.device_target_fx = fx_index;
+
+                // If the last slot was used, add another slot (up to max)
+                if (new_choice != 0 and fx_index == fx_slot_count - 1 and fx_slot_count < max_fx_slots) {
+                    state.track_fx_slot_count[track_idx] += 1;
+                }
+            }
+        }
+
+        zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
+        const is_selected = state.device_target_kind == .fx and state.device_target_fx == fx_index;
+        const style = zgui.getStyle();
+        const open_label = "Open Window";
+        const close_label = "Close Window";
+        const max_label_w = @max(
+            zgui.calcTextSize(open_label, .{})[0],
+            zgui.calcTextSize(close_label, .{})[0],
+        );
+        const button_w = max_label_w + style.frame_padding[0] * 2.0 + 6.0 * ui_scale;
+        const button_label = if (fx_slot.gui_open) close_label else open_label;
+        var button_buf: [64]u8 = undefined;
+        const button_text = std.fmt.bufPrintZ(&button_buf, "{s}##fx_open_{d}", .{ button_label, fx_index }) catch "##fx_open";
+        if (zgui.button(button_text, .{ .w = button_w, .h = 0 })) {
+            const opening = !fx_slot.gui_open;
+            if (opening) {
+                state.track_plugins[track_idx].gui_open = false;
+                for (0..max_fx_slots) |other_fx| {
+                    if (other_fx != fx_index) {
+                        state.track_fx[track_idx][other_fx].gui_open = false;
+                    }
+                }
+                fx_slot.gui_open = true;
+            } else {
+                fx_slot.gui_open = false;
+            }
+            state.device_target_kind = .fx;
+            state.device_target_fx = fx_index;
+        } else if (is_selected) {
+            // Keep selection sticky when clicking elsewhere in the row.
+            state.device_target_kind = .fx;
+            state.device_target_fx = fx_index;
+        }
+    }
+
+    zgui.separator();
     switch (state.device_kind) {
         .builtin => {
             if (state.zsynth) |plugin| {
@@ -1671,24 +1815,68 @@ fn drawNoDevice() void {
 }
 
 fn drawClapDevice(state: *State, ui_scale: f32) void {
-    const plugin = state.device_clap_plugin orelse {
-        drawNoDevice();
-        return;
-    };
+    const plugin = state.device_clap_plugin;
+    const plugin_ready = plugin != null;
 
     zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_bright });
-    zgui.text("CLAP: {s}", .{state.device_clap_name});
+    const device_label = switch (state.device_target_kind) {
+        .instrument => "Instrument",
+        .fx => "FX",
+    };
+    zgui.text("{s}: {s}", .{ device_label, state.device_clap_name });
     zgui.popStyleColor(.{ .count = 1 });
 
     zgui.sameLine(.{ .spacing = 12.0 * ui_scale });
-    const track = &state.track_plugins[state.selectedTrack()];
-    const button_label = if (track.gui_open) "Close Window" else "Open Window";
-    if (zgui.button(button_label, .{ .w = 0, .h = 0 })) {
-        track.gui_open = !track.gui_open;
+    const track_idx = state.selectedTrack();
+    const target = switch (state.device_target_kind) {
+        .instrument => &state.track_plugins[track_idx],
+        .fx => &state.track_fx[track_idx][state.device_target_fx],
+    };
+    const style = zgui.getStyle();
+    const open_label = "Open Window";
+    const close_label = "Close Window";
+    const max_label_w = @max(
+        zgui.calcTextSize(open_label, .{})[0],
+        zgui.calcTextSize(close_label, .{})[0],
+    );
+    const button_w = max_label_w + style.frame_padding[0] * 2.0 + 6.0 * ui_scale;
+    const button_label = if (target.gui_open) close_label else open_label;
+    var button_buf: [64]u8 = undefined;
+    const button_text = std.fmt.bufPrintZ(&button_buf, "{s}##device_open", .{button_label}) catch "##device_open";
+    zgui.beginDisabled(.{ .disabled = !plugin_ready });
+    if (zgui.button(button_text, .{ .w = button_w, .h = 0 })) {
+        const opening = !target.gui_open;
+        if (opening) {
+            switch (state.device_target_kind) {
+                .instrument => {
+                    for (0..max_fx_slots) |fx_index| {
+                        state.track_fx[track_idx][fx_index].gui_open = false;
+                    }
+                },
+                .fx => {
+                    state.track_plugins[track_idx].gui_open = false;
+                    for (0..max_fx_slots) |fx_index| {
+                        if (fx_index != state.device_target_fx) {
+                            state.track_fx[track_idx][fx_index].gui_open = false;
+                        }
+                    }
+                },
+            }
+            target.gui_open = true;
+        } else {
+            target.gui_open = false;
+        }
     }
+    zgui.endDisabled();
 
     zgui.separator();
-    drawClapParamDump(plugin);
+    if (plugin_ready) {
+        drawClapParamDump(plugin.?);
+    } else {
+        zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
+        zgui.textUnformatted("Loading plugin...");
+        zgui.popStyleColor(.{ .count = 1 });
+    }
 }
 
 fn drawClapParamDump(plugin: *const clap.Plugin) void {
@@ -1703,10 +1891,15 @@ fn drawClapParamDump(plugin: *const clap.Plugin) void {
         return;
     }
 
-    if (!zgui.beginChild("clap_param_dump##device", .{ .w = 0, .h = 0, .child_flags = .{ .border = true } })) {
+    const child_open = zgui.beginChild("clap_param_dump##device", .{
+        .w = 0,
+        .h = 0,
+        .child_flags = .{ .border = true },
+    });
+    defer zgui.endChild();
+    if (!child_open) {
         return;
     }
-    defer zgui.endChild();
 
     if (!zgui.beginTable("clap_param_table##device", .{
         .column = 4,
