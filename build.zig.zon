@@ -47,7 +47,8 @@
             .hash = "ztracy-0.14.0-dev-zHJSqzUHGQAmhJybhlwtl1QKevUBw4M5YKZqPfWx2y99",
         },
         .zgui = .{
-            .path = "deps/zgui",
+            .url = "git+https://github.com/fourlexboehm/zgui#00e5b6ec393574e754ab42db3507f60db440623a",
+            .hash = "zgui-0.6.0-dev--L6sZHr7bQDWTAtIgTBXBGCX-fiGyfUQLLRY0k-8owNX",
         },
         .zaudio = .{
             .path = "deps/zaudio",
