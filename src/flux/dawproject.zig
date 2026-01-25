@@ -757,6 +757,7 @@ pub fn fromFluxProject(
     state: *const ui.State,
     catalog: *const plugins.PluginCatalog,
     track_plugin_info: []const TrackPluginInfo,
+    track_fx_plugin_info: []const [ui.max_fx_slots]TrackPluginInfo,
 ) !Project {
     var ids = IdGenerator{ .allocator = allocator };
 
@@ -773,7 +774,7 @@ pub fn fromFluxProject(
         try track_ids.append(allocator, track_id);
         const channel_id = try ids.next();
 
-        // Build device if present
+        // Build devices if present
         var devices = std.ArrayList(ClapPlugin).empty;
         const choice_index = state.track_plugins[t].choice_index;
         if (catalog.entryForIndex(choice_index)) |entry| {
@@ -792,6 +793,32 @@ pub fn fromFluxProject(
                     .device_id = try allocator.dupe(u8, clap_plugin_id),
                     .device_name = try allocator.dupe(u8, entry.name),
                     .device_role = .instrument,
+                    .enabled = .{
+                        .id = enabled_id,
+                        .name = "On/Off",
+                        .value = true,
+                    },
+                    .state = if (info.state_path) |sp| .{
+                        .path = try allocator.dupe(u8, sp),
+                    } else null,
+                });
+            }
+        }
+        for (0..ui.max_fx_slots) |fx_index| {
+            const fx_choice = state.track_fx[t][fx_index].choice_index;
+            if (catalog.entryForIndex(fx_choice)) |entry| {
+                if (entry.kind != .clap) continue;
+                const device_id = try ids.next();
+                const enabled_id = try ids.next();
+                const info = if (t < track_fx_plugin_info.len) track_fx_plugin_info[t][fx_index] else TrackPluginInfo{};
+                const clap_plugin_id = info.plugin_id orelse entry.id orelse "";
+
+                try devices.append(allocator, .{
+                    .id = device_id,
+                    .name = try allocator.dupe(u8, entry.name),
+                    .device_id = try allocator.dupe(u8, clap_plugin_id),
+                    .device_name = try allocator.dupe(u8, entry.name),
+                    .device_role = .audioFX,
                     .enabled = .{
                         .id = enabled_id,
                         .name = "On/Off",
@@ -1171,11 +1198,12 @@ pub fn save(
     catalog: *const plugins.PluginCatalog,
     plugin_states: []const PluginStateFile,
     track_plugin_info: []const TrackPluginInfo,
+    track_fx_plugin_info: []const [ui.max_fx_slots]TrackPluginInfo,
 ) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const daw_project = try fromFluxProject(arena.allocator(), state, catalog, track_plugin_info);
+    const daw_project = try fromFluxProject(arena.allocator(), state, catalog, track_plugin_info, track_fx_plugin_info);
     const xml = try toXml(arena.allocator(), &daw_project);
 
     // Debug: also write raw XML for inspection
