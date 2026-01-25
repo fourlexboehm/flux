@@ -216,6 +216,7 @@ pub fn drawSequencer(
     is_focused: bool,
     track_index: usize,
     scene_index: usize,
+    live_key_states: *const [128]bool,
 ) void {
     const key_width = 56.0 * ui_scale;
     const ruler_height = 24.0 * ui_scale;
@@ -732,7 +733,17 @@ pub fn drawSequencer(
     drawRuler(draw_list, grid_area_x, base_pos[1], grid_view_width, ruler_height, state.scroll_x, pixels_per_beat, max_beats, ui_scale);
 
     // Draw piano keys
-    drawPianoKeys(draw_list, base_pos[0], grid_area_y, key_width, grid_view_height, state.scroll_y, row_height, ui_scale);
+    drawPianoKeys(
+        draw_list,
+        base_pos[0],
+        grid_area_y,
+        key_width,
+        grid_view_height,
+        state.scroll_y,
+        row_height,
+        ui_scale,
+        live_key_states,
+    );
 
     // Top-left corner
     draw_list.addRectFilled(.{
@@ -1312,6 +1323,7 @@ fn drawPianoKeys(
     scroll_y: f32,
     row_height: f32,
     ui_scale: f32,
+    live_key_states: *const [128]bool,
 ) void {
     const font_size = zgui.getFontSize();
     const max_label_size = row_height - 2.0 * ui_scale;
@@ -1354,6 +1366,27 @@ fn drawPianoKeys(
             .pmax = .{ x + width - 1, ky + row_height - 1 },
             .col = key_color,
         });
+
+        if (live_key_states[pitch]) {
+            const accent = colors.Colors.current.accent;
+            const highlight = zgui.colorConvertFloat4ToU32(.{
+                accent[0],
+                accent[1],
+                accent[2],
+                if (is_black) 0.55 else 0.4,
+            });
+            draw_list.addRectFilled(.{
+                .pmin = .{ x, ky },
+                .pmax = .{ x + width - 1, ky + row_height - 1 },
+                .col = highlight,
+            });
+            draw_list.addRect(.{
+                .pmin = .{ x, ky },
+                .pmax = .{ x + width - 1, ky + row_height - 1 },
+                .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.accent_dim),
+                .thickness = 1.0,
+            });
+        }
 
         if (note_in_octave == 0 and label_font_size >= 6.0) {
             var buf: [8]u8 = undefined;
