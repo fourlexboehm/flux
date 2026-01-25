@@ -1606,6 +1606,7 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
                     is_focused,
                     state.selectedTrack(),
                     state.selectedScene(),
+                    &state.live_key_states[state.selectedTrack()],
                 );
                 if (state.piano_state.preview_pitch) |pitch| {
                     if (state.piano_state.preview_track) |track| {
