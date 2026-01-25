@@ -97,6 +97,7 @@ const Host = struct {
     ui_state: ?*ui.State = null,
     allocator: ?std.mem.Allocator = null,
     track_plugins_ptr: ?*[ui.track_count]TrackPlugin = null,
+    track_fx_ptr: ?*[ui.track_count][ui.max_fx_slots]TrackPlugin = null,
     synths_ptr: ?*[ui.track_count]*zsynth.Plugin = null,
     catalog_ptr: ?*const plugins.PluginCatalog = null,
     undo_change_in_progress: bool = false,
@@ -266,6 +267,13 @@ const Host = struct {
                 p.onMainThread(p);
             }
         }
+        for (snapshot.track_fx_plugins) |track_fx| {
+            for (track_fx) |plugin| {
+                if (plugin) |p| {
+                    p.onMainThread(p);
+                }
+            }
+        }
     }
 
     // --- Undo extension callbacks ---
@@ -277,6 +285,17 @@ const Host = struct {
             if (track.handle) |handle| {
                 if (handle.plugin == caller_plugin) {
                     return idx;
+                }
+            }
+        }
+        if (self.track_fx_ptr) |track_fx| {
+            for (track_fx, 0..) |track_slots, idx| {
+                for (track_slots) |slot| {
+                    if (slot.handle) |handle| {
+                        if (handle.plugin == caller_plugin) {
+                            return idx;
+                        }
+                    }
                 }
             }
         }
@@ -667,6 +686,7 @@ fn applyBufferFramesChange(
     engine: *audio_engine.AudioEngine,
     shared: *audio_engine.SharedState,
     track_plugins: *[ui.track_count]TrackPlugin,
+    track_fx: *[ui.track_count][ui.max_fx_slots]TrackPlugin,
     state: *ui.State,
     catalog: *const plugins.PluginCatalog,
     synths: [ui.track_count]*zsynth.Plugin,
@@ -685,23 +705,41 @@ fn applyBufferFramesChange(
     is_audio_thread = true;
     defer is_audio_thread = was_audio;
 
-    const plugins_for_tracks = collectTrackPlugins(catalog, track_plugins, state, synths);
+    const plugins_for_tracks = collectPlugins(catalog, track_plugins, track_fx, state, synths);
     for (0..ui.track_count) |t| {
         if (shared.isPluginStarted(t)) {
-            if (plugins_for_tracks[t]) |plugin| {
+            if (plugins_for_tracks.instruments[t]) |plugin| {
                 plugin.stopProcessing(plugin);
             }
             shared.clearPluginStarted(t);
         }
+        for (0..ui.max_fx_slots) |fx_index| {
+            if (shared.isFxPluginStarted(t, fx_index)) {
+                if (plugins_for_tracks.fx[t][fx_index]) |plugin| {
+                    plugin.stopProcessing(plugin);
+                }
+                shared.clearFxPluginStarted(t, fx_index);
+            }
+        }
     }
 
     for (0..ui.track_count) |t| {
-        if (plugins_for_tracks[t]) |plugin| {
+        if (plugins_for_tracks.instruments[t]) |plugin| {
             plugin.deactivate(plugin);
             if (!plugin.activate(plugin, SampleRate, 1, new_frames)) {
                 std.log.warn("Failed to activate plugin for track {d}", .{t});
             } else {
                 shared.requestStartProcessing(t);
+            }
+        }
+        for (0..ui.max_fx_slots) |fx_index| {
+            if (plugins_for_tracks.fx[t][fx_index]) |plugin| {
+                plugin.deactivate(plugin);
+                if (!plugin.activate(plugin, SampleRate, 1, new_frames)) {
+                    std.log.warn("Failed to activate fx for track {d} slot {d}", .{ t, fx_index });
+                } else {
+                    shared.requestStartProcessingFx(t, fx_index);
+                }
             }
         }
     }
@@ -727,6 +765,12 @@ pub fn main(init: std.process.Init) !void {
     for (&track_plugins) |*track| {
         track.* = .{};
     }
+    var track_fx: [ui.track_count][ui.max_fx_slots]TrackPlugin = undefined;
+    for (&track_fx) |*track_slots| {
+        for (track_slots) |*slot| {
+            slot.* = .{};
+        }
+    }
 
     zaudio.init(allocator);
     defer zaudio.deinit();
@@ -737,6 +781,10 @@ pub fn main(init: std.process.Init) !void {
     var state = ui.State.init(allocator);
     defer state.deinit();
     state.plugin_items = catalog.items_z;
+    state.plugin_fx_items = catalog.fx_items_z;
+    state.plugin_fx_indices = catalog.fx_indices;
+    state.plugin_instrument_items = catalog.instrument_items_z;
+    state.plugin_instrument_indices = catalog.instrument_indices;
     state.plugin_divider_index = catalog.divider_index;
     var buffer_frames: u32 = state.buffer_frames;
 
@@ -744,6 +792,7 @@ pub fn main(init: std.process.Init) !void {
     host.ui_state = &state;
     host.allocator = allocator;
     host.track_plugins_ptr = &track_plugins;
+    host.track_fx_ptr = &track_fx;
     var synths: [ui.track_count]*zsynth.Plugin = undefined;
     var synth_count: usize = 0;
     errdefer {
@@ -783,11 +832,15 @@ pub fn main(init: std.process.Init) !void {
     host.jobs = &jobs;
 
     engine.updateFromUi(&state);
-    engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
+    const plugins_snapshot = collectPlugins(&catalog, &track_plugins, &track_fx, &state, synths);
+    engine.updatePlugins(plugins_snapshot.instruments, plugins_snapshot.fx);
 
     // Request startProcessing for all loaded plugins (will be called from audio thread)
     for (0..ui.track_count) |t| {
         engine.shared.requestStartProcessing(t);
+        for (0..ui.max_fx_slots) |fx_index| {
+            engine.shared.requestStartProcessingFx(t, fx_index);
+        }
     }
 
     var device_config = zaudio.Device.Config.init(.playback);
@@ -821,6 +874,8 @@ pub fn main(init: std.process.Init) !void {
 
     var last_time = try std.time.Instant.now();
     var dsp_last_update = last_time;
+    var last_interaction_time = last_time;
+    var window_was_focused = true;
 
     std.log.info("flux running (Ctrl+C to quit)", .{});
     switch (builtin.os.tag) {
@@ -845,7 +900,7 @@ pub fn main(init: std.process.Init) !void {
                     ui.tick(&state, dt);
                 }
                 state.zsynth = synths[state.selectedTrack()];
-                updateDeviceState(&state, &catalog, &track_plugins);
+                updateDeviceState(&state, &catalog, &track_plugins, &track_fx);
                 midi.poll();
                 state.midi_note_states = midi.note_states;
                 if (now.since(dsp_last_update) >= 250 * std.time.ns_per_ms) {
@@ -869,6 +924,11 @@ pub fn main(init: std.process.Init) !void {
                 )) |event| {
                     app_window.app.sendEvent(event);
                 }
+                const window_focused = objc.objc.msgSend(app_window.window, "isKeyWindow", bool, .{});
+                if (window_focused and !window_was_focused) {
+                    last_interaction_time = now;
+                }
+                window_was_focused = window_focused;
 
                 const frame = app_window.window.frame();
                 const content = app_window.window.contentRectForFrameRect(frame);
@@ -923,6 +983,7 @@ pub fn main(init: std.process.Init) !void {
                             &engine,
                             &engine.shared,
                             &track_plugins,
+                            &track_fx,
                             &state,
                             &catalog,
                             synths,
@@ -936,10 +997,12 @@ pub fn main(init: std.process.Init) !void {
                         }
                     }
                 }
-                handleFileRequests(allocator, io, &state, &catalog, &track_plugins, &host.clap_host, &engine.shared, synths);
+                handleFileRequests(allocator, io, &state, &catalog, &track_plugins, &track_fx, &host.clap_host, &engine.shared, synths);
                 engine.updateFromUi(&state);
-                try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog, &engine.shared, io, buffer_frames, true);
-                engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
+                try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
+                try syncFxPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
+                const frame_plugins = collectPlugins(&catalog, &track_plugins, &track_fx, &state, synths);
+                engine.updatePlugins(frame_plugins.instruments, frame_plugins.fx);
                 zgui.backend.draw(command_buffer, command_encoder);
                 command_encoder.as(objc.metal.CommandEncoder).endEncoding();
                 command_buffer.presentDrawable(drawable.as(objc.metal.Drawable));
@@ -960,7 +1023,17 @@ pub fn main(init: std.process.Init) !void {
                     break :blk false;
                 };
                 const interactive = zgui.isAnyItemActive() or zgui.isAnyItemHovered() or zgui.io.getWantCaptureMouse() or wants_keyboard;
-                const target_fps: u32 = if (state.playing or interactive or any_plugin_gui_open) 60 else 20;
+                const active = state.playing or interactive or any_plugin_gui_open;
+                if (active) {
+                    last_interaction_time = now;
+                }
+                const idle_ns = now.since(last_interaction_time);
+                const target_fps: u32 = if (active)
+                    60
+                else if (idle_ns >= std.time.ns_per_s)
+                    1
+                else
+                    20;
                 const target_frame_ns: u64 = std.time.ns_per_s / @as(u64, target_fps);
                 const frame_end = std.time.Instant.now() catch frame_start;
                 const frame_elapsed_ns = frame_end.since(frame_start);
@@ -1018,7 +1091,7 @@ pub fn main(init: std.process.Init) !void {
                     ui.tick(&state, dt);
                 }
                 state.zsynth = synths[state.selectedTrack()];
-                updateDeviceState(&state, &catalog, &track_plugins);
+                updateDeviceState(&state, &catalog, &track_plugins, &track_fx);
                 midi.poll();
                 state.midi_note_states = midi.note_states;
                 if (now.since(dsp_last_update) >= 250 * std.time.ns_per_ms) {
@@ -1038,6 +1111,11 @@ pub fn main(init: std.process.Init) !void {
                     zglfw.setWindowShouldClose(window, true);
                     continue;
                 }
+                const window_focused = window.getAttribute(.focused);
+                if (window_focused and !window_was_focused) {
+                    last_interaction_time = now;
+                }
+                window_was_focused = window_focused;
 
                 gl.clearBufferfv(gl.COLOR, 0, &ui.Colors.current.bg_dark);
                 const fb_size = window.getFramebufferSize();
@@ -1071,6 +1149,7 @@ pub fn main(init: std.process.Init) !void {
                             &engine,
                             &engine.shared,
                             &track_plugins,
+                            &track_fx,
                             &state,
                             &catalog,
                             synths,
@@ -1084,10 +1163,12 @@ pub fn main(init: std.process.Init) !void {
                         }
                     }
                 }
-                handleFileRequests(allocator, io, &state, &catalog, &track_plugins, &host.clap_host, &engine.shared, synths);
+                handleFileRequests(allocator, io, &state, &catalog, &track_plugins, &track_fx, &host.clap_host, &engine.shared, synths);
                 engine.updateFromUi(&state);
-                try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &state, &catalog, &engine.shared, io, buffer_frames, true);
-                engine.updatePlugins(collectTrackPlugins(&catalog, &track_plugins, &state, synths));
+                try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
+                try syncFxPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
+                const frame_plugins = collectPlugins(&catalog, &track_plugins, &track_fx, &state, synths);
+                engine.updatePlugins(frame_plugins.instruments, frame_plugins.fx);
                 zgui.backend.draw();
 
                 window.swapBuffers();
@@ -1105,7 +1186,17 @@ pub fn main(init: std.process.Init) !void {
                     break :blk false;
                 };
                 const interactive = zgui.isAnyItemActive() or zgui.isAnyItemHovered() or zgui.io.getWantCaptureMouse() or wants_keyboard;
-                const target_fps: u32 = if (state.playing or interactive or any_plugin_gui_open) 60 else 20;
+                const active = state.playing or interactive or any_plugin_gui_open;
+                if (active) {
+                    last_interaction_time = now;
+                }
+                const idle_ns = now.since(last_interaction_time);
+                const target_fps: u32 = if (active)
+                    60
+                else if (idle_ns >= std.time.ns_per_s)
+                    1
+                else
+                    20;
                 const target_frame_ns: u64 = std.time.ns_per_s / @as(u64, target_fps);
                 const frame_end = std.time.Instant.now() catch frame_start;
                 const frame_elapsed_ns = frame_end.since(frame_start);
@@ -1139,8 +1230,13 @@ fn updateDeviceState(
     state: *ui.State,
     catalog: *const plugins.PluginCatalog,
     track_plugins: *const [ui.track_count]TrackPlugin,
+    track_fx: *const [ui.track_count][ui.max_fx_slots]TrackPlugin,
 ) void {
-    const choice = state.track_plugins[state.selectedTrack()].choice_index;
+    const track_idx = state.selectedTrack();
+    const choice = switch (state.device_target_kind) {
+        .instrument => state.track_plugins[track_idx].choice_index,
+        .fx => state.track_fx[track_idx][state.device_target_fx].choice_index,
+    };
     const entry = catalog.entryForIndex(choice);
     if (entry == null or entry.?.kind == .none or entry.?.kind == .divider) {
         state.device_kind = .none;
@@ -1151,14 +1247,23 @@ fn updateDeviceState(
 
     switch (entry.?.kind) {
         .builtin => {
-            state.device_kind = .builtin;
-            state.device_clap_plugin = null;
-            state.device_clap_name = "";
+            if (state.device_target_kind == .fx) {
+                state.device_kind = .none;
+                state.device_clap_plugin = null;
+                state.device_clap_name = "";
+            } else {
+                state.device_kind = .builtin;
+                state.device_clap_plugin = null;
+                state.device_clap_name = "";
+            }
         },
         .clap => {
             state.device_kind = .clap;
             state.device_clap_name = entry.?.name;
-            const handle = track_plugins[state.selectedTrack()].handle;
+            const handle = switch (state.device_target_kind) {
+                .instrument => track_plugins[track_idx].handle,
+                .fx => track_fx[track_idx][state.device_target_fx].handle,
+            };
             state.device_clap_plugin = if (handle) |h| h.plugin else null;
         },
         else => {
@@ -1169,36 +1274,59 @@ fn updateDeviceState(
     }
 }
 
-fn collectTrackPlugins(
+const PluginSnapshot = struct {
+    instruments: [ui.track_count]?*const clap.Plugin,
+    fx: [ui.track_count][ui.max_fx_slots]?*const clap.Plugin,
+};
+
+fn pluginHasAudioInput(plugin: *const clap.Plugin) bool {
+    const ext_raw = plugin.getExtension(plugin, clap.ext.audio_ports.id) orelse return false;
+    const ports: *const clap.ext.audio_ports.Plugin = @ptrCast(@alignCast(ext_raw));
+    return ports.count(plugin, true) > 0;
+}
+
+fn collectPlugins(
     catalog: *const plugins.PluginCatalog,
     track_plugins: *const [ui.track_count]TrackPlugin,
+    track_fx: *const [ui.track_count][ui.max_fx_slots]TrackPlugin,
     state: *const ui.State,
     synths: [ui.track_count]*zsynth.Plugin,
-) [ui.track_count]?*const clap.Plugin {
-    var plugins_out: [ui.track_count]?*const clap.Plugin = [_]?*const clap.Plugin{null} ** ui.track_count;
+) PluginSnapshot {
+    var instruments: [ui.track_count]?*const clap.Plugin = [_]?*const clap.Plugin{null} ** ui.track_count;
+    var fx: [ui.track_count][ui.max_fx_slots]?*const clap.Plugin =
+        [_][ui.max_fx_slots]?*const clap.Plugin{[_]?*const clap.Plugin{null} ** ui.max_fx_slots} ** ui.track_count;
+
     for (0..ui.track_count) |t| {
         const choice = state.track_plugins[t].choice_index;
         const entry = catalog.entryForIndex(choice);
-        if (entry == null) {
-            continue;
+        if (entry) |item| {
+            switch (item.kind) {
+                .builtin => instruments[t] = &synths[t].plugin,
+                .clap => instruments[t] = if (track_plugins[t].handle) |handle| handle.plugin else null,
+                else => {},
+            }
         }
-        switch (entry.?.kind) {
-            .builtin => {
-                plugins_out[t] = &synths[t].plugin;
-            },
-            .clap => {
-                plugins_out[t] = if (track_plugins[t].handle) |handle| handle.plugin else null;
-            },
-            else => {},
+
+        for (0..ui.max_fx_slots) |fx_index| {
+            const fx_choice = state.track_fx[t][fx_index].choice_index;
+            const fx_entry = catalog.entryForIndex(fx_choice);
+            if (fx_entry != null and fx_entry.?.kind == .clap) {
+                fx[t][fx_index] = if (track_fx[t][fx_index].handle) |handle| handle.plugin else null;
+            }
         }
     }
-    return plugins_out;
+
+    return .{
+        .instruments = instruments,
+        .fx = fx,
+    };
 }
 
 fn syncTrackPlugins(
     allocator: std.mem.Allocator,
     host: *const clap.Host,
     track_plugins: *[ui.track_count]TrackPlugin,
+    track_fx: *[ui.track_count][ui.max_fx_slots]TrackPlugin,
     state: *ui.State,
     catalog: *const plugins.PluginCatalog,
     shared: ?*audio_engine.SharedState,
@@ -1257,12 +1385,7 @@ fn syncTrackPlugins(
 
         if (wants_gui and !track.gui_open) {
             if (track.gui_ext) |gui_ext| {
-                // Close all other plugin GUI windows first (but keep their gui_open state)
-                for (track_plugins) |*other_track| {
-                    if (other_track.gui_open) {
-                        closePluginGui(other_track);
-                    }
-                }
+                closeAllPluginGuis(track_plugins, track_fx);
                 openPluginGui(track, gui_ext) catch |err| {
                     std.log.err("Failed to open plugin gui: {}", .{err});
                     state.track_plugins[t].gui_open = false;
@@ -1272,6 +1395,102 @@ fn syncTrackPlugins(
             }
         } else if (!wants_gui and track.gui_open) {
             closePluginGui(track);
+        }
+    }
+}
+
+fn syncFxPlugins(
+    allocator: std.mem.Allocator,
+    host: *const clap.Host,
+    track_plugins: *[ui.track_count]TrackPlugin,
+    track_fx: *[ui.track_count][ui.max_fx_slots]TrackPlugin,
+    state: *ui.State,
+    catalog: *const plugins.PluginCatalog,
+    shared: ?*audio_engine.SharedState,
+    io: std.Io,
+    max_frames: u32,
+    start_processing: bool,
+) !void {
+    const prepareUnload = struct {
+        fn call(shared_state: ?*audio_engine.SharedState, track_index: usize, fx_index: usize, io_ctx: std.Io) void {
+            if (shared_state) |shared_ref| {
+                shared_ref.setTrackFxPlugin(track_index, fx_index, null);
+                shared_ref.waitForIdle(io_ctx);
+            }
+        }
+    }.call;
+
+    const selected_track = state.selectedTrack();
+    for (track_fx, 0..) |*track_slots, t| {
+        for (track_slots, 0..) |*slot, fx_index| {
+            const choice = state.track_fx[t][fx_index].choice_index;
+            const entry = catalog.entryForIndex(choice);
+            const kind = if (entry) |item| item.kind else .none;
+            const wants_gui = state.track_fx[t][fx_index].gui_open and (t == selected_track);
+
+            if (kind != .clap) {
+                if (slot.handle != null) {
+                    closePluginGui(slot);
+                    prepareUnload(shared, t, fx_index, io);
+                    unloadFxPlugin(slot, allocator, shared, t, fx_index);
+                }
+                if (kind == .builtin or kind == .divider) {
+                    state.track_fx[t][fx_index].choice_index = 0;
+                    state.track_fx[t][fx_index].last_valid_choice = 0;
+                }
+                slot.choice_index = state.track_fx[t][fx_index].choice_index;
+                continue;
+            }
+
+            if (slot.choice_index != choice) {
+                if (slot.handle != null) {
+                    closePluginGui(slot);
+                    prepareUnload(shared, t, fx_index, io);
+                    unloadFxPlugin(slot, allocator, shared, t, fx_index);
+                }
+                slot.choice_index = choice;
+            }
+
+            if (slot.handle == null) {
+                const path = entry.?.path orelse return error.PluginMissingPath;
+                slot.handle = try PluginHandle.init(allocator, host, path, entry.?.id, max_frames);
+                slot.gui_ext = getGuiExt(slot.handle.?);
+                if (start_processing) {
+                    if (shared) |s| {
+                        s.requestStartProcessingFx(t, fx_index);
+                    }
+                }
+            }
+
+            if (slot.handle != null and !pluginHasAudioInput(slot.handle.?.plugin)) {
+                std.log.warn("FX plugin has no audio input: {s}", .{entry.?.name});
+                closePluginGui(slot);
+                prepareUnload(shared, t, fx_index, io);
+                unloadFxPlugin(slot, allocator, shared, t, fx_index);
+                state.track_fx[t][fx_index].gui_open = false;
+                const fallback = if (state.track_fx[t][fx_index].last_valid_choice != choice)
+                    state.track_fx[t][fx_index].last_valid_choice
+                else
+                    0;
+                state.track_fx[t][fx_index].choice_index = fallback;
+                slot.choice_index = fallback;
+                continue;
+            }
+            state.track_fx[t][fx_index].last_valid_choice = choice;
+
+            if (wants_gui and !slot.gui_open) {
+                if (slot.gui_ext) |gui_ext| {
+                    closeAllPluginGuis(track_plugins, track_fx);
+                    openPluginGui(slot, gui_ext) catch |err| {
+                        std.log.err("Failed to open fx plugin gui: {}", .{err});
+                        state.track_fx[t][fx_index].gui_open = false;
+                    };
+                } else {
+                    state.track_fx[t][fx_index].gui_open = false;
+                }
+            } else if (!wants_gui and slot.gui_open) {
+                closePluginGui(slot);
+            }
         }
     }
 }
@@ -1289,6 +1508,32 @@ fn unloadPlugin(track: *TrackPlugin, allocator: std.mem.Allocator, shared: ?*aud
                 defer is_audio_thread = was_audio;
                 handle.plugin.stopProcessing(handle.plugin);
                 s.clearPluginStarted(track_index);
+            }
+        }
+        handle.deinit(allocator);
+    }
+    track.handle = null;
+    track.gui_ext = null;
+    track.gui_window = null;
+    track.gui_view = null;
+    track.gui_open = false;
+}
+
+fn unloadFxPlugin(
+    track: *TrackPlugin,
+    allocator: std.mem.Allocator,
+    shared: ?*audio_engine.SharedState,
+    track_index: usize,
+    fx_index: usize,
+) void {
+    if (track.handle) |*handle| {
+        if (shared) |s| {
+            if (s.isFxPluginStarted(track_index, fx_index)) {
+                const was_audio = is_audio_thread;
+                is_audio_thread = true;
+                defer is_audio_thread = was_audio;
+                handle.plugin.stopProcessing(handle.plugin);
+                s.clearFxPluginStarted(track_index, fx_index);
             }
         }
         handle.deinit(allocator);
@@ -1464,6 +1709,24 @@ fn closePluginGui(track: *TrackPlugin) void {
     track.gui_open = false;
 }
 
+fn closeAllPluginGuis(
+    track_plugins: *[ui.track_count]TrackPlugin,
+    track_fx: *[ui.track_count][ui.max_fx_slots]TrackPlugin,
+) void {
+    for (track_plugins) |*track| {
+        if (track.gui_open) {
+            closePluginGui(track);
+        }
+    }
+    for (track_fx) |*track_slots| {
+        for (track_slots) |*slot| {
+            if (slot.gui_open) {
+                closePluginGui(slot);
+            }
+        }
+    }
+}
+
 // ============================================================================
 // DAWproject File Handling
 // ============================================================================
@@ -1478,6 +1741,7 @@ fn handleFileRequests(
     state: *ui.State,
     catalog: *const plugins.PluginCatalog,
     track_plugins: *[ui.track_count]TrackPlugin,
+    track_fx: *[ui.track_count][ui.max_fx_slots]TrackPlugin,
     host: *const clap.Host,
     shared: ?*audio_engine.SharedState,
     synths: [ui.track_count]*zsynth.Plugin,
@@ -1488,7 +1752,7 @@ fn handleFileRequests(
         if (state.project_path == null) {
             state.save_project_as_request = true;
         } else {
-            handleSaveProject(allocator, io, state, catalog, track_plugins) catch |err| {
+            handleSaveProject(allocator, io, state, catalog, track_plugins, track_fx) catch |err| {
                 std.log.err("Failed to save project: {}", .{err});
             };
         }
@@ -1496,7 +1760,7 @@ fn handleFileRequests(
 
     if (state.save_project_as_request) {
         state.save_project_as_request = false;
-        handleSaveProjectAs(allocator, io, state, catalog, track_plugins) catch |err| {
+        handleSaveProjectAs(allocator, io, state, catalog, track_plugins, track_fx) catch |err| {
             std.log.err("Failed to save project as: {}", .{err});
         };
     }
@@ -1504,7 +1768,7 @@ fn handleFileRequests(
     // Handle load request
     if (state.load_project_request) {
         state.load_project_request = false;
-        handleLoadProject(allocator, io, state, catalog, track_plugins, host, shared, synths) catch |err| {
+        handleLoadProject(allocator, io, state, catalog, track_plugins, track_fx, host, shared, synths) catch |err| {
             std.log.err("Failed to load project: {}", .{err});
         };
     }
@@ -1534,9 +1798,10 @@ fn handleSaveProject(
     state: *const ui.State,
     catalog: *const plugins.PluginCatalog,
     track_plugins: *const [ui.track_count]TrackPlugin,
+    track_fx: *const [ui.track_count][ui.max_fx_slots]TrackPlugin,
 ) !void {
     const path = state.project_path orelse return;
-    try saveProjectToPath(allocator, io, path, state, catalog, track_plugins);
+    try saveProjectToPath(allocator, io, path, state, catalog, track_plugins, track_fx);
 }
 
 fn handleSaveProjectAs(
@@ -1545,6 +1810,7 @@ fn handleSaveProjectAs(
     state: *ui.State,
     catalog: *const plugins.PluginCatalog,
     track_plugins: *const [ui.track_count]TrackPlugin,
+    track_fx: *const [ui.track_count][ui.max_fx_slots]TrackPlugin,
 ) !void {
     const default_name = if (state.project_path) |path| std.fs.path.basename(path) else "project.dawproject";
 
@@ -1564,7 +1830,7 @@ fn handleSaveProjectAs(
     }
     defer allocator.free(path.?);
 
-    try saveProjectToPath(allocator, io, path.?, state, catalog, track_plugins);
+    try saveProjectToPath(allocator, io, path.?, state, catalog, track_plugins, track_fx);
     try state.setProjectPath(path.?);
 }
 
@@ -1575,6 +1841,7 @@ fn saveProjectToPath(
     state: *const ui.State,
     catalog: *const plugins.PluginCatalog,
     track_plugins: *const [ui.track_count]TrackPlugin,
+    track_fx: *const [ui.track_count][ui.max_fx_slots]TrackPlugin,
 ) !void {
     // Collect plugin states and plugin info
     var plugin_states: std.ArrayList(dawproject.PluginStateFile) = .empty;
@@ -1584,21 +1851,47 @@ fn saveProjectToPath(
     for (&track_plugin_info) |*info| {
         info.* = .{};
     }
+    var track_fx_plugin_info: [ui.track_count][ui.max_fx_slots]dawproject.TrackPluginInfo = undefined;
+    for (&track_fx_plugin_info) |*track_slots| {
+        for (track_slots) |*info| {
+            info.* = .{};
+        }
+    }
 
     for (track_plugins, 0..) |track, t| {
         if (track.handle) |handle| {
             // Get the plugin ID from the loaded plugin's descriptor
             track_plugin_info[t].plugin_id = std.mem.span(handle.plugin.descriptor.id);
 
-            if (capturePluginStateForDawproject(allocator, handle.plugin, t)) |ps| {
+            if (capturePluginStateForDawproject(allocator, handle.plugin, t, null)) |ps| {
                 track_plugin_info[t].state_path = ps.path;
                 plugin_states.append(allocator, ps) catch continue;
             }
         }
     }
+    for (track_fx, 0..) |track_slots, t| {
+        for (track_slots, 0..) |slot, fx_index| {
+            if (slot.handle) |handle| {
+                track_fx_plugin_info[t][fx_index].plugin_id = std.mem.span(handle.plugin.descriptor.id);
+                if (capturePluginStateForDawproject(allocator, handle.plugin, t, fx_index)) |ps| {
+                    track_fx_plugin_info[t][fx_index].state_path = ps.path;
+                    plugin_states.append(allocator, ps) catch continue;
+                }
+            }
+        }
+    }
 
     // Save the project
-    dawproject.save(allocator, io, path, state, catalog, plugin_states.items, &track_plugin_info) catch |err| {
+    dawproject.save(
+        allocator,
+        io,
+        path,
+        state,
+        catalog,
+        plugin_states.items,
+        &track_plugin_info,
+        &track_fx_plugin_info,
+    ) catch |err| {
         std.log.err("Failed to write dawproject: {}", .{err});
         return;
     };
@@ -1612,6 +1905,7 @@ fn handleLoadProject(
     state: *ui.State,
     catalog: *const plugins.PluginCatalog,
     track_plugins: *[ui.track_count]TrackPlugin,
+    track_fx: *[ui.track_count][ui.max_fx_slots]TrackPlugin,
     host: *const clap.Host,
     shared: ?*audio_engine.SharedState,
     synths: [ui.track_count]*zsynth.Plugin,
@@ -1641,7 +1935,7 @@ fn handleLoadProject(
     defer loaded.deinit();
 
     // Apply to state
-    applyDawprojectToState(allocator, &loaded, state, catalog, track_plugins, host, shared, io, synths) catch |err| {
+    applyDawprojectToState(allocator, &loaded, state, catalog, track_plugins, track_fx, host, shared, io, synths) catch |err| {
         std.log.err("Failed to apply dawproject: {}", .{err});
         return;
     };
@@ -1650,7 +1944,12 @@ fn handleLoadProject(
     std.log.info("Loaded project from: {s}", .{path.?});
 }
 
-fn capturePluginStateForDawproject(allocator: std.mem.Allocator, plugin: *const clap.Plugin, track_index: usize) ?dawproject.PluginStateFile {
+fn capturePluginStateForDawproject(
+    allocator: std.mem.Allocator,
+    plugin: *const clap.Plugin,
+    track_index: usize,
+    fx_index: ?usize,
+) ?dawproject.PluginStateFile {
     const ext_raw = plugin.getExtension(plugin, clap.ext.state.id) orelse return null;
     const ext: *const clap.ext.state.Plugin = @ptrCast(@alignCast(ext_raw));
 
@@ -1693,7 +1992,10 @@ fn capturePluginStateForDawproject(allocator: std.mem.Allocator, plugin: *const 
     @memcpy(container[header_size..], stream.buffer.items);
 
     var path_buf: [64]u8 = undefined;
-    const plugin_path = std.fmt.bufPrint(&path_buf, "plugins/track{d}.clap-preset", .{track_index}) catch return null;
+    const plugin_path = if (fx_index) |fx_slot|
+        std.fmt.bufPrint(&path_buf, "plugins/track{d}-fx{d}.clap-preset", .{ track_index, fx_slot }) catch return null
+    else
+        std.fmt.bufPrint(&path_buf, "plugins/track{d}.clap-preset", .{track_index}) catch return null;
 
     return .{
         .path = allocator.dupe(u8, plugin_path) catch return null,
@@ -1746,6 +2048,7 @@ fn applyDawprojectToState(
     state: *ui.State,
     catalog: *const plugins.PluginCatalog,
     track_plugins: *[ui.track_count]TrackPlugin,
+    track_fx: *[ui.track_count][ui.max_fx_slots]TrackPlugin,
     host: *const clap.Host,
     shared: ?*audio_engine.SharedState,
     io: std.Io,
@@ -1772,6 +2075,17 @@ fn applyDawprojectToState(
     const track_count = @min(proj.tracks.len, ui.track_count);
     state.session.track_count = track_count;
 
+    for (0..ui.track_count) |t| {
+        state.track_plugins[t].choice_index = 0;
+        state.track_plugins[t].gui_open = false;
+        state.track_plugins[t].last_valid_choice = 0;
+        for (0..ui.max_fx_slots) |fx_index| {
+            state.track_fx[t][fx_index].choice_index = 0;
+            state.track_fx[t][fx_index].gui_open = false;
+            state.track_fx[t][fx_index].last_valid_choice = 0;
+        }
+    }
+
     for (0..track_count) |t| {
         const track = proj.tracks[t];
         state.session.tracks[t].setName(track.name);
@@ -1787,11 +2101,18 @@ fn applyDawprojectToState(
 
             // Handle CLAP plugins
             if (channel.devices.len > 0) {
-                const device = channel.devices[0];
-                // Find matching plugin in catalog
-                const choice = findPluginInCatalog(catalog, device.device_id);
-                state.track_plugins[t].choice_index = choice;
-                state.track_plugins[t].last_valid_choice = choice;
+                var fx_slot: usize = 0;
+                for (channel.devices) |device| {
+                    const choice = findPluginInCatalog(catalog, device.device_id);
+                    if (device.device_role == .instrument or device.device_role == .noteFX) {
+                        state.track_plugins[t].choice_index = choice;
+                        state.track_plugins[t].last_valid_choice = choice;
+                    } else if (device.device_role == .audioFX and fx_slot < ui.max_fx_slots) {
+                        state.track_fx[t][fx_slot].choice_index = choice;
+                        state.track_fx[t][fx_slot].last_valid_choice = choice;
+                        fx_slot += 1;
+                    }
+                }
             }
         }
     }
@@ -1831,20 +2152,27 @@ fn applyDawprojectToState(
     }
 
     // Sync track plugins after state update
-    try syncTrackPlugins(allocator, host, track_plugins, state, catalog, shared, io, state.buffer_frames, true);
+    try syncTrackPlugins(allocator, host, track_plugins, track_fx, state, catalog, shared, io, state.buffer_frames, true);
+    try syncFxPlugins(allocator, host, track_plugins, track_fx, state, catalog, shared, io, state.buffer_frames, true);
 
     // Load plugin states from dawproject
     for (0..track_count) |t| {
-        if (track_plugins[t].handle) |handle| {
-            const track = proj.tracks[t];
-            if (track.channel) |channel| {
-                if (channel.devices.len > 0) {
-                    const device = channel.devices[0];
-                    if (device.state) |state_ref| {
-                        if (loaded.plugin_states.get(state_ref.path)) |state_data| {
-                            loadPluginStateFromData(handle.plugin, state_data);
-                        }
+        const track = proj.tracks[t];
+        if (track.channel) |channel| {
+            var fx_slot: usize = 0;
+            for (channel.devices) |device| {
+                if (device.state == null) continue;
+                const state_ref = device.state.?;
+                const state_data = loaded.plugin_states.get(state_ref.path) orelse continue;
+                if (device.device_role == .instrument or device.device_role == .noteFX) {
+                    if (track_plugins[t].handle) |handle| {
+                        loadPluginStateFromData(handle.plugin, state_data);
                     }
+                } else if (device.device_role == .audioFX and fx_slot < ui.max_fx_slots) {
+                    if (track_fx[t][fx_slot].handle) |handle| {
+                        loadPluginStateFromData(handle.plugin, state_data);
+                    }
+                    fx_slot += 1;
                 }
             }
         }
@@ -1957,9 +2285,21 @@ fn loadPluginStateFromData(plugin: *const clap.Plugin, data: []const u8) void {
     const ext_raw = plugin.getExtension(plugin, clap.ext.state.id) orelse return;
     const ext: *const clap.ext.state.Plugin = @ptrCast(@alignCast(ext_raw));
 
-    var stream = MemoryIStream.init(data);
+    const payload = stripClapPresetHeader(data) orelse data;
+    var stream = MemoryIStream.init(payload);
     stream.stream.context = &stream;
     _ = ext.load(plugin, &stream.stream);
+}
+
+fn stripClapPresetHeader(data: []const u8) ?[]const u8 {
+    if (data.len < 8) return null;
+    if (!std.mem.eql(u8, data[0..4], "clap")) return null;
+    const len: usize = (@as(usize, data[4]) << 24) |
+        (@as(usize, data[5]) << 16) |
+        (@as(usize, data[6]) << 8) |
+        @as(usize, data[7]);
+    if (data.len < 8 + len) return null;
+    return data[(8 + len)..];
 }
 
 const MemoryOStream = struct {

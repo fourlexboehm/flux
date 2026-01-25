@@ -13,10 +13,20 @@ pub const SharedState = struct {
     process_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     snapshots: []audio_graph.StateSnapshot,
     track_plugins: [ui.track_count]?*const clap.Plugin = [_]?*const clap.Plugin{null} ** ui.track_count,
+    track_fx_plugins: [ui.track_count][ui.max_fx_slots]?*const clap.Plugin =
+        [_][ui.max_fx_slots]?*const clap.Plugin{[_]?*const clap.Plugin{null} ** ui.max_fx_slots} ** ui.track_count,
     /// Tracks which plugins need startProcessing called (done from audio thread)
     plugins_need_start: [ui.track_count]std.atomic.Value(bool) = [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** ui.track_count,
     /// Tracks which plugins have had startProcessing called (for stopProcessing on cleanup)
     plugins_started: [ui.track_count]std.atomic.Value(bool) = [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** ui.track_count,
+    plugins_need_start_fx: [ui.track_count][ui.max_fx_slots]std.atomic.Value(bool) =
+        [_][ui.max_fx_slots]std.atomic.Value(bool){
+            [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** ui.max_fx_slots,
+        } ** ui.track_count,
+    plugins_started_fx: [ui.track_count][ui.max_fx_slots]std.atomic.Value(bool) =
+        [_][ui.max_fx_slots]std.atomic.Value(bool){
+            [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** ui.max_fx_slots,
+        } ** ui.track_count,
 
     pub fn init(allocator: std.mem.Allocator) !SharedState {
         var snapshots = try allocator.alloc(audio_graph.StateSnapshot, 2);
@@ -46,6 +56,7 @@ pub const SharedState = struct {
         back.tracks = state.session.tracks;
         back.clips = state.session.clips;
         back.track_plugins = self.track_plugins;
+        back.track_fx_plugins = self.track_fx_plugins;
         back.live_key_states = state.live_key_states;
         for (0..ui.track_count) |t| {
             for (0..ui.scene_count) |s| {
@@ -62,8 +73,13 @@ pub const SharedState = struct {
         self.active_index.store(next, .release);
     }
 
-    pub fn updatePlugins(self: *SharedState, plugins: [ui.track_count]?*const clap.Plugin) void {
+    pub fn updatePlugins(
+        self: *SharedState,
+        plugins: [ui.track_count]?*const clap.Plugin,
+        fx_plugins: [ui.track_count][ui.max_fx_slots]?*const clap.Plugin,
+    ) void {
         self.track_plugins = plugins;
+        self.track_fx_plugins = fx_plugins;
     }
 
     pub fn setTrackPlugin(self: *SharedState, track_index: usize, plugin: ?*const clap.Plugin) void {
@@ -72,6 +88,15 @@ pub const SharedState = struct {
         const next: u32 = 1 - current;
         self.snapshots[next] = self.snapshots[current];
         self.snapshots[next].track_plugins[track_index] = plugin;
+        self.active_index.store(next, .release);
+    }
+
+    pub fn setTrackFxPlugin(self: *SharedState, track_index: usize, fx_index: usize, plugin: ?*const clap.Plugin) void {
+        self.track_fx_plugins[track_index][fx_index] = plugin;
+        const current = self.active_index.load(.acquire);
+        const next: u32 = 1 - current;
+        self.snapshots[next] = self.snapshots[current];
+        self.snapshots[next].track_fx_plugins[track_index][fx_index] = plugin;
         self.active_index.store(next, .release);
     }
 
@@ -98,6 +123,26 @@ pub const SharedState = struct {
     /// Clear the started flag when unloading a plugin
     pub fn clearPluginStarted(self: *SharedState, track_index: usize) void {
         self.plugins_started[track_index].store(false, .release);
+    }
+
+    pub fn requestStartProcessingFx(self: *SharedState, track_index: usize, fx_index: usize) void {
+        self.plugins_need_start_fx[track_index][fx_index].store(true, .release);
+    }
+
+    pub fn checkAndClearStartProcessingFx(self: *SharedState, track_index: usize, fx_index: usize) bool {
+        return self.plugins_need_start_fx[track_index][fx_index].swap(false, .acq_rel);
+    }
+
+    pub fn markFxPluginStarted(self: *SharedState, track_index: usize, fx_index: usize) void {
+        self.plugins_started_fx[track_index][fx_index].store(true, .release);
+    }
+
+    pub fn isFxPluginStarted(self: *SharedState, track_index: usize, fx_index: usize) bool {
+        return self.plugins_started_fx[track_index][fx_index].load(.acquire);
+    }
+
+    pub fn clearFxPluginStarted(self: *SharedState, track_index: usize, fx_index: usize) void {
+        self.plugins_started_fx[track_index][fx_index].store(false, .release);
     }
 
     pub fn snapshot(self: *SharedState) *const audio_graph.StateSnapshot {
@@ -170,8 +215,12 @@ pub const AudioEngine = struct {
         try self.rebuildGraph(self.track_count, true);
     }
 
-    pub fn updatePlugins(self: *AudioEngine, plugins: [ui.track_count]?*const clap.Plugin) void {
-        self.shared.updatePlugins(plugins);
+    pub fn updatePlugins(
+        self: *AudioEngine,
+        plugins: [ui.track_count]?*const clap.Plugin,
+        fx_plugins: [ui.track_count][ui.max_fx_slots]?*const clap.Plugin,
+    ) void {
+        self.shared.updatePlugins(plugins, fx_plugins);
     }
 
     pub fn render(self: *AudioEngine, device: *zaudio.Device, output: ?*anyopaque, frame_count: u32) void {
@@ -251,6 +300,20 @@ fn buildGraph(
         synth_node.addOutput(.audio);
         synth_nodes[track_index] = try graph.addNode(synth_node);
 
+        var prev_node = synth_nodes[track_index];
+        for (0..ui.max_fx_slots) |fx_index| {
+            var fx_node = audio_graph.Node{
+                .id = 0,
+                .kind = .fx,
+                .data = .{ .fx = audio_graph.FxNode.init(track_index, fx_index) },
+            };
+            fx_node.addInput(.audio);
+            fx_node.addOutput(.audio);
+            const fx_id = try graph.addNode(fx_node);
+            try graph.connect(prev_node, 0, fx_id, 0, .audio);
+            prev_node = fx_id;
+        }
+
         var gain_node = audio_graph.Node{
             .id = 0,
             .kind = .gain,
@@ -261,7 +324,7 @@ fn buildGraph(
         gain_nodes[track_index] = try graph.addNode(gain_node);
 
         try graph.connect(note_nodes[track_index], 0, synth_nodes[track_index], 0, .events);
-        try graph.connect(synth_nodes[track_index], 0, gain_nodes[track_index], 0, .audio);
+        try graph.connect(prev_node, 0, gain_nodes[track_index], 0, .audio);
     }
 
     var mixer_node = audio_graph.Node{

@@ -141,6 +141,7 @@ pub const RecordingState = struct {
     track: ?usize = null,
     scene: ?usize = null,
     start_beat: f32 = 0,
+    queued_at_beat: f32 = 0,
     target_length_beats: f32 = default_clip_bars * beats_per_bar, // 4 bars
     note_start_beats: [128]?f32 = [_]?f32{null} ** 128, // Track held notes
     is_new_clip: bool = false,
@@ -153,6 +154,7 @@ pub const RecordingState = struct {
         self.track = null;
         self.scene = null;
         self.start_beat = 0;
+        self.queued_at_beat = 0;
         self.target_length_beats = default_clip_bars * beats_per_bar;
         self.note_start_beats = [_]?f32{null} ** 128;
         self.is_new_clip = false;
@@ -1365,7 +1367,7 @@ pub const SessionView = struct {
                 }
             } else if (is_armed_track and (is_empty or slot.state == .stopped)) {
                 // Click record button on armed track -> start recording
-                self.startRecording(track, scene, playing);
+                self.startRecording(track, scene, playing, playhead_beat);
             } else {
                 // Normal play/stop behavior
                 self.toggleClipPlayback(track, scene, playing);
@@ -1724,7 +1726,7 @@ pub const SessionView = struct {
     }
 
     /// Start recording on a clip slot
-    pub fn startRecording(self: *SessionView, track: usize, scene: usize, playing: bool) void {
+    pub fn startRecording(self: *SessionView, track: usize, scene: usize, playing: bool, playhead_beat: f32) void {
         // If already recording somewhere else, stop it first
         if (self.recording.isRecording()) {
             self.stopRecording(.stop);
@@ -1751,6 +1753,7 @@ pub const SessionView = struct {
         self.recording.target_length_beats = self.clips[track][scene].length_beats;
         self.recording.note_start_beats = [_]?f32{null} ** 128;
         self.recording.start_beat = 0;
+        self.recording.queued_at_beat = playhead_beat;
 
         if (!playing) {
             // Start immediately - playhead will be reset to 0
