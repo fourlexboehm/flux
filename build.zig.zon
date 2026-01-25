@@ -62,6 +62,14 @@
             .url = "git+https://github.com/carlmontanari/zig-xml#chore/zig-0.16.0-dev-support",
             .hash = "xml-0.1.0-ZTbP35UoAgBojaHeY1SNlU1m8p9F82i1Qxgiulrp2v4E",
         },
+        .@"portmidi-zig" = .{
+            .url = "git+https://github.com/fourlexboehm/portmidi-zig#500826f70314ccbd707ec81c3c32182fdef44dba",
+            .hash = "N-V-__8AANLYAADJnWyhjNWcl09PoZ15Snn4O6gJK65rahW4",
+        },
+        .portmidi = .{
+            .url = "git+https://github.com/PortMidi/portmidi#101dac9455e2718512c94e24cbcae6a6f34b908b",
+            .hash = "N-V-__8AAE8rCwDYht7NKTZ6aSAmAQCvd7qGAxnmhd0p-AI6",
+        },
     },
 
     .paths = .{

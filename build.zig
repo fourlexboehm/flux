@@ -55,6 +55,8 @@ pub fn build(b: *std.Build) void {
     const objc = b.dependency("mach-objc", .{});
     const libz_jobs = b.dependency("libz_jobs", .{});
     const zig_xml = b.dependency("zig-xml", .{});
+    const portmidi_zig = b.dependency("portmidi-zig", .{});
+    const portmidi = b.dependency("portmidi", .{});
 
     const ztracy = b.dependency("ztracy", .{
         .enable_ztracy = (builtin.mode == .Debug or profiling == true) and !disable_profiling,
@@ -193,15 +195,13 @@ pub fn build(b: *std.Build) void {
     flux.root_module.linkLibrary(ztracy.artifact("tracy"));
     flux.root_module.addImport("libz_jobs", libz_jobs.module("libz_jobs"));
     flux.root_module.addImport("xml", zig_xml.module("xml"));
-    const portmidi_module = b.createModule(.{
-        .root_source_file = b.path("deps/portmidi-zig/src/portmidi.zig"),
-    });
-    portmidi_module.addIncludePath(b.path("deps/portmidi/pm_common"));
+    const portmidi_module = portmidi_zig.module("portmidi");
+    portmidi_module.addIncludePath(portmidi.path("pm_common"));
     flux.root_module.addImport("portmidi", portmidi_module);
-    flux.root_module.addIncludePath(b.path("deps/portmidi/pm_common"));
-    flux.root_module.addIncludePath(b.path("deps/portmidi/pm_mac"));
-    flux.root_module.addIncludePath(b.path("deps/portmidi/pm_linux"));
-    flux.root_module.addIncludePath(b.path("deps/portmidi/porttime"));
+    flux.root_module.addIncludePath(portmidi.path("pm_common"));
+    flux.root_module.addIncludePath(portmidi.path("pm_mac"));
+    flux.root_module.addIncludePath(portmidi.path("pm_linux"));
+    flux.root_module.addIncludePath(portmidi.path("porttime"));
     if (builtin.os.tag == .macos) {
         flux.root_module.addImport("objc", objc.module("mach-objc"));
         flux.root_module.linkFramework("AppKit", .{});
@@ -215,13 +215,14 @@ pub fn build(b: *std.Build) void {
         flux.root_module.linkFramework("CoreServices", .{});
         flux.root_module.linkFramework("CoreAudio", .{});
         flux.root_module.addCSourceFiles(.{
+            .root = portmidi.path(""),
             .files = &.{
-                "deps/portmidi/pm_common/portmidi.c",
-                "deps/portmidi/pm_common/pmutil.c",
-                "deps/portmidi/pm_mac/pmmac.c",
-                "deps/portmidi/pm_mac/pmmacosxcm.c",
-                "deps/portmidi/porttime/porttime.c",
-                "deps/portmidi/porttime/ptmacosx_mach.c",
+                "pm_common/portmidi.c",
+                "pm_common/pmutil.c",
+                "pm_mac/pmmac.c",
+                "pm_mac/pmmacosxcm.c",
+                "porttime/porttime.c",
+                "porttime/ptmacosx_mach.c",
             },
             .flags = &.{},
         });
@@ -230,16 +231,17 @@ pub fn build(b: *std.Build) void {
         flux.root_module.linkSystemLibrary("asound", .{});
         flux.root_module.linkSystemLibrary("pthread", .{});
         flux.root_module.addCSourceFiles(.{
+            .root = portmidi.path(""),
             .files = &.{
-                "deps/portmidi/pm_common/portmidi.c",
-                "deps/portmidi/pm_common/pmutil.c",
-                "deps/portmidi/pm_linux/pmlinux.c",
-                "deps/portmidi/pm_linux/pmlinuxalsa.c",
-                "deps/portmidi/pm_linux/pmlinuxnull.c",
-                "deps/portmidi/porttime/porttime.c",
-                "deps/portmidi/porttime/ptlinux.c",
+                "pm_common/portmidi.c",
+                "pm_common/pmutil.c",
+                "pm_linux/pmlinux.c",
+                "pm_linux/pmlinuxalsa.c",
+                "pm_linux/pmlinuxnull.c",
+                "porttime/porttime.c",
+                "porttime/ptlinux.c",
             },
-            .flags = &.{ "-DPMALSA" },
+            .flags = &.{"-DPMALSA"},
         });
         if (use_wayland) {
             flux.root_module.linkSystemLibrary("wayland-client", .{});
