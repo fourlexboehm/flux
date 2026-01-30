@@ -17,6 +17,8 @@ pub threadlocal var current_processing_plugin: ?*const clap.Plugin = null;
 
 pub const NodeId = u32;
 pub const max_clip_notes = 256;
+pub const max_automation_lanes = 8;
+pub const max_automation_points = 64;
 
 pub const PortKind = enum {
     audio,
@@ -55,12 +57,43 @@ pub const ClipNotes = struct {
     notes: [max_clip_notes]ui.Note = [_]ui.Note{
         .{ .pitch = 0, .start = 0, .duration = 0 },
     } ** max_clip_notes,
+    automation_lane_count: u8 = 0,
+    automation_lanes: [max_automation_lanes]AutomationLane = [_]AutomationLane{
+        .{},
+    } ** max_automation_lanes,
 };
 
-const max_note_events = 128;
+const max_input_events = 256;
+
+pub const AutomationTargetKind = enum(u8) {
+    track,
+    device,
+    parameter,
+};
+
+pub const AutomationPoint = struct {
+    time: f32,
+    value: f32,
+};
+
+pub const AutomationLane = struct {
+    target_kind: AutomationTargetKind = .parameter,
+    target_fx_index: i8 = -1,
+    param_id: clap.Id = clap.Id.invalid_id,
+    point_count: u16 = 0,
+    points: [max_automation_points]AutomationPoint = [_]AutomationPoint{
+        .{ .time = 0, .value = 0 },
+    } ** max_automation_points,
+};
 
 const EventList = struct {
-    events: [max_note_events]clap.events.Note = undefined,
+    const max_event_size = @max(@sizeOf(clap.events.Note), @sizeOf(clap.events.ParamValue));
+    const max_event_align = @max(@alignOf(clap.events.Note), @alignOf(clap.events.ParamValue));
+    const EventStorage = struct {
+        data: [max_event_size]u8 align(max_event_align) = undefined,
+    };
+
+    events: [max_input_events]EventStorage = undefined,
     count: u32 = 0,
 
     fn reset(self: *EventList) void {
@@ -68,10 +101,20 @@ const EventList = struct {
     }
 
     fn pushNote(self: *EventList, event: clap.events.Note) void {
-        if (self.count >= max_note_events) {
+        if (self.count >= max_input_events) {
             return;
         }
-        self.events[self.count] = event;
+        const bytes = std.mem.asBytes(&event);
+        @memcpy(self.events[self.count].data[0..bytes.len], bytes);
+        self.count += 1;
+    }
+
+    fn pushParam(self: *EventList, event: clap.events.ParamValue) void {
+        if (self.count >= max_input_events) {
+            return;
+        }
+        const bytes = std.mem.asBytes(&event);
+        @memcpy(self.events[self.count].data[0..bytes.len], bytes);
         self.count += 1;
     }
 };
@@ -83,17 +126,17 @@ fn inputEventsSize(list: *const clap.events.InputEvents) callconv(.c) u32 {
 
 fn inputEventsGet(list: *const clap.events.InputEvents, index: u32) callconv(.c) *const clap.events.Header {
     const ctx: *const EventList = @ptrCast(@alignCast(list.context));
-    return &ctx.events[index].header;
+    return @ptrCast(@alignCast(&ctx.events[index].data));
 }
 
 const OutputEventList = struct {
-    events: [max_note_events]clap.events.Note = undefined,
+    events: [max_input_events]clap.events.Note = undefined,
     count: u32 = 0,
 };
 
 fn outputEventsTryPush(list: *const clap.events.OutputEvents, event: *const clap.events.Header) callconv(.c) bool {
     const ctx: *OutputEventList = @ptrCast(@alignCast(list.context));
-    if (ctx.count >= max_note_events) {
+    if (ctx.count >= max_input_events) {
         return true;
     }
     switch (event.type) {
@@ -111,6 +154,8 @@ const max_active_notes = 128;
 
 pub const NoteSource = struct {
     track_index: usize,
+    emit_notes: bool = true,
+    target_fx_index: i8 = -1,
     current_beat: f64 = 0.0,
     // Track which pitches are currently sounding (by MIDI pitch 0-127)
     active_pitches: [128]bool = [_]bool{false} ** 128,
@@ -122,8 +167,12 @@ pub const NoteSource = struct {
         .get = inputEventsGet,
     },
 
-    pub fn init(track_index: usize) NoteSource {
-        return NoteSource{ .track_index = track_index };
+    pub fn init(track_index: usize, emit_notes: bool, target_fx_index: i8) NoteSource {
+        return NoteSource{
+            .track_index = track_index,
+            .emit_notes = emit_notes,
+            .target_fx_index = target_fx_index,
+        };
     }
 
     fn resetSequencer(self: *NoteSource) void {
@@ -131,7 +180,7 @@ pub const NoteSource = struct {
         self.last_scene = null;
     }
 
-    fn emitNoteOn(self: *NoteSource, pitch: u8, sample_offset: u32) void {
+    fn emitNoteOn(self: *NoteSource, pitch: u8, velocity: f32, sample_offset: u32) void {
         self.event_list.pushNote(.{
             .header = .{
                 .size = @sizeOf(clap.events.Note),
@@ -144,12 +193,12 @@ pub const NoteSource = struct {
             .port_index = @enumFromInt(0),
             .channel = @enumFromInt(0),
             .key = @enumFromInt(@as(i16, @intCast(pitch))),
-            .velocity = 1.0,
+            .velocity = velocity,
         });
         self.active_pitches[pitch] = true;
     }
 
-    fn emitNoteOff(self: *NoteSource, pitch: u8, sample_offset: u32) void {
+    fn emitNoteOff(self: *NoteSource, pitch: u8, release_velocity: f32, sample_offset: u32) void {
         self.event_list.pushNote(.{
             .header = .{
                 .size = @sizeOf(clap.events.Note),
@@ -162,17 +211,36 @@ pub const NoteSource = struct {
             .port_index = @enumFromInt(0),
             .channel = @enumFromInt(0),
             .key = @enumFromInt(@as(i16, @intCast(pitch))),
-            .velocity = 0.0,
+            .velocity = release_velocity,
         });
         self.active_pitches[pitch] = false;
+    }
+
+    fn emitParamValue(self: *NoteSource, param_id: clap.Id, value: f64, sample_offset: u32) void {
+        self.event_list.pushParam(.{
+            .header = .{
+                .size = @sizeOf(clap.events.ParamValue),
+                .sample_offset = sample_offset,
+                .space_id = clap.events.core_space_id,
+                .type = .param_value,
+                .flags = .{},
+            },
+            .param_id = param_id,
+            .cookie = null,
+            .note_id = .unspecified,
+            .port_index = .unspecified,
+            .channel = .unspecified,
+            .key = .unspecified,
+            .value = value,
+        });
     }
 
     fn updateCombined(self: *NoteSource, desired: *const [128]bool, sample_offset: u32) void {
         for (0..128) |pitch| {
             if (self.active_pitches[pitch] and !desired[pitch]) {
-                self.emitNoteOff(@intCast(pitch), sample_offset);
+                self.emitNoteOff(@intCast(pitch), 0.0, sample_offset);
             } else if (!self.active_pitches[pitch] and desired[pitch]) {
-                self.emitNoteOn(@intCast(pitch), sample_offset);
+                self.emitNoteOn(@intCast(pitch), 1.0, sample_offset);
             }
         }
     }
@@ -214,8 +282,10 @@ pub const NoteSource = struct {
         const live_should = &snapshot.live_key_states[self.track_index];
 
         if (!snapshot.playing) {
-            self.resetSequencer();
-            self.updateCombined(live_should, 0);
+            if (self.emit_notes) {
+                self.resetSequencer();
+                self.updateCombined(live_should, 0);
+            }
             return &self.input_events;
         }
 
@@ -230,8 +300,10 @@ pub const NoteSource = struct {
         }
 
         if (active_scene == null) {
-            self.resetSequencer();
-            self.updateCombined(live_should, 0);
+            if (self.emit_notes) {
+                self.resetSequencer();
+                self.updateCombined(live_should, 0);
+            }
             return &self.input_events;
         }
 
@@ -244,7 +316,9 @@ pub const NoteSource = struct {
 
         const clip_len = @as(f64, clip.length_beats);
         if (clip_len <= 0.0) {
-            self.updateCombined(live_should, 0);
+            if (self.emit_notes) {
+                self.updateCombined(live_should, 0);
+            }
             return &self.input_events;
         }
 
@@ -255,7 +329,9 @@ pub const NoteSource = struct {
         const beat_start = @mod(self.current_beat, clip_len);
         const beat_end = beat_start + block_beats;
 
-        self.updateNotesAtBeat(clip, @floatCast(beat_start), 0, live_should);
+        if (self.emit_notes) {
+            self.updateNotesAtBeat(clip, @floatCast(beat_start), 0, live_should);
+        }
 
         if (beat_end < clip_len) {
             self.processSegment(clip, beat_start, beat_end, 0, beats_per_sample, clip_len);
@@ -285,16 +361,75 @@ pub const NoteSource = struct {
         clip_len: f64,
     ) void {
         if (seg_end <= seg_start) return;
-        for (clip.notes[0..clip.count]) |note| {
-            const note_start = @as(f64, note.start);
-            const note_end = note_start + @as(f64, note.duration);
+        if (self.emit_notes) {
+            for (clip.notes[0..clip.count]) |note| {
+                const note_start = @as(f64, note.start);
+                const note_end = note_start + @as(f64, note.duration);
 
-            if (note_end <= clip_len) {
-                self.emitNoteEvents(note.pitch, note_start, note_end, seg_start, seg_end, base_sample_offset, beats_per_sample);
-            } else {
-                const wrapped_end = note_end - clip_len;
-                self.emitNoteEvents(note.pitch, note_start, clip_len, seg_start, seg_end, base_sample_offset, beats_per_sample);
-                self.emitNoteEvents(note.pitch, 0.0, wrapped_end, seg_start, seg_end, base_sample_offset, beats_per_sample);
+                if (note_end <= clip_len) {
+                    self.emitNoteEvents(
+                        note.pitch,
+                        note.velocity,
+                        note.release_velocity,
+                        note_start,
+                        note_end,
+                        seg_start,
+                        seg_end,
+                        base_sample_offset,
+                        beats_per_sample,
+                    );
+                } else {
+                    const wrapped_end = note_end - clip_len;
+                    self.emitNoteEvents(
+                        note.pitch,
+                        note.velocity,
+                        note.release_velocity,
+                        note_start,
+                        clip_len,
+                        seg_start,
+                        seg_end,
+                        base_sample_offset,
+                        beats_per_sample,
+                    );
+                    self.emitNoteEvents(
+                        note.pitch,
+                        note.velocity,
+                        note.release_velocity,
+                        0.0,
+                        wrapped_end,
+                        seg_start,
+                        seg_end,
+                        base_sample_offset,
+                        beats_per_sample,
+                    );
+                }
+            }
+        }
+
+        self.processAutomationSegment(clip, seg_start, seg_end, base_sample_offset, beats_per_sample);
+    }
+
+    fn processAutomationSegment(
+        self: *NoteSource,
+        clip: *const ClipNotes,
+        seg_start: f64,
+        seg_end: f64,
+        base_sample_offset: u32,
+        beats_per_sample: f64,
+    ) void {
+        if (clip.automation_lane_count == 0) return;
+        for (clip.automation_lanes[0..clip.automation_lane_count]) |lane| {
+            if (lane.target_kind != .parameter or lane.param_id == clap.Id.invalid_id) {
+                continue;
+            }
+            if (lane.target_fx_index != self.target_fx_index) {
+                continue;
+            }
+            for (lane.points[0..lane.point_count]) |point| {
+                const point_time = @as(f64, point.time);
+                if (point_time < seg_start or point_time >= seg_end) continue;
+                const offset = base_sample_offset + @as(u32, @intFromFloat(@floor((point_time - seg_start) / beats_per_sample)));
+                self.emitParamValue(lane.param_id, @as(f64, point.value), offset);
             }
         }
     }
@@ -302,6 +437,8 @@ pub const NoteSource = struct {
     fn emitNoteEvents(
         self: *NoteSource,
         pitch: u8,
+        velocity: f32,
+        release_velocity: f32,
         note_start: f64,
         note_end: f64,
         seg_start: f64,
@@ -311,11 +448,11 @@ pub const NoteSource = struct {
     ) void {
         if (note_start > seg_start and note_start < seg_end) {
             const offset = base_sample_offset + @as(u32, @intFromFloat(@floor((note_start - seg_start) / beats_per_sample)));
-            self.emitNoteOn(pitch, offset);
+            self.emitNoteOn(pitch, velocity, offset);
         }
         if (note_end > seg_start and note_end < seg_end) {
             const offset = base_sample_offset + @as(u32, @intFromFloat(@floor((note_end - seg_start) / beats_per_sample)));
-            self.emitNoteOff(pitch, offset);
+            self.emitNoteOff(pitch, release_velocity, offset);
         }
     }
 };
@@ -823,6 +960,7 @@ pub const Graph = struct {
             .size = inputEventsSize,
             .get = inputEventsGet,
         };
+        const input_events = ctx.graph.findEventInput(node_id) orelse &empty_input_events;
 
         const tempo = @as(f64, ctx.snapshot.bpm);
         const beats = @as(f64, ctx.snapshot.playhead_beat);
@@ -876,7 +1014,7 @@ pub const Graph = struct {
             .audio_outputs = @as([*]clap.AudioBuffer, @ptrCast(&audio_out)),
             .audio_inputs_count = 1,
             .audio_outputs_count = 1,
-            .in_events = &empty_input_events,
+            .in_events = input_events,
             .out_events = &out_events,
         };
 
