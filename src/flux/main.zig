@@ -8,6 +8,7 @@ const zglfw = @import("zglfw");
 const zopengl = @import("zopengl");
 const objc = if (builtin.os.tag == .macos) @import("objc") else struct {};
 
+const options = @import("options");
 const ui = @import("ui.zig");
 const audio_engine = @import("audio_engine.zig");
 const audio_graph = @import("audio_graph.zig");
@@ -16,6 +17,10 @@ const plugins = @import("plugins.zig");
 const dawproject = @import("dawproject.zig");
 const file_dialog = @import("file_dialog.zig");
 const midi_input = @import("midi_input.zig");
+
+pub const std_options: std.Options = .{
+    .enable_segfault_handler = options.enable_segfault_handler,
+};
 
 const SampleRate = 44_100;
 const Channels = 2;
@@ -1843,6 +1848,10 @@ fn saveProjectToPath(
     track_plugins: *const [ui.track_count]TrackPlugin,
     track_fx: *const [ui.track_count][ui.max_fx_slots]TrackPlugin,
 ) !void {
+    var param_arena = std.heap.ArenaAllocator.init(allocator);
+    defer param_arena.deinit();
+    const param_alloc = param_arena.allocator();
+
     // Collect plugin states and plugin info
     var plugin_states: std.ArrayList(dawproject.PluginStateFile) = .empty;
     defer plugin_states.deinit(allocator);
@@ -1862,6 +1871,7 @@ fn saveProjectToPath(
         if (track.handle) |handle| {
             // Get the plugin ID from the loaded plugin's descriptor
             track_plugin_info[t].plugin_id = std.mem.span(handle.plugin.descriptor.id);
+            track_plugin_info[t].params = collectPluginParams(param_alloc, handle.plugin);
 
             if (capturePluginStateForDawproject(allocator, handle.plugin, t, null)) |ps| {
                 track_plugin_info[t].state_path = ps.path;
@@ -1873,6 +1883,7 @@ fn saveProjectToPath(
         for (track_slots, 0..) |slot, fx_index| {
             if (slot.handle) |handle| {
                 track_fx_plugin_info[t][fx_index].plugin_id = std.mem.span(handle.plugin.descriptor.id);
+                track_fx_plugin_info[t][fx_index].params = collectPluginParams(param_alloc, handle.plugin);
                 if (capturePluginStateForDawproject(allocator, handle.plugin, t, fx_index)) |ps| {
                     track_fx_plugin_info[t][fx_index].state_path = ps.path;
                     plugin_states.append(allocator, ps) catch continue;
@@ -1897,6 +1908,37 @@ fn saveProjectToPath(
     };
 
     std.log.info("Saved project to: {s}", .{path});
+}
+
+fn collectPluginParams(
+    allocator: std.mem.Allocator,
+    plugin: *const clap.Plugin,
+) []const dawproject.PluginParamInfo {
+    const ext_raw = plugin.getExtension(plugin, clap.ext.params.id) orelse return &.{};
+    const params: *const clap.ext.params.Plugin = @ptrCast(@alignCast(ext_raw));
+    const count = params.count(plugin);
+    if (count == 0) return &.{};
+
+    var list: std.ArrayList(dawproject.PluginParamInfo) = .empty;
+    for (0..count) |i| {
+        var info: clap.ext.params.Info = undefined;
+        if (!params.getInfo(plugin, @intCast(i), &info)) continue;
+        const name = std.mem.sliceTo(info.name[0..], 0);
+        var value: f64 = info.default_value;
+        if (!params.getValue(plugin, info.id, &value)) {
+            value = info.default_value;
+        }
+        list.append(allocator, .{
+            .id = @intFromEnum(info.id),
+            .name = allocator.dupe(u8, name) catch "",
+            .min = info.min_value,
+            .max = info.max_value,
+            .default_value = info.default_value,
+            .value = value,
+        }) catch {};
+    }
+
+    return list.toOwnedSlice(allocator) catch &.{};
 }
 
 fn handleLoadProject(
@@ -2074,6 +2116,10 @@ fn applyDawprojectToState(
     // Apply tracks
     const track_count = @min(proj.tracks.len, ui.track_count);
     state.session.track_count = track_count;
+    var instrument_device_ids: [ui.track_count]?[]const u8 = [_]?[]const u8{null} ** ui.track_count;
+    var fx_device_ids: [ui.track_count][ui.max_fx_slots]?[]const u8 = [_][ui.max_fx_slots]?[]const u8{
+        [_]?[]const u8{null} ** ui.max_fx_slots,
+    } ** ui.track_count;
 
     for (0..ui.track_count) |t| {
         state.track_plugins[t].choice_index = 0;
@@ -2107,9 +2153,11 @@ fn applyDawprojectToState(
                     if (device.device_role == .instrument or device.device_role == .noteFX) {
                         state.track_plugins[t].choice_index = choice;
                         state.track_plugins[t].last_valid_choice = choice;
+                        instrument_device_ids[t] = device.id;
                     } else if (device.device_role == .audioFX and fx_slot < ui.max_fx_slots) {
                         state.track_fx[t][fx_slot].choice_index = choice;
                         state.track_fx[t][fx_slot].last_valid_choice = choice;
+                        fx_device_ids[t][fx_slot] = device.id;
                         fx_slot += 1;
                     }
                 }
@@ -2144,10 +2192,10 @@ fn applyDawprojectToState(
     }
 
     if (applied_scene_clips) {
-        try applyScenes(state, proj.scenes, proj.tracks, proj.master_track);
+        try applyScenes(state, proj.scenes, proj.tracks, proj.master_track, &instrument_device_ids, &fx_device_ids);
     } else if (proj.arrangement) |arr| {
         if (arr.lanes) |root_lanes| {
-            try applyLanes(state, &root_lanes, proj.tracks);
+            try applyLanes(state, &root_lanes, proj.tracks, &instrument_device_ids, &fx_device_ids);
         }
     }
 
@@ -2192,7 +2240,13 @@ fn findPluginInCatalog(catalog: *const plugins.PluginCatalog, device_id: []const
     return 0; // Default to "None"
 }
 
-fn applyLanes(state: *ui.State, lanes: *const dawproject.Lanes, tracks: []const dawproject.Track) !void {
+fn applyLanes(
+    state: *ui.State,
+    lanes: *const dawproject.Lanes,
+    tracks: []const dawproject.Track,
+    instrument_device_ids: *const [ui.track_count]?[]const u8,
+    fx_device_ids: *const [ui.track_count][ui.max_fx_slots]?[]const u8,
+) !void {
     // Find track index for this lane
     var track_idx: ?usize = null;
     if (lanes.track) |track_id| {
@@ -2223,9 +2277,22 @@ fn applyLanes(state: *ui.State, lanes: *const dawproject.Lanes, tracks: []const 
                     piano.notes.clearRetainingCapacity();
                     if (clip.notes) |notes| {
                         for (notes.notes) |note| {
-                            piano.addNote(@intCast(note.key), @floatCast(note.time), @floatCast(note.duration)) catch continue;
+                            piano.addNoteWithVelocity(
+                                @intCast(note.key),
+                                @floatCast(note.time),
+                                @floatCast(note.duration),
+                                @floatCast(note.vel),
+                                @floatCast(note.rel),
+                            ) catch continue;
                         }
                     }
+                    try applyAutomationToClip(
+                        state.allocator,
+                        piano,
+                        clip.points,
+                        instrument_device_ids[t],
+                        &fx_device_ids[t],
+                    );
                 }
             }
         }
@@ -2233,7 +2300,7 @@ fn applyLanes(state: *ui.State, lanes: *const dawproject.Lanes, tracks: []const 
 
     // Recurse into child lanes
     for (lanes.children) |child| {
-        try applyLanes(state, &child, tracks);
+        try applyLanes(state, &child, tracks, instrument_device_ids, fx_device_ids);
     }
 }
 
@@ -2242,6 +2309,8 @@ fn applyScenes(
     scenes: []const dawproject.Scene,
     tracks: []const dawproject.Track,
     master_track: ?dawproject.Track,
+    instrument_device_ids: *const [ui.track_count]?[]const u8,
+    fx_device_ids: *const [ui.track_count][ui.max_fx_slots]?[]const u8,
 ) !void {
     const scene_count = @min(scenes.len, ui.scene_count);
     for (0..scene_count) |s| {
@@ -2272,13 +2341,92 @@ fn applyScenes(
                     piano.notes.clearRetainingCapacity();
                     if (clip.notes) |notes| {
                         for (notes.notes) |note| {
-                            piano.addNote(@intCast(note.key), @floatCast(note.time), @floatCast(note.duration)) catch continue;
+                            piano.addNoteWithVelocity(
+                                @intCast(note.key),
+                                @floatCast(note.time),
+                                @floatCast(note.duration),
+                                @floatCast(note.vel),
+                                @floatCast(note.rel),
+                            ) catch continue;
                         }
                     }
+                    try applyAutomationToClip(
+                        state.allocator,
+                        piano,
+                        clip.points,
+                        instrument_device_ids[t],
+                        &fx_device_ids[t],
+                    );
                 }
             }
         }
     }
+}
+
+fn applyAutomationToClip(
+    allocator: std.mem.Allocator,
+    piano: *ui.PianoRollClip,
+    points_list: []const dawproject.Points,
+    instrument_device_id: ?[]const u8,
+    fx_device_ids: *const [ui.max_fx_slots]?[]const u8,
+) !void {
+    piano.automation.clear(allocator);
+    for (points_list) |points| {
+        var new_lane = ui.AutomationLane{
+            .target_kind = .parameter,
+            .target_id = "",
+            .param_id = null,
+            .unit = if (points.unit) |unit| try allocator.dupe(u8, unit.toString()) else null,
+            .points = .{},
+        };
+        if (points.target.parameter) |param_id| {
+            if (parseAutomationParamId(param_id, instrument_device_id, fx_device_ids)) |parsed| {
+                if (parsed.fx_index) |fx_idx| {
+                    new_lane.target_id = try std.fmt.allocPrint(allocator, "fx{d}", .{fx_idx});
+                } else {
+                    new_lane.target_id = try allocator.dupe(u8, "instrument");
+                }
+                new_lane.param_id = try allocator.dupe(u8, parsed.param_id);
+            } else {
+                new_lane.param_id = try allocator.dupe(u8, param_id);
+            }
+        }
+        for (points.points) |point| {
+            try new_lane.points.append(allocator, .{
+                .time = @floatCast(point.time),
+                .value = @floatCast(point.value),
+            });
+        }
+        try piano.automation.lanes.append(allocator, new_lane);
+    }
+}
+
+const ParsedAutomationParam = struct {
+    fx_index: ?usize = null,
+    param_id: []const u8,
+};
+
+fn parseAutomationParamId(
+    param_id: []const u8,
+    instrument_device_id: ?[]const u8,
+    fx_device_ids: *const [ui.max_fx_slots]?[]const u8,
+) ?ParsedAutomationParam {
+    const marker = std.mem.indexOf(u8, param_id, "_p") orelse return null;
+    const device_id = param_id[0..marker];
+    const raw_param = param_id[marker + 2 ..];
+    if (instrument_device_id) |inst_id| {
+        if (std.mem.eql(u8, inst_id, device_id)) {
+            return .{ .fx_index = null, .param_id = raw_param };
+        }
+    }
+    for (fx_device_ids, 0..) |fx_id, idx| {
+        if (fx_id) |id| {
+            if (std.mem.eql(u8, id, device_id)) {
+                return .{ .fx_index = idx, .param_id = raw_param };
+            }
+        }
+    }
+    return null;
 }
 
 fn loadPluginStateFromData(plugin: *const clap.Plugin, data: []const u8) void {
