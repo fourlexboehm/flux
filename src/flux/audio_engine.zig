@@ -68,6 +68,39 @@ pub const SharedState = struct {
                 if (note_count > 0) {
                     @memcpy(dst.notes[0..note_count], src.notes.items[0..note_count]);
                 }
+                dst.automation_lane_count = 0;
+                for (src.automation.lanes.items) |lane| {
+                    if (dst.automation_lane_count >= audio_graph.max_automation_lanes) break;
+                    if (lane.target_kind != .parameter) continue;
+                    const param_id_str = lane.param_id orelse continue;
+                    const param_id_int = std.fmt.parseInt(u32, param_id_str, 10) catch continue;
+
+                    var dst_lane = &dst.automation_lanes[dst.automation_lane_count];
+                    dst_lane.* = .{};
+                    dst_lane.target_kind = .parameter;
+                    dst_lane.param_id = @enumFromInt(param_id_int);
+                    dst_lane.target_fx_index = -1;
+                    if (lane.target_id.len > 0) {
+                        if (std.mem.eql(u8, lane.target_id, "instrument")) {
+                            dst_lane.target_fx_index = -1;
+                        } else if (std.mem.startsWith(u8, lane.target_id, "fx")) {
+                            var idx_str = lane.target_id["fx".len..];
+                            if (std.mem.startsWith(u8, idx_str, ":")) {
+                                idx_str = idx_str[1..];
+                            }
+                            const fx_idx = std.fmt.parseInt(i8, idx_str, 10) catch -1;
+                            dst_lane.target_fx_index = fx_idx;
+                        }
+                    }
+
+                    const point_count = @min(lane.points.items.len, audio_graph.max_automation_points);
+                    dst_lane.point_count = @intCast(point_count);
+                    for (0..point_count) |idx| {
+                        const point = lane.points.items[idx];
+                        dst_lane.points[idx] = .{ .time = point.time, .value = point.value };
+                    }
+                    dst.automation_lane_count += 1;
+                }
             }
         }
         self.active_index.store(next, .release);
@@ -227,7 +260,7 @@ pub const AudioEngine = struct {
         if (output == null) return;
         self.shared.beginProcess();
         defer self.shared.endProcess();
-        const out_ptr: [*]f32 = @ptrCast(@alignCast(output.?));
+        const out_ptr: [*]align(1) f32 = @ptrCast(output.?);
         const sample_count: usize = @as(usize, frame_count) * Channels;
         @memset(out_ptr[0..sample_count], 0);
 
@@ -286,7 +319,7 @@ fn buildGraph(
         var note_node = audio_graph.Node{
             .id = 0,
             .kind = .note_source,
-            .data = .{ .note_source = audio_graph.NoteSource.init(track_index) },
+            .data = .{ .note_source = audio_graph.NoteSource.init(track_index, true, -1) },
         };
         note_node.addOutput(.events);
         note_nodes[track_index] = try graph.addNode(note_node);
@@ -302,14 +335,24 @@ fn buildGraph(
 
         var prev_node = synth_nodes[track_index];
         for (0..ui.max_fx_slots) |fx_index| {
+            var fx_note_node = audio_graph.Node{
+                .id = 0,
+                .kind = .note_source,
+                .data = .{ .note_source = audio_graph.NoteSource.init(track_index, false, @intCast(fx_index)) },
+            };
+            fx_note_node.addOutput(.events);
+            const fx_note_id = try graph.addNode(fx_note_node);
+
             var fx_node = audio_graph.Node{
                 .id = 0,
                 .kind = .fx,
                 .data = .{ .fx = audio_graph.FxNode.init(track_index, fx_index) },
             };
             fx_node.addInput(.audio);
+            fx_node.addInput(.events);
             fx_node.addOutput(.audio);
             const fx_id = try graph.addNode(fx_node);
+            try graph.connect(fx_note_id, 0, fx_id, 0, .events);
             try graph.connect(prev_node, 0, fx_id, 0, .audio);
             prev_node = fx_id;
         }
@@ -355,7 +398,8 @@ fn buildGraph(
     return graph;
 }
 fn initSnapshot(snapshot: *audio_graph.StateSnapshot) void {
-    snapshot.* = std.mem.zeroes(audio_graph.StateSnapshot);
+    const bytes: [*]u8 = @ptrCast(snapshot);
+    @memset(bytes[0..@sizeOf(audio_graph.StateSnapshot)], 0);
     snapshot.track_count = ui.track_count;
     snapshot.scene_count = ui.scene_count;
     for (0..ui.track_count) |t| {

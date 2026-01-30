@@ -708,7 +708,7 @@ fn processEvent(plugin: *Plugin, event: *const clap.events.Header) bool {
         return false;
     }
     if (event.type == .param_value) {
-        const param_event: *const clap.events.ParamValue = @ptrCast(@alignCast(event));
+        const param_event: *align(1) const clap.events.ParamValue = @ptrCast(event);
         const index = @intFromEnum(param_event.param_id);
         if (index >= param_count) {
             return false;

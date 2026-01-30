@@ -37,7 +37,7 @@ pub fn processNoteChanges(plugin: *Plugin, event: *const clap.events.Header) voi
     switch (event.type) {
         .note_on => {
             // A new note was pressed
-            const note_event: *const clap.events.Note = @ptrCast(@alignCast(event));
+            const note_event: *align(1) const clap.events.Note = @ptrCast(event);
 
             // Voice stealing
             if (Voices.getVoiceByKey(plugin.voices.voices.items, note_event.key)) |voice| {
@@ -76,7 +76,7 @@ pub fn processNoteChanges(plugin: *Plugin, event: *const clap.events.Header) voi
             plugin.voices.addVoice(new_voice) catch unreachable;
         },
         .note_off => {
-            const note_event: *const clap.events.Note = @ptrCast(@alignCast(event));
+            const note_event: *align(1) const clap.events.Note = @ptrCast(event);
 
             for (plugin.voices.getVoices()) |*voice| {
                 if ((voice.channel == note_event.channel or note_event.channel == .unspecified) and
@@ -88,7 +88,7 @@ pub fn processNoteChanges(plugin: *Plugin, event: *const clap.events.Header) voi
             }
         },
         .note_choke => {
-            const note_event: *const clap.events.Note = @ptrCast(@alignCast(event));
+            const note_event: *align(1) const clap.events.Note = @ptrCast(event);
 
             for (plugin.voices.getVoices(), 0..) |*voice, i| {
                 if ((voice.channel == note_event.channel or note_event.channel == .unspecified) and
@@ -101,7 +101,7 @@ pub fn processNoteChanges(plugin: *Plugin, event: *const clap.events.Header) voi
             }
         },
         .note_expression => {
-            const note_expression_event: *const clap.events.NoteExpression = @ptrCast(@alignCast(event));
+            const note_expression_event: *align(1) const clap.events.NoteExpression = @ptrCast(event);
             if (Voices.getVoiceByKey(plugin.voices.voices.items, note_expression_event.key)) |voice| {
                 voice.expression_values.set(note_expression_event.expression_id, note_expression_event.value);
             }

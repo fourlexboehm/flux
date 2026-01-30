@@ -14,6 +14,10 @@ pub const Scene = session_view.Scene;
 pub const PianoRollClip = piano_roll.PianoRollClip;
 pub const PianoRollState = piano_roll.PianoRollState;
 pub const Note = piano_roll.Note;
+pub const AutomationTargetKind = piano_roll.AutomationTargetKind;
+pub const AutomationPoint = piano_roll.AutomationPoint;
+pub const AutomationLane = piano_roll.AutomationLane;
+pub const ClipAutomation = piano_roll.ClipAutomation;
 
 // Constants
 pub const max_tracks = session_view.max_tracks;

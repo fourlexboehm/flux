@@ -36,6 +36,20 @@ pub const ClipData = struct {
     slot_length: f32,
     piano_length: f32,
     notes: []ui.Note,
+    automation: []AutomationLaneData = &.{},
+};
+
+pub const AutomationPointData = struct {
+    time: f32,
+    value: f32,
+};
+
+pub const AutomationLaneData = struct {
+    target_kind: ui.AutomationTargetKind,
+    target_id: []const u8,
+    param_id: ?[]const u8 = null,
+    unit: ?[]const u8 = null,
+    points: []AutomationPointData,
 };
 
 pub const DeviceData = struct {
@@ -147,6 +161,20 @@ pub fn apply(project: *const Project, state: *ui.State, catalog: *const plugins.
         for (clip.notes) |note| {
             try piano.notes.append(state.allocator, note);
         }
+        piano.automation.clear(state.allocator);
+        for (clip.automation) |lane| {
+            var new_lane = ui.AutomationLane{
+                .target_kind = lane.target_kind,
+                .target_id = try state.allocator.dupe(u8, lane.target_id),
+                .param_id = if (lane.param_id) |param_id| try state.allocator.dupe(u8, param_id) else null,
+                .unit = if (lane.unit) |unit| try state.allocator.dupe(u8, unit) else null,
+                .points = .{},
+            };
+            for (lane.points) |point| {
+                try new_lane.points.append(state.allocator, .{ .time = point.time, .value = point.value });
+            }
+            try piano.automation.lanes.append(state.allocator, new_lane);
+        }
     }
 
     for (0..ui.track_count) |t| {
@@ -224,6 +252,21 @@ fn buildProject(
             const notes = try allocator.alloc(ui.Note, piano.notes.items.len);
             @memcpy(notes, piano.notes.items);
 
+            var automation_list: std.ArrayList(AutomationLaneData) = .empty;
+            for (piano.automation.lanes.items) |lane| {
+                const points = try allocator.alloc(AutomationPointData, lane.points.items.len);
+                for (lane.points.items, 0..) |point, idx| {
+                    points[idx] = .{ .time = point.time, .value = point.value };
+                }
+                try automation_list.append(allocator, .{
+                    .target_kind = lane.target_kind,
+                    .target_id = try allocator.dupe(u8, lane.target_id),
+                    .param_id = if (lane.param_id) |param_id| try allocator.dupe(u8, param_id) else null,
+                    .unit = if (lane.unit) |unit| try allocator.dupe(u8, unit) else null,
+                    .points = points,
+                });
+            }
+
             try clips_list.append(allocator, .{
                 .track = t,
                 .scene = s,
@@ -231,6 +274,7 @@ fn buildProject(
                 .slot_length = stored_length,
                 .piano_length = piano.length_beats,
                 .notes = notes,
+                .automation = try automation_list.toOwnedSlice(allocator),
             });
         }
     }

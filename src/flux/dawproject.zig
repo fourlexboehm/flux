@@ -144,6 +144,7 @@ pub const ClapPlugin = struct {
     device_name: []const u8,
     device_role: DeviceRole,
     loaded: bool = true,
+    parameters: []const RealParameter = &.{},
     enabled: ?BoolParameter = null,
     state: ?FileReference = null,
 };
@@ -187,13 +188,35 @@ pub const Notes = struct {
     notes: []const Note,
 };
 
+pub const AutomationPoint = struct {
+    time: f64, // in beats
+    value: f64,
+};
+
+pub const AutomationTarget = struct {
+    parameter: ?[]const u8 = null,
+    expression: ?[]const u8 = null,
+    channel: ?i32 = null,
+    key: ?i32 = null,
+    controller: ?i32 = null,
+};
+
+pub const Points = struct {
+    id: []const u8,
+    target: AutomationTarget,
+    unit: ?Unit = null,
+    points: []const AutomationPoint,
+};
+
 /// Clip containing notes or other content
 pub const Clip = struct {
     time: f64, // start time in beats
     duration: f64,
     play_start: f64 = 0.0,
     name: ?[]const u8 = null,
+    lanes: ?Lanes = null,
     notes: ?Notes = null,
+    points: []const Points = &.{},
 };
 
 /// Clips container
@@ -208,6 +231,8 @@ pub const Lanes = struct {
     track: ?[]const u8 = null, // ID reference
     time_unit: ?TimeUnit = null,
     clips: ?Clips = null,
+    notes: ?Notes = null,
+    points: []const Points = &.{},
     children: []const Lanes = &.{},
 };
 
@@ -518,8 +543,25 @@ pub const XmlWriter = struct {
         try self.buffer.appendSlice(self.allocator, ">\n");
         self.indent_level += 1;
 
-        try self.writeIndent();
-        try self.buffer.appendSlice(self.allocator, "<Parameters/>\n");
+        if (device.parameters.len > 0) {
+            try self.writeIndent();
+            try self.buffer.appendSlice(self.allocator, "<Parameters>\n");
+            self.indent_level += 1;
+            for (device.parameters) |param| {
+                try self.writeIndent();
+                try self.buffer.appendSlice(self.allocator, "<RealParameter");
+                try self.writeAttr("id", param.id);
+                try self.writeAttr("name", param.name);
+                if (param.min) |min| try self.writeAttrFloat("min", min);
+                if (param.max) |max| try self.writeAttrFloat("max", max);
+                try self.writeAttr("unit", param.unit.toString());
+                try self.writeAttrFloat("value", param.value);
+                try self.buffer.appendSlice(self.allocator, "/>\n");
+            }
+            self.indent_level -= 1;
+            try self.writeIndent();
+            try self.buffer.appendSlice(self.allocator, "</Parameters>\n");
+        }
 
         if (device.enabled) |enabled| {
             try self.writeIndent();
@@ -559,7 +601,7 @@ pub const XmlWriter = struct {
         try self.buffer.appendSlice(self.allocator, "</Arrangement>\n");
     }
 
-    fn writeLanes(self: *Self, lanes: *const Lanes) !void {
+    fn writeLanes(self: *Self, lanes: *const Lanes) std.mem.Allocator.Error!void {
         try self.writeIndent();
         try self.buffer.appendSlice(self.allocator, "<Lanes");
         if (lanes.time_unit) |tu| try self.writeAttr("timeUnit", tu.toString());
@@ -571,6 +613,14 @@ pub const XmlWriter = struct {
         // Child lanes
         for (lanes.children) |child| {
             try self.writeLanes(&child);
+        }
+
+        if (lanes.notes) |notes| {
+            try self.writeNotes(&notes);
+        }
+
+        for (lanes.points) |points| {
+            try self.writePoints(&points);
         }
 
         // Clips
@@ -618,8 +668,12 @@ pub const XmlWriter = struct {
         try self.buffer.appendSlice(self.allocator, ">\n");
         self.indent_level += 1;
 
-        if (clip.notes) |notes| {
+        if (clip.lanes) |lanes| {
+            try self.writeLanes(&lanes);
+        } else if (clip.notes) |notes| {
             try self.writeNotes(&notes);
+        } else if (clip.points.len > 0) {
+            try self.writePoints(&clip.points[0]);
         }
 
         self.indent_level -= 1;
@@ -653,6 +707,42 @@ pub const XmlWriter = struct {
         self.indent_level -= 1;
         try self.writeIndent();
         try self.buffer.appendSlice(self.allocator, "</Notes>\n");
+    }
+
+    fn writePoints(self: *Self, points: *const Points) !void {
+        try self.writeIndent();
+        try self.buffer.appendSlice(self.allocator, "<Points");
+        try self.writeAttr("id", points.id);
+        if (points.unit) |unit| {
+            try self.writeAttr("unit", unit.toString());
+        }
+        if (points.points.len == 0) {
+            try self.buffer.appendSlice(self.allocator, "/>\n");
+            return;
+        }
+        try self.buffer.appendSlice(self.allocator, ">\n");
+        self.indent_level += 1;
+
+        try self.writeIndent();
+        try self.buffer.appendSlice(self.allocator, "<Target");
+        if (points.target.parameter) |param| try self.writeAttr("parameter", param);
+        if (points.target.expression) |expr| try self.writeAttr("expression", expr);
+        if (points.target.channel) |channel| try self.writeAttrInt("channel", channel);
+        if (points.target.key) |key| try self.writeAttrInt("key", key);
+        if (points.target.controller) |controller| try self.writeAttrInt("controller", controller);
+        try self.buffer.appendSlice(self.allocator, "/>\n");
+
+        for (points.points) |point| {
+            try self.writeIndent();
+            try self.buffer.appendSlice(self.allocator, "<RealPoint");
+            try self.writeAttrFloat("time", point.time);
+            try self.writeAttrFloat("value", point.value);
+            try self.buffer.appendSlice(self.allocator, "/>\n");
+        }
+
+        self.indent_level -= 1;
+        try self.writeIndent();
+        try self.buffer.appendSlice(self.allocator, "</Points>\n");
     }
 
     fn writeScene(self: *Self, scene: *const Scene) !void {
@@ -726,8 +816,12 @@ pub const XmlWriter = struct {
         try self.buffer.appendSlice(self.allocator, ">\n");
         self.indent_level += 1;
 
-        if (clip.notes) |notes| {
+        if (clip.lanes) |lanes| {
+            try self.writeLanes(&lanes);
+        } else if (clip.notes) |notes| {
             try self.writeNotes(&notes);
+        } else if (clip.points.len > 0) {
+            try self.writePoints(&clip.points[0]);
         }
 
         self.indent_level -= 1;
@@ -765,6 +859,10 @@ pub fn fromFluxProject(
     var tracks_list = std.ArrayList(Track).empty;
     var track_lanes = std.ArrayList(Lanes).empty;
     var track_ids = std.ArrayList([]const u8).empty; // Store track IDs for ClipSlot references
+    var instrument_device_ids: [ui.track_count]?[]const u8 = [_]?[]const u8{null} ** ui.track_count;
+    var fx_device_ids: [ui.track_count][ui.max_fx_slots]?[]const u8 = [_][ui.max_fx_slots]?[]const u8{
+        [_]?[]const u8{null} ** ui.max_fx_slots,
+    } ** ui.track_count;
 
     const master_channel_id = try ids.next();
 
@@ -780,12 +878,27 @@ pub fn fromFluxProject(
         if (catalog.entryForIndex(choice_index)) |entry| {
             if (entry.kind == .clap) {
                 const device_id = try ids.next();
+                instrument_device_ids[t] = device_id;
                 const enabled_id = try ids.next();
 
                 // Get plugin ID and state path from track_plugin_info if available
                 const info = if (t < track_plugin_info.len) track_plugin_info[t] else TrackPluginInfo{};
                 // Prefer plugin ID from loaded plugin, fall back to catalog entry
                 const clap_plugin_id = info.plugin_id orelse entry.id orelse "";
+                var params = std.ArrayList(RealParameter).empty;
+                if (info.params.len > 0) {
+                    for (info.params) |param| {
+                        const param_id = try std.fmt.allocPrint(allocator, "{s}_p{d}", .{ device_id, param.id });
+                        try params.append(allocator, .{
+                            .id = param_id,
+                            .name = try allocator.dupe(u8, param.name),
+                            .value = param.value,
+                            .min = param.min,
+                            .max = param.max,
+                            .unit = .linear,
+                        });
+                    }
+                }
 
                 try devices.append(allocator, .{
                     .id = device_id,
@@ -793,6 +906,7 @@ pub fn fromFluxProject(
                     .device_id = try allocator.dupe(u8, clap_plugin_id),
                     .device_name = try allocator.dupe(u8, entry.name),
                     .device_role = .instrument,
+                    .parameters = try params.toOwnedSlice(allocator),
                     .enabled = .{
                         .id = enabled_id,
                         .name = "On/Off",
@@ -809,9 +923,24 @@ pub fn fromFluxProject(
             if (catalog.entryForIndex(fx_choice)) |entry| {
                 if (entry.kind != .clap) continue;
                 const device_id = try ids.next();
+                fx_device_ids[t][fx_index] = device_id;
                 const enabled_id = try ids.next();
                 const info = if (t < track_fx_plugin_info.len) track_fx_plugin_info[t][fx_index] else TrackPluginInfo{};
                 const clap_plugin_id = info.plugin_id orelse entry.id orelse "";
+                var params = std.ArrayList(RealParameter).empty;
+                if (info.params.len > 0) {
+                    for (info.params) |param| {
+                        const param_id = try std.fmt.allocPrint(allocator, "{s}_p{d}", .{ device_id, param.id });
+                        try params.append(allocator, .{
+                            .id = param_id,
+                            .name = try allocator.dupe(u8, param.name),
+                            .value = param.value,
+                            .min = param.min,
+                            .max = param.max,
+                            .unit = .linear,
+                        });
+                    }
+                }
 
                 try devices.append(allocator, .{
                     .id = device_id,
@@ -819,6 +948,7 @@ pub fn fromFluxProject(
                     .device_id = try allocator.dupe(u8, clap_plugin_id),
                     .device_name = try allocator.dupe(u8, entry.name),
                     .device_role = .audioFX,
+                    .parameters = try params.toOwnedSlice(allocator),
                     .enabled = .{
                         .id = enabled_id,
                         .name = "On/Off",
@@ -944,13 +1074,47 @@ pub fn fromFluxProject(
                         .time = note.start,
                         .duration = note.duration,
                         .key = note.pitch,
-                        .vel = 0.8,
-                        .rel = 0.8,
+                        .vel = note.velocity,
+                        .rel = note.release_velocity,
                     });
                 }
 
                 const clip_duration = if (slot.state != .empty) slot.length_beats else piano.length_beats;
                 const notes_id = try ids.next();
+                var points_list = std.ArrayList(Points).empty;
+                if (piano.automation.lanes.items.len > 0) {
+                    for (piano.automation.lanes.items) |lane| {
+                        const device_id = if (std.mem.eql(u8, lane.target_id, "instrument") or lane.target_id.len == 0) blk: {
+                            break :blk instrument_device_ids[t] orelse continue;
+                        } else if (std.mem.startsWith(u8, lane.target_id, "fx")) blk: {
+                            var idx_str = lane.target_id["fx".len..];
+                            if (std.mem.startsWith(u8, idx_str, ":")) idx_str = idx_str[1..];
+                            const fx_idx = std.fmt.parseInt(usize, idx_str, 10) catch continue;
+                            if (fx_idx >= ui.max_fx_slots) continue;
+                            break :blk fx_device_ids[t][fx_idx] orelse continue;
+                        } else {
+                            continue;
+                        };
+
+                        const points_id = try ids.next();
+                        const points = try allocator.alloc(AutomationPoint, lane.points.items.len);
+                        for (lane.points.items, 0..) |point, idx| {
+                            points[idx] = .{ .time = point.time, .value = point.value };
+                        }
+                        const param_with_target = if (lane.param_id) |param_id| blk: {
+                            break :blk try std.fmt.allocPrint(allocator, "{s}_p{s}", .{ device_id, param_id });
+                        } else null;
+
+                        try points_list.append(allocator, .{
+                            .id = points_id,
+                            .target = .{
+                                .parameter = param_with_target,
+                            },
+                            .unit = if (lane.unit) |unit| parseUnit(unit) else null,
+                            .points = points,
+                        });
+                    }
+                }
 
                 try clip_slots.append(allocator, .{
                     .id = clip_slot_id,
@@ -961,10 +1125,19 @@ pub fn fromFluxProject(
                         .duration = clip_duration,
                         .play_start = 0.0,
                         .name = null,
-                        .notes = .{
+                        .lanes = if (points_list.items.len > 0) .{
+                            .id = try ids.next(),
+                            .notes = .{
+                                .id = notes_id,
+                                .notes = try daw_notes.toOwnedSlice(allocator),
+                            },
+                            .points = try points_list.toOwnedSlice(allocator),
+                        } else null,
+                        .notes = if (points_list.items.len == 0) .{
                             .id = notes_id,
                             .notes = try daw_notes.toOwnedSlice(allocator),
-                        },
+                        } else null,
+                        .points = if (points_list.items.len == 0) &.{} else &.{},
                     },
                 });
             } else {
@@ -1177,10 +1350,20 @@ pub const PluginStateFile = struct {
     data: []const u8, // raw binary state
 };
 
+pub const PluginParamInfo = struct {
+    id: u32,
+    name: []const u8,
+    min: f64,
+    max: f64,
+    default_value: f64,
+    value: f64,
+};
+
 /// Plugin info for a track, used when building the DAWproject
 pub const TrackPluginInfo = struct {
     plugin_id: ?[]const u8 = null, // CLAP plugin ID, e.g. "com.digital-suburban.dexed"
     state_path: ?[]const u8 = null, // Path in ZIP, e.g. "plugins/track0.clap-preset"
+    params: []const PluginParamInfo = &.{},
 };
 
 /// Save project to a .dawproject file (ZIP archive)
@@ -1398,6 +1581,10 @@ fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Project 
     var current_clip: ?Clip = null;
     var current_notes: ?Notes = null;
     var notes_list = std.ArrayList(Note).empty;
+    var current_points: ?Points = null;
+    var clip_points_list = std.ArrayList(Points).empty;
+    var points_point_list = std.ArrayList(AutomationPoint).empty;
+    var points_target: AutomationTarget = .{};
     var current_scene: ?Scene = null;
     var current_clip_slot: ?ClipSlot = null;
     var clip_slots_list = std.ArrayList(ClipSlot).empty;
@@ -1418,12 +1605,15 @@ fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Project 
         clips,
         clip,
         notes,
+        points,
+        clip_lanes,
         scenes,
         scene,
         scene_lanes,
         clip_slot,
     };
     var state: ParseState = .root;
+    var clip_child_state: ParseState = .clip;
 
     while (true) {
         const node = reader.read() catch break;
@@ -1589,13 +1779,17 @@ fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Project 
                 } else if (std.mem.eql(u8, elem_name, "Clip") and (state == .clips or state == .clip_slot)) {
                     clip_context = if (state == .clips) .arrangement else .clip_slot;
                     state = .clip;
+                    clip_points_list = std.ArrayList(Points).empty;
                     current_clip = .{
                         .time = parseFloatAttr(getAttr(reader, "time")) orelse 0.0,
                         .duration = parseFloatAttr(getAttr(reader, "duration")) orelse 4.0,
                         .play_start = parseFloatAttr(getAttr(reader, "playStart")) orelse 0.0,
                         .name = if (getAttr(reader, "name")) |n| try allocator.dupe(u8, n) else null,
                     };
-                } else if (std.mem.eql(u8, elem_name, "Notes") and state == .clip) {
+                } else if (std.mem.eql(u8, elem_name, "Lanes") and state == .clip) {
+                    state = .clip_lanes;
+                } else if (std.mem.eql(u8, elem_name, "Notes") and (state == .clip or state == .clip_lanes)) {
+                    clip_child_state = state;
                     state = .notes;
                     current_notes = .{
                         .id = try allocator.dupe(u8, getAttr(reader, "id") orelse ""),
@@ -1608,6 +1802,43 @@ fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Project 
                         .key = @intCast(parseIntAttr(getAttr(reader, "key")) orelse 60),
                         .vel = parseFloatAttr(getAttr(reader, "vel")) orelse 0.8,
                         .rel = parseFloatAttr(getAttr(reader, "rel")) orelse 0.8,
+                    });
+                } else if (std.mem.eql(u8, elem_name, "Points") and (state == .clip or state == .clip_lanes)) {
+                    clip_child_state = state;
+                    state = .points;
+                    points_target = .{};
+                    points_point_list = std.ArrayList(AutomationPoint).empty;
+                    current_points = .{
+                        .id = try allocator.dupe(u8, getAttr(reader, "id") orelse ""),
+                        .target = .{},
+                        .unit = if (getAttr(reader, "unit")) |unit| parseUnit(unit) else null,
+                        .points = &.{}, // Will be filled in on element_end
+                    };
+                } else if (std.mem.eql(u8, elem_name, "Target") and state == .points) {
+                    points_target = .{
+                        .parameter = if (getAttr(reader, "parameter")) |param| try allocator.dupe(u8, param) else null,
+                        .expression = if (getAttr(reader, "expression")) |expr| try allocator.dupe(u8, expr) else null,
+                        .channel = if (getAttr(reader, "channel")) |chan| @intCast(parseIntAttr(chan) orelse 0) else null,
+                        .key = if (getAttr(reader, "key")) |key| @intCast(parseIntAttr(key) orelse 0) else null,
+                        .controller = if (getAttr(reader, "controller")) |ctrl| @intCast(parseIntAttr(ctrl) orelse 0) else null,
+                    };
+                } else if ((std.mem.eql(u8, elem_name, "Point") or std.mem.eql(u8, elem_name, "RealPoint")) and state == .points) {
+                    const value = parseFloatAttr(getAttr(reader, "value")) orelse 0.0;
+                    try points_point_list.append(allocator, .{
+                        .time = parseFloatAttr(getAttr(reader, "time")) orelse 0.0,
+                        .value = value,
+                    });
+                } else if ((std.mem.eql(u8, elem_name, "EnumPoint") or std.mem.eql(u8, elem_name, "IntegerPoint")) and state == .points) {
+                    const value = @as(f64, @floatFromInt(parseIntAttr(getAttr(reader, "value")) orelse 0));
+                    try points_point_list.append(allocator, .{
+                        .time = parseFloatAttr(getAttr(reader, "time")) orelse 0.0,
+                        .value = value,
+                    });
+                } else if (std.mem.eql(u8, elem_name, "BoolPoint") and state == .points) {
+                    const value: f64 = if (parseBool(getAttr(reader, "value"))) 1.0 else 0.0;
+                    try points_point_list.append(allocator, .{
+                        .time = parseFloatAttr(getAttr(reader, "time")) orelse 0.0,
+                        .value = value,
                     });
                 }
             },
@@ -1691,11 +1922,13 @@ fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Project 
                     state = .track_lanes;
                 } else if (std.mem.eql(u8, elem_name, "Clip") and state == .clip) {
                     if (current_clip) |clip| {
+                        var clip_copy = clip;
+                        clip_copy.points = try clip_points_list.toOwnedSlice(allocator);
                         if (clip_context == .arrangement) {
-                            try clips_list.append(allocator, clip);
+                            try clips_list.append(allocator, clip_copy);
                         } else if (clip_context == .clip_slot) {
                             if (current_clip_slot) |*slot| {
-                                slot.clip = clip;
+                                slot.clip = clip_copy;
                             }
                         }
                     }
@@ -1712,6 +1945,19 @@ fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Project 
                     }
                     current_notes = null;
                     notes_list = std.ArrayList(Note).empty;
+                    state = clip_child_state;
+                } else if (std.mem.eql(u8, elem_name, "Points") and state == .points) {
+                    if (current_points) |points| {
+                        var points_copy = points;
+                        points_copy.target = points_target;
+                        points_copy.points = try points_point_list.toOwnedSlice(allocator);
+                        try clip_points_list.append(allocator, points_copy);
+                    }
+                    current_points = null;
+                    points_point_list = std.ArrayList(AutomationPoint).empty;
+                    points_target = .{};
+                    state = clip_child_state;
+                } else if (std.mem.eql(u8, elem_name, "Lanes") and state == .clip_lanes) {
                     state = .clip;
                 }
             },

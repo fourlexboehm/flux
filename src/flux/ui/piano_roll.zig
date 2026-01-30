@@ -36,26 +36,86 @@ pub const Note = struct {
     pitch: u8, // MIDI pitch 0-127
     start: f32, // Start time in beats
     duration: f32, // Duration in beats
+    velocity: f32 = 0.8, // 0.0-1.0
+    release_velocity: f32 = 0.8, // 0.0-1.0
+};
+
+pub const AutomationTargetKind = enum {
+    track,
+    device,
+    parameter,
+};
+
+pub const AutomationPoint = struct {
+    time: f32, // in beats
+    value: f32,
+};
+
+pub const AutomationLane = struct {
+    target_kind: AutomationTargetKind = .parameter,
+    target_id: []const u8 = "",
+    param_id: ?[]const u8 = null,
+    unit: ?[]const u8 = null,
+    points: std.ArrayListUnmanaged(AutomationPoint) = .{},
+};
+
+pub const ClipAutomation = struct {
+    lanes: std.ArrayListUnmanaged(AutomationLane) = .{},
+
+    pub fn clear(self: *ClipAutomation, allocator: std.mem.Allocator) void {
+        for (self.lanes.items) |*lane| {
+            if (lane.target_id.len > 0) {
+                allocator.free(lane.target_id);
+            }
+            if (lane.param_id) |param_id| {
+                allocator.free(param_id);
+            }
+            if (lane.unit) |unit| {
+                allocator.free(unit);
+            }
+            lane.points.deinit(allocator);
+        }
+        self.lanes.clearRetainingCapacity();
+    }
+
+    pub fn deinit(self: *ClipAutomation, allocator: std.mem.Allocator) void {
+        self.clear(allocator);
+        self.lanes.deinit(allocator);
+    }
 };
 
 pub const PianoRollClip = struct {
     allocator: std.mem.Allocator,
     length_beats: f32,
     notes: std.ArrayListUnmanaged(Note),
+    automation: ClipAutomation,
 
     pub fn init(allocator: std.mem.Allocator) PianoRollClip {
         return .{
             .allocator = allocator,
             .length_beats = default_clip_bars * beats_per_bar,
             .notes = .{},
+            .automation = .{},
         };
     }
 
     pub fn deinit(self: *PianoRollClip) void {
         self.notes.deinit(self.allocator);
+        self.automation.deinit(self.allocator);
     }
 
     pub fn addNote(self: *PianoRollClip, pitch: u8, start: f32, duration: f32) !void {
+        return self.addNoteWithVelocity(pitch, start, duration, 0.8, 0.8);
+    }
+
+    pub fn addNoteWithVelocity(
+        self: *PianoRollClip,
+        pitch: u8,
+        start: f32,
+        duration: f32,
+        velocity: f32,
+        release_velocity: f32,
+    ) !void {
         // Trim any existing notes at the same pitch that overlap with the new note's start
         // This handles the case where a new note-on comes while a note is already playing
         var i: usize = 0;
@@ -75,7 +135,13 @@ pub const PianoRollClip = struct {
             }
             i += 1;
         }
-        try self.notes.append(self.allocator, .{ .pitch = pitch, .start = start, .duration = duration });
+        try self.notes.append(self.allocator, .{
+            .pitch = pitch,
+            .start = start,
+            .duration = duration,
+            .velocity = velocity,
+            .release_velocity = release_velocity,
+        });
     }
 
     pub fn removeNoteAt(self: *PianoRollClip, index: usize) void {
@@ -84,6 +150,7 @@ pub const PianoRollClip = struct {
 
     pub fn clear(self: *PianoRollClip) void {
         self.notes.clearRetainingCapacity();
+        self.automation.clear(self.allocator);
         self.length_beats = default_clip_bars * beats_per_bar;
     }
 };
