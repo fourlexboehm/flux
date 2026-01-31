@@ -83,8 +83,8 @@ fn drawContent(plugin: *Plugin, options: DrawOptions) void {
             renderParam(plugin, Params.Parameter.WaveShape1, options);
             renderParam(plugin, Params.Parameter.Octave1, options);
             renderParam(plugin, Params.Parameter.Pitch1, options);
-            zgui.endChild();
         }
+        zgui.endChild();
         if (zgui.beginChild("Oscillator 2##Child", .{ .child_flags = .{
             .border = true,
             .auto_resize_y = true,
@@ -96,8 +96,8 @@ fn drawContent(plugin: *Plugin, options: DrawOptions) void {
             renderParam(plugin, Params.Parameter.WaveShape2, options);
             renderParam(plugin, Params.Parameter.Octave2, options);
             renderParam(plugin, Params.Parameter.Pitch2, options);
-            zgui.endChild();
         }
+        zgui.endChild();
         if (zgui.beginChild("ADSR##Child", .{ .child_flags = .{
             .border = true,
             .auto_resize_y = true,
@@ -108,8 +108,8 @@ fn drawContent(plugin: *Plugin, options: DrawOptions) void {
             renderParam(plugin, Params.Parameter.Decay, options);
             renderParam(plugin, Params.Parameter.Sustain, options);
             renderParam(plugin, Params.Parameter.Release, options);
-            zgui.endChild();
         }
+        zgui.endChild();
         if (zgui.beginChild("Options##Child", .{ .child_flags = .{
             .border = true,
             .auto_resize_y = true,
@@ -123,10 +123,10 @@ fn drawContent(plugin: *Plugin, options: DrawOptions) void {
                 zgui.sameLine(.{});
                 renderParam(plugin, Params.Parameter.DebugBool2, options);
             }
-            zgui.endChild();
         }
         zgui.endChild();
     }
+    zgui.endChild();
     zgui.sameLine(.{});
     if (zgui.beginChild("Display##Child", .{})) {
         if (zgui.beginChild("Filter##Child", .{ .child_flags = .{
@@ -140,8 +140,8 @@ fn drawContent(plugin: *Plugin, options: DrawOptions) void {
             renderParam(plugin, Params.Parameter.FilterType, options);
             renderParam(plugin, Params.Parameter.FilterFreq, options);
             renderParam(plugin, Params.Parameter.FilterQ, options);
-            zgui.endChild();
         }
+        zgui.endChild();
         zgui.spacing();
         zgui.separatorText("Display##Sep");
         if (zgui.beginChild("Oscillators##Display", .{ .child_flags = .{
@@ -206,10 +206,10 @@ fn drawContent(plugin: *Plugin, options: DrawOptions) void {
                 });
                 zgui.plot.endPlot();
             }
-            zgui.endChild();
         }
         zgui.endChild();
     }
+    zgui.endChild();
 }
 
 fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) void {
