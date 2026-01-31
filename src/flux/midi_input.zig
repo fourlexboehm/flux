@@ -38,7 +38,7 @@ const EventQueue = struct {
     }
 };
 
-fn applyNoteEvent(notes: *[128]bool, event: MidiEvent) void {
+fn applyNoteEvent(notes: *[128]bool, velocities: *[128]f32, event: MidiEvent) void {
     const msg = event.status & 0xF0;
     const note = event.data1;
     if (note >= 128) return;
@@ -46,22 +46,29 @@ fn applyNoteEvent(notes: *[128]bool, event: MidiEvent) void {
         0x90 => {
             if (event.data2 == 0) {
                 notes[note] = false;
+                velocities[note] = 0.0;
             } else {
                 notes[note] = true;
+                velocities[note] = @as(f32, @floatFromInt(event.data2)) / 127.0;
             }
         },
-        0x80 => notes[note] = false,
+        0x80 => {
+            notes[note] = false;
+            velocities[note] = 0.0;
+        },
         else => {},
     }
 }
 
 pub const MidiInput = struct {
     note_states: [128]bool = [_]bool{false} ** 128,
+    note_velocities: [128]f32 = [_]f32{0.0} ** 128,
     impl: Impl = undefined,
     active: bool = false,
 
     pub fn init(self: *MidiInput, allocator: std.mem.Allocator) !void {
         self.note_states = [_]bool{false} ** 128;
+        self.note_velocities = [_]f32{0.0} ** 128;
         self.impl = .{};
         errdefer self.impl.deinit();
         try self.impl.init(allocator);
@@ -80,7 +87,7 @@ pub const MidiInput = struct {
 
     pub fn poll(self: *MidiInput) void {
         if (!self.active) return;
-        self.impl.poll(&self.note_states);
+        self.impl.poll(&self.note_states, &self.note_velocities);
     }
 };
 
@@ -92,7 +99,7 @@ const Impl = switch (builtin.os.tag) {
 const NoopInput = struct {
     pub fn init(_: *NoopInput, _: std.mem.Allocator) !void {}
     pub fn deinit(_: *NoopInput) void {}
-    pub fn poll(_: *NoopInput, _: *[128]bool) void {}
+    pub fn poll(_: *NoopInput, _: *[128]bool, _: *[128]f32) void {}
 };
 
 const PortMidiInput = struct {
@@ -114,7 +121,7 @@ const PortMidiInput = struct {
         pm.terminate();
     }
 
-    pub fn poll(self: *PortMidiInput, notes: *[128]bool) void {
+    pub fn poll(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32) void {
         self.rescan_counter +%= 1;
         if (self.rescan_counter >= self.rescan_interval) {
             self.rescan_counter = 0;
@@ -135,7 +142,7 @@ const PortMidiInput = struct {
                 const status = pm.messageStatus(msg);
                 const data1 = pm.messageData1(msg);
                 const data2 = pm.messageData2(msg);
-                applyNoteEvent(notes, .{ .status = status, .data1 = data1, .data2 = data2 });
+                applyNoteEvent(notes, velocities, .{ .status = status, .data1 = data1, .data2 = data2 });
             }
         }
     }
