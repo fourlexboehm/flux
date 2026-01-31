@@ -1,8 +1,10 @@
 const std = @import("std");
 const zgui = @import("zgui");
 const zsynth = @import("zsynth-core");
+const zminimoog = @import("zminimoog-core");
 const clap = @import("clap-bindings");
 const zsynth_view = zsynth.View;
+const zminimoog_view = zminimoog.View;
 
 // Import UI modules
 pub const ui = @import("ui/root.zig");
@@ -45,9 +47,43 @@ pub const FocusedPane = enum {
 
 pub const DeviceKind = enum {
     none,
-    builtin,
-    clap,
+    plugin, // Unified: any loaded plugin (builtin or external CLAP)
 };
+
+// ============================================================================
+// Embedded View Registry
+// ============================================================================
+// Maps plugin IDs to embedded zgui draw functions.
+// This allows builtin plugins loaded through TrackPlugin to render embedded UI.
+
+pub const EmbeddedViewDrawFn = *const fn (*const clap.Plugin) void;
+
+fn zsynthDraw(clap_plugin: *const clap.Plugin) void {
+    const plugin = zsynth.Plugin.fromClapPlugin(clap_plugin);
+    zsynth_view.drawEmbedded(plugin, .{ .notify_host = false });
+}
+
+fn zminimoogDraw(clap_plugin: *const clap.Plugin) void {
+    const plugin = zminimoog.Plugin.fromClapPlugin(clap_plugin);
+    zminimoog_view.drawEmbedded(plugin, .{ .notify_host = false });
+}
+
+pub const embedded_views = std.StaticStringMap(EmbeddedViewDrawFn).initComptime(.{
+    .{ "com.juge.zsynth", zsynthDraw },
+    .{ "com.fourlex.zminimoog", zminimoogDraw },
+});
+
+/// Check if a plugin has an embedded view available
+pub fn hasEmbeddedView(plugin: *const clap.Plugin) bool {
+    const id = std.mem.sliceTo(plugin.descriptor.id, 0);
+    return embedded_views.get(id) != null;
+}
+
+/// Get the embedded view draw function for a plugin, if available
+pub fn getEmbeddedView(plugin: *const clap.Plugin) ?EmbeddedViewDrawFn {
+    const id = std.mem.sliceTo(plugin.descriptor.id, 0);
+    return embedded_views.get(id);
+}
 
 pub const DeviceTargetKind = enum {
     instrument,
@@ -74,10 +110,10 @@ pub const State = struct {
     bottom_mode: BottomMode,
     bottom_panel_height: f32,
     splitter_drag_start: f32,
-    zsynth: ?*zsynth.Plugin,
+    // Device state - unified for builtin and external CLAP plugins
     device_kind: DeviceKind,
-    device_clap_plugin: ?*const clap.Plugin,
-    device_clap_name: []const u8,
+    device_clap_plugin: ?*const clap.Plugin, // Current plugin (builtin or external)
+    device_clap_name: []const u8, // Name for display
     device_target_kind: DeviceTargetKind,
     device_target_track: usize,
     device_target_fx: usize,
@@ -172,7 +208,6 @@ pub const State = struct {
             .bottom_mode = .device,
             .bottom_panel_height = 300.0,
             .splitter_drag_start = 0.0,
-            .zsynth = null,
             .device_kind = .none,
             .device_clap_plugin = null,
             .device_clap_name = "",
@@ -1810,18 +1845,21 @@ fn drawDevicePanel(state: *State, ui_scale: f32) void {
 
     zgui.separator();
     switch (state.device_kind) {
-        .builtin => {
-            if (state.zsynth) |plugin| {
-                if (zgui.beginChild("zsynth_embed##device", .{ .w = 0, .h = 0 })) {
-                    zsynth_view.drawEmbedded(plugin, .{ .notify_host = false });
+        .plugin => {
+            if (state.device_clap_plugin) |plugin| {
+                // Check if plugin has an embedded view (builtin plugins)
+                if (getEmbeddedView(plugin)) |draw_fn| {
+                    if (zgui.beginChild("plugin_embed##device", .{ .w = 0, .h = 0 })) {
+                        draw_fn(plugin);
+                    }
+                    zgui.endChild();
+                } else {
+                    // External CLAP plugin - show "Open Window" button
+                    drawClapDevice(state, ui_scale);
                 }
-                zgui.endChild();
             } else {
                 drawNoDevice();
             }
-        },
-        .clap => {
-            drawClapDevice(state, ui_scale);
         },
         .none => {
             drawNoDevice();

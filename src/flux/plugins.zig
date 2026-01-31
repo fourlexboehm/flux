@@ -299,6 +299,14 @@ pub fn defaultPluginPath() ![]const u8 {
     };
 }
 
+pub fn zminimoogPluginPath() ![]const u8 {
+    return switch (builtin.os.tag) {
+        .macos => "zig-out/lib/ZMinimoog.clap/Contents/MacOS/ZMinimoog",
+        .linux => "zig-out/lib/zminimoog.clap",
+        else => error.UnsupportedOs,
+    };
+}
+
 pub fn discover(allocator: std.mem.Allocator, io: Io) !PluginCatalog {
     var catalog = PluginCatalog{ .allocator = allocator };
 
@@ -306,6 +314,9 @@ pub fn discover(allocator: std.mem.Allocator, io: Io) !PluginCatalog {
 
     const builtin_path = try defaultPluginPath();
     try appendStaticEntry(&catalog, .builtin, "ZSynth", builtin_path, "com.juge.zsynth");
+
+    const zminimoog_path = try zminimoogPluginPath();
+    try appendStaticEntry(&catalog, .builtin, "ZMinimoog", zminimoog_path, "com.fourlex.zminimoog");
 
     var clap_entries: std.ArrayListUnmanaged(PluginEntry) = .{};
     defer clap_entries.deinit(allocator);

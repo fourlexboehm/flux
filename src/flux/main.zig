@@ -13,6 +13,7 @@ const ui = @import("ui.zig");
 const audio_engine = @import("audio_engine.zig");
 const audio_graph = @import("audio_graph.zig");
 const zsynth = @import("zsynth-core");
+const zminimoog = @import("zminimoog-core");
 const plugins = @import("plugins.zig");
 const dawproject = @import("dawproject.zig");
 const file_dialog = @import("file_dialog.zig");
@@ -103,7 +104,6 @@ const Host = struct {
     allocator: ?std.mem.Allocator = null,
     track_plugins_ptr: ?*[ui.track_count]TrackPlugin = null,
     track_fx_ptr: ?*[ui.track_count][ui.max_fx_slots]TrackPlugin = null,
-    synths_ptr: ?*[ui.track_count]*zsynth.Plugin = null,
     catalog_ptr: ?*const plugins.PluginCatalog = null,
     undo_change_in_progress: bool = false,
     undo_track_index: ?usize = null, // Track that started the change
@@ -307,25 +307,14 @@ const Host = struct {
         return null;
     }
 
-    /// Get the CLAP plugin for a given track (external or builtin zsynth)
+    /// Get the CLAP plugin for a given track (external or builtin)
     fn getPluginForTrack(self: *Host, state: *ui.State, track_idx: usize) ?*const clap.Plugin {
+        _ = state;
         if (track_idx >= ui.track_count) return null;
 
-        // Check for external CLAP plugin first
+        // All plugins (builtin and external) are now in TrackPlugin
         if (self.track_plugins_ptr) |track_plugins| {
-            if (track_plugins[track_idx].handle) |handle| {
-                return handle.plugin;
-            }
-        }
-        // Check if track is using builtin zsynth
-        if (self.catalog_ptr) |catalog| {
-            if (self.synths_ptr) |synths| {
-                const choice = state.track_plugins[track_idx].choice_index;
-                const entry = catalog.entryForIndex(choice);
-                if (entry != null and entry.?.kind == .builtin) {
-                    return &synths.*[track_idx].plugin;
-                }
-            }
+            return track_plugins[track_idx].getPlugin();
         }
         return null;
     }
@@ -534,13 +523,34 @@ const PluginHandle = struct {
     }
 };
 
+/// Handle for a builtin (statically linked) plugin
+const BuiltinHandle = struct {
+    plugin: *clap.Plugin,
+
+    pub fn deinit(self: *BuiltinHandle) void {
+        self.plugin.deactivate(self.plugin);
+        // Note: destroy() calls the CLAP _destroy callback which already calls plugin.deinit()
+        self.plugin.destroy(self.plugin);
+    }
+};
+
 const TrackPlugin = struct {
+    /// External CLAP plugin loaded from disk
     handle: ?PluginHandle = null,
+    /// Builtin plugin (statically linked)
+    builtin: ?BuiltinHandle = null,
     gui_ext: ?*const clap.ext.gui.Plugin = null,
     gui_window: ?*anyopaque = null,
     gui_view: ?*anyopaque = null,
     gui_open: bool = false,
     choice_index: i32 = -1,
+
+    /// Get the CLAP plugin pointer, whether external or builtin
+    pub fn getPlugin(self: *const TrackPlugin) ?*const clap.Plugin {
+        if (self.handle) |h| return h.plugin;
+        if (self.builtin) |b| return b.plugin;
+        return null;
+    }
 };
 
 const AppWindow = if (builtin.os.tag == .macos) struct {
@@ -669,18 +679,6 @@ fn dataCallback(
 
             jobs.setSleepNs(sleep_ns);
         }
-
-        // Print stats once per second
-        const now = end;
-        const should_print = if (perf_last_print) |last| now.since(last) >= std.time.ns_per_s else true;
-        if (should_print and perf_count > 0) {
-            const avg_us = perf_total_us / perf_count;
-            std.debug.print("audio: avg={d}us max={d}us budget={d}us ({d}%)\n", .{ avg_us, perf_max_us, budget_us, avg_us * 100 / budget_us });
-            perf_total_us = 0;
-            perf_max_us = 0;
-            perf_count = 0;
-            perf_last_print = now;
-        }
     }
 }
 
@@ -692,9 +690,6 @@ fn applyBufferFramesChange(
     shared: *audio_engine.SharedState,
     track_plugins: *[ui.track_count]TrackPlugin,
     track_fx: *[ui.track_count][ui.max_fx_slots]TrackPlugin,
-    state: *ui.State,
-    catalog: *const plugins.PluginCatalog,
-    synths: [ui.track_count]*zsynth.Plugin,
     new_frames: u32,
 ) !void {
     if (new_frames == engine.max_frames) return;
@@ -710,7 +705,7 @@ fn applyBufferFramesChange(
     is_audio_thread = true;
     defer is_audio_thread = was_audio;
 
-    const plugins_for_tracks = collectPlugins(catalog, track_plugins, track_fx, state, synths);
+    const plugins_for_tracks = collectPlugins(track_plugins, track_fx);
     for (0..ui.track_count) |t| {
         if (shared.isPluginStarted(t)) {
             if (plugins_for_tracks.instruments[t]) |plugin| {
@@ -798,29 +793,6 @@ pub fn main(init: std.process.Init) !void {
     host.allocator = allocator;
     host.track_plugins_ptr = &track_plugins;
     host.track_fx_ptr = &track_fx;
-    var synths: [ui.track_count]*zsynth.Plugin = undefined;
-    var synth_count: usize = 0;
-    errdefer {
-        for (synths[0..synth_count]) |plugin| {
-            plugin.deinit();
-        }
-    }
-    for (0..ui.track_count) |track_index| {
-        const plugin = try zsynth.Plugin.init(allocator, &host.clap_host);
-        if (!plugin.plugin.init(&plugin.plugin)) return error.PluginInitFailed;
-        if (!plugin.plugin.activate(&plugin.plugin, SampleRate, 1, buffer_frames)) {
-            return error.PluginActivateFailed;
-        }
-        synths[track_index] = plugin;
-        synth_count += 1;
-    }
-    defer {
-        for (synths[0..synth_count]) |plugin| {
-            plugin.deinit();
-        }
-    }
-    state.zsynth = synths[0];
-    host.synths_ptr = &synths;
     host.catalog_ptr = &catalog;
 
     var engine = try audio_engine.AudioEngine.init(allocator, SampleRate, buffer_frames);
@@ -837,16 +809,7 @@ pub fn main(init: std.process.Init) !void {
     host.jobs = &jobs;
 
     engine.updateFromUi(&state);
-    const plugins_snapshot = collectPlugins(&catalog, &track_plugins, &track_fx, &state, synths);
-    engine.updatePlugins(plugins_snapshot.instruments, plugins_snapshot.fx);
-
-    // Request startProcessing for all loaded plugins (will be called from audio thread)
-    for (0..ui.track_count) |t| {
-        engine.shared.requestStartProcessing(t);
-        for (0..ui.max_fx_slots) |fx_index| {
-            engine.shared.requestStartProcessingFx(t, fx_index);
-        }
-    }
+    // Initial plugin sync will happen on first frame - plugins are loaded lazily
 
     var device_config = zaudio.Device.Config.init(.playback);
     device_config.playback.format = zaudio.Format.float32;
@@ -904,7 +867,6 @@ pub fn main(init: std.process.Init) !void {
                     const dt = @as(f64, @floatFromInt(delta_ns)) / std.time.ns_per_s;
                     ui.tick(&state, dt);
                 }
-                state.zsynth = synths[state.selectedTrack()];
                 updateDeviceState(&state, &catalog, &track_plugins, &track_fx);
                 midi.poll();
                 state.midi_note_states = midi.note_states;
@@ -990,9 +952,6 @@ pub fn main(init: std.process.Init) !void {
                             &engine.shared,
                             &track_plugins,
                             &track_fx,
-                            &state,
-                            &catalog,
-                            synths,
                             requested_frames,
                         ) catch |err| {
                             std.log.warn("Failed to apply buffer size {d}: {}", .{ requested_frames, err });
@@ -1003,11 +962,11 @@ pub fn main(init: std.process.Init) !void {
                         }
                     }
                 }
-                handleFileRequests(allocator, io, &state, &catalog, &track_plugins, &track_fx, &host.clap_host, &engine.shared, synths);
+                handleFileRequests(allocator, io, &state, &catalog, &track_plugins, &track_fx, &host.clap_host, &engine.shared);
                 engine.updateFromUi(&state);
                 try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 try syncFxPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
-                const frame_plugins = collectPlugins(&catalog, &track_plugins, &track_fx, &state, synths);
+                const frame_plugins = collectPlugins(&track_plugins, &track_fx);
                 engine.updatePlugins(frame_plugins.instruments, frame_plugins.fx);
                 zgui.backend.draw(command_buffer, command_encoder);
                 command_encoder.as(objc.metal.CommandEncoder).endEncoding();
@@ -1096,7 +1055,6 @@ pub fn main(init: std.process.Init) !void {
                     const dt = @as(f64, @floatFromInt(delta_ns)) / std.time.ns_per_s;
                     ui.tick(&state, dt);
                 }
-                state.zsynth = synths[state.selectedTrack()];
                 updateDeviceState(&state, &catalog, &track_plugins, &track_fx);
                 midi.poll();
                 state.midi_note_states = midi.note_states;
@@ -1157,9 +1115,6 @@ pub fn main(init: std.process.Init) !void {
                             &engine.shared,
                             &track_plugins,
                             &track_fx,
-                            &state,
-                            &catalog,
-                            synths,
                             requested_frames,
                         ) catch |err| {
                             std.log.warn("Failed to apply buffer size {d}: {}", .{ requested_frames, err });
@@ -1170,11 +1125,11 @@ pub fn main(init: std.process.Init) !void {
                         }
                     }
                 }
-                handleFileRequests(allocator, io, &state, &catalog, &track_plugins, &track_fx, &host.clap_host, &engine.shared, synths);
+                handleFileRequests(allocator, io, &state, &catalog, &track_plugins, &track_fx, &host.clap_host, &engine.shared);
                 engine.updateFromUi(&state);
                 try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 try syncFxPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
-                const frame_plugins = collectPlugins(&catalog, &track_plugins, &track_fx, &state, synths);
+                const frame_plugins = collectPlugins(&track_plugins, &track_fx);
                 engine.updatePlugins(frame_plugins.instruments, frame_plugins.fx);
                 zgui.backend.draw();
 
@@ -1252,32 +1207,22 @@ fn updateDeviceState(
         return;
     }
 
-    switch (entry.?.kind) {
-        .builtin => {
-            if (state.device_target_kind == .fx) {
-                state.device_kind = .none;
-                state.device_clap_plugin = null;
-                state.device_clap_name = "";
-            } else {
-                state.device_kind = .builtin;
-                state.device_clap_plugin = null;
-                state.device_clap_name = "";
-            }
-        },
-        .clap => {
-            state.device_kind = .clap;
-            state.device_clap_name = entry.?.name;
-            const handle = switch (state.device_target_kind) {
-                .instrument => track_plugins[track_idx].handle,
-                .fx => track_fx[track_idx][state.device_target_fx].handle,
-            };
-            state.device_clap_plugin = if (handle) |h| h.plugin else null;
-        },
-        else => {
-            state.device_kind = .none;
-            state.device_clap_plugin = null;
-            state.device_clap_name = "";
-        },
+    // Get the plugin from TrackPlugin (works for both builtin and external)
+    const track_plugin = switch (state.device_target_kind) {
+        .instrument => &track_plugins[track_idx],
+        .fx => &track_fx[track_idx][state.device_target_fx],
+    };
+    const plugin = track_plugin.getPlugin();
+
+    if (plugin != null) {
+        state.device_kind = .plugin;
+        state.device_clap_plugin = plugin;
+        state.device_clap_name = entry.?.name;
+    } else {
+        // Plugin not yet loaded (will be loaded on next sync)
+        state.device_kind = .none;
+        state.device_clap_plugin = null;
+        state.device_clap_name = entry.?.name;
     }
 }
 
@@ -1293,33 +1238,19 @@ fn pluginHasAudioInput(plugin: *const clap.Plugin) bool {
 }
 
 fn collectPlugins(
-    catalog: *const plugins.PluginCatalog,
     track_plugins: *const [ui.track_count]TrackPlugin,
     track_fx: *const [ui.track_count][ui.max_fx_slots]TrackPlugin,
-    state: *const ui.State,
-    synths: [ui.track_count]*zsynth.Plugin,
 ) PluginSnapshot {
     var instruments: [ui.track_count]?*const clap.Plugin = [_]?*const clap.Plugin{null} ** ui.track_count;
     var fx: [ui.track_count][ui.max_fx_slots]?*const clap.Plugin =
         [_][ui.max_fx_slots]?*const clap.Plugin{[_]?*const clap.Plugin{null} ** ui.max_fx_slots} ** ui.track_count;
 
     for (0..ui.track_count) |t| {
-        const choice = state.track_plugins[t].choice_index;
-        const entry = catalog.entryForIndex(choice);
-        if (entry) |item| {
-            switch (item.kind) {
-                .builtin => instruments[t] = &synths[t].plugin,
-                .clap => instruments[t] = if (track_plugins[t].handle) |handle| handle.plugin else null,
-                else => {},
-            }
-        }
+        // All plugins (builtin and external) are now in TrackPlugin
+        instruments[t] = track_plugins[t].getPlugin();
 
         for (0..ui.max_fx_slots) |fx_index| {
-            const fx_choice = state.track_fx[t][fx_index].choice_index;
-            const fx_entry = catalog.entryForIndex(fx_choice);
-            if (fx_entry != null and fx_entry.?.kind == .clap) {
-                fx[t][fx_index] = if (track_fx[t][fx_index].handle) |handle| handle.plugin else null;
-            }
+            fx[t][fx_index] = track_fx[t][fx_index].getPlugin();
         }
     }
 
@@ -1358,9 +1289,10 @@ fn syncTrackPlugins(
 
         const entry = catalog.entryForIndex(choice);
         const kind = if (entry) |item| item.kind else .none;
-        // Skip none, divider, and builtin (builtin zsynth is handled via synths[] array, not track_plugins)
-        if (kind == .none or kind == .divider or kind == .builtin) {
-            if (track.handle != null) {
+
+        // Handle none/divider - unload any existing plugin
+        if (kind == .none or kind == .divider) {
+            if (track.handle != null or track.builtin != null) {
                 closePluginGui(track);
                 prepareUnload(shared, t, io);
                 unloadPlugin(track, allocator, shared, t);
@@ -1369,8 +1301,9 @@ fn syncTrackPlugins(
             continue;
         }
 
+        // Plugin choice changed - unload old plugin
         if (track.choice_index != choice) {
-            if (track.handle != null) {
+            if (track.handle != null or track.builtin != null) {
                 closePluginGui(track);
                 prepareUnload(shared, t, io);
                 unloadPlugin(track, allocator, shared, t);
@@ -1378,10 +1311,37 @@ fn syncTrackPlugins(
             track.choice_index = choice;
         }
 
-        if (track.handle == null) {
-            const path = entry.?.path orelse return error.PluginMissingPath;
-            track.handle = try PluginHandle.init(allocator, host, path, entry.?.id, max_frames);
-            track.gui_ext = getGuiExt(track.handle.?);
+        // Load new plugin if needed
+        if (track.handle == null and track.builtin == null) {
+            switch (kind) {
+                .builtin => {
+                    // Instantiate builtin plugin directly (statically linked)
+                    const plugin_id = entry.?.id orelse "";
+                    if (std.mem.eql(u8, plugin_id, "com.fourlex.zminimoog")) {
+                        const plugin = try zminimoog.Plugin.init(allocator, host);
+                        if (!plugin.plugin.init(&plugin.plugin)) return error.PluginInitFailed;
+                        if (!plugin.plugin.activate(&plugin.plugin, SampleRate, 1, max_frames)) {
+                            return error.PluginActivateFailed;
+                        }
+                        track.builtin = .{ .plugin = &plugin.plugin };
+                    } else {
+                        const plugin = try zsynth.Plugin.init(allocator, host);
+                        if (!plugin.plugin.init(&plugin.plugin)) return error.PluginInitFailed;
+                        if (!plugin.plugin.activate(&plugin.plugin, SampleRate, 1, max_frames)) {
+                            return error.PluginActivateFailed;
+                        }
+                        track.builtin = .{ .plugin = &plugin.plugin };
+                    }
+                    // Builtins don't have external GUIs - they use embedded zgui views
+                    track.gui_ext = null;
+                },
+                .clap => {
+                    const path = entry.?.path orelse return error.PluginMissingPath;
+                    track.handle = try PluginHandle.init(allocator, host, path, entry.?.id, max_frames);
+                    track.gui_ext = getGuiExt(track.handle.?);
+                },
+                else => {},
+            }
             // Request startProcessing from audio thread (CLAP requires audio thread for this call)
             if (start_processing) {
                 if (shared) |s| {
@@ -1390,18 +1350,21 @@ fn syncTrackPlugins(
             }
         }
 
-        if (wants_gui and !track.gui_open) {
-            if (track.gui_ext) |gui_ext| {
-                closeAllPluginGuis(track_plugins, track_fx);
-                openPluginGui(track, gui_ext) catch |err| {
-                    std.log.err("Failed to open plugin gui: {}", .{err});
+        // GUI handling for external CLAP plugins only (builtins use embedded views)
+        if (kind == .clap) {
+            if (wants_gui and !track.gui_open) {
+                if (track.gui_ext) |gui_ext| {
+                    closeAllPluginGuis(track_plugins, track_fx);
+                    openPluginGui(track, gui_ext) catch |err| {
+                        std.log.err("Failed to open plugin gui: {}", .{err});
+                        state.track_plugins[t].gui_open = false;
+                    };
+                } else {
                     state.track_plugins[t].gui_open = false;
-                };
-            } else {
-                state.track_plugins[t].gui_open = false;
+                }
+            } else if (!wants_gui and track.gui_open) {
+                closePluginGui(track);
             }
-        } else if (!wants_gui and track.gui_open) {
-            closePluginGui(track);
         }
     }
 }
@@ -1503,7 +1466,10 @@ fn syncFxPlugins(
 }
 
 fn unloadPlugin(track: *TrackPlugin, allocator: std.mem.Allocator, shared: ?*audio_engine.SharedState, track_index: usize) void {
-    if (track.handle) |*handle| {
+    // Get the CLAP plugin pointer (works for both handle and builtin)
+    const plugin_ptr = track.getPlugin();
+
+    if (plugin_ptr) |plugin| {
         // Check if plugin was started via shared state and call stopProcessing if needed
         if (shared) |s| {
             if (s.isPluginStarted(track_index)) {
@@ -1513,13 +1479,23 @@ fn unloadPlugin(track: *TrackPlugin, allocator: std.mem.Allocator, shared: ?*aud
                 const was_audio = is_audio_thread;
                 is_audio_thread = true;
                 defer is_audio_thread = was_audio;
-                handle.plugin.stopProcessing(handle.plugin);
+                plugin.stopProcessing(plugin);
                 s.clearPluginStarted(track_index);
             }
         }
+    }
+
+    // Deinit external plugin handle
+    if (track.handle) |*handle| {
         handle.deinit(allocator);
     }
+    // Deinit builtin plugin
+    if (track.builtin) |*b| {
+        b.deinit();
+    }
+
     track.handle = null;
+    track.builtin = null;
     track.gui_ext = null;
     track.gui_window = null;
     track.gui_view = null;
@@ -1751,7 +1727,6 @@ fn handleFileRequests(
     track_fx: *[ui.track_count][ui.max_fx_slots]TrackPlugin,
     host: *const clap.Host,
     shared: ?*audio_engine.SharedState,
-    synths: [ui.track_count]*zsynth.Plugin,
 ) void {
     // Handle save request
     if (state.save_project_request) {
@@ -1775,7 +1750,7 @@ fn handleFileRequests(
     // Handle load request
     if (state.load_project_request) {
         state.load_project_request = false;
-        handleLoadProject(allocator, io, state, catalog, track_plugins, track_fx, host, shared, synths) catch |err| {
+        handleLoadProject(allocator, io, state, catalog, track_plugins, track_fx, host, shared) catch |err| {
             std.log.err("Failed to load project: {}", .{err});
         };
     }
@@ -1784,16 +1759,9 @@ fn handleFileRequests(
     if (state.plugin_state_restore_request) |req| {
         state.plugin_state_restore_request = null;
         if (req.track_index < ui.track_count) {
-            // Check for external CLAP plugin first
-            if (track_plugins[req.track_index].handle) |handle| {
-                loadPluginStateFromData(handle.plugin, req.state_data);
-            } else {
-                // Check if track is using builtin zsynth
-                const choice = state.track_plugins[req.track_index].choice_index;
-                const entry = catalog.entryForIndex(choice);
-                if (entry != null and entry.?.kind == .builtin) {
-                    loadPluginStateFromData(&synths[req.track_index].plugin, req.state_data);
-                }
+            // All plugins (builtin and external) are now in TrackPlugin
+            if (track_plugins[req.track_index].getPlugin()) |plugin| {
+                loadPluginStateFromData(plugin, req.state_data);
             }
         }
     }
@@ -1952,7 +1920,6 @@ fn handleLoadProject(
     track_fx: *[ui.track_count][ui.max_fx_slots]TrackPlugin,
     host: *const clap.Host,
     shared: ?*audio_engine.SharedState,
-    synths: [ui.track_count]*zsynth.Plugin,
 ) !void {
     // Show open dialog
     const path = file_dialog.openFile(
@@ -1979,7 +1946,7 @@ fn handleLoadProject(
     defer loaded.deinit();
 
     // Apply to state
-    applyDawprojectToState(allocator, &loaded, state, catalog, track_plugins, track_fx, host, shared, io, synths) catch |err| {
+    applyDawprojectToState(allocator, &loaded, state, catalog, track_plugins, track_fx, host, shared, io) catch |err| {
         std.log.err("Failed to apply dawproject: {}", .{err});
         return;
     };
@@ -2096,7 +2063,6 @@ fn applyDawprojectToState(
     host: *const clap.Host,
     shared: ?*audio_engine.SharedState,
     io: std.Io,
-    synths: [ui.track_count]*zsynth.Plugin,
 ) !void {
     const proj = &loaded.project;
 
@@ -2227,8 +2193,6 @@ fn applyDawprojectToState(
             }
         }
     }
-
-    _ = synths;
 }
 
 fn findPluginInCatalog(catalog: *const plugins.PluginCatalog, device_id: []const u8) i32 {
