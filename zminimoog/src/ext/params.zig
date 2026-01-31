@@ -51,6 +51,9 @@ pub const Parameter = enum {
     Glide,
     PitchBendRange,
     MasterVolume,
+
+    // Quality
+    OversampleFactor,
 };
 
 pub const ParameterValue = union(enum) {
@@ -108,6 +111,9 @@ pub const param_defaults = std.enums.EnumFieldStruct(Parameter, ParameterValue, 
     .Glide = .{ .Float = 0.0 }, // Glide time in seconds
     .PitchBendRange = .{ .Float = 2.0 }, // semitones
     .MasterVolume = .{ .Float = 0.8 },
+
+    // Quality
+    .OversampleFactor = .{ .Float = 2.0 }, // 0=1x, 1=2x, 2=4x (default 4x)
 };
 
 pub const param_count = std.meta.fields(Parameter).len;
@@ -411,6 +417,15 @@ fn getParamInfo(param: Parameter) Info {
             std.mem.copyForwards(u8, &info.name, "Master Volume");
             std.mem.copyForwards(u8, &info.module, "Output");
         },
+        // Quality
+        .OversampleFactor => {
+            info.default_value = param_defaults.OversampleFactor.Float;
+            info.min_value = 0.0;
+            info.max_value = 2.0;
+            info.flags.is_stepped = true;
+            std.mem.copyForwards(u8, &info.name, "Oversample");
+            std.mem.copyForwards(u8, &info.module, "Quality");
+        },
     }
 
     return info;
@@ -430,6 +445,7 @@ const range_names = [_][]const u8{ "LO", "32'", "16'", "8'", "4'", "2'" };
 const noise_names = [_][]const u8{ "White", "Pink" };
 const tracking_names = [_][]const u8{ "Off", "Half", "Full" };
 const switch_names = [_][]const u8{ "Off", "On" };
+const oversample_names = [_][]const u8{ "1x", "2x", "4x" };
 
 pub fn _valueToText(
     _: *const clap.Plugin,
@@ -467,6 +483,10 @@ pub fn _valueToText(
         .Osc3KeyboardCtrl, .Osc3ToFilter, .Osc3ToOsc => blk: {
             const idx: usize = @intFromFloat(@round(@max(0.0, @min(1.0, value))));
             break :blk std.fmt.bufPrintZ(buffer[0..size], "{s}", .{switch_names[idx]});
+        },
+        .OversampleFactor => blk: {
+            const idx: usize = @intFromFloat(@round(@max(0.0, @min(2.0, value))));
+            break :blk std.fmt.bufPrintZ(buffer[0..size], "{s}", .{oversample_names[idx]});
         },
         .FilterEmphasis => std.fmt.bufPrintZ(buffer[0..size], "{d:.2}", .{value}),
         else => std.fmt.bufPrintZ(buffer[0..size], "{d:.2}", .{value}),

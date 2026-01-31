@@ -61,6 +61,14 @@ pub const FilterComponents = board4_filter_vca.FilterComponents;
 pub const FilterOutputs = board4_filter_vca.FilterOutputs;
 
 // ============================================================================
+// Global Oversampler (for entire voice)
+// ============================================================================
+pub const oversampler = @import("oversampler.zig");
+
+pub const GlobalOversampler = oversampler.GlobalOversampler;
+pub const OversampleFactor = oversampler.OversampleFactor;
+
+// ============================================================================
 // Board 5: Rectifier/Power Supply
 // ============================================================================
 pub const board5_rectifier = @import("board5_rectifier.zig");
@@ -135,9 +143,9 @@ pub fn Minimoog(comptime T: type) type {
             var self = Self{
                 .oscillators = OscillatorBank(T).init(sample_rate),
                 .contours = Board2Contours(T).init(sample_rate),
-                .noise = NoiseSource(T).init(),
+                .noise = NoiseSource(T).initWithSampleRate(sample_rate),
                 .filter = MoogLadderFilter(T).init(sample_rate),
-                .vca = VCA(T).init(),
+                .vca = VCA(T).init(sample_rate),
                 .panel = FrontPanel(T).init(),
                 .sample_rate = sample_rate,
             };
@@ -153,7 +161,9 @@ pub fn Minimoog(comptime T: type) type {
             self.sample_rate = sample_rate;
             self.oscillators.prepare(sample_rate);
             self.contours.prepare(sample_rate);
+            self.noise.prepare(sample_rate);
             self.filter.prepare(sample_rate);
+            self.vca.prepare(sample_rate);
         }
 
         pub fn reset(self: *Self) void {
@@ -164,6 +174,13 @@ pub fn Minimoog(comptime T: type) type {
             self.vca.reset();
             self.panel.reset();
             self.gate = false;
+        }
+
+        /// Set digital anti-aliasing mode for oscillators
+        /// - true: Use PolyBLEP/PolyBLAMP (for 1x, no oversampling)
+        /// - false: Raw WDF output (for 2x/4x, oversampling handles aliasing)
+        pub fn setDigitalAntialiasing(self: *Self, enabled: bool) void {
+            self.oscillators.setDigitalAntialiasing(enabled);
         }
 
         // ====================================================================
