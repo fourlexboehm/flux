@@ -122,7 +122,7 @@ pub fn apply(project: *const Project, state: *ui.State, catalog: *const plugins.
             state.session.tracks[t].solo = track.solo;
         } else {
             var buf: [32]u8 = undefined;
-            const label = std.fmt.bufPrint(&buf, "Track {d}", .{t + 1}) catch "Track";
+            const label = std.fmt.bufPrint(&buf, "Inst {d}", .{t + 1}) catch "Inst";
             state.session.tracks[t].setName(label);
         }
     }
@@ -132,7 +132,7 @@ pub fn apply(project: *const Project, state: *ui.State, catalog: *const plugins.
             state.session.scenes[s].setName(project.scenes[s].name);
         } else {
             var buf: [32]u8 = undefined;
-            const label = std.fmt.bufPrint(&buf, "Scene {d}", .{s + 1}) catch "Scene";
+            const label = std.fmt.bufPrint(&buf, "{d}", .{s + 1}) catch "1";
             state.session.scenes[s].setName(label);
         }
     }
