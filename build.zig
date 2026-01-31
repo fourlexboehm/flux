@@ -34,6 +34,11 @@ pub fn build(b: *std.Build) void {
 
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const enable_segfault_handler = b.option(
+        bool,
+        "enable_segfault_handler",
+        "Enable std segfault handler for debug backtraces",
+    ) orelse (optimize == .Debug);
     const clap_bindings = b.dependency("clap-bindings", .{});
     const regex = b.dependency("regex", .{});
     const zgui = b.dependency("zgui", .{
@@ -104,9 +109,11 @@ pub fn build(b: *std.Build) void {
     var options = Step.Options.create(b);
     options.addOption(bool, "wait_for_debugger", wait_for_debugger);
     options.addOption(bool, "enable_gui", true);
+    options.addOption(bool, "enable_segfault_handler", enable_segfault_handler);
     var options_core = Step.Options.create(b);
     options_core.addOption(bool, "wait_for_debugger", wait_for_debugger);
     options_core.addOption(bool, "enable_gui", false);
+    options_core.addOption(bool, "enable_segfault_handler", enable_segfault_handler);
 
     // Something about this is very wrong...
     const font_data = @embedFile("assets/Roboto-Medium.ttf");
@@ -193,6 +200,7 @@ pub fn build(b: *std.Build) void {
     flux.root_module.linkLibrary(zaudio.artifact("miniaudio"));
     flux.root_module.addImport("tracy", ztracy.module("root"));
     flux.root_module.linkLibrary(ztracy.artifact("tracy"));
+    flux.root_module.addOptions("options", options);
     flux.root_module.addImport("libz_jobs", libz_jobs.module("libz_jobs"));
     flux.root_module.addImport("xml", zig_xml.module("xml"));
     const portmidi_module = portmidi_zig.module("portmidi");

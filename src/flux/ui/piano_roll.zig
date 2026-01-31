@@ -160,6 +160,7 @@ pub const DragMode = enum {
     create,
     resize_right,
     move,
+    velocity,
     resize_clip,
     select_rect,
 };
@@ -171,10 +172,16 @@ pub const PianoRollDrag = struct {
     grab_offset_pitch: i32 = 0,
     original_start: f32 = 0,
     original_pitch: u8 = 0,
+    drag_start_mouse_y: f32 = 0,
     // For undo tracking
     drag_start_start: f32 = 0, // Start position when drag began
     drag_start_pitch: u8 = 0, // Pitch when drag began
     drag_start_duration: f32 = 0, // Duration when drag began
+};
+
+const VelocityDragNote = struct {
+    index: usize,
+    velocity: f32,
 };
 
 pub const PianoRollState = struct {
@@ -190,6 +197,7 @@ pub const PianoRollState = struct {
     // Drag state
     drag: PianoRollDrag = .{},
     drag_select: selection.DragSelectState = .{},
+    velocity_drag_notes: std.ArrayListUnmanaged(VelocityDragNote) = .{},
 
     // Context menu state
     context_note_index: ?usize = null,
@@ -218,6 +226,7 @@ pub const PianoRollState = struct {
     pub fn deinit(self: *PianoRollState) void {
         self.selected_notes.deinit(self.allocator);
         self.clipboard.deinit(self.allocator);
+        self.velocity_drag_notes.deinit(self.allocator);
     }
 
     pub fn clearSelection(self: *PianoRollState) void {
@@ -272,6 +281,27 @@ pub const PianoRollState = struct {
     }
 };
 
+fn lerpColor(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
+    const clamped = std.math.clamp(t, 0.0, 1.0);
+    return .{
+        a[0] + (b[0] - a[0]) * clamped,
+        a[1] + (b[1] - a[1]) * clamped,
+        a[2] + (b[2] - a[2]) * clamped,
+        a[3] + (b[3] - a[3]) * clamped,
+    };
+}
+
+fn applyVelocityColor(base: [4]f32, velocity: f32) [4]f32 {
+    const v = std.math.clamp(velocity, 0.0, 1.0);
+    const white: [4]f32 = .{ 1.0, 1.0, 1.0, base[3] };
+    const black: [4]f32 = .{ 0.0, 0.0, 0.0, base[3] };
+    var color = base;
+    // Lower velocity -> lighter, higher velocity -> darker.
+    color = lerpColor(color, white, (1.0 - v) * 0.35);
+    color = lerpColor(color, black, v * 0.35);
+    return color;
+}
+
 pub fn drawSequencer(
     state: *PianoRollState,
     clip: *PianoRollClip,
@@ -309,6 +339,16 @@ pub fn drawSequencer(
     zgui.pushStyleColor4f(.{ .idx = .text, .c = colors.Colors.current.text_dim });
     zgui.text("{d:.0} bars", .{clip.length_beats / beats_per_bar});
     zgui.popStyleColor(.{ .count = 1 });
+
+    if (state.selected_note_index) |note_idx| {
+        if (note_idx < clip.notes.items.len) {
+            const vel_pct = std.math.clamp(clip.notes.items[note_idx].velocity, 0.0, 1.0) * 127.0;
+            zgui.sameLine(.{ .spacing = 20.0 * ui_scale });
+            zgui.pushStyleColor4f(.{ .idx = .text, .c = colors.Colors.current.text_dim });
+            zgui.text("Vel {d:.0}", .{vel_pct});
+            zgui.popStyleColor(.{ .count = 1 });
+        }
+    }
 
     // Scroll/zoom bar
     zgui.sameLine(.{ .spacing = 30.0 * ui_scale });
@@ -496,7 +536,8 @@ pub fn drawSequencer(
 
         const is_selected = state.isNoteSelected(note_idx);
 
-        const note_color = if (is_selected) colors.Colors.current.note_selected else colors.Colors.current.note_color;
+        const base_note_color = if (is_selected) colors.Colors.current.note_selected else colors.Colors.current.note_color;
+        const note_color = applyVelocityColor(base_note_color, note.velocity);
         draw_list.addRectFilled(.{
             .pmin = .{ note_x + 1, note_y + 1 },
             .pmax = .{ note_x + note_w - 1, note_y + row_height - 1 },
@@ -531,23 +572,47 @@ pub fn drawSequencer(
         const over_handle = mouse[0] >= handle_x;
 
         if (over_note and state.drag.mode == .none) {
-            zgui.setMouseCursor(if (over_handle) .resize_ew else .resize_all);
+            const modifier_down = selection.isModifierDown();
+            if (over_handle) {
+                zgui.setMouseCursor(.resize_ew);
+            } else if (modifier_down) {
+                zgui.setMouseCursor(.resize_ns);
+            } else {
+                zgui.setMouseCursor(.resize_all);
+            }
 
             if (zgui.isMouseClicked(.left)) {
                 const grab_beat = (mouse[0] - grid_window_pos[0] + state.scroll_x) / pixels_per_beat;
                 state.handleNoteClick(note_idx, selection.isShiftDown());
 
-                state.drag = .{
-                    .mode = if (over_handle) .resize_right else .move,
-                    .note_index = note_idx,
-                    .grab_offset_beats = grab_beat - note.start,
-                    .original_start = note.start,
-                    .original_pitch = note.pitch,
-                    // Save original values for undo
-                    .drag_start_start = note.start,
-                    .drag_start_pitch = note.pitch,
-                    .drag_start_duration = note.duration,
-                };
+                if (modifier_down and !over_handle) {
+                    state.velocity_drag_notes.clearRetainingCapacity();
+                    for (state.selected_notes.keys()) |sel_idx| {
+                        if (sel_idx < clip.notes.items.len) {
+                            state.velocity_drag_notes.append(state.allocator, .{
+                                .index = sel_idx,
+                                .velocity = clip.notes.items[sel_idx].velocity,
+                            }) catch {};
+                        }
+                    }
+                    state.drag = .{
+                        .mode = .velocity,
+                        .note_index = note_idx,
+                        .drag_start_mouse_y = mouse[1],
+                    };
+                } else {
+                    state.drag = .{
+                        .mode = if (over_handle) .resize_right else .move,
+                        .note_index = note_idx,
+                        .grab_offset_beats = grab_beat - note.start,
+                        .original_start = note.start,
+                        .original_pitch = note.pitch,
+                        // Save original values for undo
+                        .drag_start_start = note.start,
+                        .drag_start_pitch = note.pitch,
+                        .drag_start_duration = note.duration,
+                    };
+                }
                 left_click_note = true;
             }
 
@@ -763,6 +828,9 @@ pub fn drawSequencer(
                 .select_rect => {
                     finalizeRectSelection(state, clip, grid_window_pos, pixels_per_beat, row_height, state.scroll_x, state.scroll_y);
                     state.drag_select.reset();
+                },
+                .velocity => {
+                    state.velocity_drag_notes.clearRetainingCapacity();
                 },
                 .resize_clip => {
                     // Clip was resized - emit resize request if length changed
@@ -1187,6 +1255,16 @@ fn handleDrag(
 
                 state.drag.original_start = new_start;
                 state.drag.original_pitch = @intCast(new_pitch_i);
+            }
+        },
+        .velocity => {
+            const velocity_per_pixel: f32 = 0.005;
+            const delta = (state.drag.drag_start_mouse_y - mouse[1]) * velocity_per_pixel;
+            for (state.velocity_drag_notes.items) |entry| {
+                if (entry.index < clip.notes.items.len) {
+                    const new_velocity = std.math.clamp(entry.velocity + delta, 0.0, 1.0);
+                    clip.notes.items[entry.index].velocity = new_velocity;
+                }
             }
         },
         .resize_right, .create => {
