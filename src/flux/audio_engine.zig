@@ -58,6 +58,7 @@ pub const SharedState = struct {
         back.track_plugins = self.track_plugins;
         back.track_fx_plugins = self.track_fx_plugins;
         back.live_key_states = state.live_key_states;
+        back.live_key_velocities = state.live_key_velocities;
         for (0..ui.track_count) |t| {
             for (0..ui.scene_count) |s| {
                 const src = &state.piano_clips[t][s];

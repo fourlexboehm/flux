@@ -908,6 +908,7 @@ pub fn main(init: std.process.Init) !void {
                 updateDeviceState(&state, &catalog, &track_plugins, &track_fx);
                 midi.poll();
                 state.midi_note_states = midi.note_states;
+                state.midi_note_velocities = midi.note_velocities;
                 if (now.since(dsp_last_update) >= 250 * std.time.ns_per_ms) {
                     state.dsp_load_pct = engine.dsp_load_pct.load(.acquire);
                     dsp_last_update = now;
@@ -1099,6 +1100,7 @@ pub fn main(init: std.process.Init) !void {
                 updateDeviceState(&state, &catalog, &track_plugins, &track_fx);
                 midi.poll();
                 state.midi_note_states = midi.note_states;
+                state.midi_note_velocities = midi.note_velocities;
                 if (now.since(dsp_last_update) >= 250 * std.time.ns_per_ms) {
                     state.dsp_load_pct = engine.dsp_load_pct.load(.acquire);
                     dsp_last_update = now;

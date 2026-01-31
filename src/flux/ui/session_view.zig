@@ -144,6 +144,7 @@ pub const RecordingState = struct {
     queued_at_beat: f32 = 0,
     target_length_beats: f32 = default_clip_bars * beats_per_bar, // 4 bars
     note_start_beats: [128]?f32 = [_]?f32{null} ** 128, // Track held notes
+    note_start_velocities: [128]?f32 = [_]?f32{null} ** 128,
     is_new_clip: bool = false,
 
     pub fn isRecording(self: *const RecordingState) bool {
@@ -157,6 +158,7 @@ pub const RecordingState = struct {
         self.queued_at_beat = 0;
         self.target_length_beats = default_clip_bars * beats_per_bar;
         self.note_start_beats = [_]?f32{null} ** 128;
+        self.note_start_velocities = [_]?f32{null} ** 128;
         self.is_new_clip = false;
     }
 };

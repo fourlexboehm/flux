@@ -105,7 +105,9 @@ pub const State = struct {
     plugin_divider_index: ?i32,
     live_key_states: [ui.max_tracks][128]bool,
     previous_key_states: [ui.max_tracks][128]bool,
+    live_key_velocities: [ui.max_tracks][128]f32,
     midi_note_states: [128]bool,
+    midi_note_velocities: [128]f32,
     keyboard_octave: i8,
 
     // Project file requests (handled by main.zig)
@@ -193,7 +195,9 @@ pub const State = struct {
             .plugin_divider_index = null,
             .live_key_states = [_][128]bool{[_]bool{false} ** 128} ** ui.max_tracks,
             .previous_key_states = [_][128]bool{[_]bool{false} ** 128} ** ui.max_tracks,
+            .live_key_velocities = [_][128]f32{[_]f32{0.0} ** 128} ** ui.max_tracks,
             .midi_note_states = [_]bool{false} ** 128,
+            .midi_note_velocities = [_]f32{0.0} ** 128,
             .keyboard_octave = 0,
             .load_project_request = false,
             .save_project_request = false,
@@ -848,18 +852,21 @@ fn processRecordingMidi(state: *State) void {
         if (is_pressed and !was_pressed) {
             // Note on: store start beat (using position within clip)
             rec.note_start_beats[pitch] = current_beat;
+            rec.note_start_velocities[pitch] = state.live_key_velocities[track][pitch];
         } else if (!is_pressed and was_pressed) {
             // Note off: create note
             if (rec.note_start_beats[pitch]) |start_beat| {
+                const velocity = rec.note_start_velocities[pitch] orelse 0.8;
                 var duration = current_beat - start_beat;
                 // Handle wrap-around (note started near end of clip, ended after loop)
                 if (duration < 0) {
                     duration = duration + clip_length;
                 }
                 if (duration > 0.01) { // Minimum note duration
-                    piano_clip.addNote(p, start_beat, duration) catch {};
+                    piano_clip.addNoteWithVelocity(p, start_beat, duration, velocity, 0.8) catch {};
                 }
                 rec.note_start_beats[pitch] = null;
+                rec.note_start_velocities[pitch] = null;
             }
         }
     }
@@ -881,13 +888,14 @@ fn finalizeHeldNotesAtPosition(state: *State, end_beat: f32) void {
     for (0..128) |pitch| {
         if (rec.note_start_beats[pitch]) |start_beat| {
             const p: u8 = @intCast(pitch);
+            const velocity = rec.note_start_velocities[pitch] orelse 0.8;
             var duration = relative_end - start_beat;
             // Handle wrap-around
             if (duration < 0) {
                 duration = duration + clip_length;
             }
             if (duration > 0.01) {
-                piano_clip.addNote(p, start_beat, duration) catch {};
+                piano_clip.addNoteWithVelocity(p, start_beat, duration, velocity, 0.8) catch {};
             }
             // Don't clear note_start_beats here - the loop handler will reset them to 0
         }
@@ -910,15 +918,17 @@ fn finalizeHeldNotes(state: *State) void {
     for (0..128) |pitch| {
         if (rec.note_start_beats[pitch]) |start_beat| {
             const p: u8 = @intCast(pitch);
+            const velocity = rec.note_start_velocities[pitch] orelse 0.8;
             var duration = current_beat - start_beat;
             // Handle wrap-around
             if (duration < 0) {
                 duration = duration + clip_length;
             }
             if (duration > 0.01) {
-                piano_clip.addNote(p, start_beat, duration) catch {};
+                piano_clip.addNoteWithVelocity(p, start_beat, duration, velocity, 0.8) catch {};
             }
             rec.note_start_beats[pitch] = null;
+            rec.note_start_velocities[pitch] = null;
         }
     }
 }
@@ -930,6 +940,7 @@ pub fn updateKeyboardMidi(state: *State) void {
         // Clear all key states when text input is active to release any held notes
         for (0..ui.max_tracks) |track_index| {
             state.live_key_states[track_index] = [_]bool{false} ** 128;
+            state.live_key_velocities[track_index] = [_]f32{0.0} ** 128;
         }
         return;
     }
@@ -967,17 +978,21 @@ pub fn updateKeyboardMidi(state: *State) void {
     const octave_offset: i16 = @as(i16, state.keyboard_octave) * 12;
 
     var pressed = [_]bool{false} ** 128;
+    var pressed_velocities = [_]f32{0.0} ** 128;
     for (mappings) |mapping| {
         if (zgui.isKeyDown(mapping.key)) {
             const pitch: i16 = @as(i16, keyboard_base_pitch) + @as(i16, mapping.offset) + octave_offset;
             if (pitch >= 0 and pitch <= 127) {
-                pressed[@intCast(pitch)] = true;
+                const idx: usize = @intCast(pitch);
+                pressed[idx] = true;
+                pressed_velocities[idx] = 0.8;
             }
         }
     }
     for (0..128) |pitch| {
         if (state.midi_note_states[pitch]) {
             pressed[pitch] = true;
+            pressed_velocities[pitch] = @max(pressed_velocities[pitch], state.midi_note_velocities[pitch]);
         }
     }
 
@@ -986,8 +1001,10 @@ pub fn updateKeyboardMidi(state: *State) void {
     for (0..ui.max_tracks) |track_index| {
         if (track_index == target_track) {
             state.live_key_states[track_index] = pressed;
+            state.live_key_velocities[track_index] = pressed_velocities;
         } else {
             state.live_key_states[track_index] = [_]bool{false} ** 128;
+            state.live_key_velocities[track_index] = [_]f32{0.0} ** 128;
         }
     }
 }
@@ -1663,6 +1680,7 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
                     if (state.piano_state.preview_track) |track| {
                         if (track < ui.max_tracks) {
                             state.live_key_states[track][pitch] = true;
+                            state.live_key_velocities[track][pitch] = 0.8;
                         }
                     }
                 }

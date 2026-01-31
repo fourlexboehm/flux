@@ -49,6 +49,7 @@ pub const StateSnapshot = struct {
     track_plugins: [ui.track_count]?*const clap.Plugin,
     track_fx_plugins: [ui.track_count][ui.max_fx_slots]?*const clap.Plugin,
     live_key_states: [ui.track_count][128]bool,
+    live_key_velocities: [ui.track_count][128]f32,
 };
 
 pub const ClipNotes = struct {
@@ -235,12 +236,19 @@ pub const NoteSource = struct {
         });
     }
 
-    fn updateCombined(self: *NoteSource, desired: *const [128]bool, sample_offset: u32) void {
+    fn updateCombined(
+        self: *NoteSource,
+        desired: *const [128]bool,
+        live_should: *const [128]bool,
+        live_velocities: *const [128]f32,
+        sample_offset: u32,
+    ) void {
         for (0..128) |pitch| {
             if (self.active_pitches[pitch] and !desired[pitch]) {
                 self.emitNoteOff(@intCast(pitch), 0.0, sample_offset);
             } else if (!self.active_pitches[pitch] and desired[pitch]) {
-                self.emitNoteOn(@intCast(pitch), 1.0, sample_offset);
+                const velocity = if (live_should[pitch]) live_velocities[pitch] else 1.0;
+                self.emitNoteOn(@intCast(pitch), velocity, sample_offset);
             }
         }
     }
@@ -251,6 +259,7 @@ pub const NoteSource = struct {
         beat: f32,
         sample_offset: u32,
         live_should: *const [128]bool,
+        live_velocities: *const [128]f32,
     ) void {
         // Determine which pitches should be active at this beat
         var should_be_active: [128]bool = [_]bool{false} ** 128;
@@ -273,18 +282,19 @@ pub const NoteSource = struct {
         for (0..128) |pitch| {
             should_be_active[pitch] = should_be_active[pitch] or live_should[pitch];
         }
-        self.updateCombined(&should_be_active, sample_offset);
+        self.updateCombined(&should_be_active, live_should, live_velocities, sample_offset);
     }
 
     fn process(self: *NoteSource, snapshot: *const StateSnapshot, sample_rate: f32, frame_count: u32) *const clap.events.InputEvents {
         self.event_list.reset();
         self.input_events.context = &self.event_list;
         const live_should = &snapshot.live_key_states[self.track_index];
+        const live_velocities = &snapshot.live_key_velocities[self.track_index];
 
         if (!snapshot.playing) {
             if (self.emit_notes) {
                 self.resetSequencer();
-                self.updateCombined(live_should, 0);
+                self.updateCombined(live_should, live_should, live_velocities, 0);
             }
             return &self.input_events;
         }
@@ -302,7 +312,7 @@ pub const NoteSource = struct {
         if (active_scene == null) {
             if (self.emit_notes) {
                 self.resetSequencer();
-                self.updateCombined(live_should, 0);
+                self.updateCombined(live_should, live_should, live_velocities, 0);
             }
             return &self.input_events;
         }
@@ -317,7 +327,7 @@ pub const NoteSource = struct {
         const clip_len = @as(f64, clip.length_beats);
         if (clip_len <= 0.0) {
             if (self.emit_notes) {
-                self.updateCombined(live_should, 0);
+                self.updateCombined(live_should, live_should, live_velocities, 0);
             }
             return &self.input_events;
         }
@@ -330,7 +340,7 @@ pub const NoteSource = struct {
         const beat_end = beat_start + block_beats;
 
         if (self.emit_notes) {
-            self.updateNotesAtBeat(clip, @floatCast(beat_start), 0, live_should);
+            self.updateNotesAtBeat(clip, @floatCast(beat_start), 0, live_should, live_velocities);
         }
 
         if (beat_end < clip_len) {
