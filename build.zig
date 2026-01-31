@@ -62,6 +62,7 @@ pub fn build(b: *std.Build) void {
     const zig_xml = b.dependency("zig-xml", .{});
     const portmidi_zig = b.dependency("portmidi-zig", .{});
     const portmidi = b.dependency("portmidi", .{});
+    const zig_wdf = b.dependency("zig-wdf", .{});
 
     const ztracy = b.dependency("ztracy", .{
         .enable_ztracy = (builtin.mode == .Debug or profiling == true) and !disable_profiling,
@@ -89,6 +90,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const zminimoog_core = b.createModule(.{
+        .root_source_file = b.path("zminimoog/src/core.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     const lib = b.addLibrary(.{
         .name = "zsynth",
@@ -110,20 +116,24 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "wait_for_debugger", wait_for_debugger);
     options.addOption(bool, "enable_gui", true);
     options.addOption(bool, "enable_segfault_handler", enable_segfault_handler);
-    var options_core = Step.Options.create(b);
+    const options_core = Step.Options.create(b);
     options_core.addOption(bool, "wait_for_debugger", wait_for_debugger);
     options_core.addOption(bool, "enable_gui", false);
     options_core.addOption(bool, "enable_segfault_handler", enable_segfault_handler);
+    const options_core_module = options_core.createModule();
 
-    // Something about this is very wrong...
+    // Font data is shared between all modules via a common options module
     const font_data = @embedFile("assets/Roboto-Medium.ttf");
-    var static_data = Step.Options.create(b);
+    const static_data = Step.Options.create(b);
     static_data.addOption([]const u8, "font", font_data);
+    const static_data_module = static_data.createModule();
+
     const build_targets = [_]*Step.Compile{ lib, exe };
     for (build_targets) |pkg| {
         // Libraries
         pkg.root_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
         pkg.root_module.addImport("regex", regex.module("regex"));
+        pkg.root_module.addImport("zig_wdf", zig_wdf.module("zig_wdf"));
 
         // GUI Related libraries
         pkg.root_module.addImport("zgui", zgui.module("root"));
@@ -138,7 +148,7 @@ pub fn build(b: *std.Build) void {
         pkg.root_module.linkLibrary(ztracy.artifact("tracy"));
 
         pkg.root_module.addOptions("options", options);
-        pkg.root_module.addOptions("static_data", static_data);
+        pkg.root_module.addImport("static_data", static_data_module);
 
         if (builtin.os.tag == .macos) {
             pkg.root_module.addImport("objc", objc.module("mach-objc"));
@@ -167,10 +177,22 @@ pub fn build(b: *std.Build) void {
     zsynth_core.addImport("zglfw", zglfw.module("root"));
     zsynth_core.addImport("zopengl", zopengl.module("root"));
     zsynth_core.addImport("tracy", ztracy.module("root"));
-    zsynth_core.addOptions("options", options_core);
-    zsynth_core.addOptions("static_data", static_data);
+    zsynth_core.addImport("options", options_core_module);
+    zsynth_core.addImport("static_data", static_data_module);
     if (builtin.os.tag == .macos) {
         zsynth_core.addImport("objc", objc.module("mach-objc"));
+    }
+
+    zminimoog_core.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
+    zminimoog_core.addImport("zgui", zgui.module("root"));
+    zminimoog_core.addImport("zglfw", zglfw.module("root"));
+    zminimoog_core.addImport("zopengl", zopengl.module("root"));
+    zminimoog_core.addImport("tracy", ztracy.module("root"));
+    zminimoog_core.addImport("zig_wdf", zig_wdf.module("zig_wdf"));
+    zminimoog_core.addImport("options", options_core_module);
+    zminimoog_core.addImport("static_data", static_data_module);
+    if (builtin.os.tag == .macos) {
+        zminimoog_core.addImport("objc", objc.module("mach-objc"));
     }
 
     // Specific steps for different targets
@@ -190,6 +212,7 @@ pub fn build(b: *std.Build) void {
 
     flux.root_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
     flux.root_module.addImport("zsynth-core", zsynth_core);
+    flux.root_module.addImport("zminimoog-core", zminimoog_core);
     flux.root_module.addImport("zaudio", zaudio.module("root"));
     flux.root_module.addImport("zgui", zgui.module("root"));
     flux.root_module.addImport("zglfw", zglfw.module("root"));
