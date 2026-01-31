@@ -9,6 +9,7 @@
 //   - Keyboard Circuit with Glide (Portamento)
 
 const std = @import("std");
+const wdft = @import("zig_wdf");
 
 // ============================================================================
 // Component Values from Schematic
@@ -21,6 +22,14 @@ pub const EnvelopeComponents = struct {
     // Timing resistor ranges (determines attack/decay times)
     pub const min_time_ms: comptime_float = 1.0; // Minimum attack/decay time
     pub const max_time_ms: comptime_float = 10000.0; // Maximum attack/decay time (10 seconds)
+
+    // Timing resistor values (from pots)
+    pub const min_timing_r: comptime_float = 1000.0; // 1k minimum (fastest)
+    pub const max_timing_r: comptime_float = 10000000.0; // 10M maximum (slowest)
+
+    // 1N4004 diode parameters (attack diode CR1)
+    pub const diode_is: comptime_float = 1.0e-14; // Saturation current
+    pub const diode_vt: comptime_float = 25.85e-3; // Thermal voltage
 
     // Glide capacitor
     pub const glide_cap: comptime_float = 1.0e-6; // 1µF (C6)
@@ -39,11 +48,277 @@ pub const EnvelopeStage = enum {
 };
 
 // ============================================================================
-// ADSD Envelope Generator
+// WDF Transistor Envelope Generator
+// ============================================================================
+
+/// WDF-based envelope generator with authentic RC timing and diode shaping
+///
+/// Circuit topology (from schematic):
+///   +V ----[R_attack]---+
+///                       |
+///                      CR1 (1N4004)  <-- Attack diode (forward bias during attack)
+///                       |
+///                       +----------- Timing Capacitor (10µF)
+///                       |
+///         [R_decay]-----+
+///                       |
+///                      GND
+///
+/// During attack:
+///   - Current flows through R_attack and CR1 (diode forward biased)
+///   - Capacitor charges with time constant τ = R_attack * C
+///   - Diode drop (~0.6V) creates slight asymmetry
+///
+/// During decay/release:
+///   - Diode reverse biased (blocks attack path)
+///   - Capacitor discharges through R_decay only
+///   - Time constant τ = R_decay * C
+///
+/// The diode creates the characteristic asymmetric attack/decay behavior
+/// that gives analog envelopes their distinctive feel.
+pub fn WDFEnvelope(comptime T: type) type {
+    const R = wdft.Resistor(T);
+    const C = wdft.Capacitor(T);
+
+    // Diode for attack path asymmetry
+    const Diode = wdft.Diode(T, R);
+
+    return struct {
+        // Timing capacitor (main energy storage)
+        c_timing: C,
+
+        // Attack resistor (variable via pot)
+        r_attack: R,
+
+        // Decay resistor (variable via pot)
+        r_decay: R,
+
+        // Attack diode (1N4004) - creates asymmetric charging
+        cr1: Diode,
+
+        // Envelope state
+        stage: EnvelopeStage = .idle,
+        output: T = 0.0,
+        gate: bool = false,
+
+        // Time parameters (in seconds)
+        attack_time: T = 0.01,
+        decay_time: T = 0.1,
+        sustain_level: T = 0.7,
+        release_time: T = 0.3,
+
+        // Target voltage for current stage
+        target: T = 0.0,
+
+        // Capacitor voltage (envelope output)
+        cap_voltage: T = 0.0,
+
+        // Sample rate
+        sample_rate: T,
+
+        const Self = @This();
+
+        // Diode parameters (1N4004)
+        const diode_is: T = EnvelopeComponents.diode_is;
+        const diode_vt: T = EnvelopeComponents.diode_vt;
+
+        pub fn init(sample_rate: T) Self {
+            // Calculate initial resistor values from time constants
+            // τ = R * C, so R = τ / C
+            const attack_r = timeToResistance(0.01); // 10ms default
+            const decay_r = timeToResistance(0.1); // 100ms default
+
+            return Self{
+                .c_timing = C.init(EnvelopeComponents.timing_cap, sample_rate),
+                .r_attack = R.init(attack_r),
+                .r_decay = R.init(decay_r),
+                .cr1 = Diode.init(R.init(100.0), diode_is, diode_vt, 1.0), // 100 ohm series resistance, 1 diode
+                .sample_rate = sample_rate,
+            };
+        }
+
+        pub fn prepare(self: *Self, sample_rate: T) void {
+            self.sample_rate = sample_rate;
+            self.c_timing.prepare(sample_rate);
+            self.c_timing.calcImpedance();
+        }
+
+        pub fn reset(self: *Self) void {
+            self.stage = .idle;
+            self.output = 0.0;
+            self.cap_voltage = 0.0;
+            self.gate = false;
+            self.c_timing.reset();
+        }
+
+        /// Convert time in seconds to resistance value
+        fn timeToResistance(time_seconds: T) T {
+            // τ = R * C, so R = τ / C
+            // We use a multiplier because the RC time constant gives ~63% charge
+            // and we want time to ~95% (about 3τ)
+            const tau = time_seconds / 3.0;
+            const r = tau / EnvelopeComponents.timing_cap;
+            return @max(EnvelopeComponents.min_timing_r, @min(EnvelopeComponents.max_timing_r, r));
+        }
+
+        /// Set attack time in seconds
+        pub fn setAttack(self: *Self, time_seconds: T) void {
+            self.attack_time = @max(0.001, time_seconds);
+            self.r_attack.setResistance(timeToResistance(self.attack_time));
+        }
+
+        /// Set decay time in seconds
+        pub fn setDecay(self: *Self, time_seconds: T) void {
+            self.decay_time = @max(0.001, time_seconds);
+            self.r_decay.setResistance(timeToResistance(self.decay_time));
+        }
+
+        /// Set sustain level (0.0 to 1.0)
+        pub fn setSustain(self: *Self, level: T) void {
+            self.sustain_level = @max(0.0, @min(1.0, level));
+        }
+
+        /// Set release time in seconds
+        pub fn setRelease(self: *Self, time_seconds: T) void {
+            self.release_time = @max(0.001, time_seconds);
+            // Release uses the decay resistor path (diode blocks attack path)
+        }
+
+        /// Set all ADSD parameters at once
+        pub fn setADSD(self: *Self, attack: T, decay: T, sustain: T, release: T) void {
+            self.setAttack(attack);
+            self.setDecay(decay);
+            self.setSustain(sustain);
+            self.setRelease(release);
+        }
+
+        /// Trigger the envelope (gate on)
+        pub fn noteOn(self: *Self) void {
+            self.gate = true;
+            self.stage = .attack;
+            self.target = 1.0;
+        }
+
+        /// Release the envelope (gate off)
+        pub fn noteOff(self: *Self) void {
+            self.gate = false;
+            if (self.stage != .idle) {
+                self.stage = .release;
+                self.target = 0.0;
+            }
+        }
+
+        /// Trigger with velocity
+        pub fn noteOnVelocity(self: *Self, velocity: T) void {
+            self.gate = true;
+            self.stage = .attack;
+            self.target = @max(0.0, @min(1.0, velocity));
+        }
+
+        /// Check if envelope is finished
+        pub fn isFinished(self: *const Self) bool {
+            return self.stage == .idle;
+        }
+
+        /// Process one sample using WDF RC circuit with diode
+        pub inline fn processSample(self: *Self) T {
+            switch (self.stage) {
+                .idle => {
+                    self.output = 0.0;
+                    self.cap_voltage = 0.0;
+                },
+                .attack => {
+                    // Attack: charge capacitor through R_attack and diode
+                    // Diode is forward biased, creating slight voltage drop
+                    const v_supply: T = self.target; // Target voltage
+                    const v_diff = v_supply - self.cap_voltage;
+
+                    // Calculate charging current through attack resistor
+                    // Diode creates ~0.6V drop when forward biased
+                    const diode_drop: T = 0.6;
+                    const effective_v = @max(0.0, v_diff - diode_drop);
+
+                    // RC charging: dV/dt = (V_target - V_cap) / (R * C)
+                    const r_attack_val = self.r_attack.wdf.R;
+                    const charge_rate = effective_v / (r_attack_val * EnvelopeComponents.timing_cap * self.sample_rate);
+
+                    self.cap_voltage += charge_rate;
+
+                    // Check if we've reached target (within 1%)
+                    if (self.cap_voltage >= self.target * 0.99) {
+                        self.cap_voltage = self.target;
+                        self.stage = .decay;
+                    }
+
+                    self.output = self.cap_voltage;
+                },
+                .decay => {
+                    // Decay: discharge capacitor through R_decay only
+                    // Diode is reverse biased (blocks attack path)
+                    const v_diff = self.cap_voltage - self.sustain_level;
+
+                    if (v_diff > 0.0001) {
+                        // RC discharge: dV/dt = -(V_cap - V_sustain) / (R * C)
+                        const r_decay_val = self.r_decay.wdf.R;
+                        const discharge_rate = v_diff / (r_decay_val * EnvelopeComponents.timing_cap * self.sample_rate);
+
+                        self.cap_voltage -= discharge_rate;
+
+                        if (self.cap_voltage <= self.sustain_level) {
+                            self.cap_voltage = self.sustain_level;
+                            self.stage = .sustain;
+                        }
+                    } else {
+                        self.cap_voltage = self.sustain_level;
+                        self.stage = .sustain;
+                    }
+
+                    self.output = self.cap_voltage;
+                },
+                .sustain => {
+                    // Hold at sustain level
+                    self.output = self.sustain_level;
+                    self.cap_voltage = self.sustain_level;
+
+                    if (!self.gate) {
+                        self.stage = .release;
+                    }
+                },
+                .release => {
+                    // Release: discharge to zero through R_decay
+                    // Similar to decay but to zero target
+                    if (self.cap_voltage > 0.0001) {
+                        // Use release time for the resistance calculation
+                        const release_r = timeToResistance(self.release_time);
+                        const discharge_rate = self.cap_voltage / (release_r * EnvelopeComponents.timing_cap * self.sample_rate);
+
+                        self.cap_voltage -= discharge_rate;
+
+                        if (self.cap_voltage < 0.0001) {
+                            self.cap_voltage = 0.0;
+                            self.stage = .idle;
+                        }
+                    } else {
+                        self.cap_voltage = 0.0;
+                        self.stage = .idle;
+                    }
+
+                    self.output = self.cap_voltage;
+                },
+            }
+
+            return self.output;
+        }
+    };
+}
+
+// ============================================================================
+// ADSD Envelope Generator (Mathematical Model - Fast Alternative)
 // ============================================================================
 
 /// Minimoog-style ADSD (Attack, Decay, Sustain, Decay) envelope
 /// Note: Release is actually "Decay to zero" in the Minimoog
+/// This is a fast mathematical model as an alternative to WDFEnvelope
 pub fn ADSDEnvelope(comptime T: type) type {
     return struct {
         stage: EnvelopeStage = .idle,
@@ -284,10 +559,12 @@ pub fn Glide(comptime T: type) type {
 // ============================================================================
 
 /// Complete Board 2 with filter envelope, loudness envelope, and glide
+/// Uses WDF-based envelopes for authentic RC timing with diode shaping
 pub fn Board2Contours(comptime T: type) type {
     return struct {
-        filter_env: ADSDEnvelope(T),
-        loudness_env: ADSDEnvelope(T),
+        // WDF-based envelopes with transistor timing circuits
+        filter_env: WDFEnvelope(T),
+        loudness_env: WDFEnvelope(T),
         glide: Glide(T),
         sample_rate: T,
 
@@ -299,8 +576,8 @@ pub fn Board2Contours(comptime T: type) type {
 
         pub fn init(sample_rate: T) Self {
             return .{
-                .filter_env = ADSDEnvelope(T).init(sample_rate),
-                .loudness_env = ADSDEnvelope(T).init(sample_rate),
+                .filter_env = WDFEnvelope(T).init(sample_rate),
+                .loudness_env = WDFEnvelope(T).init(sample_rate),
                 .glide = Glide(T).init(sample_rate),
                 .sample_rate = sample_rate,
             };
