@@ -70,6 +70,9 @@
             .url = "git+https://github.com/PortMidi/portmidi#101dac9455e2718512c94e24cbcae6a6f34b908b",
             .hash = "N-V-__8AAE8rCwDYht7NKTZ6aSAmAQCvd7qGAxnmhd0p-AI6",
         },
+        .@"zig-wdf" = .{
+            .path = "../zig-wdf",
+        },
     },
 
     .paths = .{
