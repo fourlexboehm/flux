@@ -130,6 +130,7 @@ pub fn Minimoog(comptime T: type) type {
 
         // Oscillator modulation
         osc_mod_amount: T = 0.0, // Mod wheel to oscillators (vibrato)
+        osc3_mod_last: T = 0.0,
 
         // Current note state
         current_note_cv: T = 0.0,
@@ -169,6 +170,7 @@ pub fn Minimoog(comptime T: type) type {
             self.board4.reset();
             self.panel.reset();
             self.gate = false;
+            self.osc3_mod_last = 0.0;
         }
 
         /// Set digital anti-aliasing mode for oscillators
@@ -320,8 +322,9 @@ pub fn Minimoog(comptime T: type) type {
 
             // Calculate final pitch CV (base + pitch wheel + vibrato)
             const mod_amount = wheels.mod_amount;
+            const osc3_mod = self.osc3_mod_last;
             const vibrato = if (self.osc_mod_amount > 0)
-                self.getOsc3Mod() * mod_amount * self.osc_mod_amount
+                osc3_mod * mod_amount * self.osc_mod_amount
             else
                 0.0;
 
@@ -338,6 +341,7 @@ pub fn Minimoog(comptime T: type) type {
 
             // Generate oscillator outputs
             const osc_outputs = self.oscillators.processSampleIndividual();
+            self.osc3_mod_last = osc_outputs.osc3;
 
             // Mix oscillators
             var audio: T = 0.0;
@@ -372,12 +376,12 @@ pub fn Minimoog(comptime T: type) type {
 
             // Mod wheel to filter
             if (self.filter_mod_amount > 0.0) {
-                cutoff += self.getOsc3Mod() * mod_amount * self.filter_mod_amount * 5000.0;
+                cutoff += osc3_mod * mod_amount * self.filter_mod_amount * 5000.0;
             }
 
             // Osc 3 to filter (when switch enabled)
             if (self.panel.switches.osc3_to_filter) {
-                cutoff += osc_outputs.osc3 * 2000.0;
+                cutoff += osc3_mod * 2000.0;
             }
 
             // Set Board 4 parameters

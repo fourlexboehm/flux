@@ -721,7 +721,12 @@ pub fn VCO(comptime T: type) type {
         /// Sawtooth with PolyBLEP at reset discontinuity
         fn generateSawWithBLEP(self: *Self, cap_voltage: T) T {
             // Normalize from [saw_low, saw_high] to [-1, +1]
-            const normalized = (cap_voltage - OscillatorComponents.saw_low) / voltage_swing;
+            // Clamp to handle any WDF overshoot
+            const normalized = std.math.clamp(
+                (cap_voltage - OscillatorComponents.saw_low) / voltage_swing,
+                0.0,
+                1.0,
+            );
             var output = normalized * 2.0 - 1.0;
 
             // Apply PolyBLEP correction at reset discontinuity
@@ -736,7 +741,12 @@ pub fn VCO(comptime T: type) type {
         /// Triangle with PolyBLAMP at peaks (Fix 7)
         fn generateTriangleWithBLAMP(self: *Self, cap_voltage: T) T {
             // Generate from sawtooth by folding
-            const normalized = (cap_voltage - OscillatorComponents.saw_low) / voltage_swing;
+            // Clamp to handle any WDF overshoot
+            const normalized = std.math.clamp(
+                (cap_voltage - OscillatorComponents.saw_low) / voltage_swing,
+                0.0,
+                1.0,
+            );
             const saw = normalized * 2.0 - 1.0;
 
             // Fold: abs(saw) gives 0->1->0, then scale to -1->1->-1
@@ -773,7 +783,12 @@ pub fn VCO(comptime T: type) type {
         fn generateSawRaw(self: *Self, cap_voltage: T) T {
             _ = self;
             // Normalize from [saw_low, saw_high] to [-1, +1]
-            const normalized = (cap_voltage - OscillatorComponents.saw_low) / voltage_swing;
+            // Clamp to handle any WDF overshoot
+            const normalized = std.math.clamp(
+                (cap_voltage - OscillatorComponents.saw_low) / voltage_swing,
+                0.0,
+                1.0,
+            );
             return normalized * 2.0 - 1.0;
         }
 
@@ -931,12 +946,14 @@ pub fn OscillatorBank(comptime T: type) type {
         /// Analog saturation curve (models op-amp soft clipping)
         pub fn analogSaturate(x: T) T {
             // Soft saturation using tanh approximation
-            // More efficient than std.math.tanh for real-time use
+            // Uses the same formula as the filter's softClip for consistency
             const x2 = x * x;
-            const x3 = x2 * x;
-            const x5 = x3 * x2;
-            // Pade approximation of tanh
-            return x * (1.0 + x2 * 0.0833333) / (1.0 + x2 * 0.416667 + x5 * 0.0083333);
+            // For large inputs, clamp to ±1
+            if (x2 > 9.0) {
+                return if (x > 0) @as(T, 1.0) else @as(T, -1.0);
+            }
+            // tanh approximation: x * (27 + x²) / (27 + 9*x²)
+            return x * (27.0 + x2) / (27.0 + 9.0 * x2);
         }
     };
 }

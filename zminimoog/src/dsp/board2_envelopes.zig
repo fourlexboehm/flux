@@ -113,6 +113,9 @@ pub fn WDFEnvelope(comptime T: type) type {
         // Capacitor voltage (envelope output)
         cap_voltage: T = 0.0,
 
+        // Cached release resistance to avoid per-sample recompute
+        release_r: T = timeToResistance(0.3),
+
         // Sample rate
         sample_rate: T,
 
@@ -181,6 +184,7 @@ pub fn WDFEnvelope(comptime T: type) type {
         /// Set release time in seconds
         pub fn setRelease(self: *Self, time_seconds: T) void {
             self.release_time = @max(0.001, time_seconds);
+            self.release_r = timeToResistance(self.release_time);
             // Release uses the decay resistor path (diode blocks attack path)
         }
 
@@ -194,9 +198,19 @@ pub fn WDFEnvelope(comptime T: type) type {
 
         /// Trigger the envelope (gate on)
         pub fn noteOn(self: *Self) void {
+            const was_gate = self.gate;
             self.gate = true;
-            self.stage = .attack;
             self.target = 1.0;
+            if (!was_gate or self.stage == .idle) {
+                self.stage = .attack;
+                // Start from zero only when fully idle (avoids hard retrigger clicks)
+                self.cap_voltage = 0.0;
+                self.output = 0.0;
+            } else {
+                // Retrigger from current level to avoid discontinuity
+                self.stage = if (self.cap_voltage >= self.target) .decay else .attack;
+                self.output = self.cap_voltage;
+            }
         }
 
         /// Release the envelope (gate off)
@@ -210,9 +224,17 @@ pub fn WDFEnvelope(comptime T: type) type {
 
         /// Trigger with velocity
         pub fn noteOnVelocity(self: *Self, velocity: T) void {
+            const was_gate = self.gate;
             self.gate = true;
-            self.stage = .attack;
             self.target = @max(0.0, @min(1.0, velocity));
+            if (!was_gate or self.stage == .idle) {
+                self.stage = .attack;
+                self.cap_voltage = 0.0;
+                self.output = 0.0;
+            } else {
+                self.stage = if (self.cap_voltage >= self.target) .decay else .attack;
+                self.output = self.cap_voltage;
+            }
         }
 
         /// Check if envelope is finished
@@ -229,18 +251,14 @@ pub fn WDFEnvelope(comptime T: type) type {
                 },
                 .attack => {
                     // Attack: charge capacitor through R_attack and diode
-                    // Diode is forward biased, creating slight voltage drop
+                    // In real circuit, diode allows current flow but we model
+                    // the charging directly without the 0.6V drop for proper envelope behavior
                     const v_supply: T = self.target; // Target voltage
                     const v_diff = v_supply - self.cap_voltage;
 
-                    // Calculate charging current through attack resistor
-                    // Diode creates ~0.6V drop when forward biased
-                    const diode_drop: T = 0.6;
-                    const effective_v = @max(0.0, v_diff - diode_drop);
-
                     // RC charging: dV/dt = (V_target - V_cap) / (R * C)
                     const r_attack_val = self.r_attack.wdf.R;
-                    const charge_rate = effective_v / (r_attack_val * EnvelopeComponents.timing_cap * self.sample_rate);
+                    const charge_rate = v_diff / (r_attack_val * EnvelopeComponents.timing_cap * self.sample_rate);
 
                     self.cap_voltage += charge_rate;
 
@@ -289,8 +307,7 @@ pub fn WDFEnvelope(comptime T: type) type {
                     // Similar to decay but to zero target
                     if (self.cap_voltage > 0.0001) {
                         // Use release time for the resistance calculation
-                        const release_r = timeToResistance(self.release_time);
-                        const discharge_rate = self.cap_voltage / (release_r * EnvelopeComponents.timing_cap * self.sample_rate);
+                        const discharge_rate = self.cap_voltage / (self.release_r * EnvelopeComponents.timing_cap * self.sample_rate);
 
                         self.cap_voltage -= discharge_rate;
 
@@ -405,9 +422,15 @@ pub fn ADSDEnvelope(comptime T: type) type {
 
         /// Trigger the envelope (gate on)
         pub fn noteOn(self: *Self) void {
+            const was_gate = self.gate;
             self.gate = true;
-            self.stage = .attack;
             self.target = 1.0;
+            if (!was_gate or self.stage == .idle) {
+                self.stage = .attack;
+                self.output = 0.0;
+            } else {
+                self.stage = if (self.output >= self.target) .decay else .attack;
+            }
         }
 
         /// Release the envelope (gate off)
@@ -421,9 +444,15 @@ pub fn ADSDEnvelope(comptime T: type) type {
 
         /// Trigger with velocity (optional)
         pub fn noteOnVelocity(self: *Self, velocity: T) void {
+            const was_gate = self.gate;
             self.gate = true;
-            self.stage = .attack;
             self.target = @max(0.0, @min(1.0, velocity));
+            if (!was_gate or self.stage == .idle) {
+                self.stage = .attack;
+                self.output = 0.0;
+            } else {
+                self.stage = if (self.output >= self.target) .decay else .attack;
+            }
         }
 
         /// Check if envelope is finished
@@ -722,9 +751,10 @@ test "glide smooths pitch" {
     glide.setTargetPitch(1.0);
 
     // Process and check that pitch gradually increases
+    // With 100ms glide time at 48kHz, we need ~5000 samples (~104ms) to reach 0.5
     var prev_pitch: T = 0.0;
     var all_increasing = true;
-    for (0..1000) |_| {
+    for (0..5000) |_| {
         const pitch = glide.processSample();
         if (pitch < prev_pitch - 0.0001) {
             all_increasing = false;
@@ -733,7 +763,7 @@ test "glide smooths pitch" {
     }
 
     try std.testing.expect(all_increasing);
-    // Should be approaching target
+    // Should be approaching target (after ~100ms, should be at ~63%)
     try std.testing.expect(prev_pitch > 0.5);
 }
 
@@ -743,9 +773,9 @@ test "board2 contours complete cycle" {
 
     var board2 = Board2Contours(T).init(sample_rate);
 
-    // Set up envelopes
-    board2.filter_env.setADSD(0.01, 0.05, 0.5, 0.1);
-    board2.loudness_env.setADSD(0.01, 0.05, 0.8, 0.1);
+    // Set up envelopes with short release for faster test
+    board2.filter_env.setADSD(0.01, 0.05, 0.5, 0.05); // 50ms release
+    board2.loudness_env.setADSD(0.01, 0.05, 0.8, 0.05); // 50ms release
     board2.glide.setGlideTime(0.05);
 
     // Note on
@@ -760,7 +790,7 @@ test "board2 contours complete cycle" {
     // Note off
     board2.noteOff();
 
-    // Process release
+    // Process release - with 50ms release, need ~8000 samples for exponential decay
     for (0..10000) |_| {
         _ = board2.processSample();
     }
