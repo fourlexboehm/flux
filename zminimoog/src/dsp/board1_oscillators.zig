@@ -669,14 +669,9 @@ pub fn VCO(comptime T: type) type {
         /// If use_digital_antialiasing is true, applies PolyBLEP/PolyBLAMP
         /// If false, outputs raw WDF waveform (for use with oversampling)
         pub inline fn processSample(self: *Self) T {
-            // Process the exponential converter to get charging current
-            // The CA3046 converts CV to exponential current
-            const exp_current = self.exp_converter.processSample();
-
-            // Update the circuit's charging current from the exponential converter
-            // Blend between calculated current and exp converter for stability
-            const blended_current = self.charge_current * 0.5 + exp_current * 0.5 * 1e6; // Scale exp output
-            self.circuit.setCurrent(@max(1.0e-9, blended_current));
+            // Use the pre-calculated charging current from updatePhaseIncrement()
+            // This is mathematically correct: I = C * dV/dt = C * voltage_swing * frequency
+            self.circuit.setCurrent(self.charge_current);
 
             // Process WDF circuit - current charges the capacitor
             self.circuit.process();
@@ -690,17 +685,11 @@ pub fn VCO(comptime T: type) type {
                 // Store fractional phase at discontinuity before resetting
                 self.reset_fractional_phase = @mod(self.phase + self.phase_increment, 1.0);
 
-                // Trigger the discharge switch (2N3392 transistor)
-                self.discharge_switch.setTrigger(true);
+                // Reset capacitor directly (instant reset)
+                self.circuit.next.z = OscillatorComponents.saw_low * 2.0;
+                cap_voltage = OscillatorComponents.saw_low;
                 self.reset_occurred = true;
                 self.phase = self.reset_fractional_phase;
-            }
-
-            // If discharge switch is active, use it to discharge the capacitor
-            if (self.discharge_switch.isDischarging()) {
-                cap_voltage = self.discharge_switch.processSample(cap_voltage);
-                // Update the WDF capacitor state with the discharge result
-                self.circuit.next.z = cap_voltage * 2.0;
             }
 
             // Advance phase (for derived waveforms)

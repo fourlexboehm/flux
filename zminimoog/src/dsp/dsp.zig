@@ -54,7 +54,6 @@ pub const NoiseOutputs = board3_noise.NoiseOutputs;
 pub const board4_filter_vca = @import("board4_filter_vca.zig");
 
 pub const MoogLadderFilter = board4_filter_vca.MoogLadderFilter;
-pub const LadderStage = board4_filter_vca.LadderStage;
 pub const VCA = board4_filter_vca.VCA;
 pub const Board4FilterVCA = board4_filter_vca.Board4FilterVCA;
 pub const FilterComponents = board4_filter_vca.FilterComponents;
@@ -108,8 +107,7 @@ pub fn Minimoog(comptime T: type) type {
         oscillators: OscillatorBank(T), // Board 1
         contours: Board2Contours(T), // Board 2
         noise: NoiseSource(T), // Board 3
-        filter: MoogLadderFilter(T), // Board 4 - Filter
-        vca: VCA(T), // Board 4 - VCA
+        board4: Board4FilterVCA(T), // Board 4 - Unified Filter + VCA
 
         // Front Panel
         panel: FrontPanel(T),
@@ -144,8 +142,7 @@ pub fn Minimoog(comptime T: type) type {
                 .oscillators = OscillatorBank(T).init(sample_rate),
                 .contours = Board2Contours(T).init(sample_rate),
                 .noise = NoiseSource(T).initWithSampleRate(sample_rate),
-                .filter = MoogLadderFilter(T).init(sample_rate),
-                .vca = VCA(T).init(sample_rate),
+                .board4 = Board4FilterVCA(T).init(sample_rate),
                 .panel = FrontPanel(T).init(),
                 .sample_rate = sample_rate,
             };
@@ -162,16 +159,14 @@ pub fn Minimoog(comptime T: type) type {
             self.oscillators.prepare(sample_rate);
             self.contours.prepare(sample_rate);
             self.noise.prepare(sample_rate);
-            self.filter.prepare(sample_rate);
-            self.vca.prepare(sample_rate);
+            self.board4.prepare(sample_rate);
         }
 
         pub fn reset(self: *Self) void {
             self.oscillators.reset();
             self.contours.reset();
             self.noise.reset();
-            self.filter.reset();
-            self.vca.reset();
+            self.board4.reset();
             self.panel.reset();
             self.gate = false;
         }
@@ -230,7 +225,7 @@ pub fn Minimoog(comptime T: type) type {
         /// Set filter emphasis (resonance)
         pub fn setFilterEmphasis(self: *Self, emphasis: T) void {
             self.filter_emphasis = std.math.clamp(emphasis, 0.0, 4.5);
-            self.filter.setResonance(self.filter_emphasis);
+            self.board4.setResonance(self.filter_emphasis);
         }
 
         /// Set filter contour (envelope) amount
@@ -385,15 +380,12 @@ pub fn Minimoog(comptime T: type) type {
                 cutoff += osc_outputs.osc3 * 2000.0;
             }
 
-            // Clamp and set filter cutoff
-            self.filter.setCutoff(std.math.clamp(cutoff, 20.0, 20000.0));
+            // Set Board 4 parameters
+            self.board4.setCutoff(std.math.clamp(cutoff, 20.0, 20000.0));
+            self.board4.setAmplitude(loudness_env);
 
-            // Process through filter
-            const filtered = self.filter.processSample(audio);
-
-            // Process through VCA
-            self.vca.setGainEnvelope(loudness_env);
-            const output = self.vca.processSample(filtered);
+            // Process through unified Board 4 (Filter -> VCA as one circuit)
+            const output = self.board4.processSample(audio);
 
             // Apply master volume
             return output * self.panel.master_volume;
