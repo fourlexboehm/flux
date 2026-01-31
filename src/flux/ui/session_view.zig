@@ -236,15 +236,17 @@ pub const SessionView = struct {
         };
 
         // Initialize tracks
-        const track_names = [_][]const u8{ "Track 1", "Track 2", "Track 3", "Track 4" };
         for (0..self.track_count) |i| {
-            self.tracks[i] = Track.init(if (i < track_names.len) track_names[i] else "Track");
+            var buf: [16]u8 = undefined;
+            const name = std.fmt.bufPrint(&buf, "Inst {d}", .{i + 1}) catch "Inst";
+            self.tracks[i] = Track.init(name);
         }
 
         // Initialize scenes
-        const scene_names = [_][]const u8{ "Intro", "Verse", "Build", "Chorus", "Bridge", "Drop", "Outro", "Ending" };
         for (0..self.scene_count) |i| {
-            self.scenes[i] = Scene.init(if (i < scene_names.len) scene_names[i] else "Scene");
+            var buf: [16]u8 = undefined;
+            const name = std.fmt.bufPrint(&buf, "{d}", .{i + 1}) catch "1";
+            self.scenes[i] = Scene.init(name);
         }
 
         // Initialize all clips as empty
@@ -433,7 +435,7 @@ pub const SessionView = struct {
         if (self.track_count >= max_tracks) return false;
 
         var buf: [16]u8 = undefined;
-        const name = std.fmt.bufPrint(&buf, "Track {d}", .{self.track_count + 1}) catch "Track";
+        const name = std.fmt.bufPrint(&buf, "Inst {d}", .{self.track_count + 1}) catch "Inst";
         self.tracks[self.track_count] = Track.init(name);
         self.track_count += 1;
         // Emit undo request
@@ -452,7 +454,7 @@ pub const SessionView = struct {
         if (self.scene_count >= max_scenes) return false;
 
         var buf: [16]u8 = undefined;
-        const name = std.fmt.bufPrint(&buf, "Scene {d}", .{self.scene_count + 1}) catch "Scene";
+        const name = std.fmt.bufPrint(&buf, "{d}", .{self.scene_count + 1}) catch "1";
         self.scenes[self.scene_count] = Scene.init(name);
         self.scene_count += 1;
         // Emit undo request
