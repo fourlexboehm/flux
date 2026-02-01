@@ -1866,6 +1866,16 @@ fn handleArrowKeys(
                             preview_pitch = note.pitch;
                         }
                         moved = true;
+                        state.emitUndoRequest(.{
+                            .kind = .note_move,
+                            .track = track_index,
+                            .scene = scene_index,
+                            .note_index = idx,
+                            .old_start = note.start,
+                            .old_pitch = old_pitch,
+                            .new_start = note.start,
+                            .new_pitch = note.pitch,
+                        });
                     }
                 }
             }
@@ -1888,6 +1898,16 @@ fn handleArrowKeys(
                             preview_pitch = note.pitch;
                         }
                         moved = true;
+                        state.emitUndoRequest(.{
+                            .kind = .note_move,
+                            .track = track_index,
+                            .scene = scene_index,
+                            .note_index = idx,
+                            .old_start = note.start,
+                            .old_pitch = old_pitch,
+                            .new_start = note.start,
+                            .new_pitch = note.pitch,
+                        });
                     }
                 }
             }
