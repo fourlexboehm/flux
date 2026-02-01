@@ -6,7 +6,7 @@ pub fn Extensions(
     comptime ThreadPoolType: type,
     comptime UndoType: type,
 ) type {
-    const shared = @import("root");
+    const shared = @import("root.zig");
 
     return struct {
         pub const AudioPorts = shared.ext.audioports;
