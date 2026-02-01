@@ -1427,6 +1427,31 @@ fn processUndoRequests(state: *State) void {
         } else |_| {}
         state.session.clip_move_count = 0;
     }
+
+    // Process piano clip copy requests (from session view paste)
+    if (state.session.pending_piano_copies and state.session.piano_copy_count > 0) {
+        var temp_clips: [ui.max_tracks * ui.max_scenes]ui.piano_roll.PianoRollClip = undefined;
+        var temp_valid: [ui.max_tracks * ui.max_scenes]bool = undefined;
+        for (state.session.piano_copy_requests[0..state.session.piano_copy_count], 0..) |req, i| {
+            if (req.src_track == req.dst_track and req.src_scene == req.dst_scene) {
+                temp_valid[i] = false;
+                continue;
+            }
+            temp_valid[i] = true;
+            temp_clips[i] = ui.piano_roll.PianoRollClip.init(state.allocator);
+            temp_clips[i].copyFrom(&state.piano_clips[req.src_track][req.src_scene]);
+            temp_clips[i].length_beats = state.session.clips[req.dst_track][req.dst_scene].length_beats;
+        }
+
+        for (state.session.piano_copy_requests[0..state.session.piano_copy_count], 0..) |req, i| {
+            if (!temp_valid[i]) continue;
+            state.piano_clips[req.dst_track][req.dst_scene].deinit();
+            state.piano_clips[req.dst_track][req.dst_scene] = temp_clips[i];
+        }
+
+        state.session.pending_piano_copies = false;
+        state.session.piano_copy_count = 0;
+    }
 }
 
 fn processPianoRollUndoRequests(state: *State) void {

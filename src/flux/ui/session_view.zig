@@ -86,9 +86,18 @@ pub const Scene = struct {
 
 /// Clipboard entry for clip copy/paste
 pub const ClipboardEntry = struct {
+    src_track: usize,
+    src_scene: usize,
     track_offset: i32,
     scene_offset: i32,
     slot: ClipSlot,
+};
+
+pub const PianoCopyRequest = struct {
+    src_track: usize,
+    src_scene: usize,
+    dst_track: usize,
+    dst_scene: usize,
 };
 
 pub const OpenClipRequest = struct {
@@ -202,6 +211,10 @@ pub const SessionView = struct {
     clipboard: std.ArrayListUnmanaged(ClipboardEntry) = .{},
     clipboard_origin_track: usize = 0,
     clipboard_origin_scene: usize = 0,
+    // Piano clip copy requests (processed by ui.zig)
+    piano_copy_requests: [max_tracks * max_scenes]PianoCopyRequest = undefined,
+    piano_copy_count: usize = 0,
+    pending_piano_copies: bool = false,
 
     // Drag move state
     drag_moving: bool = false,
@@ -418,6 +431,8 @@ pub const SessionView = struct {
                 // Only copy non-empty clips
                 if (slot.state != .empty) {
                     self.clipboard.append(self.allocator, .{
+                        .src_track = t,
+                        .src_scene = s,
                         .track_offset = @as(i32, @intCast(t)) - @as(i32, @intCast(min_track)),
                         .scene_offset = @as(i32, @intCast(s)) - @as(i32, @intCast(min_scene)),
                         .slot = .{
@@ -441,6 +456,7 @@ pub const SessionView = struct {
         if (self.clipboard.items.len == 0) return;
 
         self.clearSelection();
+        self.piano_copy_count = 0;
         for (self.clipboard.items) |entry| {
             const track_i = @as(i32, @intCast(self.primary_track)) + entry.track_offset;
             const scene_i = @as(i32, @intCast(self.primary_scene)) + entry.scene_offset;
@@ -452,7 +468,17 @@ pub const SessionView = struct {
 
             self.clips[track][scene] = entry.slot;
             self.selectClip(track, scene);
+            if (self.piano_copy_count < self.piano_copy_requests.len) {
+                self.piano_copy_requests[self.piano_copy_count] = .{
+                    .src_track = entry.src_track,
+                    .src_scene = entry.src_scene,
+                    .dst_track = track,
+                    .dst_scene = scene,
+                };
+                self.piano_copy_count += 1;
+            }
         }
+        self.pending_piano_copies = self.piano_copy_count > 0;
     }
 
     /// Add a new track
