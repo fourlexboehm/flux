@@ -54,6 +54,7 @@ pub const NoiseOutputs = board3_noise.NoiseOutputs;
 pub const board4_filter_vca = @import("board4_filter_vca.zig");
 
 pub const MoogLadderFilter = board4_filter_vca.MoogLadderFilter;
+pub const LadderStage = board4_filter_vca.LadderStage;
 pub const VCA = board4_filter_vca.VCA;
 pub const Board4FilterVCA = board4_filter_vca.Board4FilterVCA;
 pub const FilterComponents = board4_filter_vca.FilterComponents;
@@ -107,7 +108,8 @@ pub fn Minimoog(comptime T: type) type {
         oscillators: OscillatorBank(T), // Board 1
         contours: Board2Contours(T), // Board 2
         noise: NoiseSource(T), // Board 3
-        board4: Board4FilterVCA(T), // Board 4 - Unified Filter + VCA
+        filter: MoogLadderFilter(T), // Board 4 - Filter
+        vca: VCA(T), // Board 4 - VCA
 
         // Front Panel
         panel: FrontPanel(T),
@@ -130,7 +132,6 @@ pub fn Minimoog(comptime T: type) type {
 
         // Oscillator modulation
         osc_mod_amount: T = 0.0, // Mod wheel to oscillators (vibrato)
-        osc3_mod_last: T = 0.0,
 
         // Current note state
         current_note_cv: T = 0.0,
@@ -142,8 +143,9 @@ pub fn Minimoog(comptime T: type) type {
             var self = Self{
                 .oscillators = OscillatorBank(T).init(sample_rate),
                 .contours = Board2Contours(T).init(sample_rate),
-                .noise = NoiseSource(T).initWithSampleRate(sample_rate),
-                .board4 = Board4FilterVCA(T).init(sample_rate),
+                .noise = NoiseSource(T).init(),
+                .filter = MoogLadderFilter(T).init(sample_rate),
+                .vca = VCA(T).init(),
                 .panel = FrontPanel(T).init(),
                 .sample_rate = sample_rate,
             };
@@ -159,25 +161,27 @@ pub fn Minimoog(comptime T: type) type {
             self.sample_rate = sample_rate;
             self.oscillators.prepare(sample_rate);
             self.contours.prepare(sample_rate);
-            self.noise.prepare(sample_rate);
-            self.board4.prepare(sample_rate);
+            self.filter.prepare(sample_rate);
         }
 
         pub fn reset(self: *Self) void {
             self.oscillators.reset();
             self.contours.reset();
             self.noise.reset();
-            self.board4.reset();
+            self.filter.reset();
+            self.vca.reset();
             self.panel.reset();
             self.gate = false;
-            self.osc3_mod_last = 0.0;
         }
 
         /// Set digital anti-aliasing mode for oscillators
-        /// - true: Use PolyBLEP/PolyBLAMP (for 1x, no oversampling)
-        /// - false: Raw WDF output (for 2x/4x, oversampling handles aliasing)
+        /// Always use polyBlep mode - it's cheap and provides fallback for 1x mode
+        /// The oscillator's internal oversampling is NOT used (voice-level handles it)
         pub fn setDigitalAntialiasing(self: *Self, enabled: bool) void {
-            self.oscillators.setDigitalAntialiasing(enabled);
+            _ = enabled;
+            // Always use polyBlep - avoids oscillator internal oversampling
+            // which would conflict with voice-level oversampling
+            self.oscillators.setAntiAliasMode(.polyBlep);
         }
 
         // ====================================================================
@@ -227,7 +231,7 @@ pub fn Minimoog(comptime T: type) type {
         /// Set filter emphasis (resonance)
         pub fn setFilterEmphasis(self: *Self, emphasis: T) void {
             self.filter_emphasis = std.math.clamp(emphasis, 0.0, 4.5);
-            self.board4.setResonance(self.filter_emphasis);
+            self.filter.setResonance(self.filter_emphasis);
         }
 
         /// Set filter contour (envelope) amount
@@ -322,9 +326,8 @@ pub fn Minimoog(comptime T: type) type {
 
             // Calculate final pitch CV (base + pitch wheel + vibrato)
             const mod_amount = wheels.mod_amount;
-            const osc3_mod = self.osc3_mod_last;
             const vibrato = if (self.osc_mod_amount > 0)
-                osc3_mod * mod_amount * self.osc_mod_amount
+                self.getOsc3Mod() * mod_amount * self.osc_mod_amount
             else
                 0.0;
 
@@ -341,7 +344,6 @@ pub fn Minimoog(comptime T: type) type {
 
             // Generate oscillator outputs
             const osc_outputs = self.oscillators.processSampleIndividual();
-            self.osc3_mod_last = osc_outputs.osc3;
 
             // Mix oscillators
             var audio: T = 0.0;
@@ -376,20 +378,23 @@ pub fn Minimoog(comptime T: type) type {
 
             // Mod wheel to filter
             if (self.filter_mod_amount > 0.0) {
-                cutoff += osc3_mod * mod_amount * self.filter_mod_amount * 5000.0;
+                cutoff += self.getOsc3Mod() * mod_amount * self.filter_mod_amount * 5000.0;
             }
 
             // Osc 3 to filter (when switch enabled)
             if (self.panel.switches.osc3_to_filter) {
-                cutoff += osc3_mod * 2000.0;
+                cutoff += osc_outputs.osc3 * 2000.0;
             }
 
-            // Set Board 4 parameters
-            self.board4.setCutoff(std.math.clamp(cutoff, 20.0, 20000.0));
-            self.board4.setAmplitude(loudness_env);
+            // Clamp and set filter cutoff
+            self.filter.setCutoff(std.math.clamp(cutoff, 20.0, 20000.0));
 
-            // Process through unified Board 4 (Filter -> VCA as one circuit)
-            const output = self.board4.processSample(audio);
+            // Process through filter
+            const filtered = self.filter.processSample(audio);
+
+            // Process through VCA
+            self.vca.setGainEnvelope(loudness_env);
+            const output = self.vca.processSample(filtered);
 
             // Apply master volume
             return output * self.panel.master_volume;
