@@ -13,7 +13,7 @@
 //   - Controlled by loudness envelope
 
 const std = @import("std");
-const wdft = @import("zig_wdf");
+const wdft = @import("wdf");
 
 // ============================================================================
 // Component Values from Schematic

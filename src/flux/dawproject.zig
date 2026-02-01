@@ -860,6 +860,8 @@ pub fn fromFluxProject(
     var track_lanes = std.ArrayList(Lanes).empty;
     var track_ids = std.ArrayList([]const u8).empty; // Store track IDs for ClipSlot references
     var instrument_device_ids: [ui.track_count]?[]const u8 = [_]?[]const u8{null} ** ui.track_count;
+    var track_volume_param_ids: [ui.track_count]?[]const u8 = [_]?[]const u8{null} ** ui.track_count;
+    var track_pan_param_ids: [ui.track_count]?[]const u8 = [_]?[]const u8{null} ** ui.track_count;
     var fx_device_ids: [ui.track_count][ui.max_fx_slots]?[]const u8 = [_][ui.max_fx_slots]?[]const u8{
         [_]?[]const u8{null} ** ui.max_fx_slots,
     } ** ui.track_count;
@@ -964,6 +966,8 @@ pub fn fromFluxProject(
         const vol_id = try ids.next();
         const mute_id = try ids.next();
         const pan_id = try ids.next();
+        track_volume_param_ids[t] = vol_id;
+        track_pan_param_ids[t] = pan_id;
 
         try tracks_list.append(allocator, .{
             .id = track_id,
@@ -1084,26 +1088,38 @@ pub fn fromFluxProject(
                 var points_list = std.ArrayList(Points).empty;
                 if (piano.automation.lanes.items.len > 0) {
                     for (piano.automation.lanes.items) |lane| {
-                        const device_id = if (std.mem.eql(u8, lane.target_id, "instrument") or lane.target_id.len == 0) blk: {
-                            break :blk instrument_device_ids[t] orelse continue;
-                        } else if (std.mem.startsWith(u8, lane.target_id, "fx")) blk: {
-                            var idx_str = lane.target_id["fx".len..];
-                            if (std.mem.startsWith(u8, idx_str, ":")) idx_str = idx_str[1..];
-                            const fx_idx = std.fmt.parseInt(usize, idx_str, 10) catch continue;
-                            if (fx_idx >= ui.max_fx_slots) continue;
-                            break :blk fx_device_ids[t][fx_idx] orelse continue;
-                        } else {
-                            continue;
-                        };
-
                         const points_id = try ids.next();
                         const points = try allocator.alloc(AutomationPoint, lane.points.items.len);
                         for (lane.points.items, 0..) |point, idx| {
                             points[idx] = .{ .time = point.time, .value = point.value };
                         }
-                        const param_with_target = if (lane.param_id) |param_id| blk: {
-                            break :blk try std.fmt.allocPrint(allocator, "{s}_p{s}", .{ device_id, param_id });
-                        } else null;
+                        var param_with_target: ?[]const u8 = null;
+                        if (lane.target_kind == .track) {
+                            if (lane.param_id) |param_id| {
+                                if (std.mem.eql(u8, param_id, "volume")) {
+                                    param_with_target = track_volume_param_ids[t];
+                                } else if (std.mem.eql(u8, param_id, "pan")) {
+                                    param_with_target = track_pan_param_ids[t];
+                                }
+                            }
+                        } else {
+                            const device_id = if (std.mem.eql(u8, lane.target_id, "instrument") or lane.target_id.len == 0) blk: {
+                                break :blk instrument_device_ids[t] orelse continue;
+                            } else if (std.mem.startsWith(u8, lane.target_id, "fx")) blk: {
+                                var idx_str = lane.target_id["fx".len..];
+                                if (std.mem.startsWith(u8, idx_str, ":")) idx_str = idx_str[1..];
+                                const fx_idx = std.fmt.parseInt(usize, idx_str, 10) catch continue;
+                                if (fx_idx >= ui.max_fx_slots) continue;
+                                break :blk fx_device_ids[t][fx_idx] orelse continue;
+                            } else {
+                                continue;
+                            };
+
+                            if (lane.param_id) |param_id| {
+                                param_with_target = try std.fmt.allocPrint(allocator, "{s}_p{s}", .{ device_id, param_id });
+                            }
+                        }
+                        if (param_with_target == null) continue;
 
                         try points_list.append(allocator, .{
                             .id = points_id,
