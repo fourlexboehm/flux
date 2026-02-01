@@ -19,7 +19,7 @@
 //   - Oversampling: Process at higher rate, lowpass filter, decimate (pure, CPU intensive)
 
 const std = @import("std");
-const wdft = @import("zig_wdf");
+const wdft = @import("wdf");
 
 // ============================================================================
 // Component Values from Schematic

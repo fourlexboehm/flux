@@ -416,7 +416,7 @@ pub const NoteSource = struct {
             }
         }
 
-        self.processAutomationSegment(clip, seg_start, seg_end, base_sample_offset, beats_per_sample);
+        self.processAutomationSegment(clip, seg_start, seg_end, base_sample_offset, beats_per_sample, clip_len);
     }
 
     fn processAutomationSegment(
@@ -426,6 +426,7 @@ pub const NoteSource = struct {
         seg_end: f64,
         base_sample_offset: u32,
         beats_per_sample: f64,
+        clip_len: f64,
     ) void {
         if (clip.automation_lane_count == 0) return;
         for (clip.automation_lanes[0..clip.automation_lane_count]) |lane| {
@@ -435,11 +436,32 @@ pub const NoteSource = struct {
             if (lane.target_fx_index != self.target_fx_index) {
                 continue;
             }
+            var last_before: ?AutomationPoint = null;
+            var last_overall: ?AutomationPoint = null;
+            var has_point_at_start = false;
             for (lane.points[0..lane.point_count]) |point| {
                 const point_time = @as(f64, point.time);
+                if (last_overall == null or point_time > @as(f64, last_overall.?.time)) {
+                    last_overall = point;
+                }
+                if (point_time < seg_start and (last_before == null or point_time > @as(f64, last_before.?.time))) {
+                    last_before = point;
+                }
+                if (std.math.approxEqAbs(f64, point_time, seg_start, 1e-9)) {
+                    has_point_at_start = true;
+                }
                 if (point_time < seg_start or point_time >= seg_end) continue;
                 const offset = base_sample_offset + @as(u32, @intFromFloat(@floor((point_time - seg_start) / beats_per_sample)));
                 self.emitParamValue(lane.param_id, @as(f64, point.value), offset);
+            }
+            if (!has_point_at_start) {
+                if (last_before) |point| {
+                    self.emitParamValue(lane.param_id, @as(f64, point.value), base_sample_offset);
+                } else if (seg_start == 0.0 and clip_len > 0.0) {
+                    if (last_overall) |point| {
+                        self.emitParamValue(lane.param_id, @as(f64, point.value), base_sample_offset);
+                    }
+                }
             }
         }
     }

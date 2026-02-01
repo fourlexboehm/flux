@@ -62,7 +62,7 @@ pub fn build(b: *std.Build) void {
     const zig_xml = b.dependency("zig-xml", .{});
     const portmidi_zig = b.dependency("portmidi-zig", .{});
     const portmidi = b.dependency("portmidi", .{});
-    const zig_wdf = b.dependency("zig-wdf", .{});
+    const wdf = b.dependency("wdf", .{});
 
     const ztracy = b.dependency("ztracy", .{
         .enable_ztracy = (builtin.mode == .Debug or profiling == true) and !disable_profiling,
@@ -133,7 +133,7 @@ pub fn build(b: *std.Build) void {
         // Libraries
         pkg.root_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
         pkg.root_module.addImport("regex", regex.module("regex"));
-        pkg.root_module.addImport("zig_wdf", zig_wdf.module("zig_wdf"));
+        pkg.root_module.addImport("wdf", wdf.module("wdf"));
 
         // GUI Related libraries
         pkg.root_module.addImport("zgui", zgui.module("root"));
@@ -188,7 +188,7 @@ pub fn build(b: *std.Build) void {
     zminimoog_core.addImport("zglfw", zglfw.module("root"));
     zminimoog_core.addImport("zopengl", zopengl.module("root"));
     zminimoog_core.addImport("tracy", ztracy.module("root"));
-    zminimoog_core.addImport("zig_wdf", zig_wdf.module("zig_wdf"));
+    zminimoog_core.addImport("wdf", wdf.module("wdf"));
     zminimoog_core.addImport("options", options_core_module);
     zminimoog_core.addImport("static_data", static_data_module);
     if (builtin.os.tag == .macos) {
@@ -295,7 +295,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    filter_test_module.addImport("zig_wdf", zig_wdf.module("zig_wdf"));
+    filter_test_module.addImport("wdf", wdf.module("wdf"));
 
     const filter_tests = b.addTest(.{
         .root_module = filter_test_module,
@@ -309,7 +309,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    dsp_test_module.addImport("zig_wdf", zig_wdf.module("zig_wdf"));
+    dsp_test_module.addImport("wdf", wdf.module("wdf"));
 
     const dsp_tests = b.addTest(.{
         .root_module = dsp_test_module,

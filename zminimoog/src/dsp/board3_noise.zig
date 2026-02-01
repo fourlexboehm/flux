@@ -8,7 +8,7 @@
 //   - Pink Noise Filter (-3dB/octave)
 
 const std = @import("std");
-const wdft = @import("zig_wdf");
+const wdft = @import("wdf");
 
 // ============================================================================
 // Component Values from Schematic

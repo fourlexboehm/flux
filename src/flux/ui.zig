@@ -139,6 +139,8 @@ pub const State = struct {
     plugin_instrument_items: [:0]const u8,
     plugin_instrument_indices: []i32,
     plugin_divider_index: ?i32,
+    track_plugin_ptrs: [ui.max_tracks]?*const clap.Plugin,
+    track_fx_plugin_ptrs: [ui.max_tracks][max_fx_slots]?*const clap.Plugin,
     live_key_states: [ui.max_tracks][128]bool,
     previous_key_states: [ui.max_tracks][128]bool,
     live_key_velocities: [ui.max_tracks][128]f32,
@@ -228,6 +230,10 @@ pub const State = struct {
             .plugin_instrument_items = &[_:0]u8{},
             .plugin_instrument_indices = &[_]i32{},
             .plugin_divider_index = null,
+            .track_plugin_ptrs = [_]?*const clap.Plugin{null} ** ui.max_tracks,
+            .track_fx_plugin_ptrs = [_][max_fx_slots]?*const clap.Plugin{
+                [_]?*const clap.Plugin{null} ** max_fx_slots,
+            } ** ui.max_tracks,
             .live_key_states = [_][128]bool{[_]bool{false} ** 128} ** ui.max_tracks,
             .previous_key_states = [_][128]bool{[_]bool{false} ** 128} ** ui.max_tracks,
             .live_key_velocities = [_][128]f32{[_]f32{0.0} ** 128} ** ui.max_tracks,
@@ -1698,6 +1704,9 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
                 zgui.popStyleColor(.{ .count = 1 });
             } else {
                 const is_focused = state.focused_pane == .bottom;
+                const track_idx = state.selectedTrack();
+                const instrument_plugin = state.track_plugin_ptrs[track_idx];
+                const fx_plugins = state.track_fx_plugin_ptrs[track_idx][0..state.track_fx_slot_count[track_idx]];
                 ui.piano_roll.drawSequencer(
                     &state.piano_state,
                     state.currentClip(),
@@ -1710,6 +1719,8 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
                     state.selectedTrack(),
                     state.selectedScene(),
                     &state.live_key_states[state.selectedTrack()],
+                    instrument_plugin,
+                    fx_plugins,
                 );
                 if (state.piano_state.preview_pitch) |pitch| {
                     if (state.piano_state.preview_track) |track| {
@@ -1764,7 +1775,35 @@ fn drawDevicePanel(state: *State, ui_scale: f32) void {
         }
     }
 
-    zgui.sameLine(.{ .spacing = 20.0 * ui_scale });
+    zgui.sameLine(.{ .spacing = 12.0 * ui_scale });
+    const instrument_ready = state.track_plugin_ptrs[track_idx] != null;
+    const inst_style = zgui.getStyle();
+    const inst_open_label = "Open Instrument";
+    const inst_close_label = "Close Instrument";
+    const inst_max_label_w = @max(
+        zgui.calcTextSize(inst_open_label, .{})[0],
+        zgui.calcTextSize(inst_close_label, .{})[0],
+    );
+    const inst_button_w = inst_max_label_w + inst_style.frame_padding[0] * 2.0 + 6.0 * ui_scale;
+    const inst_button_label = if (track_plugin.gui_open) inst_close_label else inst_open_label;
+    var inst_button_buf: [64]u8 = undefined;
+    const inst_button_text = std.fmt.bufPrintZ(&inst_button_buf, "{s}##instrument_open", .{inst_button_label}) catch "##instrument_open";
+    zgui.beginDisabled(.{ .disabled = !instrument_ready });
+    if (zgui.button(inst_button_text, .{ .w = inst_button_w, .h = 0 })) {
+        const opening = !track_plugin.gui_open;
+        if (opening) {
+            for (0..max_fx_slots) |fx_index| {
+                state.track_fx[track_idx][fx_index].gui_open = false;
+            }
+            track_plugin.gui_open = true;
+        } else {
+            track_plugin.gui_open = false;
+        }
+        state.device_target_kind = .instrument;
+        state.device_target_fx = 0;
+    }
+    zgui.endDisabled();
+
     zgui.separator();
 
     zgui.spacing();
@@ -1821,6 +1860,8 @@ fn drawDevicePanel(state: *State, ui_scale: f32) void {
         const button_label = if (fx_slot.gui_open) close_label else open_label;
         var button_buf: [64]u8 = undefined;
         const button_text = std.fmt.bufPrintZ(&button_buf, "{s}##fx_open_{d}", .{ button_label, fx_index }) catch "##fx_open";
+        const fx_ready = state.track_fx_plugin_ptrs[track_idx][fx_index] != null;
+        zgui.beginDisabled(.{ .disabled = !fx_ready });
         if (zgui.button(button_text, .{ .w = button_w, .h = 0 })) {
             const opening = !fx_slot.gui_open;
             if (opening) {
@@ -1836,7 +1877,9 @@ fn drawDevicePanel(state: *State, ui_scale: f32) void {
             }
             state.device_target_kind = .fx;
             state.device_target_fx = fx_index;
-        } else if (is_selected) {
+        }
+        zgui.endDisabled();
+        if (is_selected) {
             // Keep selection sticky when clicking elsewhere in the row.
             state.device_target_kind = .fx;
             state.device_target_fx = fx_index;

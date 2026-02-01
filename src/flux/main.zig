@@ -939,6 +939,7 @@ pub fn main(init: std.process.Init) !void {
                 zgui.backend.newFrame(fb_width, fb_height, app_window.view, descriptor);
                 zgui.setNextFrameWantCaptureKeyboard(true);
                 ui.updateKeyboardMidi(&state);
+                updateUiPluginPointers(&state, &track_plugins, &track_fx);
                 ui.draw(&state, 1.0);
                 if (state.buffer_frames_requested) {
                     const requested_frames = state.buffer_frames;
@@ -1102,6 +1103,7 @@ pub fn main(init: std.process.Init) !void {
                 zgui.io.setDisplayFramebufferScale(scale_x, scale_y);
                 zgui.setNextFrameWantCaptureKeyboard(true);
                 ui.updateKeyboardMidi(&state);
+                updateUiPluginPointers(&state, &track_plugins, &track_fx);
                 ui.draw(&state, 1.0);
                 if (state.buffer_frames_requested) {
                     const requested_frames = state.buffer_frames;
@@ -1258,6 +1260,21 @@ fn collectPlugins(
         .instruments = instruments,
         .fx = fx,
     };
+}
+
+fn updateUiPluginPointers(
+    state: *ui.State,
+    track_plugins: *const [ui.track_count]TrackPlugin,
+    track_fx: *const [ui.track_count][ui.max_fx_slots]TrackPlugin,
+) void {
+    for (track_plugins, 0..) |track, t| {
+        state.track_plugin_ptrs[t] = track.getPlugin();
+    }
+    for (track_fx, 0..) |track_slots, t| {
+        for (track_slots, 0..) |slot, fx_index| {
+            state.track_fx_plugin_ptrs[t][fx_index] = slot.getPlugin();
+        }
+    }
 }
 
 fn syncTrackPlugins(
@@ -2252,12 +2269,18 @@ fn applyLanes(
                             ) catch continue;
                         }
                     }
+                    const track = tracks[t];
+                    const channel = track.channel;
+                    const vol_id = if (channel) |ch| if (ch.volume) |vol| vol.id else null else null;
+                    const pan_id = if (channel) |ch| if (ch.pan) |pan| pan.id else null else null;
                     try applyAutomationToClip(
                         state.allocator,
                         piano,
                         clip.points,
                         instrument_device_ids[t],
                         &fx_device_ids[t],
+                        vol_id,
+                        pan_id,
                     );
                 }
             }
@@ -2316,12 +2339,18 @@ fn applyScenes(
                             ) catch continue;
                         }
                     }
+                    const track = tracks[t];
+                    const channel = track.channel;
+                    const vol_id = if (channel) |ch| if (ch.volume) |vol| vol.id else null else null;
+                    const pan_id = if (channel) |ch| if (ch.pan) |pan| pan.id else null else null;
                     try applyAutomationToClip(
                         state.allocator,
                         piano,
                         clip.points,
                         instrument_device_ids[t],
                         &fx_device_ids[t],
+                        vol_id,
+                        pan_id,
                     );
                 }
             }
@@ -2335,6 +2364,8 @@ fn applyAutomationToClip(
     points_list: []const dawproject.Points,
     instrument_device_id: ?[]const u8,
     fx_device_ids: *const [ui.max_fx_slots]?[]const u8,
+    track_volume_param_id: ?[]const u8,
+    track_pan_param_id: ?[]const u8,
 ) !void {
     piano.automation.clear(allocator);
     for (points_list) |points| {
@@ -2346,7 +2377,15 @@ fn applyAutomationToClip(
             .points = .{},
         };
         if (points.target.parameter) |param_id| {
-            if (parseAutomationParamId(param_id, instrument_device_id, fx_device_ids)) |parsed| {
+            if (track_volume_param_id != null and std.mem.eql(u8, param_id, track_volume_param_id.?)) {
+                new_lane.target_kind = .track;
+                new_lane.target_id = try allocator.dupe(u8, "track");
+                new_lane.param_id = try allocator.dupe(u8, "volume");
+            } else if (track_pan_param_id != null and std.mem.eql(u8, param_id, track_pan_param_id.?)) {
+                new_lane.target_kind = .track;
+                new_lane.target_id = try allocator.dupe(u8, "track");
+                new_lane.param_id = try allocator.dupe(u8, "pan");
+            } else if (parseAutomationParamId(param_id, instrument_device_id, fx_device_ids)) |parsed| {
                 if (parsed.fx_index) |fx_idx| {
                     new_lane.target_id = try std.fmt.allocPrint(allocator, "fx{d}", .{fx_idx});
                 } else {

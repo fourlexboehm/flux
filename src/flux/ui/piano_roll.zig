@@ -3,6 +3,7 @@ const colors = @import("colors.zig");
 const selection = @import("selection.zig");
 const session_view = @import("session_view.zig");
 const std = @import("std");
+const clap = @import("clap-bindings");
 
 pub const total_pitches = 128;
 pub const beats_per_bar = session_view.beats_per_bar;
@@ -57,6 +58,13 @@ pub const AutomationLane = struct {
     param_id: ?[]const u8 = null,
     unit: ?[]const u8 = null,
     points: std.ArrayListUnmanaged(AutomationPoint) = .{},
+};
+
+const AutomationAddTarget = enum {
+    track_volume,
+    track_pan,
+    instrument_param,
+    fx_param,
 };
 
 pub const ClipAutomation = struct {
@@ -215,6 +223,17 @@ pub const PianoRollState = struct {
     beats_per_pixel: f32 = 0.5,
     key_pan_active: bool = false,
 
+    // Automation UI state
+    automation_edit: bool = false,
+    automation_lane_index: ?usize = null,
+    automation_selected_point: ?usize = null,
+    automation_drag_active: bool = false,
+    automation_drag_lane: usize = 0,
+    automation_drag_point: usize = 0,
+    automation_add_target: AutomationAddTarget = .instrument_param,
+    automation_add_fx_index: usize = 0,
+    automation_add_param_id: ?u32 = null,
+
     // Undo requests (processed by ui.zig)
     undo_requests: [16]UndoRequest = undefined,
     undo_request_count: usize = 0,
@@ -314,6 +333,8 @@ pub fn drawSequencer(
     track_index: usize,
     scene_index: usize,
     live_key_states: *const [128]bool,
+    instrument_plugin: ?*const clap.Plugin,
+    fx_plugins: []const ?*const clap.Plugin,
 ) void {
     const key_width = 56.0 * ui_scale;
     const ruler_height = 24.0 * ui_scale;
@@ -355,6 +376,9 @@ pub fn drawSequencer(
     drawScrollZoomBar(state, pixels_per_beat, key_width, ui_scale);
 
     zgui.spacing();
+
+    drawAutomationHeader(state, clip, ui_scale, instrument_plugin, fx_plugins);
+    const automation_mode = state.automation_edit and state.automation_lane_index != null;
 
     // Calculate layout
     const content_height = 128.0 * row_height;
@@ -571,7 +595,7 @@ pub fn drawSequencer(
             mouse[1] >= note_y and mouse[1] < note_y + row_height;
         const over_handle = mouse[0] >= handle_x;
 
-        if (over_note and state.drag.mode == .none) {
+        if (!automation_mode and over_note and state.drag.mode == .none) {
             const modifier_down = selection.isModifierDown();
             if (over_handle) {
                 zgui.setMouseCursor(.resize_ew);
@@ -626,6 +650,25 @@ pub fn drawSequencer(
         }
     }
 
+    if (state.automation_lane_index) |lane_index| {
+        drawAutomationOverlay(
+            state,
+            clip,
+            lane_index,
+            mouse,
+            mouse_down,
+            grid_window_pos,
+            grid_view_width,
+            grid_view_height,
+            pixels_per_beat,
+            quantize_beats,
+            automation_mode,
+            instrument_plugin,
+            fx_plugins,
+            draw_list,
+        );
+    }
+
     draw_list.popClipRect();
 
     // Interaction handling
@@ -641,7 +684,7 @@ pub fn drawSequencer(
     }
 
     // Keyboard shortcuts (only when this pane is focused)
-    if (is_focused and keyboard_free) {
+    if (is_focused and keyboard_free and !automation_mode) {
         if (modifier_down and zgui.isKeyPressed(.c, false)) {
             copyNotes(state, clip);
         }
@@ -705,7 +748,8 @@ pub fn drawSequencer(
     }
 
     const wheel_y = zgui.io.getMouseWheel();
-    if ((keys_hovered or in_grid) and wheel_y != 0) {
+    const ui_hovered = zgui.isAnyItemHovered() or zgui.isAnyItemActive();
+    if ((keys_hovered or in_grid) and wheel_y != 0 and !ui_hovered) {
         const scroll_step = row_height * 3.0;
         state.scroll_y = std.math.clamp(state.scroll_y - wheel_y * scroll_step, 0, max_scroll_y);
     }
@@ -719,7 +763,7 @@ pub fn drawSequencer(
     }
 
     // Right-click context menu
-    if (in_grid and zgui.isMouseClicked(.right) and state.drag.mode == .none) {
+    if (!automation_mode and in_grid and zgui.isMouseClicked(.right) and state.drag.mode == .none) {
         const click_beat = (mouse[0] - grid_window_pos[0] + state.scroll_x) / pixels_per_beat;
         const click_row = (mouse[1] - grid_window_pos[1] + state.scroll_y) / row_height;
         var click_pitch_i: i32 = 127 - @as(i32, @intFromFloat(click_row));
@@ -733,7 +777,7 @@ pub fn drawSequencer(
     }
 
     // Double-click to create note
-    if (in_grid and zgui.isMouseDoubleClicked(.left) and state.drag.mode == .none and !left_click_note) {
+    if (!automation_mode and in_grid and zgui.isMouseDoubleClicked(.left) and state.drag.mode == .none and !left_click_note) {
         const click_beat = (mouse[0] - grid_window_pos[0] + state.scroll_x) / pixels_per_beat;
         const click_row = (mouse[1] - grid_window_pos[1] + state.scroll_y) / row_height;
         const click_pitch_i: i32 = 127 - @as(i32, @intFromFloat(click_row));
@@ -761,7 +805,7 @@ pub fn drawSequencer(
     }
 
     // Single click to start selection rectangle
-    if (in_grid and zgui.isMouseClicked(.left) and state.drag.mode == .none and !left_click_note) {
+    if (!automation_mode and in_grid and zgui.isMouseClicked(.left) and state.drag.mode == .none and !left_click_note) {
         if (!shift_down) {
             state.clearSelection();
         }
@@ -953,6 +997,552 @@ fn drawScrollZoomBar(state: *PianoRollState, pixels_per_beat: f32, key_width: f3
     const zoom_pct = (1.0 - state.beats_per_pixel) / (1.0 - 0.005) * 100;
     zgui.text("{d:.0}%", .{zoom_pct});
     zgui.popStyleColor(.{ .count = 1 });
+}
+
+fn drawAutomationHeader(
+    state: *PianoRollState,
+    clip: *PianoRollClip,
+    ui_scale: f32,
+    instrument_plugin: ?*const clap.Plugin,
+    fx_plugins: []const ?*const clap.Plugin,
+) void {
+    const lane_count = clip.automation.lanes.items.len;
+    if (lane_count == 0) {
+        state.automation_lane_index = null;
+    } else if (state.automation_lane_index == null or state.automation_lane_index.? >= lane_count) {
+        state.automation_lane_index = 0;
+    }
+
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = colors.Colors.current.text_dim });
+    zgui.textUnformatted("Automation:");
+    zgui.popStyleColor(.{ .count = 1 });
+
+    zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
+    zgui.setNextItemWidth(260.0 * ui_scale);
+
+    var preview_buf: [256]u8 = undefined;
+    const preview = if (state.automation_lane_index) |idx|
+        automationLaneLabel(&preview_buf, &clip.automation.lanes.items[idx], instrument_plugin, fx_plugins)
+    else
+        (std.fmt.bufPrintZ(&preview_buf, "None", .{}) catch "None");
+
+    if (zgui.beginCombo("##automation_lane", .{ .preview_value = preview })) {
+        for (clip.automation.lanes.items, 0..) |*lane, idx| {
+            var lane_buf: [256]u8 = undefined;
+            const label = automationLaneLabel(&lane_buf, lane, instrument_plugin, fx_plugins);
+            const selected = state.automation_lane_index != null and state.automation_lane_index.? == idx;
+            if (zgui.selectable(label, .{ .selected = selected })) {
+                state.automation_lane_index = idx;
+                state.automation_selected_point = null;
+            }
+        }
+        zgui.endCombo();
+    }
+
+    zgui.sameLine(.{ .spacing = 10.0 * ui_scale });
+    if (zgui.button("Add Lane##automation_add", .{ .w = 0, .h = 0 })) {
+        state.automation_add_param_id = null;
+        zgui.openPopup("automation_add", .{});
+    }
+
+    if (state.automation_lane_index) |idx| {
+        zgui.sameLine(.{ .spacing = 6.0 * ui_scale });
+        if (zgui.button("Remove##automation_remove", .{ .w = 0, .h = 0 })) {
+            if (idx < clip.automation.lanes.items.len) {
+                var lane = &clip.automation.lanes.items[idx];
+                if (lane.target_id.len > 0) {
+                    clip.allocator.free(lane.target_id);
+                }
+                if (lane.param_id) |param_id| {
+                    clip.allocator.free(param_id);
+                }
+                if (lane.unit) |unit| {
+                    clip.allocator.free(unit);
+                }
+                lane.points.deinit(clip.allocator);
+                _ = clip.automation.lanes.orderedRemove(idx);
+                state.automation_lane_index = if (clip.automation.lanes.items.len > 0) @min(idx, clip.automation.lanes.items.len - 1) else null;
+                state.automation_selected_point = null;
+            }
+        }
+    }
+
+    zgui.sameLine(.{ .spacing = 10.0 * ui_scale });
+    _ = zgui.checkbox("Edit##automation_edit", .{ .v = &state.automation_edit });
+
+    if (zgui.beginPopup("automation_add", .{})) {
+        const targets = "Track Volume\x00Track Pan\x00Instrument Param\x00FX Param\x00\x00";
+        var target_index: i32 = @intFromEnum(state.automation_add_target);
+        if (zgui.combo("Target", .{
+            .current_item = &target_index,
+            .items_separated_by_zeros = targets,
+        })) {
+            state.automation_add_target = @enumFromInt(target_index);
+            state.automation_add_param_id = null;
+        }
+
+        if (state.automation_add_target == .fx_param) {
+            if (fx_plugins.len == 0) {
+                zgui.textUnformatted("No FX slots on this track.");
+            } else {
+                var fx_label_buf: [64]u8 = undefined;
+                const current_fx = @min(state.automation_add_fx_index, fx_plugins.len - 1);
+                state.automation_add_fx_index = current_fx;
+                const fx_preview = std.fmt.bufPrintZ(&fx_label_buf, "FX {d}", .{current_fx + 1}) catch "FX";
+                if (zgui.beginCombo("FX Slot", .{ .preview_value = fx_preview })) {
+                    for (0..fx_plugins.len) |fx_index| {
+                        var slot_buf: [32]u8 = undefined;
+                        const slot_label = std.fmt.bufPrintZ(&slot_buf, "FX {d}", .{fx_index + 1}) catch "FX";
+                        const selected = fx_index == state.automation_add_fx_index;
+                        if (zgui.selectable(slot_label, .{ .selected = selected })) {
+                            state.automation_add_fx_index = fx_index;
+                            state.automation_add_param_id = null;
+                        }
+                    }
+                    zgui.endCombo();
+                }
+            }
+        }
+
+        const target_plugin = switch (state.automation_add_target) {
+            .instrument_param => instrument_plugin,
+            .fx_param => if (fx_plugins.len > 0) fx_plugins[@min(state.automation_add_fx_index, fx_plugins.len - 1)] else null,
+            else => null,
+        };
+
+        var has_param_selection = true;
+        if (state.automation_add_target == .instrument_param or state.automation_add_target == .fx_param) {
+            has_param_selection = drawParamCombo("Parameter", target_plugin, &state.automation_add_param_id);
+        }
+
+        const allow_add = switch (state.automation_add_target) {
+            .track_volume, .track_pan => true,
+            else => has_param_selection and state.automation_add_param_id != null,
+        };
+
+        zgui.beginDisabled(.{ .disabled = !allow_add });
+        if (zgui.button("Create Lane", .{ .w = 0, .h = 0 })) {
+            addAutomationLane(state, clip, instrument_plugin, fx_plugins);
+            zgui.closeCurrentPopup();
+        }
+        zgui.endDisabled();
+
+        zgui.endPopup();
+    }
+}
+
+fn addAutomationLane(
+    state: *PianoRollState,
+    clip: *PianoRollClip,
+    instrument_plugin: ?*const clap.Plugin,
+    fx_plugins: []const ?*const clap.Plugin,
+) void {
+    var target_kind: AutomationTargetKind = .parameter;
+    var target_id_buf: [32]u8 = undefined;
+    var target_id: []const u8 = "";
+    var param_id_buf: [32]u8 = undefined;
+    var param_id: []const u8 = "";
+
+    switch (state.automation_add_target) {
+        .track_volume => {
+            target_kind = .track;
+            target_id = "track";
+            param_id = "volume";
+        },
+        .track_pan => {
+            target_kind = .track;
+            target_id = "track";
+            param_id = "pan";
+        },
+        .instrument_param => {
+            target_kind = .parameter;
+            target_id = "instrument";
+            if (state.automation_add_param_id) |pid| {
+                param_id = std.fmt.bufPrint(&param_id_buf, "{d}", .{pid}) catch "";
+            }
+        },
+        .fx_param => {
+            target_kind = .parameter;
+            target_id = std.fmt.bufPrint(&target_id_buf, "fx{d}", .{state.automation_add_fx_index}) catch "fx0";
+            if (state.automation_add_param_id) |pid| {
+                param_id = std.fmt.bufPrint(&param_id_buf, "{d}", .{pid}) catch "";
+            }
+        },
+    }
+
+    if (param_id.len == 0 and (state.automation_add_target == .instrument_param or state.automation_add_target == .fx_param)) {
+        return;
+    }
+
+    if (findAutomationLaneIndex(clip, target_kind, target_id, param_id)) |existing| {
+        state.automation_lane_index = existing;
+        state.automation_selected_point = null;
+        return;
+    }
+
+    const target_id_copy = if (target_id.len > 0) clip.allocator.dupe(u8, target_id) catch "" else "";
+    const param_id_copy = if (param_id.len > 0) (clip.allocator.dupe(u8, param_id) catch null) else null;
+
+    _ = instrument_plugin;
+    _ = fx_plugins;
+
+    clip.automation.lanes.append(clip.allocator, .{
+        .target_kind = target_kind,
+        .target_id = target_id_copy,
+        .param_id = param_id_copy,
+        .unit = null,
+        .points = .{},
+    }) catch return;
+
+    state.automation_lane_index = clip.automation.lanes.items.len - 1;
+    state.automation_selected_point = null;
+}
+
+fn findAutomationLaneIndex(
+    clip: *PianoRollClip,
+    target_kind: AutomationTargetKind,
+    target_id: []const u8,
+    param_id: []const u8,
+) ?usize {
+    for (clip.automation.lanes.items, 0..) |lane, idx| {
+        if (lane.target_kind != target_kind) continue;
+        if (!automationTargetIdMatch(lane.target_id, target_id)) continue;
+        const lane_param = lane.param_id orelse "";
+        if (!std.mem.eql(u8, lane_param, param_id)) continue;
+        return idx;
+    }
+    return null;
+}
+
+fn automationTargetIdMatch(existing: []const u8, desired: []const u8) bool {
+    if (std.mem.eql(u8, existing, desired)) return true;
+    if (existing.len == 0 and std.mem.eql(u8, desired, "instrument")) return true;
+    if (desired.len == 0 and std.mem.eql(u8, existing, "instrument")) return true;
+    return false;
+}
+
+fn drawParamCombo(
+    label: []const u8,
+    plugin: ?*const clap.Plugin,
+    selected_param: *?u32,
+) bool {
+    if (plugin == null) {
+        zgui.textUnformatted("No plugin loaded.");
+        return false;
+    }
+    const ext_raw = plugin.?.getExtension(plugin.?, clap.ext.params.id) orelse {
+        zgui.textUnformatted("No parameters exposed.");
+        return false;
+    };
+    const params: *const clap.ext.params.Plugin = @ptrCast(@alignCast(ext_raw));
+    const count = params.count(plugin.?);
+    if (count == 0) {
+        zgui.textUnformatted("No parameters exposed.");
+        return false;
+    }
+
+    var preview_buf: [256]u8 = undefined;
+    const preview_label = if (selected_param.*) |pid|
+        getParamLabelById(&preview_buf, plugin.?, params, pid)
+    else
+        (std.fmt.bufPrintZ(&preview_buf, "Select parameter", .{}) catch "Select parameter");
+
+    var label_buf: [64]u8 = undefined;
+    const label_z: [:0]const u8 = std.fmt.bufPrintZ(&label_buf, "{s}", .{label}) catch "Parameter";
+    if (zgui.beginCombo(label_z, .{ .preview_value = preview_label })) {
+        for (0..count) |i| {
+            var info: clap.ext.params.Info = undefined;
+            if (!params.getInfo(plugin.?, @intCast(i), &info)) continue;
+            var name_buf: [256]u8 = undefined;
+            const name = formatParamLabelZ(&name_buf, &info);
+            const selected = selected_param.* != null and selected_param.*.? == @intFromEnum(info.id);
+            if (zgui.selectable(name, .{ .selected = selected })) {
+                selected_param.* = @intFromEnum(info.id);
+            }
+        }
+        zgui.endCombo();
+    }
+    return true;
+}
+
+fn drawAutomationOverlay(
+    state: *PianoRollState,
+    clip: *PianoRollClip,
+    lane_index: usize,
+    mouse: [2]f32,
+    mouse_down: bool,
+    grid_window_pos: [2]f32,
+    grid_view_width: f32,
+    grid_view_height: f32,
+    pixels_per_beat: f32,
+    quantize_beats: f32,
+    automation_mode: bool,
+    instrument_plugin: ?*const clap.Plugin,
+    fx_plugins: []const ?*const clap.Plugin,
+    draw_list: zgui.DrawList,
+) void {
+    if (lane_index >= clip.automation.lanes.items.len) return;
+    var lane = &clip.automation.lanes.items[lane_index];
+    if (lane.points.items.len == 0 and !automation_mode) return;
+
+    const range = getAutomationRange(lane, instrument_plugin, fx_plugins);
+    const min_value = range.min_value;
+    const max_value = range.max_value;
+
+    const in_grid = mouse[0] >= grid_window_pos[0] and mouse[0] < grid_window_pos[0] + grid_view_width and
+        mouse[1] >= grid_window_pos[1] and mouse[1] < grid_window_pos[1] + grid_view_height;
+
+    const point_radius = 4.0;
+    var hovered_point: ?usize = null;
+
+    for (lane.points.items, 0..) |point, idx| {
+        const x = grid_window_pos[0] + point.time * pixels_per_beat - state.scroll_x;
+        const y = valueToY(point.value, min_value, max_value, grid_window_pos[1], grid_view_height);
+        if (@abs(mouse[0] - x) <= point_radius and @abs(mouse[1] - y) <= point_radius) {
+            hovered_point = idx;
+            break;
+        }
+    }
+
+    if (automation_mode) {
+        if (state.automation_drag_active) {
+            if (mouse_down) {
+                if (state.automation_drag_lane == lane_index and state.automation_drag_point < lane.points.items.len) {
+                    const drag_time = selection.snapToStep(
+                        std.math.clamp((mouse[0] - grid_window_pos[0] + state.scroll_x) / pixels_per_beat, 0, clip.length_beats),
+                        quantize_beats,
+                    );
+                    const drag_value = valueFromY(mouse[1], min_value, max_value, grid_window_pos[1], grid_view_height);
+                    lane.points.items[state.automation_drag_point] = .{ .time = drag_time, .value = drag_value };
+                    sortAutomationPoints(&lane.points);
+                    state.automation_drag_point = findPointIndex(&lane.points, drag_time, drag_value);
+                    state.automation_selected_point = state.automation_drag_point;
+                }
+            } else {
+                state.automation_drag_active = false;
+            }
+        } else if (hovered_point) |idx| {
+            if (zgui.isMouseClicked(.left)) {
+                state.automation_drag_active = true;
+                state.automation_drag_lane = lane_index;
+                state.automation_drag_point = idx;
+                state.automation_selected_point = idx;
+            } else if (zgui.isMouseClicked(.right)) {
+                _ = lane.points.orderedRemove(idx);
+                if (state.automation_selected_point) |sel| {
+                    if (sel == idx or sel >= lane.points.items.len) {
+                        state.automation_selected_point = null;
+                    }
+                }
+            }
+        } else if (in_grid and zgui.isMouseClicked(.left)) {
+            if (lane.points.items.len < 64) {
+                const new_time = selection.snapToStep(
+                    std.math.clamp((mouse[0] - grid_window_pos[0] + state.scroll_x) / pixels_per_beat, 0, clip.length_beats),
+                    quantize_beats,
+                );
+                const new_value = valueFromY(mouse[1], min_value, max_value, grid_window_pos[1], grid_view_height);
+                lane.points.append(clip.allocator, .{ .time = new_time, .value = new_value }) catch {};
+                sortAutomationPoints(&lane.points);
+                state.automation_selected_point = findPointIndex(&lane.points, new_time, new_value);
+            }
+        }
+    }
+
+    sortAutomationPoints(&lane.points);
+
+    if (lane.points.items.len > 1) {
+        const line_color = zgui.colorConvertFloat4ToU32(colors.Colors.current.accent);
+        for (lane.points.items, 0..) |point, idx| {
+            if (idx == 0) continue;
+            const prev = lane.points.items[idx - 1];
+            const x1 = grid_window_pos[0] + prev.time * pixels_per_beat - state.scroll_x;
+            const y1 = valueToY(prev.value, min_value, max_value, grid_window_pos[1], grid_view_height);
+            const x2 = grid_window_pos[0] + point.time * pixels_per_beat - state.scroll_x;
+            const y2 = valueToY(point.value, min_value, max_value, grid_window_pos[1], grid_view_height);
+        draw_list.addLine(.{ .p1 = .{ x1, y1 }, .p2 = .{ x2, y2 }, .col = line_color, .thickness = 2.0 });
+        }
+    }
+
+    for (lane.points.items, 0..) |point, idx| {
+        const x = grid_window_pos[0] + point.time * pixels_per_beat - state.scroll_x;
+        const y = valueToY(point.value, min_value, max_value, grid_window_pos[1], grid_view_height);
+        const is_selected = state.automation_selected_point != null and state.automation_selected_point.? == idx;
+        const point_color = if (is_selected) colors.Colors.current.note_handle_selected else colors.Colors.current.note_handle;
+        draw_list.addCircleFilled(.{ .p = .{ x, y }, .r = point_radius, .col = zgui.colorConvertFloat4ToU32(point_color) });
+    }
+}
+
+const AutomationRange = struct {
+    min_value: f32,
+    max_value: f32,
+};
+
+fn getAutomationRange(
+    lane: *const AutomationLane,
+    instrument_plugin: ?*const clap.Plugin,
+    fx_plugins: []const ?*const clap.Plugin,
+) AutomationRange {
+    if (lane.target_kind == .track) {
+        if (lane.param_id) |param_id| {
+            if (std.mem.eql(u8, param_id, "volume")) {
+                return .{ .min_value = 0.0, .max_value = 2.0 };
+            }
+            if (std.mem.eql(u8, param_id, "pan")) {
+                return .{ .min_value = 0.0, .max_value = 1.0 };
+            }
+        }
+    }
+
+    const plugin = getLanePlugin(lane, instrument_plugin, fx_plugins) orelse return .{ .min_value = 0.0, .max_value = 1.0 };
+    const param_id = lane.param_id orelse return .{ .min_value = 0.0, .max_value = 1.0 };
+    const pid = std.fmt.parseInt(u32, param_id, 10) catch return .{ .min_value = 0.0, .max_value = 1.0 };
+
+    var info: clap.ext.params.Info = undefined;
+    if (findParamInfo(plugin, pid, &info)) {
+        const min_value: f32 = @floatCast(info.min_value);
+        const max_value: f32 = @floatCast(info.max_value);
+        if (max_value > min_value) {
+            return .{ .min_value = min_value, .max_value = max_value };
+        }
+    }
+    return .{ .min_value = 0.0, .max_value = 1.0 };
+}
+
+fn getLanePlugin(
+    lane: *const AutomationLane,
+    instrument_plugin: ?*const clap.Plugin,
+    fx_plugins: []const ?*const clap.Plugin,
+) ?*const clap.Plugin {
+    if (lane.target_kind != .parameter) return null;
+    if (lane.target_id.len == 0 or std.mem.eql(u8, lane.target_id, "instrument")) {
+        return instrument_plugin;
+    }
+    if (parseFxIndex(lane.target_id)) |fx_index| {
+        if (fx_index < fx_plugins.len) {
+            return fx_plugins[fx_index];
+        }
+    }
+    return null;
+}
+
+fn valueToY(value: f32, min_value: f32, max_value: f32, top: f32, height: f32) f32 {
+    const clamped = std.math.clamp(value, min_value, max_value);
+    const t = if (max_value > min_value) (clamped - min_value) / (max_value - min_value) else 0.0;
+    return top + (1.0 - t) * height;
+}
+
+fn valueFromY(y: f32, min_value: f32, max_value: f32, top: f32, height: f32) f32 {
+    const t = 1.0 - std.math.clamp((y - top) / height, 0.0, 1.0);
+    return min_value + t * (max_value - min_value);
+}
+
+fn sortAutomationPoints(points: *std.ArrayListUnmanaged(AutomationPoint)) void {
+    std.mem.sort(AutomationPoint, points.items, {}, struct {
+        fn lessThan(_: void, a: AutomationPoint, b: AutomationPoint) bool {
+            return a.time < b.time;
+        }
+    }.lessThan);
+}
+
+fn findPointIndex(points: *const std.ArrayListUnmanaged(AutomationPoint), time: f32, value: f32) usize {
+    for (points.items, 0..) |point, idx| {
+        if (std.math.approxEqAbs(f32, point.time, time, 0.0001) and std.math.approxEqAbs(f32, point.value, value, 0.0001)) {
+            return idx;
+        }
+    }
+    return 0;
+}
+
+fn parseFxIndex(target_id: []const u8) ?usize {
+    if (!std.mem.startsWith(u8, target_id, "fx")) return null;
+    var idx_str = target_id["fx".len..];
+    if (std.mem.startsWith(u8, idx_str, ":")) {
+        idx_str = idx_str[1..];
+    }
+    return std.fmt.parseInt(usize, idx_str, 10) catch null;
+}
+
+fn automationLaneLabel(
+    buf: []u8,
+    lane: *const AutomationLane,
+    instrument_plugin: ?*const clap.Plugin,
+    fx_plugins: []const ?*const clap.Plugin,
+) [:0]const u8 {
+    if (lane.target_kind == .track) {
+        if (lane.param_id) |param_id| {
+            if (std.mem.eql(u8, param_id, "volume")) {
+                return std.fmt.bufPrintZ(buf, "Track Volume", .{}) catch "Track Volume";
+            }
+            if (std.mem.eql(u8, param_id, "pan")) {
+                return std.fmt.bufPrintZ(buf, "Track Pan", .{}) catch "Track Pan";
+            }
+        }
+        return std.fmt.bufPrintZ(buf, "Track Automation", .{}) catch "Track Automation";
+    }
+
+    var target_buf: [64]u8 = undefined;
+    const target_label = if (lane.target_id.len == 0 or std.mem.eql(u8, lane.target_id, "instrument")) blk: {
+        break :blk "Instrument";
+    } else if (parseFxIndex(lane.target_id)) |fx_index| blk: {
+        break :blk std.fmt.bufPrint(&target_buf, "FX {d}", .{fx_index + 1}) catch "FX";
+    } else blk: {
+        break :blk "Device";
+    };
+
+    const param_label = if (lane.param_id) |param_id| blk: {
+        const pid = std.fmt.parseInt(u32, param_id, 10) catch break :blk param_id;
+        const plugin = getLanePlugin(lane, instrument_plugin, fx_plugins) orelse break :blk param_id;
+        const ext_raw = plugin.getExtension(plugin, clap.ext.params.id) orelse break :blk param_id;
+        const params: *const clap.ext.params.Plugin = @ptrCast(@alignCast(ext_raw));
+        var label_buf: [256]u8 = undefined;
+        break :blk getParamLabelById(&label_buf, plugin, params, pid);
+    } else "Param";
+
+    return std.fmt.bufPrintZ(buf, "{s}: {s}", .{ target_label, param_label }) catch "Automation";
+}
+
+fn findParamInfo(plugin: *const clap.Plugin, param_id: u32, out: *clap.ext.params.Info) bool {
+    const ext_raw = plugin.getExtension(plugin, clap.ext.params.id) orelse return false;
+    const params: *const clap.ext.params.Plugin = @ptrCast(@alignCast(ext_raw));
+    const count = params.count(plugin);
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        if (!params.getInfo(plugin, @intCast(i), out)) continue;
+        if (@intFromEnum(out.id) == param_id) return true;
+    }
+    return false;
+}
+
+fn getParamLabelById(
+    buf: []u8,
+    plugin: *const clap.Plugin,
+    params: *const clap.ext.params.Plugin,
+    param_id: u32,
+) [:0]const u8 {
+    const count = params.count(plugin);
+    var i: usize = 0;
+    while (i < count) : (i += 1) {
+        var info: clap.ext.params.Info = undefined;
+        if (!params.getInfo(plugin, @intCast(i), &info)) continue;
+        if (@intFromEnum(info.id) != param_id) continue;
+        return formatParamLabelZ(buf, &info);
+    }
+    return std.fmt.bufPrintZ(buf, "Param {d}", .{param_id}) catch "Param";
+}
+
+fn formatParamLabelZ(buf: []u8, info: *const clap.ext.params.Info) [:0]const u8 {
+    const name = sliceToNull(info.name[0..]);
+    const module = sliceToNull(info.module[0..]);
+    if (module.len > 0) {
+        return std.fmt.bufPrintZ(buf, "{s}/{s}", .{ module, name }) catch "Param";
+    }
+    return std.fmt.bufPrintZ(buf, "{s}", .{name}) catch "Param";
+}
+
+fn sliceToNull(buf: []const u8) []const u8 {
+    const end = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
+    return buf[0..end];
 }
 
 fn copyNotes(state: *PianoRollState, clip: *const PianoRollClip) void {
