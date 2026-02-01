@@ -4,10 +4,17 @@ const std = @import("std");
 const clap = @import("clap-bindings");
 const tracy = @import("tracy");
 
-const extensions = @import("extensions.zig");
+const shared = @import("shared");
 
 const Params = @import("ext/params.zig");
+const ViewType = @import("ext/gui/view.zig");
+const VoiceInfo = @import("ext/voice_info.zig");
+const ThreadPool = @import("ext/thread_pool.zig");
+const Undo = @import("ext/undo.zig");
+const extensions = shared.plugin_extensions.Extensions(Plugin, ViewType, Params, VoiceInfo, ThreadPool, Undo);
 const GUI = extensions.GUI;
+pub const View = ViewType;
+pub const font = shared.core.Core(Plugin, ViewType).font;
 const options = @import("options");
 const Voices = @import("audio/voices.zig");
 const Filter = @import("audio/filter.zig");
