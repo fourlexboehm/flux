@@ -10,6 +10,19 @@ jobs:
       - run: |
           set -euo pipefail
           ZIG_VERSION=$(grep -n "\\.minimum_zig_version" build.zig.zon | sed -E 's/.*"([^"]+)".*/\\1/')
+          if ! curl -fsI "https://ziglang.org/builds/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" >/dev/null; then
+            echo "Zig build ${ZIG_VERSION} not found, falling back to latest master build." >&2
+            ZIG_VERSION=$(
+              python3 - <<'PY'
+import json
+import urllib.request
+
+with urllib.request.urlopen("https://ziglang.org/download/index.json") as resp:
+    data = json.load(resp)
+print(data["master"]["version"])
+PY
+            )
+          fi
           curl -fL "https://ziglang.org/builds/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
           tar -xf zig.tar.xz
           ZIG_DIR="zig-x86_64-linux-${ZIG_VERSION}"
