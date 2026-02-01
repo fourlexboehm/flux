@@ -288,6 +288,38 @@ pub fn build(b: *std.Build) void {
     const run_flux = b.addRunArtifact(flux);
     const run_flux_step = b.step("run-flux", "Run the flux application");
     run_flux_step.dependOn(&run_flux.step);
+
+    // Unit tests for zminimoog DSP - filter module
+    const filter_test_module = b.createModule(.{
+        .root_source_file = b.path("zminimoog/src/dsp/board4_filter_vca.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    filter_test_module.addImport("zig_wdf", zig_wdf.module("zig_wdf"));
+
+    const filter_tests = b.addTest(.{
+        .root_module = filter_test_module,
+    });
+
+    const run_filter_tests = b.addRunArtifact(filter_tests);
+
+    // Unit tests for complete Minimoog
+    const dsp_test_module = b.createModule(.{
+        .root_source_file = b.path("zminimoog/src/dsp/dsp.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    dsp_test_module.addImport("zig_wdf", zig_wdf.module("zig_wdf"));
+
+    const dsp_tests = b.addTest(.{
+        .root_module = dsp_test_module,
+    });
+
+    const run_dsp_tests = b.addRunArtifact(dsp_tests);
+
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&run_filter_tests.step);
+    test_step.dependOn(&run_dsp_tests.step);
 }
 
 pub const CreateClapPluginStep = struct {

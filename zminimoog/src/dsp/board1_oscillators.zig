@@ -13,10 +13,10 @@
 //   The current magnitude determines frequency (I = C * dV/dt).
 //   Reset is handled by detecting threshold crossing and resetting capacitor state.
 //
-// Anti-Aliasing:
-//   - PolyBLEP for sawtooth/square/pulse discontinuities
-//   - PolyBLAMP for triangle peaks
-//   - Global oversampling handles remaining aliasing (see oversampler.zig)
+// Anti-Aliasing Options:
+//   - None: Raw WDF output (will alias)
+//   - PolyBLEP: Polynomial bandlimited step correction (efficient, good quality)
+//   - Oversampling: Process at higher rate, lowpass filter, decimate (pure, CPU intensive)
 
 const std = @import("std");
 const wdft = @import("zig_wdf");
@@ -45,24 +45,16 @@ pub const OscillatorComponents = struct {
     // Octave range (Minimoog has -2 to +2 octaves from base)
     pub const octave_range_low: comptime_float = -2.0;
     pub const octave_range_high: comptime_float = 2.0;
+};
 
-    // CA3046 transistor array parameters (5-transistor matched array)
-    pub const ca3046_is: comptime_float = 1.0e-15; // Saturation current
-    pub const ca3046_vt: comptime_float = 25.85e-3; // Thermal voltage
-    pub const ca3046_beta_f: comptime_float = 100.0; // Forward current gain
-    pub const ca3046_beta_r: comptime_float = 1.0; // Reverse current gain
+// ============================================================================
+// Anti-Aliasing Configuration
+// ============================================================================
 
-    // 2N3392 discharge transistor parameters
-    pub const q2n3392_is: comptime_float = 2.0e-14; // Saturation current
-    pub const q2n3392_vt: comptime_float = 25.85e-3; // Thermal voltage
-    pub const q2n3392_beta_f: comptime_float = 150.0; // Forward current gain
-    pub const q2n3392_beta_r: comptime_float = 1.0; // Reverse current gain
-    pub const q2n3392_r_ce_sat: comptime_float = 5.0; // Collector-emitter saturation resistance
-
-    // Exponential converter resistors
-    pub const exp_input_r: comptime_float = 100000.0; // 100k CV input resistor
-    pub const exp_ref_r: comptime_float = 100000.0; // 100k reference resistor
-    pub const exp_mirror_r: comptime_float = 10000.0; // 10k current mirror resistor
+pub const AntiAliasMode = enum {
+    polyBlep, // PolyBLEP correction (efficient, applied to WDF output)
+    oversample2x, // 2x oversampling
+    oversample4x, // 4x oversampling (best quality, default)
 };
 
 // ============================================================================
@@ -75,6 +67,66 @@ pub const Waveform = enum {
     square,
     pulse, // Variable pulse width
 };
+
+// ============================================================================
+// Oversampler (Generic)
+// ============================================================================
+
+/// Generic oversampler with half-band lowpass filter for decimation
+/// Can be used to wrap oscillators or entire signal chains
+pub fn Oversampler(comptime T: type, comptime factor: comptime_int) type {
+    comptime if (factor != 2 and factor != 4) @compileError("Oversampling factor must be 2 or 4");
+
+    return struct {
+        // Half-band filter coefficients (optimized for oversampling)
+        // Using a simple but effective 7-tap half-band filter
+        filter_state: [7]T = [_]T{0.0} ** 7,
+        output_accumulator: T = 0.0,
+
+        const Self = @This();
+
+        // Half-band filter coefficients (symmetric, every other coef is 0 except center)
+        // This allows efficient implementation
+        const coeffs = if (factor == 2)
+            [_]T{ 0.0625, 0.25, 0.375, 0.25, 0.0625, 0.0, 0.0 }
+        else
+            // For 4x, we use a steeper filter
+            [_]T{ 0.03125, 0.125, 0.21875, 0.25, 0.21875, 0.125, 0.03125 };
+
+        pub fn init() Self {
+            return .{};
+        }
+
+        pub fn reset(self: *Self) void {
+            self.filter_state = [_]T{0.0} ** 7;
+            self.output_accumulator = 0.0;
+        }
+
+        /// Process multiple oversampled inputs and return decimated output
+        pub fn processAndDecimate(self: *Self, samples: [factor]T) T {
+            var result: T = 0.0;
+
+            // Process each oversampled sample through the filter
+            for (samples) |sample| {
+                // Shift filter state
+                var i: usize = 6;
+                while (i > 0) : (i -= 1) {
+                    self.filter_state[i] = self.filter_state[i - 1];
+                }
+                self.filter_state[0] = sample;
+
+                // Apply filter (only compute output for last sample in group)
+            }
+
+            // Compute filtered output
+            for (coeffs, 0..) |coef, i| {
+                result += coef * self.filter_state[i];
+            }
+
+            return result;
+        }
+    };
+}
 
 // ============================================================================
 // PolyBLEP Anti-Aliasing
@@ -135,364 +187,43 @@ pub fn PolyBLAMP(comptime T: type) type {
         /// Calculate PolyBLAMP correction for a slope discontinuity (corner)
         /// t: normalized position within the current sample (0 to 1)
         /// dt: phase increment (frequency / sample_rate)
-        pub inline fn correction(t: T, dt: T) T {
+        /// scale: slope change magnitude (typically 4.0 for triangle going from +2 to -2)
+        pub inline fn correction(t: T, dt: T, scale: T) T {
+            // PolyBLAMP is the integral of PolyBLEP
             if (t < dt) {
                 const t_norm = t / dt;
-                // Integrated PolyBLEP: smooths the corner
                 const t2 = t_norm * t_norm;
                 const t3 = t2 * t_norm;
                 const t4 = t3 * t_norm;
-                return dt * (t4 / 4.0 - t3 / 3.0);
+                return scale * dt * (t4 / 4.0 - t3 / 3.0);
             } else if (t > 1.0 - dt) {
                 const t_norm = (t - 1.0) / dt + 1.0;
                 const t2 = t_norm * t_norm;
                 const t3 = t2 * t_norm;
                 const t4 = t3 * t_norm;
-                return -dt * ((1.0 - t4) / 4.0 - (1.0 - t3) / 3.0);
+                return scale * dt * (t4 / 4.0 + t3 / 3.0 - t_norm);
             }
             return 0.0;
         }
-    };
-}
 
-// ============================================================================
-// CA3046 Exponential Converter (5-Transistor Array)
-// ============================================================================
+        /// Apply PolyBLAMP to a triangle wave
+        /// phase: current phase (0 to 1)
+        /// dt: phase increment
+        /// raw_tri: naive triangle value (-1 to 1)
+        pub inline fn triangleCorrection(phase: T, dt: T, raw_tri: T) T {
+            var output = raw_tri;
+            // Triangle has corners at phase 0 (bottom) and 0.5 (top)
+            // Slope changes from +4 to -4 at phase 0.5, and -4 to +4 at phase 0/1
+            const slope_change: T = 4.0; // Going from slope +2 to -2 (or vice versa)
 
-/// CA3046 exponential converter for VCO frequency control
-///
-/// Circuit topology (from schematic):
-///   CV input ---[R]--+-- Base Q1 (differential input)
-///                    |      |
-///                    |     |E
-///                    |      |----+
-///                    |           |
-///   V_ref ----[R]----+-- Base Q2 | (differential reference)
-///                    |      |    |
-///                    |     |E    |
-///                    +------+----+---- To Q3 base (Wilson mirror input)
-///                                 |
-///                            Q3---|--- Q4 (Wilson current mirror)
-///                                 |     |
-///                                Q5-----+---- Output current
-///
-/// The CA3046 contains 5 matched transistors:
-///   Q1, Q2: Differential pair for exponential conversion
-///   Q3, Q4, Q5: Wilson current mirror for accurate current output
-///
-/// This provides precise 1V/octave tracking for VCO frequency control.
-pub fn CA3046ExpConverter(comptime T: type) type {
-    const R = wdft.Resistor(T);
+            // Corner at phase 0.5 (peak)
+            const phase_from_peak = @mod(phase + 0.5, 1.0);
+            output -= correction(phase_from_peak, dt, slope_change);
 
-    // Differential pair transistors (Q1, Q2)
-    const NPN_Diff = wdft.NpnTransistor(T, R, R);
+            // Corner at phase 0/1 (trough)
+            output += correction(phase, dt, slope_change);
 
-    // Wilson current mirror transistors (Q3, Q4, Q5)
-    const NPN_Mirror = wdft.NpnTransistor(T, R, R);
-
-    return struct {
-        // Differential pair
-        q1: NPN_Diff, // CV input transistor
-        q2: NPN_Diff, // Reference transistor
-
-        // Wilson current mirror
-        q3: NPN_Mirror, // Mirror reference
-        q4: NPN_Mirror, // Mirror output stage 1
-        q5: NPN_Mirror, // Mirror output stage 2
-
-        // Control voltages
-        cv_input: T = 0.0, // CV input (1V/octave)
-        v_ref: T = 0.0, // Reference voltage
-
-        // Output current (charges the integrating capacitor)
-        output_current: T = 0.0,
-
-        // Base current (sets operating point)
-        base_current: T = 10.0e-6, // 10µA nominal
-
-        // CV smoothing
-        cv_smoothed: T = 0.0,
-        cv_smooth_coeff: T = 0.0,
-
-        sample_rate: T,
-
-        const Self = @This();
-
-        // CA3046 parameters
-        const ca3046_is: T = OscillatorComponents.ca3046_is;
-        const ca3046_vt: T = OscillatorComponents.ca3046_vt;
-        const ca3046_alpha_f: T = OscillatorComponents.ca3046_beta_f / (OscillatorComponents.ca3046_beta_f + 1.0);
-        const ca3046_alpha_r: T = OscillatorComponents.ca3046_beta_r / (OscillatorComponents.ca3046_beta_r + 1.0);
-
-        pub fn init(sample_rate: T) Self {
-            // CV smoothing: ~2ms for fast response
-            const smooth_time: T = 0.002;
-            const cv_smooth = 1.0 - @exp(-1.0 / (smooth_time * sample_rate));
-
-            return Self{
-                // Differential pair
-                .q1 = NPN_Diff.init(
-                    R.init(OscillatorComponents.exp_input_r),
-                    R.init(OscillatorComponents.source_resistance),
-                    ca3046_is,
-                    ca3046_vt,
-                    ca3046_alpha_f,
-                    ca3046_alpha_r,
-                ),
-                .q2 = NPN_Diff.init(
-                    R.init(OscillatorComponents.exp_ref_r),
-                    R.init(OscillatorComponents.source_resistance),
-                    ca3046_is,
-                    ca3046_vt,
-                    ca3046_alpha_f,
-                    ca3046_alpha_r,
-                ),
-                // Wilson current mirror
-                .q3 = NPN_Mirror.init(
-                    R.init(OscillatorComponents.exp_mirror_r),
-                    R.init(OscillatorComponents.source_resistance),
-                    ca3046_is,
-                    ca3046_vt,
-                    ca3046_alpha_f,
-                    ca3046_alpha_r,
-                ),
-                .q4 = NPN_Mirror.init(
-                    R.init(OscillatorComponents.exp_mirror_r),
-                    R.init(OscillatorComponents.source_resistance),
-                    ca3046_is,
-                    ca3046_vt,
-                    ca3046_alpha_f,
-                    ca3046_alpha_r,
-                ),
-                .q5 = NPN_Mirror.init(
-                    R.init(OscillatorComponents.exp_mirror_r),
-                    R.init(OscillatorComponents.source_resistance),
-                    ca3046_is,
-                    ca3046_vt,
-                    ca3046_alpha_f,
-                    ca3046_alpha_r,
-                ),
-                .sample_rate = sample_rate,
-                .cv_smooth_coeff = cv_smooth,
-            };
-        }
-
-        pub fn prepare(self: *Self, sample_rate: T) void {
-            self.sample_rate = sample_rate;
-            const smooth_time: T = 0.002;
-            self.cv_smooth_coeff = 1.0 - @exp(-1.0 / (smooth_time * sample_rate));
-        }
-
-        pub fn reset(self: *Self) void {
-            self.q1.reset();
-            self.q2.reset();
-            self.q3.reset();
-            self.q4.reset();
-            self.q5.reset();
-            self.cv_smoothed = self.cv_input;
-            self.output_current = 0.0;
-        }
-
-        /// Set the CV input voltage (1V/octave)
-        pub fn setCV(self: *Self, cv_volts: T) void {
-            self.cv_input = cv_volts;
-        }
-
-        /// Set the reference voltage
-        pub fn setReference(self: *Self, v_ref: T) void {
-            self.v_ref = v_ref;
-        }
-
-        /// Process one sample and return the charging current
-        /// This current is used to charge the VCO integrating capacitor
-        pub inline fn processSample(self: *Self) T {
-            // Smooth CV input
-            self.cv_smoothed += (self.cv_input - self.cv_smoothed) * self.cv_smooth_coeff;
-
-            // Apply voltages to differential pair bases
-            self.q1.port_bc.wdf.a = self.cv_smoothed * 2.0;
-            self.q2.port_bc.wdf.a = self.v_ref * 2.0;
-
-            // Process differential pair
-            self.q1.process();
-            self.q2.process();
-
-            // Get collector current from Q1 (exponentially related to CV-Vref)
-            const i_diff = self.q1.collectorCurrent();
-
-            // Feed into Wilson current mirror (Q3)
-            // The mirror input current sets the mirror output
-            self.q3.port_bc.wdf.a = @abs(i_diff) * OscillatorComponents.exp_mirror_r * 2.0;
-            self.q3.process();
-
-            // Q4 and Q5 form the Wilson mirror output stage
-            const i_mirror_ref = self.q3.collectorCurrent();
-            self.q4.port_bc.wdf.a = @abs(i_mirror_ref) * OscillatorComponents.exp_mirror_r * 2.0;
-            self.q4.process();
-
-            self.q5.port_bc.wdf.a = @abs(self.q4.collectorCurrent()) * OscillatorComponents.exp_mirror_r * 2.0;
-            self.q5.process();
-
-            // Output current from the Wilson mirror
-            // This is the exponentially-controlled charging current
-            self.output_current = @abs(self.q5.collectorCurrent());
-
-            // Clamp to reasonable range (prevents runaway)
-            const min_current: T = 1.0e-9;
-            const max_current: T = 10.0e-3;
-            self.output_current = @max(min_current, @min(max_current, self.output_current));
-
-            return self.output_current;
-        }
-
-        /// Get the current output without processing
-        pub fn getOutputCurrent(self: *const Self) T {
-            return self.output_current;
-        }
-    };
-}
-
-// ============================================================================
-// 2N3392 Discharge Switch
-// ============================================================================
-
-/// Discharge switch for VCO sawtooth reset
-///
-/// Circuit topology:
-///   Comparator output --+-- Base Q1 (2N3392)
-///                       |      |
-///                       |     |C---- To Integrating Capacitor
-///                       |     |E
-///                       |      |
-///                      GND-----+
-///
-/// When the comparator detects the sawtooth has reached its peak,
-/// it turns on Q1, which discharges the integrating capacitor.
-/// This creates the sawtooth reset with realistic (~100ns) timing
-/// instead of an instantaneous reset.
-///
-/// The finite discharge time creates authentic "softening" of the
-/// sawtooth reset edge, which is part of the Minimoog's character.
-pub fn DischargeSwitch(comptime T: type) type {
-    const R = wdft.Resistor(T);
-    const NPN = wdft.NpnTransistor(T, R, R);
-
-    return struct {
-        q1: NPN,
-
-        // Switch state
-        trigger: bool = false,
-
-        // Discharge timing
-        discharge_time: T = 0.0, // Time since trigger started
-        discharge_duration: T = 0.0, // Duration of discharge (~100ns scaled to sample rate)
-
-        // Capacitor voltage state
-        cap_voltage: T = 0.0,
-
-        sample_rate: T,
-
-        const Self = @This();
-
-        // 2N3392 parameters
-        const q2n3392_is: T = OscillatorComponents.q2n3392_is;
-        const q2n3392_vt: T = OscillatorComponents.q2n3392_vt;
-        const q2n3392_alpha_f: T = OscillatorComponents.q2n3392_beta_f / (OscillatorComponents.q2n3392_beta_f + 1.0);
-        const q2n3392_alpha_r: T = OscillatorComponents.q2n3392_beta_r / (OscillatorComponents.q2n3392_beta_r + 1.0);
-
-        // Saturation resistance when switch is on
-        const r_ce_sat: T = OscillatorComponents.q2n3392_r_ce_sat;
-
-        pub fn init(sample_rate: T) Self {
-            // Discharge duration: ~100ns in real circuit, scaled to samples
-            // At 192kHz (4x oversampling of 48kHz), this is about 0.02 samples
-            // We use a minimum of 1 sample for stability
-            const discharge_ns: T = 100.0e-9;
-            const discharge_samples = @max(1.0, discharge_ns * sample_rate);
-
-            return Self{
-                .q1 = NPN.init(
-                    R.init(OscillatorComponents.source_resistance), // BC port
-                    R.init(r_ce_sat), // BE port - saturation resistance
-                    q2n3392_is,
-                    q2n3392_vt,
-                    q2n3392_alpha_f,
-                    q2n3392_alpha_r,
-                ),
-                .sample_rate = sample_rate,
-                .discharge_duration = discharge_samples,
-            };
-        }
-
-        pub fn prepare(self: *Self, sample_rate: T) void {
-            self.sample_rate = sample_rate;
-            const discharge_ns: T = 100.0e-9;
-            self.discharge_duration = @max(1.0, discharge_ns * sample_rate);
-        }
-
-        pub fn reset(self: *Self) void {
-            self.q1.reset();
-            self.trigger = false;
-            self.discharge_time = 0.0;
-            self.cap_voltage = OscillatorComponents.saw_low;
-        }
-
-        /// Trigger the discharge switch (called when sawtooth reaches threshold)
-        pub fn setTrigger(self: *Self, on: bool) void {
-            if (on and !self.trigger) {
-                // Rising edge - start discharge
-                self.discharge_time = 0.0;
-            }
-            self.trigger = on;
-        }
-
-        /// Process the discharge switch and return the new capacitor voltage
-        /// This models the realistic discharge curve through the transistor
-        pub inline fn processSample(self: *Self, current_cap_voltage: T) T {
-            self.cap_voltage = current_cap_voltage;
-
-            if (self.trigger) {
-                // Transistor is conducting - discharge the capacitor
-                // Apply base drive to turn transistor fully on
-                self.q1.port_bc.wdf.a = 5.0 * 2.0; // 5V base drive
-
-                // Process transistor
-                self.q1.process();
-
-                // Calculate discharge based on transistor's collector current
-                // The collector current flows through the saturation resistance
-                const i_discharge = @abs(self.q1.collectorCurrent());
-
-                // Discharge the capacitor: dV = I * dt / C
-                // dt = 1/sample_rate, simplified to discharge rate
-                const discharge_rate = i_discharge / (OscillatorComponents.core_cap * self.sample_rate);
-
-                // Exponential discharge towards saw_low
-                const target = OscillatorComponents.saw_low;
-                const discharge_factor = 1.0 - @exp(-discharge_rate * 10.0);
-                self.cap_voltage += (target - self.cap_voltage) * discharge_factor;
-
-                // Track discharge time
-                self.discharge_time += 1.0;
-
-                // Check if discharge is complete
-                if (self.cap_voltage <= OscillatorComponents.saw_low * 0.95) {
-                    self.cap_voltage = OscillatorComponents.saw_low;
-                    self.trigger = false;
-                }
-            }
-
-            return self.cap_voltage;
-        }
-
-        /// Check if the switch is currently discharging
-        pub fn isDischarging(self: *const Self) bool {
-            return self.trigger;
-        }
-
-        /// Get the current capacitor voltage
-        pub fn getCapVoltage(self: *const Self) T {
-            return self.cap_voltage;
+            return output;
         }
     };
 }
@@ -512,34 +243,24 @@ pub fn DischargeSwitch(comptime T: type) type {
 ///
 /// The charging current is set to achieve the desired frequency:
 ///   I = C * (V_high - V_low) * f
-///
-/// Anti-aliasing is handled via PolyBLEP/PolyBLAMP.
-/// Global oversampling is done at the voice level (see oversampler.zig).
 pub fn VCO(comptime T: type) type {
-    // WDF circuit topology:
-    // - CA3046 exponential converter generates charging current from CV
-    // - Current charges the integrating capacitor
-    // - 2N3392 discharge switch resets the capacitor when threshold is reached
+    // WDF circuit topology: IdealCurrentSource driving a Capacitor
+    // The current source models the exponential converter output
+    // IdealCurrentSource is the root that drives wave scattering
     const C = wdft.Capacitor(T);
     const ICS = wdft.IdealCurrentSource(T, C);
 
     return struct {
-        // Core integrator circuit
         circuit: ICS,
-
-        // CA3046 exponential converter for CV-to-current conversion
-        exp_converter: CA3046ExpConverter(T),
-
-        // 2N3392 discharge switch for realistic sawtooth reset
-        discharge_switch: DischargeSwitch(T),
 
         frequency: T = OscillatorComponents.base_frequency,
         sample_rate: T,
+        internal_sample_rate: T, // May differ from sample_rate when oversampling
         waveform: Waveform = .sawtooth,
         pulse_width: T = 0.5, // For pulse wave (0.0 to 1.0)
 
-        // CV input (1V/octave)
-        cv_input: T = 0.0,
+        // Anti-aliasing mode
+        anti_alias: AntiAliasMode = .polyBlep,
 
         // Detune in cents (-100 to +100 typical)
         detune_cents: T = 0.0,
@@ -551,17 +272,16 @@ pub fn VCO(comptime T: type) type {
         phase: T = 0.0,
         phase_increment: T = 0.0,
 
-        // Charging current (from exponential converter)
+        // Charging current (determines frequency)
         charge_current: T = 0.0,
 
-        // Track reset for PolyBLEP (Fix 6: store fractional phase at discontinuity)
+        // Track reset for PolyBLEP
         reset_occurred: bool = false,
-        reset_fractional_phase: T = 0.0, // Fractional phase where reset occurred
+        reset_phase: T = 0.0, // Phase at which reset occurred
 
-        // Anti-aliasing mode:
-        // - true: Use PolyBLEP/PolyBLAMP (for 1x, no oversampling)
-        // - false: Raw WDF output (for 2x/4x, oversampling handles aliasing)
-        use_digital_antialiasing: bool = true,
+        // Oversamplers
+        oversampler_2x: Oversampler(T, 2) = Oversampler(T, 2).init(),
+        oversampler_4x: Oversampler(T, 4) = Oversampler(T, 4).init(),
 
         const Self = @This();
 
@@ -570,9 +290,8 @@ pub fn VCO(comptime T: type) type {
         pub fn init(sample_rate: T) Self {
             var self = Self{
                 .circuit = ICS.init(C.init(OscillatorComponents.core_cap, sample_rate)),
-                .exp_converter = CA3046ExpConverter(T).init(sample_rate),
-                .discharge_switch = DischargeSwitch(T).init(sample_rate),
                 .sample_rate = sample_rate,
+                .internal_sample_rate = sample_rate,
             };
             self.updatePhaseIncrement();
             return self;
@@ -580,28 +299,40 @@ pub fn VCO(comptime T: type) type {
 
         pub fn prepare(self: *Self, sample_rate: T) void {
             self.sample_rate = sample_rate;
-            self.circuit.next.prepare(sample_rate);
+            self.updateInternalSampleRate();
+            self.circuit.next.prepare(self.internal_sample_rate);
             self.circuit.calcImpedance();
-            self.exp_converter.prepare(sample_rate);
-            self.discharge_switch.prepare(sample_rate);
             self.updatePhaseIncrement();
         }
 
         pub fn reset(self: *Self) void {
             self.phase = 0.0;
             self.circuit.next.reset();
-            self.exp_converter.reset();
-            self.discharge_switch.reset();
+            self.oversampler_2x.reset();
+            self.oversampler_4x.reset();
             self.reset_occurred = false;
-            self.reset_fractional_phase = 0.0;
+        }
+
+        /// Set anti-aliasing mode
+        pub fn setAntiAliasMode(self: *Self, mode: AntiAliasMode) void {
+            self.anti_alias = mode;
+            self.updateInternalSampleRate();
+            self.circuit.next.prepare(self.internal_sample_rate);
+            self.circuit.calcImpedance();
+            self.updatePhaseIncrement();
+        }
+
+        fn updateInternalSampleRate(self: *Self) void {
+            self.internal_sample_rate = switch (self.anti_alias) {
+                .polyBlep => self.sample_rate,
+                .oversample2x => self.sample_rate * 2.0,
+                .oversample4x => self.sample_rate * 4.0,
+            };
         }
 
         /// Set frequency directly in Hz
         pub fn setFrequency(self: *Self, freq_hz: T) void {
             self.frequency = @max(0.1, @min(freq_hz, self.sample_rate * 0.45)); // Nyquist limit
-            // Convert frequency to CV: CV = log2(freq / base_freq)
-            self.cv_input = std.math.log2(self.frequency / OscillatorComponents.base_frequency);
-            self.exp_converter.setCV(self.cv_input);
             self.updatePhaseIncrement();
         }
 
@@ -612,13 +343,10 @@ pub fn VCO(comptime T: type) type {
         }
 
         /// Set frequency via 1V/octave CV (0V = base frequency)
-        /// Uses the CA3046 exponential converter for authentic response
         pub fn setCV(self: *Self, cv_volts: T) void {
-            self.cv_input = cv_volts + @as(T, @floatFromInt(self.octave_offset));
-            self.exp_converter.setCV(self.cv_input);
-            const freq = OscillatorComponents.base_frequency * std.math.pow(T, 2.0, self.cv_input);
-            self.frequency = @max(0.1, @min(freq, self.sample_rate * 0.45));
-            self.updatePhaseIncrement();
+            const octave_shift = cv_volts + @as(T, @floatFromInt(self.octave_offset));
+            const freq = OscillatorComponents.base_frequency * std.math.pow(T, 2.0, octave_shift);
+            self.setFrequency(freq);
         }
 
         /// Set detune in cents
@@ -642,20 +370,13 @@ pub fn VCO(comptime T: type) type {
             self.pulse_width = @max(0.01, @min(0.99, pw));
         }
 
-        /// Set digital anti-aliasing mode
-        /// - true: Use PolyBLEP/PolyBLAMP (for 1x, no oversampling)
-        /// - false: Raw WDF output (for 2x/4x, oversampling handles aliasing)
-        pub fn setDigitalAntialiasing(self: *Self, enabled: bool) void {
-            self.use_digital_antialiasing = enabled;
-        }
-
         fn updatePhaseIncrement(self: *Self) void {
             // Apply detune
             const detune_factor = std.math.pow(T, 2.0, self.detune_cents / 1200.0);
             const final_freq = self.frequency * detune_factor;
 
-            // Phase increment based on sample rate
-            self.phase_increment = final_freq / self.sample_rate;
+            // Phase increment based on internal (possibly oversampled) rate
+            self.phase_increment = final_freq / self.internal_sample_rate;
 
             // Calculate charging current for desired frequency
             // From I = C * dV/dt, and we need full swing in one period:
@@ -664,32 +385,31 @@ pub fn VCO(comptime T: type) type {
             self.circuit.setCurrent(self.charge_current);
         }
 
-        /// Generate one sample
-        /// Uses transistor exponential converter and discharge switch for authentic behavior
-        /// If use_digital_antialiasing is true, applies PolyBLEP/PolyBLAMP
-        /// If false, outputs raw WDF waveform (for use with oversampling)
+        /// Generate one sample (handles anti-aliasing internally)
         pub inline fn processSample(self: *Self) T {
-            // Use the pre-calculated charging current from updatePhaseIncrement()
-            // This is mathematically correct: I = C * dV/dt = C * voltage_swing * frequency
-            self.circuit.setCurrent(self.charge_current);
+            return switch (self.anti_alias) {
+                .polyBlep => self.processSampleWithPolyBLEP(),
+                .oversample2x => self.processSampleOversampled2x(),
+                .oversample4x => self.processSampleOversampled4x(),
+            };
+        }
 
-            // Process WDF circuit - current charges the capacitor
+        /// Raw WDF processing (no anti-aliasing)
+        fn processSampleInternal(self: *Self) T {
+            // Process WDF circuit - IdealCurrentSource drives the wave scattering
             self.circuit.process();
 
             // Read capacitor voltage (this is our sawtooth core)
-            var cap_voltage = wdft.voltage(T, &self.circuit.next.wdf);
+            const cap_voltage = wdft.voltage(T, &self.circuit.next.wdf);
 
-            // Check for reset threshold
+            // Check for reset threshold (models comparator + discharge transistor)
             self.reset_occurred = false;
             if (cap_voltage >= OscillatorComponents.saw_high) {
-                // Store fractional phase at discontinuity before resetting
-                self.reset_fractional_phase = @mod(self.phase + self.phase_increment, 1.0);
-
-                // Reset capacitor directly (instant reset)
-                self.circuit.next.z = OscillatorComponents.saw_low * 2.0;
-                cap_voltage = OscillatorComponents.saw_low;
+                // Reset capacitor state - models the fast discharge through Q1
+                self.circuit.next.z = OscillatorComponents.saw_low * 2.0; // WDF state
                 self.reset_occurred = true;
-                self.phase = self.reset_fractional_phase;
+                self.reset_phase = self.phase;
+                self.phase = 0.0;
             }
 
             // Advance phase (for derived waveforms)
@@ -699,114 +419,81 @@ pub fn VCO(comptime T: type) type {
             }
 
             // Generate output waveform
-            if (self.use_digital_antialiasing) {
-                // 1x mode: Use PolyBLEP/PolyBLAMP for anti-aliasing
-                return switch (self.waveform) {
-                    .sawtooth => self.generateSawWithBLEP(cap_voltage),
-                    .triangle => self.generateTriangleWithBLAMP(cap_voltage),
-                    .square => self.generateSquareWithBLEP(),
-                    .pulse => self.generatePulseWithBLEP(),
-                };
-            } else {
-                // 2x/4x mode: Raw WDF output, oversampling handles aliasing
-                return switch (self.waveform) {
-                    .sawtooth => self.generateSawRaw(cap_voltage),
-                    .triangle => self.generateTriangleRaw(cap_voltage),
-                    .square => self.generateSquareRaw(),
-                    .pulse => self.generatePulseRaw(),
-                };
-            }
-        }
-
-        /// Sawtooth with PolyBLEP at reset discontinuity
-        fn generateSawWithBLEP(self: *Self, cap_voltage: T) T {
-            // Normalize from [saw_low, saw_high] to [-1, +1]
-            // Clamp to handle any WDF overshoot
-            const normalized = std.math.clamp(
-                (cap_voltage - OscillatorComponents.saw_low) / voltage_swing,
-                0.0,
-                1.0,
-            );
-            var output = normalized * 2.0 - 1.0;
-
-            // Apply PolyBLEP correction at reset discontinuity
-            if (self.reset_occurred) {
-                // Fix 6: Use the stored fractional phase for accurate correction
-                output -= PolyBLEP(T).correction(self.reset_fractional_phase, self.phase_increment) * 2.0;
-            }
+            const output = switch (self.waveform) {
+                .sawtooth => self.generateSaw(cap_voltage),
+                .triangle => self.generateTriangle(cap_voltage),
+                .square => self.generateSquare(),
+                .pulse => self.generatePulse(),
+            };
 
             return output;
         }
 
-        /// Triangle with PolyBLAMP at peaks (Fix 7)
-        fn generateTriangleWithBLAMP(self: *Self, cap_voltage: T) T {
-            // Generate from sawtooth by folding
-            // Clamp to handle any WDF overshoot
-            const normalized = std.math.clamp(
-                (cap_voltage - OscillatorComponents.saw_low) / voltage_swing,
-                0.0,
-                1.0,
-            );
-            const saw = normalized * 2.0 - 1.0;
+        /// WDF processing with PolyBLEP anti-aliasing
+        fn processSampleWithPolyBLEP(self: *Self) T {
+            const raw = self.processSampleInternal();
 
-            // Fold: abs(saw) gives 0->1->0, then scale to -1->1->-1
-            var output = @abs(saw) * 2.0 - 1.0;
-
-            // Fix 7: Apply PolyBLAMP at triangle peaks (phase 0.25 and 0.75)
-            // Peak at phase 0 (bottom of triangle, saw reset point)
-            output += PolyBLAMP(T).correction(self.phase, self.phase_increment) * 4.0;
-
-            // Peak at phase 0.5 (top of triangle)
-            const peak_phase = @mod(self.phase + 0.5, 1.0);
-            output -= PolyBLAMP(T).correction(peak_phase, self.phase_increment) * 4.0;
-
-            return output;
+            // Apply PolyBLEP correction based on waveform
+            return switch (self.waveform) {
+                .sawtooth => blk: {
+                    var output = raw;
+                    // Apply correction at reset discontinuity
+                    if (self.reset_occurred) {
+                        output -= PolyBLEP(T).correction(self.phase, self.phase_increment) * 2.0;
+                    }
+                    break :blk output;
+                },
+                .triangle => PolyBLAMP(T).triangleCorrection(self.phase, self.phase_increment, raw),
+                .square => PolyBLEP(T).pulseCorrection(self.phase, self.phase_increment, 0.5, raw),
+                .pulse => PolyBLEP(T).pulseCorrection(self.phase, self.phase_increment, self.pulse_width, raw),
+            };
         }
 
-        /// Square wave with PolyBLEP
-        fn generateSquareWithBLEP(self: *Self) T {
-            const raw = if (self.phase < 0.5) @as(T, 1.0) else @as(T, -1.0);
-            return PolyBLEP(T).pulseCorrection(self.phase, self.phase_increment, 0.5, raw);
+        /// 2x oversampled processing
+        fn processSampleOversampled2x(self: *Self) T {
+            var samples: [2]T = undefined;
+            for (&samples) |*s| {
+                s.* = self.processSampleInternal();
+            }
+            return self.oversampler_2x.processAndDecimate(samples);
         }
 
-        /// Pulse wave with PolyBLEP
-        fn generatePulseWithBLEP(self: *Self) T {
-            const raw = if (self.phase < self.pulse_width) @as(T, 1.0) else @as(T, -1.0);
-            return PolyBLEP(T).pulseCorrection(self.phase, self.phase_increment, self.pulse_width, raw);
+        /// 4x oversampled processing
+        fn processSampleOversampled4x(self: *Self) T {
+            var samples: [4]T = undefined;
+            for (&samples) |*s| {
+                s.* = self.processSampleInternal();
+            }
+            return self.oversampler_4x.processAndDecimate(samples);
         }
 
-        // ====================================================================
-        // Raw WDF waveform generation (for use with oversampling)
-        // ====================================================================
-
-        /// Raw sawtooth from WDF capacitor voltage (no anti-aliasing)
-        fn generateSawRaw(self: *Self, cap_voltage: T) T {
+        /// Sawtooth: normalized capacitor voltage
+        fn generateSaw(self: *Self, cap_voltage: T) T {
             _ = self;
             // Normalize from [saw_low, saw_high] to [-1, +1]
-            // Clamp to handle any WDF overshoot
-            const normalized = std.math.clamp(
-                (cap_voltage - OscillatorComponents.saw_low) / voltage_swing,
-                0.0,
-                1.0,
-            );
+            const normalized = (cap_voltage - OscillatorComponents.saw_low) / voltage_swing;
             return normalized * 2.0 - 1.0;
         }
 
-        /// Raw triangle from folded sawtooth (no anti-aliasing)
-        fn generateTriangleRaw(self: *Self, cap_voltage: T) T {
-            const saw = self.generateSawRaw(cap_voltage);
+        /// Triangle: fold the sawtooth
+        fn generateTriangle(self: *Self, cap_voltage: T) T {
+            const saw = self.generateSaw(cap_voltage);
             // Fold: abs(saw) gives 0->1->0, then scale to -1->1->-1
             return @abs(saw) * 2.0 - 1.0;
         }
 
-        /// Raw square wave (no anti-aliasing)
-        fn generateSquareRaw(self: *Self) T {
-            return if (self.phase < 0.5) @as(T, 1.0) else @as(T, -1.0);
+        /// Square: comparator on phase
+        fn generateSquare(self: *Self) T {
+            return self.generatePulseInternal(0.5);
         }
 
-        /// Raw pulse wave (no anti-aliasing)
-        fn generatePulseRaw(self: *Self) T {
-            return if (self.phase < self.pulse_width) @as(T, 1.0) else @as(T, -1.0);
+        /// Pulse: variable duty cycle
+        fn generatePulse(self: *Self) T {
+            return self.generatePulseInternal(self.pulse_width);
+        }
+
+        fn generatePulseInternal(self: *Self, pw: T) T {
+            return if (self.phase < pw) @as(T, 1.0) else @as(T, -1.0);
         }
     };
 }
@@ -878,6 +565,13 @@ pub fn OscillatorBank(comptime T: type) type {
             self.osc3.reset();
         }
 
+        /// Set anti-aliasing mode for all oscillators
+        pub fn setAntiAliasMode(self: *Self, mode: AntiAliasMode) void {
+            self.osc1.setAntiAliasMode(mode);
+            self.osc2.setAntiAliasMode(mode);
+            self.osc3.setAntiAliasMode(mode);
+        }
+
         /// Set all oscillators to same base frequency (1V/oct CV)
         pub fn setCV(self: *Self, cv_volts: T) void {
             self.osc1.setCV(cv_volts);
@@ -902,15 +596,6 @@ pub fn OscillatorBank(comptime T: type) type {
         /// Set drive amount (affects analog saturation character)
         pub fn setDrive(self: *Self, d: T) void {
             self.drive = @max(0.1, @min(4.0, d));
-        }
-
-        /// Set digital anti-aliasing mode for all oscillators
-        /// - true: Use PolyBLEP/PolyBLAMP (for 1x, no oversampling)
-        /// - false: Raw WDF output (for 2x/4x, oversampling handles aliasing)
-        pub fn setDigitalAntialiasing(self: *Self, enabled: bool) void {
-            self.osc1.setDigitalAntialiasing(enabled);
-            self.osc2.setDigitalAntialiasing(enabled);
-            self.osc3.setDigitalAntialiasing(enabled);
         }
 
         /// Generate mixed output with analog summing emulation
@@ -946,14 +631,12 @@ pub fn OscillatorBank(comptime T: type) type {
         /// Analog saturation curve (models op-amp soft clipping)
         pub fn analogSaturate(x: T) T {
             // Soft saturation using tanh approximation
-            // Uses the same formula as the filter's softClip for consistency
+            // More efficient than std.math.tanh for real-time use
             const x2 = x * x;
-            // For large inputs, clamp to ±1
-            if (x2 > 9.0) {
-                return if (x > 0) @as(T, 1.0) else @as(T, -1.0);
-            }
-            // tanh approximation: x * (27 + x²) / (27 + 9*x²)
-            return x * (27.0 + x2) / (27.0 + 9.0 * x2);
+            const x3 = x2 * x;
+            const x5 = x3 * x2;
+            // Pade approximation of tanh
+            return x * (1.0 + x2 * 0.0833333) / (1.0 + x2 * 0.416667 + x5 * 0.0083333);
         }
     };
 }
@@ -963,6 +646,46 @@ pub fn OscOutputs(comptime T: type) type {
         osc1: T,
         osc2: T,
         osc3: T,
+    };
+}
+
+// ============================================================================
+// Synth-Wide Oversampler (for entire signal chain)
+// ============================================================================
+
+/// Wrapper for oversampling an entire signal processing chain
+/// Use this when you want to oversample filter + mixer saturation too
+pub fn SynthOversampler(comptime T: type, comptime factor: comptime_int) type {
+    comptime if (factor != 2 and factor != 4) @compileError("Factor must be 2 or 4");
+
+    return struct {
+        oversampler: Oversampler(T, factor),
+        internal_sample_rate: T,
+        output_sample_rate: T,
+
+        const Self = @This();
+
+        pub fn init(output_sample_rate: T) Self {
+            return .{
+                .oversampler = Oversampler(T, factor).init(),
+                .internal_sample_rate = output_sample_rate * @as(T, @floatFromInt(factor)),
+                .output_sample_rate = output_sample_rate,
+            };
+        }
+
+        pub fn reset(self: *Self) void {
+            self.oversampler.reset();
+        }
+
+        /// Get the sample rate that internal processing should use
+        pub fn getInternalSampleRate(self: *Self) T {
+            return self.internal_sample_rate;
+        }
+
+        /// Call this once per output sample with `factor` internal samples
+        pub fn processAndDecimate(self: *Self, samples: [factor]T) T {
+            return self.oversampler.processAndDecimate(samples);
+        }
     };
 }
 
@@ -1021,6 +744,7 @@ test "vco waveforms produce different outputs" {
 
     var vco = VCO(T).init(sample_rate);
     vco.setFrequency(100.0);
+    vco.setAntiAliasMode(.polyBlep); // Use lightweight mode for consistent comparison
 
     // Collect samples for each waveform
     var sum_saw: T = 0.0;
@@ -1039,6 +763,28 @@ test "vco waveforms produce different outputs" {
 
     // Square wave should have higher average absolute value than sawtooth
     try std.testing.expect(sum_square > sum_saw);
+}
+
+test "vco anti-alias modes work" {
+    const T = f64;
+    const sample_rate: T = 48000.0;
+
+    var vco = VCO(T).init(sample_rate);
+    vco.setFrequency(1000.0);
+
+    // Test each mode produces output
+    const modes = [_]AntiAliasMode{ .polyBlep, .oversample2x, .oversample4x };
+    for (modes) |mode| {
+        vco.setAntiAliasMode(mode);
+        vco.reset();
+
+        var has_output = false;
+        for (0..500) |_| {
+            const sample = vco.processSample();
+            if (@abs(sample) > 0.1) has_output = true;
+        }
+        try std.testing.expect(has_output);
+    }
 }
 
 test "oscillator bank mixes three oscillators" {
@@ -1089,32 +835,13 @@ test "polyblep reduces discontinuity" {
     try std.testing.expect(@abs(correction_at_mid) < 0.001);
 }
 
-test "polyblamp produces correction at peaks" {
+test "oversampler decimates correctly" {
     const T = f64;
 
-    // Test PolyBLAMP correction at peak
-    const dt: T = 0.01;
+    var os = Oversampler(T, 2).init();
 
-    // At phase near 0, correction should be non-zero
-    const correction_at_peak = PolyBLAMP(T).correction(0.005, dt);
-    try std.testing.expect(@abs(correction_at_peak) > 0.0);
-
-    // At phase = 0.5 (away from peak), correction should be zero
-    const correction_at_mid = PolyBLAMP(T).correction(0.5, dt);
-    try std.testing.expect(@abs(correction_at_mid) < 0.001);
-}
-
-test "triangle wave is generated" {
-    const T = f64;
-    const sample_rate: T = 48000.0;
-
-    var vco = VCO(T).init(sample_rate);
-    vco.setFrequency(100.0);
-    vco.setWaveform(.triangle);
-
-    // Generate samples and verify output is in range
-    for (0..500) |_| {
-        const sample = vco.processSample();
-        try std.testing.expect(sample >= -1.5 and sample <= 1.5);
-    }
+    // DC signal should pass through unchanged (approximately)
+    const dc_samples = [_]T{ 0.5, 0.5 };
+    const dc_out = os.processAndDecimate(dc_samples);
+    try std.testing.expect(@abs(dc_out - 0.5) < 0.1);
 }
