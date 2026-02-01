@@ -5,19 +5,16 @@ const zopengl = @import("zopengl");
 const glfw = @import("zglfw");
 
 const imgui = @import("imgui.zig");
-const GUI = @import("gui.zig");
-const Plugin = @import("../../plugin.zig");
 
 const gl_major = 4;
 const gl_minor = 0;
 
-pub fn init(gui: *GUI) !void {
+pub fn init(comptime GUIType: type, gui: *GUIType) !void {
     if (gui.platform_data != null) {
         std.log.err("Platform already initialized!", .{});
         return error.PlatformAlreadyInitialized;
     }
 
-    // Initialize GLFW
     try glfw.init();
     errdefer glfw.terminate();
 
@@ -39,7 +36,7 @@ pub fn init(gui: *GUI) !void {
     try zopengl.loadCoreProfile(glfw.getProcAddress, gl_major, gl_minor);
 
     gui.scale_factor = window.getContentScale()[1];
-    imgui.applyScaleFactor(gui);
+    imgui.applyScaleFactor(GUIType, gui);
 
     zgui.backend.init(window);
     errdefer zgui.backend.deinit();
@@ -49,7 +46,7 @@ pub fn init(gui: *GUI) !void {
     };
 }
 
-pub fn deinit(gui: *GUI) void {
+pub fn deinit(comptime GUIType: type, gui: *GUIType) void {
     if (gui.platform_data) |data| {
         data.window.destroy();
         glfw.terminate();
@@ -57,20 +54,18 @@ pub fn deinit(gui: *GUI) void {
     gui.platform_data = null;
 }
 
-pub fn update(plugin: *Plugin) !void {
-    if (plugin.gui) |gui| {
-        if (gui.platform_data) |data| {
-            if (data.window.shouldClose()) {
-                std.log.info("Window requested close, closing!", .{});
-                gui.deinit();
-                return;
-            }
-            try draw(gui);
+pub fn update(comptime GUIType: type, comptime ViewType: type, gui: *GUIType) !void {
+    if (gui.platform_data) |data| {
+        if (data.window.shouldClose()) {
+            std.log.info("Window requested close, closing!", .{});
+            gui.deinit();
+            return;
         }
+        try draw(GUIType, ViewType, gui);
     }
 }
 
-pub fn draw(gui: *GUI) !void {
+pub fn draw(comptime GUIType: type, comptime ViewType: type, gui: *GUIType) !void {
     if (gui.platform_data == null) {
         return error.PlatformNotInitialized;
     }
@@ -89,9 +84,9 @@ pub fn draw(gui: *GUI) !void {
 
     const fb_size = window.getFramebufferSize();
 
-    imgui.setContext(gui);
+    imgui.setContext(GUIType, gui);
     zgui.backend.newFrame(@intCast(fb_size[0]), @intCast(fb_size[1]));
-    imgui.draw(gui);
+    imgui.draw(GUIType, ViewType, gui);
     zgui.backend.draw();
 
     window.swapBuffers();

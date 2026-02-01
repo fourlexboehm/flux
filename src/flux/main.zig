@@ -7,6 +7,7 @@ const zgui = @import("zgui");
 const zglfw = @import("zglfw");
 const zopengl = @import("zopengl");
 const objc = if (builtin.os.tag == .macos) @import("objc") else struct {};
+const shared_mod = @import("shared");
 
 const options = @import("options");
 const ui = @import("ui.zig");
@@ -851,8 +852,7 @@ pub fn main(init: std.process.Init) !void {
             var app_window = try AppWindow.init("flux", 1280, 720);
             defer app_window.deinit();
 
-            _ = zgui.io.addFontFromFile("assets/Roboto-Medium.ttf", std.math.floor(16.0 * app_window.scale_factor));
-            zgui.getStyle().scaleAllSizes(app_window.scale_factor);
+            shared_mod.imgui_style.applyScaleFromFile("assets/Roboto-Medium.ttf", app_window.scale_factor);
             zgui.backend.init(app_window.view, app_window.device);
             defer zgui.backend.deinit();
 
@@ -1037,8 +1037,7 @@ pub fn main(init: std.process.Init) !void {
                 const parsed = std.fmt.parseFloat(f32, std.mem.span(env)) catch break :blk 1.0;
                 break :blk if (parsed > 0) parsed else 1.0;
             };
-            _ = zgui.io.addFontFromFile("assets/Roboto-Medium.ttf", std.math.floor(16.0 * ui_scale));
-            if (ui_scale != 1.0) zgui.getStyle().scaleAllSizes(ui_scale);
+            shared_mod.imgui_style.applyScaleFromFile("assets/Roboto-Medium.ttf", ui_scale);
 
             zgui.backend.init(window);
             defer zgui.backend.deinit();
