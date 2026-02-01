@@ -11,6 +11,7 @@ pub const SharedState = struct {
     processing: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     active_index: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     process_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    suspend_processing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     snapshots: []audio_graph.StateSnapshot,
     track_plugins: [ui.track_count]?*const clap.Plugin = [_]?*const clap.Plugin{null} ** ui.track_count,
     track_fx_plugins: [ui.track_count][ui.max_fx_slots]?*const clap.Plugin =
@@ -197,6 +198,14 @@ pub const SharedState = struct {
             _ = io.sleep(std.Io.Duration.fromMilliseconds(1), .awake) catch {};
         }
     }
+
+    pub fn setSuspendProcessing(self: *SharedState, should_suspend: bool) void {
+        self.suspend_processing.store(should_suspend, .release);
+    }
+
+    pub fn isProcessingSuspended(self: *SharedState) bool {
+        return self.suspend_processing.load(.acquire);
+    }
 };
 
 pub const AudioEngine = struct {
@@ -259,11 +268,13 @@ pub const AudioEngine = struct {
 
     pub fn render(self: *AudioEngine, device: *zaudio.Device, output: ?*anyopaque, frame_count: u32) void {
         if (output == null) return;
-        self.shared.beginProcess();
-        defer self.shared.endProcess();
         const out_ptr: [*]align(1) f32 = @ptrCast(output.?);
         const sample_count: usize = @as(usize, frame_count) * Channels;
         @memset(out_ptr[0..sample_count], 0);
+
+        if (self.shared.isProcessingSuspended()) return;
+        self.shared.beginProcess();
+        defer self.shared.endProcess();
 
         if (self.rebuilding.load(.acquire) != 0) return;
         if (frame_count == 0) return;

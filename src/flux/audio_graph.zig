@@ -437,15 +437,23 @@ pub const NoteSource = struct {
                 continue;
             }
             var last_before: ?AutomationPoint = null;
+            var first_after: ?AutomationPoint = null;
+            var first_overall: ?AutomationPoint = null;
             var last_overall: ?AutomationPoint = null;
             var has_point_at_start = false;
             for (lane.points[0..lane.point_count]) |point| {
                 const point_time = @as(f64, point.time);
+                if (first_overall == null or point_time < @as(f64, first_overall.?.time)) {
+                    first_overall = point;
+                }
                 if (last_overall == null or point_time > @as(f64, last_overall.?.time)) {
                     last_overall = point;
                 }
                 if (point_time < seg_start and (last_before == null or point_time > @as(f64, last_before.?.time))) {
                     last_before = point;
+                }
+                if (point_time >= seg_start and (first_after == null or point_time < @as(f64, first_after.?.time))) {
+                    first_after = point;
                 }
                 if (std.math.approxEqAbs(f64, point_time, seg_start, 1e-9)) {
                     has_point_at_start = true;
@@ -454,14 +462,22 @@ pub const NoteSource = struct {
                 const offset = base_sample_offset + @as(u32, @intFromFloat(@floor((point_time - seg_start) / beats_per_sample)));
                 self.emitParamValue(lane.param_id, @as(f64, point.value), offset);
             }
-            if (!has_point_at_start) {
-                if (last_before) |point| {
-                    self.emitParamValue(lane.param_id, @as(f64, point.value), base_sample_offset);
-                } else if (seg_start == 0.0 and clip_len > 0.0) {
-                    if (last_overall) |point| {
-                        self.emitParamValue(lane.param_id, @as(f64, point.value), base_sample_offset);
-                    }
+            if (!has_point_at_start and first_overall != null and last_overall != null) {
+                const prev = if (last_before) |point| point else last_overall.?;
+                const next = if (first_after) |point| point else first_overall.?;
+                var prev_time = @as(f64, prev.time);
+                var next_time = @as(f64, next.time);
+                if (last_before == null) {
+                    prev_time -= clip_len;
                 }
+                if (first_after == null) {
+                    next_time += clip_len;
+                }
+                const value = if (std.math.approxEqAbs(f64, prev_time, next_time, 1e-9))
+                    @as(f64, prev.value)
+                else
+                    @as(f64, prev.value) + (seg_start - prev_time) * (@as(f64, next.value) - @as(f64, prev.value)) / (next_time - prev_time);
+                self.emitParamValue(lane.param_id, value, base_sample_offset);
             }
         }
     }

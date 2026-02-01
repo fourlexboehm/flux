@@ -162,6 +162,36 @@ pub const PianoRollClip = struct {
         self.automation.clear(self.allocator);
         self.length_beats = default_clip_bars * beats_per_bar;
     }
+
+    pub fn copyFrom(self: *PianoRollClip, src: *const PianoRollClip) void {
+        self.clear();
+        self.length_beats = src.length_beats;
+        if (src.notes.items.len > 0) {
+            self.notes.appendSlice(self.allocator, src.notes.items) catch {};
+        }
+        for (src.automation.lanes.items) |lane| {
+            var lane_copy = AutomationLane{
+                .target_kind = lane.target_kind,
+                .target_id = "",
+                .param_id = null,
+                .unit = null,
+                .points = .{},
+            };
+            if (lane.target_id.len > 0) {
+                lane_copy.target_id = self.allocator.dupe(u8, lane.target_id) catch "";
+            }
+            if (lane.param_id) |param_id| {
+                lane_copy.param_id = self.allocator.dupe(u8, param_id) catch null;
+            }
+            if (lane.unit) |unit| {
+                lane_copy.unit = self.allocator.dupe(u8, unit) catch null;
+            }
+            if (lane.points.items.len > 0) {
+                lane_copy.points.appendSlice(self.allocator, lane.points.items) catch {};
+            }
+            self.automation.lanes.append(self.allocator, lane_copy) catch {};
+        }
+    }
 };
 
 pub const DragMode = enum {
@@ -530,6 +560,8 @@ pub fn drawSequencer(
         }
     }
 
+    const popup_open = zgui.isPopupOpen("piano_roll_ctx", .{});
+
     // Draw notes
     var right_click_note_index: ?usize = null;
     var left_click_note = false;
@@ -592,7 +624,7 @@ pub fn drawSequencer(
                 zgui.setMouseCursor(.resize_all);
             }
 
-            if (zgui.isMouseClicked(.left)) {
+            if (!popup_open and zgui.isMouseClicked(.left)) {
                 const grab_beat = (mouse[0] - grid_window_pos[0] + state.scroll_x) / pixels_per_beat;
                 state.handleNoteClick(note_idx, selection.isShiftDown());
 
@@ -627,7 +659,7 @@ pub fn drawSequencer(
                 left_click_note = true;
             }
 
-            if (zgui.isMouseClicked(.right)) {
+            if (!popup_open and zgui.isMouseClicked(.right)) {
                 right_click_note_index = note_idx;
                 state.note_selection.primary = note_idx;
                 if (!state.isNoteSelected(note_idx)) {
@@ -758,8 +790,11 @@ pub fn drawSequencer(
         zgui.openPopup("piano_roll_ctx", .{});
     }
 
+    const menu_action = drawContextMenu(state, clip, min_note_duration, track_index, scene_index);
+    const popup_active = popup_open or zgui.isPopupOpen("piano_roll_ctx", .{});
+
     // Double-click to create note
-    if (!automation_mode and in_grid and zgui.isMouseDoubleClicked(.left) and state.drag.mode == .none and !left_click_note) {
+    if (!popup_active and !menu_action and !automation_mode and in_grid and zgui.isMouseDoubleClicked(.left) and state.drag.mode == .none and !left_click_note) {
         const click_beat = (mouse[0] - grid_window_pos[0] + state.scroll_x) / pixels_per_beat;
         const click_row = (mouse[1] - grid_window_pos[1] + state.scroll_y) / row_height;
         const click_pitch_i: i32 = 127 - @as(i32, @intFromFloat(click_row));
@@ -787,7 +822,7 @@ pub fn drawSequencer(
     }
 
     // Single click to start selection rectangle
-    if (!automation_mode and in_grid and zgui.isMouseClicked(.left) and state.drag.mode == .none and !left_click_note) {
+    if (!popup_active and !menu_action and !automation_mode and in_grid and zgui.isMouseClicked(.left) and state.drag.mode == .none and !left_click_note) {
         if (!shift_down) {
             state.clearSelection();
         }
@@ -892,9 +927,6 @@ pub fn drawSequencer(
             colors.Colors.current.selection_rect_border,
         );
     }
-
-    // Context menu
-    drawContextMenu(state, clip, min_note_duration, track_index, scene_index);
 
     // Draw ruler
     drawRuler(draw_list, grid_area_x, base_pos[1], grid_view_width, ruler_height, state.scroll_x, pixels_per_beat, max_beats, ui_scale);
@@ -2018,7 +2050,7 @@ fn finalizeRectSelection(
     }
 }
 
-fn drawContextMenu(state: *PianoRollState, clip: *PianoRollClip, min_duration: f32, track_index: usize, scene_index: usize) void {
+fn drawContextMenu(state: *PianoRollState, clip: *PianoRollClip, min_duration: f32, track_index: usize, scene_index: usize) bool {
     if (zgui.beginPopup("piano_roll_ctx", .{})) {
         var menu_ctx = MenuCtx{
             .state = state,
@@ -2027,7 +2059,7 @@ fn drawContextMenu(state: *PianoRollState, clip: *PianoRollClip, min_duration: f
             .scene_index = scene_index,
             .min_note_duration = min_duration,
         };
-        _ = edit_actions.drawMenu(&menu_ctx, .{
+        const action_triggered = edit_actions.drawMenu(&menu_ctx, .{
             .has_selection = state.hasSelection(),
             .can_paste = state.clipboard.items.len > 0 and state.context_in_grid,
         }, .{
@@ -2039,7 +2071,9 @@ fn drawContextMenu(state: *PianoRollState, clip: *PianoRollClip, min_duration: f
         });
 
         zgui.endPopup();
+        return action_triggered;
     }
+    return false;
 }
 
 fn drawRuler(
