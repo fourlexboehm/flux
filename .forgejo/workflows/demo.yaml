@@ -4,7 +4,14 @@ on: [push]
 
 jobs:
   test:
-    runs-on: codeberg-tiny
+    runs-on: docker
     steps:
-      - uses: https://data.forgejo.org/actions/checkout@v4
+      - uses: actions/checkout@v4
+      - run: |
+          set -euo pipefail
+          ZIG_VERSION=$(grep -n "\\.minimum_zig_version" build.zig.zon | sed -E 's/.*"([^"]+)".*/\\1/')
+          curl -fL "https://ziglang.org/builds/zig-x86_64-linux-${ZIG_VERSION}.tar.xz" -o zig.tar.xz
+          tar -xf zig.tar.xz
+          ZIG_DIR="zig-x86_64-linux-${ZIG_VERSION}"
+          echo "$PWD/${ZIG_DIR}" >> "$GITHUB_PATH"
       - run: zig build test
