@@ -636,7 +636,8 @@ pub fn draw(state: *State, ui_scale: f32) void {
         }
         if (is_active) {
             const drag_delta = zgui.getMouseDragDelta(.left, .{});
-            state.bottom_panel_height = std.math.clamp(state.splitter_drag_start - drag_delta[1] / ui_scale, 100.0, 800.0);
+            const max_bottom_unscaled = max_bottom / ui_scale;
+            state.bottom_panel_height = std.math.clamp(state.splitter_drag_start - drag_delta[1] / ui_scale, 100.0, max_bottom_unscaled);
         }
 
         // Bottom panel
