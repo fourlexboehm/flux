@@ -1192,12 +1192,17 @@ fn drawTransport(state: *State, ui_scale: f32) void {
     }
 
     zgui.sameLine(.{ .spacing = 10.0 * ui_scale });
+    var dsp_buf: [16]u8 = undefined;
+    const dsp_label = std.fmt.bufPrint(&dsp_buf, "DSP {d}%", .{state.dsp_load_pct}) catch "DSP";
+    const dsp_size = zgui.calcTextSize(dsp_label, .{});
+    const dsp_max_w = zgui.calcTextSize("DSP 100%", .{})[0];
     zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
-    zgui.text("DSP {d}%", .{state.dsp_load_pct});
+    zgui.textUnformatted(dsp_label);
     zgui.popStyleColor(.{ .count = 1 });
 
     // Load/Save buttons (right-aligned, centered vertically)
-    zgui.sameLine(.{ .spacing = spacing * 2.0 });
+    const dsp_pad = @max(0.0, dsp_max_w - dsp_size[0]);
+    zgui.sameLine(.{ .spacing = spacing * 2.0 + dsp_pad });
 
     // Move buttons up to center in transport bar
     const save_y = zgui.getCursorPosY();
@@ -1230,6 +1235,16 @@ fn drawClipGrid(state: *State, ui_scale: f32) void {
     // Draw session view
     const is_focused = state.focused_pane == .session;
     state.session.draw(ui_scale, state.playing, is_focused, state.playhead_beat);
+    // Lock selection to the active recording clip to avoid cross-clip input confusion.
+    if (state.session.recording.isRecording()) {
+        if (state.session.recording.track) |track| {
+            if (state.session.recording.scene) |scene| {
+                if (state.session.primary_track != track or state.session.primary_scene != scene) {
+                    state.session.selectOnly(track, scene);
+                }
+            }
+        }
+    }
     if (state.session.open_clip_request) |req| {
         state.session.open_clip_request = null;
         state.session.primary_track = req.track;
