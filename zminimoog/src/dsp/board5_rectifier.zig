@@ -20,7 +20,7 @@
 // For audio DSP, this models power supply ripple and sag effects.
 
 const std = @import("std");
-const wdft = @import("zig_wdf");
+const wdft = @import("wdf");
 
 // Component values from schematic
 pub const ComponentValues = struct {

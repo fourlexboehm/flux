@@ -917,7 +917,9 @@ pub const SessionView = struct {
             var scene_buf: [48]u8 = undefined;
             const scene_name = self.scenes[scene_idx].getName();
             const scene_text_size = zgui.calcTextSize(scene_name, .{});
-            zgui.setCursorPosY(row_start_y + (row_height - scene_text_size[1]) / 2.0);
+            const frame_padding = zgui.getStyle().frame_padding;
+            const selectable_height = scene_text_size[1] + frame_padding[1] * 2.0;
+            zgui.setCursorPosY(row_start_y + (row_height - selectable_height) / 2.0);
             const scene_label = std.fmt.bufPrintZ(&scene_buf, "{s}##scene_hdr{d}", .{ scene_name, scene_idx }) catch "Scene";
             if (zgui.selectable(scene_label, .{ .selected = is_scene_selected, .w = scene_col_w - launch_size - 12.0 * ui_scale })) {
                 self.primary_scene = scene_idx;
