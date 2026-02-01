@@ -965,7 +965,16 @@ pub fn main(init: std.process.Init) !void {
                         }
                     }
                 }
-                handleFileRequests(allocator, io, &state, &catalog, &track_plugins, &track_fx, &host.clap_host, &engine.shared);
+                handleFileRequests(
+                    allocator,
+                    io,
+                    &state,
+                    &catalog,
+                    &track_plugins,
+                    &track_fx,
+                    &host.clap_host,
+                    &engine.shared,
+                );
                 engine.updateFromUi(&state);
                 try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 try syncFxPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
@@ -1128,7 +1137,16 @@ pub fn main(init: std.process.Init) !void {
                         }
                     }
                 }
-                handleFileRequests(allocator, io, &state, &catalog, &track_plugins, &track_fx, &host.clap_host, &engine.shared);
+                handleFileRequests(
+                    allocator,
+                    io,
+                    &state,
+                    &catalog,
+                    &track_plugins,
+                    &track_fx,
+                    &host.clap_host,
+                    &engine.shared,
+                );
                 engine.updateFromUi(&state);
                 try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 try syncFxPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
@@ -1752,7 +1770,7 @@ fn handleFileRequests(
         if (state.project_path == null) {
             state.save_project_as_request = true;
         } else {
-            handleSaveProject(allocator, io, state, catalog, track_plugins, track_fx) catch |err| {
+            handleSaveProject(allocator, io, state, catalog, track_plugins, track_fx, shared) catch |err| {
                 std.log.err("Failed to save project: {}", .{err});
             };
         }
@@ -1760,7 +1778,7 @@ fn handleFileRequests(
 
     if (state.save_project_as_request) {
         state.save_project_as_request = false;
-        handleSaveProjectAs(allocator, io, state, catalog, track_plugins, track_fx) catch |err| {
+        handleSaveProjectAs(allocator, io, state, catalog, track_plugins, track_fx, shared) catch |err| {
             std.log.err("Failed to save project as: {}", .{err});
         };
     }
@@ -1792,9 +1810,10 @@ fn handleSaveProject(
     catalog: *const plugins.PluginCatalog,
     track_plugins: *const [ui.track_count]TrackPlugin,
     track_fx: *const [ui.track_count][ui.max_fx_slots]TrackPlugin,
+    shared: ?*audio_engine.SharedState,
 ) !void {
     const path = state.project_path orelse return;
-    try saveProjectToPath(allocator, io, path, state, catalog, track_plugins, track_fx);
+    try saveProjectToPath(allocator, io, path, state, catalog, track_plugins, track_fx, shared);
 }
 
 fn handleSaveProjectAs(
@@ -1804,6 +1823,7 @@ fn handleSaveProjectAs(
     catalog: *const plugins.PluginCatalog,
     track_plugins: *const [ui.track_count]TrackPlugin,
     track_fx: *const [ui.track_count][ui.max_fx_slots]TrackPlugin,
+    shared: ?*audio_engine.SharedState,
 ) !void {
     const default_name = if (state.project_path) |path| std.fs.path.basename(path) else "project.dawproject";
 
@@ -1823,7 +1843,7 @@ fn handleSaveProjectAs(
     }
     defer allocator.free(path.?);
 
-    try saveProjectToPath(allocator, io, path.?, state, catalog, track_plugins, track_fx);
+    try saveProjectToPath(allocator, io, path.?, state, catalog, track_plugins, track_fx, shared);
     try state.setProjectPath(path.?);
 }
 
@@ -1835,7 +1855,47 @@ fn saveProjectToPath(
     catalog: *const plugins.PluginCatalog,
     track_plugins: *const [ui.track_count]TrackPlugin,
     track_fx: *const [ui.track_count][ui.max_fx_slots]TrackPlugin,
+    shared: ?*audio_engine.SharedState,
 ) !void {
+    if (shared) |s| {
+        s.setSuspendProcessing(true);
+        defer s.setSuspendProcessing(false);
+        s.waitForIdle(io);
+        const was_audio = is_audio_thread;
+        is_audio_thread = true;
+        defer is_audio_thread = was_audio;
+
+        const plugins_for_tracks = collectPlugins(track_plugins, track_fx);
+        defer {
+            for (0..ui.track_count) |t| {
+                if (plugins_for_tracks.instruments[t] != null) {
+                    s.requestStartProcessing(t);
+                }
+                for (0..ui.max_fx_slots) |fx_index| {
+                    if (plugins_for_tracks.fx[t][fx_index] != null) {
+                        s.requestStartProcessingFx(t, fx_index);
+                    }
+                }
+            }
+        }
+        for (0..ui.track_count) |t| {
+            if (s.isPluginStarted(t)) {
+                if (plugins_for_tracks.instruments[t]) |plugin| {
+                    plugin.stopProcessing(plugin);
+                }
+                s.clearPluginStarted(t);
+            }
+            for (0..ui.max_fx_slots) |fx_index| {
+                if (s.isFxPluginStarted(t, fx_index)) {
+                    if (plugins_for_tracks.fx[t][fx_index]) |plugin| {
+                        plugin.stopProcessing(plugin);
+                    }
+                    s.clearFxPluginStarted(t, fx_index);
+                }
+            }
+        }
+    }
+
     var param_arena = std.heap.ArenaAllocator.init(allocator);
     defer param_arena.deinit();
     const param_alloc = param_arena.allocator();
@@ -1979,15 +2039,23 @@ fn capturePluginStateForDawproject(
     track_index: usize,
     fx_index: ?usize,
 ) ?dawproject.PluginStateFile {
-    const ext_raw = plugin.getExtension(plugin, clap.ext.state.id) orelse return null;
-    const ext: *const clap.ext.state.Plugin = @ptrCast(@alignCast(ext_raw));
-
     var stream = MemoryOStream.init(allocator);
     stream.stream.context = &stream;
     defer stream.buffer.deinit(allocator);
 
-    if (!ext.save(plugin, &stream.stream)) {
-        return null;
+    if (plugin.getExtension(plugin, clap.ext.state_context.id)) |ext_raw| {
+        const ext: *const clap.ext.state_context.Plugin = @ptrCast(@alignCast(ext_raw));
+        if (!ext.save(plugin, &stream.stream, .project)) {
+            stream.buffer.clearRetainingCapacity();
+        }
+    }
+
+    if (stream.buffer.items.len == 0) {
+        const ext_raw = plugin.getExtension(plugin, clap.ext.state.id) orelse return null;
+        const ext: *const clap.ext.state.Plugin = @ptrCast(@alignCast(ext_raw));
+        if (!ext.save(plugin, &stream.stream)) {
+            return null;
+        }
     }
 
     // Build clap-preset container format:
