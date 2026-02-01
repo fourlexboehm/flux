@@ -1,0 +1,10 @@
+name: build-test
+
+on: [push]
+
+jobs:
+  test:
+    runs-on: codeberg-tiny
+    steps:
+      - uses: https://data.forgejo.org/actions/checkout@v4
+      - run: zig build test
