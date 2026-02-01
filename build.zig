@@ -95,7 +95,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-
     const lib = b.addLibrary(.{
         .name = "zsynth",
         .root_module = lib_module,
@@ -128,12 +127,29 @@ pub fn build(b: *std.Build) void {
     static_data.addOption([]const u8, "font", font_data);
     const static_data_module = static_data.createModule();
 
+    const shared = b.createModule(.{
+        .root_source_file = b.path("shared/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    shared.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
+    shared.addImport("tracy", ztracy.module("root"));
+    shared.addImport("options", options_core_module);
+    shared.addImport("static_data", static_data_module);
+    shared.addImport("zgui", zgui.module("root"));
+    shared.addImport("zglfw", zglfw.module("root"));
+    shared.addImport("zopengl", zopengl.module("root"));
+    if (builtin.os.tag == .macos) {
+        shared.addImport("objc", objc.module("mach-objc"));
+    }
+
     const build_targets = [_]*Step.Compile{ lib, exe };
     for (build_targets) |pkg| {
         // Libraries
         pkg.root_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
         pkg.root_module.addImport("regex", regex.module("regex"));
         pkg.root_module.addImport("wdf", wdf.module("wdf"));
+        pkg.root_module.addImport("shared", shared);
 
         // GUI Related libraries
         pkg.root_module.addImport("zgui", zgui.module("root"));
@@ -177,6 +193,7 @@ pub fn build(b: *std.Build) void {
     zsynth_core.addImport("zglfw", zglfw.module("root"));
     zsynth_core.addImport("zopengl", zopengl.module("root"));
     zsynth_core.addImport("tracy", ztracy.module("root"));
+    zsynth_core.addImport("shared", shared);
     zsynth_core.addImport("options", options_core_module);
     zsynth_core.addImport("static_data", static_data_module);
     if (builtin.os.tag == .macos) {
@@ -189,6 +206,7 @@ pub fn build(b: *std.Build) void {
     zminimoog_core.addImport("zopengl", zopengl.module("root"));
     zminimoog_core.addImport("tracy", ztracy.module("root"));
     zminimoog_core.addImport("wdf", wdf.module("wdf"));
+    zminimoog_core.addImport("shared", shared);
     zminimoog_core.addImport("options", options_core_module);
     zminimoog_core.addImport("static_data", static_data_module);
     if (builtin.os.tag == .macos) {
@@ -224,6 +242,7 @@ pub fn build(b: *std.Build) void {
     flux.root_module.addImport("tracy", ztracy.module("root"));
     flux.root_module.linkLibrary(ztracy.artifact("tracy"));
     flux.root_module.addOptions("options", options);
+    flux.root_module.addImport("shared", shared);
     flux.root_module.addImport("libz_jobs", libz_jobs.module("libz_jobs"));
     flux.root_module.addImport("xml", zig_xml.module("xml"));
     const portmidi_module = portmidi_zig.module("portmidi");

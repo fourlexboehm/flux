@@ -364,7 +364,6 @@ pub const State = struct {
             .track_rename => |c| {
                 // Undo rename = restore old name
                 self.session.tracks[c.track_index].name = c.old_name;
-                self.session.tracks[c.track_index].name_len = c.old_len;
             },
             .track_volume => |c| {
                 self.session.tracks[c.track_index].volume = c.old_volume;
@@ -384,7 +383,6 @@ pub const State = struct {
             .scene_rename => |c| {
                 // Undo rename = restore old name
                 self.session.scenes[c.scene_index].name = c.old_name;
-                self.session.scenes[c.scene_index].name_len = c.old_len;
             },
             .bpm_change => |c| {
                 self.bpm = c.old_bpm;
@@ -483,14 +481,12 @@ pub const State = struct {
                 if (self.session.track_count < ui.max_tracks) {
                     self.session.tracks[self.session.track_count] = .{};
                     self.session.tracks[self.session.track_count].name = c.name;
-                    self.session.tracks[self.session.track_count].name_len = c.name_len;
                     self.session.track_count += 1;
                 }
             },
             .track_rename => |c| {
                 // Redo rename = apply new name
                 self.session.tracks[c.track_index].name = c.new_name;
-                self.session.tracks[c.track_index].name_len = c.new_len;
             },
             .track_volume => |c| {
                 self.session.tracks[c.track_index].volume = c.new_volume;
@@ -506,14 +502,12 @@ pub const State = struct {
                 if (self.session.scene_count < ui.max_scenes) {
                     self.session.scenes[self.session.scene_count] = .{};
                     self.session.scenes[self.session.scene_count].name = c.name;
-                    self.session.scenes[self.session.scene_count].name_len = c.name_len;
                     self.session.scene_count += 1;
                 }
             },
             .scene_rename => |c| {
                 // Redo rename = apply new name
                 self.session.scenes[c.scene_index].name = c.new_name;
-                self.session.scenes[c.scene_index].name_len = c.new_len;
             },
             .bpm_change => |c| {
                 self.bpm = c.new_bpm;
@@ -1293,7 +1287,6 @@ fn processUndoRequests(state: *State) void {
                     .track_add = .{
                         .track_index = req.track,
                         .name = track.name,
-                        .name_len = track.name_len,
                     },
                 });
             },
@@ -1320,7 +1313,6 @@ fn processUndoRequests(state: *State) void {
                             .track_index = req.track,
                             .track_data = .{
                                 .name = req.track_data.name,
-                                .name_len = req.track_data.name_len,
                                 .volume = req.track_data.volume,
                                 .mute = req.track_data.mute,
                                 .solo = req.track_data.solo,
@@ -1340,7 +1332,6 @@ fn processUndoRequests(state: *State) void {
                     .scene_add = .{
                         .scene_index = req.scene,
                         .name = scene.name,
-                        .name_len = scene.name_len,
                     },
                 });
             },
@@ -1367,7 +1358,6 @@ fn processUndoRequests(state: *State) void {
                             .scene_index = req.scene,
                             .scene_data = .{
                                 .name = req.scene_data.name,
-                                .name_len = req.scene_data.name_len,
                             },
                             .clips = clips,
                             .notes = notes,
@@ -1586,7 +1576,6 @@ fn insertTrackInState(state: *State, cmd: *const undo.command.TrackDeleteCmd) vo
 
     state.session.tracks[cmd.track_index] = .{
         .name = cmd.track_data.name,
-        .name_len = cmd.track_data.name_len,
         .volume = cmd.track_data.volume,
         .mute = cmd.track_data.mute,
         .solo = cmd.track_data.solo,
@@ -1631,7 +1620,6 @@ fn insertSceneInState(state: *State, cmd: *const undo.command.SceneDeleteCmd) vo
 
     state.session.scenes[cmd.scene_index] = .{
         .name = cmd.scene_data.name,
-        .name_len = cmd.scene_data.name_len,
     };
     for (0..ui.max_tracks) |t| {
         const slot = cmd.clips[t];
@@ -1736,6 +1724,31 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
     }
 }
 
+fn findPluginListIndex(indices: []const i32, choice_index: i32) i32 {
+    for (indices, 0..) |catalog_index, list_index| {
+        if (catalog_index == choice_index) {
+            return @intCast(list_index);
+        }
+    }
+    return 0;
+}
+
+fn catalogIndexFromList(indices: []const i32, list_index: i32) ?i32 {
+    if (indices.len == 0) return null;
+    const idx: usize = @intCast(list_index);
+    if (idx >= indices.len) return null;
+    return indices[idx];
+}
+
+fn calcToggleButtonWidth(open_label: []const u8, close_label: []const u8, ui_scale: f32) f32 {
+    const style = zgui.getStyle();
+    const max_label_w = @max(
+        zgui.calcTextSize(open_label, .{})[0],
+        zgui.calcTextSize(close_label, .{})[0],
+    );
+    return max_label_w + style.frame_padding[0] * 2.0 + 6.0 * ui_scale;
+}
+
 fn drawDevicePanel(state: *State, ui_scale: f32) void {
     // Track device selector
     zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
@@ -1754,21 +1767,14 @@ fn drawDevicePanel(state: *State, ui_scale: f32) void {
     const track_plugin = &state.track_plugins[track_idx];
 
     // Convert catalog index to instrument list index for display
-    var instrument_list_index: i32 = 0;
-    for (state.plugin_instrument_indices, 0..) |catalog_index, list_index| {
-        if (catalog_index == track_plugin.choice_index) {
-            instrument_list_index = @intCast(list_index);
-            break;
-        }
-    }
+    var instrument_list_index: i32 = findPluginListIndex(state.plugin_instrument_indices, track_plugin.choice_index);
 
     if (zgui.combo("##device_select", .{
         .current_item = &instrument_list_index,
         .items_separated_by_zeros = state.plugin_instrument_items,
     })) {
         // Selection changed - convert back to catalog index
-        if (state.plugin_instrument_indices.len > 0) {
-            const new_choice = state.plugin_instrument_indices[@intCast(instrument_list_index)];
+        if (catalogIndexFromList(state.plugin_instrument_indices, instrument_list_index)) |new_choice| {
             track_plugin.choice_index = new_choice;
             track_plugin.gui_open = false;
             state.device_target_kind = .instrument;
@@ -1778,14 +1784,9 @@ fn drawDevicePanel(state: *State, ui_scale: f32) void {
 
     zgui.sameLine(.{ .spacing = 12.0 * ui_scale });
     const instrument_ready = state.track_plugin_ptrs[track_idx] != null;
-    const inst_style = zgui.getStyle();
     const inst_open_label = "Open Instrument";
     const inst_close_label = "Close Instrument";
-    const inst_max_label_w = @max(
-        zgui.calcTextSize(inst_open_label, .{})[0],
-        zgui.calcTextSize(inst_close_label, .{})[0],
-    );
-    const inst_button_w = inst_max_label_w + inst_style.frame_padding[0] * 2.0 + 6.0 * ui_scale;
+    const inst_button_w = calcToggleButtonWidth(inst_open_label, inst_close_label, ui_scale);
     const inst_button_label = if (track_plugin.gui_open) inst_close_label else inst_open_label;
     var inst_button_buf: [64]u8 = undefined;
     const inst_button_text = std.fmt.bufPrintZ(&inst_button_buf, "{s}##instrument_open", .{inst_button_label}) catch "##instrument_open";
@@ -1823,19 +1824,12 @@ fn drawDevicePanel(state: *State, ui_scale: f32) void {
         var label_buf: [32]u8 = undefined;
         const label = std.fmt.bufPrintZ(&label_buf, "##fx{d}", .{fx_index}) catch "##fx";
         zgui.setNextItemWidth(200.0 * ui_scale);
-        var fx_list_index: i32 = 0;
-        for (state.plugin_fx_indices, 0..) |catalog_index, list_index| {
-            if (catalog_index == fx_slot.choice_index) {
-                fx_list_index = @intCast(list_index);
-                break;
-            }
-        }
+        var fx_list_index: i32 = findPluginListIndex(state.plugin_fx_indices, fx_slot.choice_index);
         if (zgui.combo(label, .{
             .current_item = &fx_list_index,
             .items_separated_by_zeros = state.plugin_fx_items,
         })) {
-            if (state.plugin_fx_indices.len > 0) {
-                const new_choice = state.plugin_fx_indices[@intCast(fx_list_index)];
+            if (catalogIndexFromList(state.plugin_fx_indices, fx_list_index)) |new_choice| {
                 fx_slot.choice_index = new_choice;
                 fx_slot.gui_open = false;
                 state.device_target_kind = .fx;
@@ -1850,14 +1844,9 @@ fn drawDevicePanel(state: *State, ui_scale: f32) void {
 
         zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
         const is_selected = state.device_target_kind == .fx and state.device_target_fx == fx_index;
-        const style = zgui.getStyle();
         const open_label = "Open Window";
         const close_label = "Close Window";
-        const max_label_w = @max(
-            zgui.calcTextSize(open_label, .{})[0],
-            zgui.calcTextSize(close_label, .{})[0],
-        );
-        const button_w = max_label_w + style.frame_padding[0] * 2.0 + 6.0 * ui_scale;
+        const button_w = calcToggleButtonWidth(open_label, close_label, ui_scale);
         const button_label = if (fx_slot.gui_open) close_label else open_label;
         var button_buf: [64]u8 = undefined;
         const button_text = std.fmt.bufPrintZ(&button_buf, "{s}##fx_open_{d}", .{ button_label, fx_index }) catch "##fx_open";

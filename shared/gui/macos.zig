@@ -3,16 +3,13 @@ const std = @import("std");
 const objc = @import("objc");
 const zgui = @import("zgui");
 
-const glfw = @import("zglfw");
 const imgui = @import("imgui.zig");
-const GUI = @import("gui.zig");
-const Plugin = @import("../../plugin.zig");
 
-pub fn init(gui: *GUI, view: *objc.app_kit.View) !void {
+pub fn init(comptime GUIType: type, gui: *GUIType, view: *objc.app_kit.View) !void {
     const window = view.window();
 
     gui.scale_factor = @floatCast(window.backingScaleFactor());
-    imgui.applyScaleFactor(gui);
+    imgui.applyScaleFactor(GUIType, gui);
 
     view.setWantsLayer(true);
 
@@ -61,7 +58,7 @@ pub fn init(gui: *GUI, view: *objc.app_kit.View) !void {
     errdefer zgui.backend.deinit();
 }
 
-pub fn deinit(gui: *GUI) void {
+pub fn deinit(comptime GUIType: type, gui: *GUIType) void {
     if (gui.platform_data) |data| {
         data.device.release();
         data.layer.release();
@@ -70,11 +67,10 @@ pub fn deinit(gui: *GUI) void {
     gui.platform_data = null;
 }
 
-pub fn update(plugin: *Plugin) !void {
+pub fn update(comptime GUIType: type, comptime ViewType: type, gui: *GUIType) !void {
     const pool = objc.objc.autoreleasePoolPush();
     defer objc.objc.autoreleasePoolPop(pool);
 
-    // Pass events from the NSApp down to the NSWindow and ImGui
     const NSApp = objc.app_kit.Application.sharedApplication();
     while (NSApp.nextEventMatchingMask(
         objc.app_kit.EventMaskAny,
@@ -85,19 +81,16 @@ pub fn update(plugin: *Plugin) !void {
         NSApp.sendEvent(event);
     }
 
-    if (plugin.gui) |gui| {
-        try draw(gui);
-    }
+    try draw(GUIType, ViewType, gui);
 }
 
-pub fn draw(gui: *GUI) !void {
+pub fn draw(comptime GUIType: type, comptime ViewType: type, gui: *GUIType) !void {
     if (gui.platform_data == null) {
         return error.PlatformNotInitialized;
     }
 
     const data = gui.platform_data.?;
 
-    // Set up the metal render pass
     const descriptor = objc.metal.RenderPassDescriptor.renderPassDescriptor();
     const color_attachment = descriptor.colorAttachments().objectAtIndexedSubscript(0);
     const clear_color = objc.metal.ClearColor.init(0, 0, 0, 1);
@@ -117,9 +110,9 @@ pub fn draw(gui: *GUI) !void {
 
     const framebuffer_width = gui.width * @as(u32, @intFromFloat(gui.scale_factor));
     const framebuffer_height = gui.height * @as(u32, @intFromFloat(gui.scale_factor));
-    imgui.setContext(gui);
+    imgui.setContext(GUIType, gui);
     zgui.backend.newFrame(framebuffer_width, framebuffer_height, data.view, descriptor);
-    imgui.draw(gui);
+    imgui.draw(GUIType, ViewType, gui);
 
     zgui.backend.draw(command_buffer, command_encoder);
     command_encoder.as(objc.metal.CommandEncoder).endEncoding();

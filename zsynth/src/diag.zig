@@ -5,7 +5,7 @@ const clap = @import("clap-bindings");
 const glfw = @import("zglfw");
 const objc = @import("objc");
 const Plugin = @import("plugin.zig");
-const GUI = @import("ext/gui/gui.zig");
+const GUI = @import("shared").gui.Gui(@import("plugin.zig").Plugin, @import("ext/gui/view.zig"));
 
 const AppWindow = struct {
     app: *objc.app_kit.Application,

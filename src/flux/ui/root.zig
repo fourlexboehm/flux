@@ -3,6 +3,7 @@ pub const colors = @import("colors.zig");
 pub const selection = @import("selection.zig");
 pub const session_view = @import("session_view.zig");
 pub const piano_roll = @import("piano_roll.zig");
+pub const edit_actions = @import("edit_actions.zig");
 
 // Re-export commonly used types
 pub const Colors = colors.Colors;

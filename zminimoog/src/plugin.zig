@@ -7,7 +7,7 @@ const tracy = @import("tracy");
 const extensions = @import("extensions.zig");
 
 const Params = @import("ext/params.zig");
-const GUI = @import("ext/gui/gui.zig");
+const GUI = extensions.GUI;
 const options = @import("options");
 const Voices = @import("audio/voices.zig");
 const Filter = @import("audio/filter.zig");

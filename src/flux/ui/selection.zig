@@ -158,6 +158,42 @@ pub const DragSelectState = struct {
         draw_list.addRect(.{ .pmin = rect.min, .pmax = rect.max, .col = border_color, .thickness = 1.0 });
     }
 
+    /// Draw selection rectangle clipped to a region, with custom colors
+    pub fn drawClipped(
+        self: *const DragSelectState,
+        draw_list: zgui.DrawList,
+        clip_min: [2]f32,
+        clip_max: [2]f32,
+        fill: [4]f32,
+        border: [4]f32,
+    ) void {
+        if (!self.active) return;
+
+        const rect = self.getRect();
+        const clipped_min = .{
+            @max(rect.min[0], clip_min[0]),
+            @max(rect.min[1], clip_min[1]),
+        };
+        const clipped_max = .{
+            @min(rect.max[0], clip_max[0]),
+            @min(rect.max[1], clip_max[1]),
+        };
+
+        if (clipped_max[0] > clipped_min[0] and clipped_max[1] > clipped_min[1]) {
+            draw_list.addRectFilled(.{
+                .pmin = clipped_min,
+                .pmax = clipped_max,
+                .col = zgui.colorConvertFloat4ToU32(fill),
+            });
+            draw_list.addRect(.{
+                .pmin = clipped_min,
+                .pmax = clipped_max,
+                .col = zgui.colorConvertFloat4ToU32(border),
+                .thickness = 1.0,
+            });
+        }
+    }
+
     /// Check if a rectangle intersects with the selection rectangle
     pub fn intersects(self: *const DragSelectState, item_min: [2]f32, item_max: [2]f32) bool {
         const rect = self.getRect();

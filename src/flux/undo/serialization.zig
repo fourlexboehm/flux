@@ -186,7 +186,7 @@ pub const MetadataWriter = struct {
             },
             .track_add => |c| {
                 try self.writeAttrInt("trackIndex", c.track_index);
-                try self.writeAttr("name", c.name[0..c.name_len]);
+                try self.writeAttr("name", c.name.get());
                 try self.buffer.appendSlice(self.allocator, "/>\n");
             },
             .track_delete => |c| {
@@ -195,8 +195,8 @@ pub const MetadataWriter = struct {
             },
             .track_rename => |c| {
                 try self.writeAttrInt("trackIndex", c.track_index);
-                try self.writeAttr("oldName", c.old_name[0..c.old_len]);
-                try self.writeAttr("newName", c.new_name[0..c.new_len]);
+                try self.writeAttr("oldName", c.old_name.get());
+                try self.writeAttr("newName", c.new_name.get());
                 try self.buffer.appendSlice(self.allocator, "/>\n");
             },
             .track_volume => |c| {
@@ -219,7 +219,7 @@ pub const MetadataWriter = struct {
             },
             .scene_add => |c| {
                 try self.writeAttrInt("sceneIndex", c.scene_index);
-                try self.writeAttr("name", c.name[0..c.name_len]);
+                try self.writeAttr("name", c.name.get());
                 try self.buffer.appendSlice(self.allocator, "/>\n");
             },
             .scene_delete => |c| {
@@ -228,8 +228,8 @@ pub const MetadataWriter = struct {
             },
             .scene_rename => |c| {
                 try self.writeAttrInt("sceneIndex", c.scene_index);
-                try self.writeAttr("oldName", c.old_name[0..c.old_len]);
-                try self.writeAttr("newName", c.new_name[0..c.new_len]);
+                try self.writeAttr("oldName", c.old_name.get());
+                try self.writeAttr("newName", c.new_name.get());
                 try self.buffer.appendSlice(self.allocator, "/>\n");
             },
             .bpm_change => |c| {

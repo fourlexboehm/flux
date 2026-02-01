@@ -127,8 +127,7 @@ pub const NoteBatchCmd = struct {
 /// Add track command
 pub const TrackAddCmd = struct {
     track_index: usize,
-    name: [32]u8,
-    name_len: usize,
+    name: session_view.NameField,
 };
 
 /// Delete track command - stores all track data for restore
@@ -141,8 +140,7 @@ pub const TrackDeleteCmd = struct {
 
 /// Track data for serialization (avoids dependency on full Track type)
 pub const TrackData = struct {
-    name: [32]u8,
-    name_len: usize,
+    name: session_view.NameField,
     volume: f32,
     mute: bool,
     solo: bool,
@@ -157,10 +155,8 @@ pub const ClipSlotData = struct {
 /// Rename track command
 pub const TrackRenameCmd = struct {
     track_index: usize,
-    old_name: [32]u8,
-    old_len: usize,
-    new_name: [32]u8,
-    new_len: usize,
+    old_name: session_view.NameField,
+    new_name: session_view.NameField,
 };
 
 /// Track volume change command
@@ -187,8 +183,7 @@ pub const TrackSoloCmd = struct {
 /// Add scene command
 pub const SceneAddCmd = struct {
     scene_index: usize,
-    name: [32]u8,
-    name_len: usize,
+    name: session_view.NameField,
 };
 
 /// Delete scene command - stores all scene data for restore
@@ -201,17 +196,14 @@ pub const SceneDeleteCmd = struct {
 
 /// Scene data for serialization
 pub const SceneData = struct {
-    name: [32]u8,
-    name_len: usize,
+    name: session_view.NameField,
 };
 
 /// Rename scene command
 pub const SceneRenameCmd = struct {
     scene_index: usize,
-    old_name: [32]u8,
-    old_len: usize,
-    new_name: [32]u8,
-    new_len: usize,
+    old_name: session_view.NameField,
+    new_name: session_view.NameField,
 };
 
 /// BPM change command

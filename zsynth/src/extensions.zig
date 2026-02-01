@@ -8,7 +8,7 @@ pub const State = struct {
         return shared.ext.state.create(@import("ext/params.zig"), @import("plugin.zig"));
     }
 };
-pub const GUI = @import("ext/gui/gui.zig");
+pub const GUI = shared.gui.Gui(@import("plugin.zig").Plugin, @import("ext/gui/view.zig"));
 pub const VoiceInfo = @import("ext/voice_info.zig");
 pub const ThreadPool = @import("ext/thread_pool.zig");
 pub const Undo = @import("ext/undo.zig");
