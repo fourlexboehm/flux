@@ -2027,7 +2027,7 @@ fn drawContextMenu(state: *PianoRollState, clip: *PianoRollClip, min_duration: f
             .scene_index = scene_index,
             .min_note_duration = min_duration,
         };
-        edit_actions.drawMenu(&menu_ctx, .{
+        _ = edit_actions.drawMenu(&menu_ctx, .{
             .has_selection = state.hasSelection(),
             .can_paste = state.clipboard.items.len > 0 and state.context_in_grid,
         }, .{

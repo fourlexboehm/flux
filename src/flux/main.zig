@@ -663,15 +663,17 @@ fn dataCallback(
             const usage_pct_clamped: u32 = @intCast(@min(usage_pct, 999));
             engine.dsp_load_pct.store(usage_pct_clamped, .release);
             const current_sleep = jobs.dynamic_sleep_ns.load(.monotonic);
+            const is_playing = engine.shared.snapshot().playing;
 
             // Sleep targets as fraction of buffer period
             const max_sleep = budget_ns / 2; // 50% of buffer - idle
             const mid_sleep = budget_ns / 10; // 10% of buffer - moderate
             const min_sleep = budget_ns / 100; // 1% of buffer - high load
+            const mid_threshold: u64 = if (is_playing) 5 else 20;
 
             const sleep_ns: u64 = if (usage_pct >= 40)
                 min_sleep
-            else if (usage_pct >= 20)
+            else if (usage_pct >= mid_threshold)
                 mid_sleep
             else if (usage_pct < 5 and current_sleep < max_sleep)
                 @min(current_sleep * 2, max_sleep) // ramp up slowly
