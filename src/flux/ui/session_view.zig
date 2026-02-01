@@ -758,6 +758,57 @@ pub const SessionView = struct {
         self.render_hover_scene = null;
         self.render_hover_has_content = false;
 
+        // Right-click context menu (handle before left-click selection)
+        const ctrl_click = zgui.isMouseClicked(.left) and zgui.io.getKeyCtrl();
+        if (in_grid and (zgui.isMouseClicked(.right) or (builtin.os.tag == .macos and ctrl_click))) {
+            if (hover_track != null and hover_scene != null) {
+                if (hover_has_content) {
+                    if (!self.isSelected(hover_track.?, hover_scene.?)) {
+                        self.selectOnly(hover_track.?, hover_scene.?);
+                    } else {
+                        self.primary_track = hover_track.?;
+                        self.primary_scene = hover_scene.?;
+                    }
+                } else {
+                    self.clearSelection();
+                    self.primary_track = hover_track.?;
+                    self.primary_scene = hover_scene.?;
+                }
+            }
+            zgui.openPopup("session_ctx", .{});
+        }
+
+        var menu_action = false;
+        var popup_open = zgui.isPopupOpen("session_ctx", .{});
+        if (zgui.beginPopup("session_ctx", .{})) {
+            popup_open = true;
+            menu_action = edit_actions.drawMenu(self, .{
+                .has_selection = self.hasSelection(),
+                .can_paste = self.clipboard.items.len > 0,
+            }, .{
+                .copy = SessionView.copySelected,
+                .cut = SessionView.cutSelected,
+                .paste = SessionView.paste,
+                .delete = SessionView.deleteSelected,
+                .select_all = SessionView.selectAllClips,
+            });
+            zgui.separator();
+            // Delete track/scene options
+            var track_label_buf: [48]u8 = undefined;
+            const track_del_label = std.fmt.bufPrintZ(&track_label_buf, "Delete Track \"{s}\"", .{self.tracks[self.primary_track].getName()}) catch "Delete Track";
+            if (zgui.menuItem(track_del_label, .{ .enabled = self.track_count > 1 })) {
+                _ = self.deleteTrack(self.primary_track);
+                menu_action = true;
+            }
+            var scene_label_buf: [48]u8 = undefined;
+            const scene_del_label = std.fmt.bufPrintZ(&scene_label_buf, "Delete Scene \"{s}\"", .{self.scenes[self.primary_scene].getName()}) catch "Delete Scene";
+            if (zgui.menuItem(scene_del_label, .{ .enabled = self.scene_count > 1 })) {
+                _ = self.deleteScene(self.primary_scene);
+                menu_action = true;
+            }
+            zgui.endPopup();
+        }
+
         // Handle mouse release - complete drag move and reset all drag state
         if (!zgui.isMouseDown(.left)) {
             // If we were dragging clips and have a valid target, do the actual move now
@@ -776,7 +827,7 @@ pub const SessionView = struct {
         }
 
         // On click, decide: drag move (if over clip with content) or drag select (if over empty)
-        if (zgui.isMouseClicked(.left) and in_grid) {
+        if (!popup_open and !menu_action and zgui.isMouseClicked(.left) and in_grid) {
             if (hover_has_content) {
                 // Start drag move
                 self.drag_moving = true;
@@ -1016,51 +1067,6 @@ pub const SessionView = struct {
             }
         }
 
-        // Right-click context menu
-        const ctrl_click = zgui.isMouseClicked(.left) and zgui.io.getKeyCtrl();
-        if (in_grid and (zgui.isMouseClicked(.right) or (builtin.os.tag == .macos and ctrl_click))) {
-            if (hover_track != null and hover_scene != null) {
-                if (hover_has_content) {
-                    if (!self.isSelected(hover_track.?, hover_scene.?)) {
-                        self.selectOnly(hover_track.?, hover_scene.?);
-                    } else {
-                        self.primary_track = hover_track.?;
-                        self.primary_scene = hover_scene.?;
-                    }
-                } else {
-                    self.clearSelection();
-                    self.primary_track = hover_track.?;
-                    self.primary_scene = hover_scene.?;
-                }
-            }
-            zgui.openPopup("session_ctx", .{});
-        }
-
-        if (zgui.beginPopup("session_ctx", .{})) {
-            edit_actions.drawMenu(self, .{
-                .has_selection = self.hasSelection(),
-                .can_paste = self.clipboard.items.len > 0,
-            }, .{
-                .copy = SessionView.copySelected,
-                .cut = SessionView.cutSelected,
-                .paste = SessionView.paste,
-                .delete = SessionView.deleteSelected,
-                .select_all = SessionView.selectAllClips,
-            });
-            zgui.separator();
-            // Delete track/scene options
-            var track_label_buf: [48]u8 = undefined;
-            const track_del_label = std.fmt.bufPrintZ(&track_label_buf, "Delete Track \"{s}\"", .{self.tracks[self.primary_track].getName()}) catch "Delete Track";
-            if (zgui.menuItem(track_del_label, .{ .enabled = self.track_count > 1 })) {
-                _ = self.deleteTrack(self.primary_track);
-            }
-            var scene_label_buf: [48]u8 = undefined;
-            const scene_del_label = std.fmt.bufPrintZ(&scene_label_buf, "Delete Scene \"{s}\"", .{self.scenes[self.primary_scene].getName()}) catch "Delete Scene";
-            if (zgui.menuItem(scene_del_label, .{ .enabled = self.scene_count > 1 })) {
-                _ = self.deleteScene(self.primary_scene);
-            }
-            zgui.endPopup();
-        }
 
         // Draw selection rectangle if active
         if (self.drag_select.active) {

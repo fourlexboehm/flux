@@ -56,26 +56,34 @@ pub fn drawMenu(
     ctx: anytype,
     state: MenuState,
     actions: Actions(@TypeOf(ctx.*)),
-) void {
+) bool {
     const Ctx = @TypeOf(ctx.*);
+    var action_triggered = false;
 
     if (actions.copy != null and zgui.menuItem("Copy", .{ .shortcut = "Cmd/Ctrl+C", .enabled = state.has_selection })) {
         callIf(Ctx, ctx, actions.copy);
+        action_triggered = true;
     }
     if (actions.cut != null and zgui.menuItem("Cut", .{ .shortcut = "Cmd/Ctrl+X", .enabled = state.has_selection })) {
         callIf(Ctx, ctx, actions.cut);
+        action_triggered = true;
     }
     if (actions.paste != null and zgui.menuItem("Paste", .{ .shortcut = "Cmd/Ctrl+V", .enabled = state.can_paste })) {
         callIf(Ctx, ctx, actions.paste);
+        action_triggered = true;
     }
     if (actions.delete != null and zgui.menuItem("Delete", .{ .shortcut = "Del", .enabled = state.has_selection })) {
         callIf(Ctx, ctx, actions.delete);
+        action_triggered = true;
     }
 
     if (actions.select_all != null) {
         zgui.separator();
         if (zgui.menuItem("Select All", .{ .shortcut = "Cmd/Ctrl+A" })) {
             callIf(Ctx, ctx, actions.select_all);
+            action_triggered = true;
         }
     }
+
+    return action_triggered;
 }
