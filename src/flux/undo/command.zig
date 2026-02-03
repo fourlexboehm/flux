@@ -14,6 +14,7 @@ pub const CommandKind = enum {
     // Clip operations
     clip_create,
     clip_delete,
+    clip_paste,
     clip_move,
     clip_resize,
 
@@ -58,6 +59,16 @@ pub const ClipDeleteCmd = struct {
     scene: usize,
     length_beats: f32,
     notes: []const Note,
+};
+
+/// Paste clip command - stores old/new clip state for undo/redo
+pub const ClipPasteCmd = struct {
+    track: usize,
+    scene: usize,
+    old_clip: ClipSlotData,
+    new_clip: ClipSlotData,
+    old_notes: []const Note,
+    new_notes: []const Note,
 };
 
 /// Move clip command - stores source and destination
@@ -229,6 +240,7 @@ pub const PluginStateCmd = struct {
 pub const Command = union(CommandKind) {
     clip_create: ClipCreateCmd,
     clip_delete: ClipDeleteCmd,
+    clip_paste: ClipPasteCmd,
     clip_move: ClipMoveCmd,
     clip_resize: ClipResizeCmd,
     note_add: NoteAddCmd,
@@ -303,6 +315,7 @@ pub const Command = union(CommandKind) {
         return switch (self.*) {
             .clip_create => "Create Clip",
             .clip_delete => "Delete Clip",
+            .clip_paste => "Paste Clip",
             .clip_move => "Move Clip",
             .clip_resize => "Resize Clip",
             .note_add => "Add Note",
@@ -331,6 +344,14 @@ pub const Command = union(CommandKind) {
             .clip_delete => |*cmd| {
                 if (cmd.notes.len > 0) {
                     allocator.free(cmd.notes);
+                }
+            },
+            .clip_paste => |*cmd| {
+                if (cmd.old_notes.len > 0) {
+                    allocator.free(cmd.old_notes);
+                }
+                if (cmd.new_notes.len > 0) {
+                    allocator.free(cmd.new_notes);
                 }
             },
             .clip_move => |*cmd| {

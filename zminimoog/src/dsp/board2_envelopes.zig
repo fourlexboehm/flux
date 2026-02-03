@@ -67,6 +67,9 @@ pub fn ADSDEnvelope(comptime T: type) type {
         // Gate state
         gate: bool = false,
 
+        // Per-note velocity scaling (1.0 for full level)
+        velocity_scale: T = 1.0,
+
         const Self = @This();
 
         pub fn init(sample_rate: T) Self {
@@ -86,6 +89,7 @@ pub fn ADSDEnvelope(comptime T: type) type {
             self.stage = .idle;
             self.output = 0.0;
             self.gate = false;
+            self.velocity_scale = 1.0;
         }
 
         /// Set attack time in seconds
@@ -132,6 +136,7 @@ pub fn ADSDEnvelope(comptime T: type) type {
         pub fn noteOn(self: *Self) void {
             self.gate = true;
             self.stage = .attack;
+            self.velocity_scale = 1.0;
             self.target = 1.0;
         }
 
@@ -148,7 +153,8 @@ pub fn ADSDEnvelope(comptime T: type) type {
         pub fn noteOnVelocity(self: *Self, velocity: T) void {
             self.gate = true;
             self.stage = .attack;
-            self.target = @max(0.0, @min(1.0, velocity));
+            self.velocity_scale = @max(0.0, @min(1.0, velocity));
+            self.target = self.velocity_scale;
         }
 
         /// Check if envelope is finished
@@ -166,27 +172,32 @@ pub fn ADSDEnvelope(comptime T: type) type {
                     // Linear attack towards target (1.0)
                     self.output += self.attack_rate;
                     if (self.output >= self.target) {
-                        self.output = self.target;
+                        if (self.output - self.target <= self.attack_rate) {
+                            self.output = self.target;
+                        }
                         self.stage = .decay;
                     }
                 },
                 .decay => {
                     // Exponential-ish decay towards sustain level
-                    const diff = self.output - self.sustain_level;
-                    if (diff > 0.0001) {
+                    const sustain_target = self.sustain_level * self.velocity_scale;
+                    const diff = self.output - sustain_target;
+                    if (@abs(diff) > 0.0001) {
                         self.output -= diff * self.decay_rate * 6.0; // Multiply for faster response
-                        if (self.output <= self.sustain_level) {
-                            self.output = self.sustain_level;
+                        if ((diff > 0.0 and self.output <= sustain_target) or
+                            (diff < 0.0 and self.output >= sustain_target))
+                        {
+                            self.output = sustain_target;
                             self.stage = .sustain;
                         }
                     } else {
-                        self.output = self.sustain_level;
+                        self.output = sustain_target;
                         self.stage = .sustain;
                     }
                 },
                 .sustain => {
                     // Hold at sustain level while gate is held
-                    self.output = self.sustain_level;
+                    self.output = self.sustain_level * self.velocity_scale;
                     if (!self.gate) {
                         self.stage = .release;
                     }
@@ -447,7 +458,8 @@ test "glide smooths pitch" {
     // Process and check that pitch gradually increases
     var prev_pitch: T = 0.0;
     var all_increasing = true;
-    for (0..1000) |_| {
+    const steps: usize = 1000;
+    for (0..steps) |_| {
         const pitch = glide.processSample();
         if (pitch < prev_pitch - 0.0001) {
             all_increasing = false;
@@ -456,8 +468,10 @@ test "glide smooths pitch" {
     }
 
     try std.testing.expect(all_increasing);
-    // Should be approaching target
-    try std.testing.expect(prev_pitch > 0.5);
+    // Should be near exponential expectation after N steps
+    const samples = glide.glide_time * sample_rate;
+    const expected = 1.0 - @exp(-@as(T, @floatFromInt(steps)) / samples);
+    try std.testing.expect(@abs(prev_pitch - expected) < 0.02);
 }
 
 test "board2 contours complete cycle" {

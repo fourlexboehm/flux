@@ -125,6 +125,7 @@ pub const SceneSnapshot = struct {
 pub const UndoRequestKind = enum {
     clip_create,
     clip_delete,
+    clip_paste,
     track_add,
     track_delete,
     scene_add,
@@ -137,6 +138,8 @@ pub const UndoRequest = struct {
     kind: UndoRequestKind,
     track: usize = 0,
     scene: usize = 0,
+    src_track: usize = 0,
+    src_scene: usize = 0,
     length_beats: f32 = 0,
     // For clip_delete: store the old clip state
     old_clip: ClipSlot = .{},
@@ -466,6 +469,7 @@ pub const SessionView = struct {
             const scene: usize = @intCast(scene_i);
             if (track >= self.track_count or scene >= self.scene_count) continue;
 
+            const old_clip = self.clips[track][scene];
             self.clips[track][scene] = entry.slot;
             self.selectClip(track, scene);
             if (self.piano_copy_count < self.piano_copy_requests.len) {
@@ -476,6 +480,19 @@ pub const SessionView = struct {
                     .dst_scene = scene,
                 };
                 self.piano_copy_count += 1;
+            }
+
+            if (self.undo_request_count < self.undo_requests.len) {
+                self.undo_requests[self.undo_request_count] = .{
+                    .kind = .clip_paste,
+                    .track = track,
+                    .scene = scene,
+                    .src_track = entry.src_track,
+                    .src_scene = entry.src_scene,
+                    .length_beats = entry.slot.length_beats,
+                    .old_clip = old_clip,
+                };
+                self.undo_request_count += 1;
             }
         }
         self.pending_piano_copies = self.piano_copy_count > 0;

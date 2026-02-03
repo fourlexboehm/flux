@@ -139,6 +139,45 @@ pub const MetadataWriter = struct {
                     try self.buffer.appendSlice(self.allocator, "</flux:Command>\n");
                 }
             },
+            .clip_paste => |c| {
+                try self.writeAttrInt("track", c.track);
+                try self.writeAttrInt("scene", c.scene);
+                try self.writeAttrInt("oldHasClip", @intFromBool(c.old_clip.has_clip));
+                try self.writeAttrFloat("oldLength", c.old_clip.length_beats);
+                try self.writeAttrInt("newHasClip", @intFromBool(c.new_clip.has_clip));
+                try self.writeAttrFloat("newLength", c.new_clip.length_beats);
+                if (c.old_notes.len == 0 and c.new_notes.len == 0) {
+                    try self.buffer.appendSlice(self.allocator, "/>\n");
+                } else {
+                    try self.buffer.appendSlice(self.allocator, ">\n");
+                    self.indent_level += 1;
+                    if (c.old_notes.len > 0) {
+                        try self.writeIndent();
+                        try self.buffer.appendSlice(self.allocator, "<flux:OldNotes>\n");
+                        self.indent_level += 1;
+                        for (c.old_notes) |note| {
+                            try self.writeNote(&note);
+                        }
+                        self.indent_level -= 1;
+                        try self.writeIndent();
+                        try self.buffer.appendSlice(self.allocator, "</flux:OldNotes>\n");
+                    }
+                    if (c.new_notes.len > 0) {
+                        try self.writeIndent();
+                        try self.buffer.appendSlice(self.allocator, "<flux:NewNotes>\n");
+                        self.indent_level += 1;
+                        for (c.new_notes) |note| {
+                            try self.writeNote(&note);
+                        }
+                        self.indent_level -= 1;
+                        try self.writeIndent();
+                        try self.buffer.appendSlice(self.allocator, "</flux:NewNotes>\n");
+                    }
+                    self.indent_level -= 1;
+                    try self.writeIndent();
+                    try self.buffer.appendSlice(self.allocator, "</flux:Command>\n");
+                }
+            },
             inline .note_add, .note_remove => |c| {
                 try self.writeAttrInt("track", c.track);
                 try self.writeAttrInt("scene", c.scene);
