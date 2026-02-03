@@ -607,8 +607,7 @@ pub fn OscillatorBank(comptime T: type) type {
             // Apply drive before summing
             const driven_sum = (s1 + s2 + s3) * self.drive;
 
-            // Analog summing with soft saturation (tanh-like op-amp behavior)
-            // This models the summing amplifier's nonlinear headroom
+            // Analog summing without saturation (WIP: keep linear for now)
             const mix = analogSaturate(driven_sum * 0.33);
 
             return mix;
@@ -628,15 +627,9 @@ pub fn OscillatorBank(comptime T: type) type {
             return self.osc3.processSample();
         }
 
-        /// Analog saturation curve (models op-amp soft clipping)
+        /// Analog saturation curve (bypassed; keep linear until tuned)
         pub fn analogSaturate(x: T) T {
-            // Soft saturation using tanh approximation
-            // More efficient than std.math.tanh for real-time use
-            const x2 = x * x;
-            const x3 = x2 * x;
-            const x5 = x3 * x2;
-            // Pade approximation of tanh
-            return x * (1.0 + x2 * 0.0833333) / (1.0 + x2 * 0.416667 + x5 * 0.0083333);
+            return x;
         }
     };
 }
@@ -805,19 +798,13 @@ test "oscillator bank mixes three oscillators" {
     try std.testing.expect(max_output > 0.1);
 }
 
-test "analog saturation soft clips" {
+test "analog saturation bypasses (linear)" {
     const T = f64;
 
-    // Test that saturation function limits output
-    const saturated = OscillatorBank(T).analogSaturate(10.0);
+    const input: T = 10.0;
+    const saturated = OscillatorBank(T).analogSaturate(input);
 
-    // Should be less than input (soft clipped)
-    try std.testing.expect(saturated < 10.0);
-    // Should be positive
-    try std.testing.expect(saturated > 0.0);
-    // tanh(10) ≈ 1.0, our approximation should be close
-    try std.testing.expect(saturated > 0.9);
-    try std.testing.expect(saturated < 1.1);
+    try std.testing.expectEqual(input, saturated);
 }
 
 test "polyblep reduces discontinuity" {
@@ -840,8 +827,11 @@ test "oversampler decimates correctly" {
 
     var os = Oversampler(T, 2).init();
 
-    // DC signal should pass through unchanged (approximately)
+    // DC signal should pass through unchanged after filter settles
     const dc_samples = [_]T{ 0.5, 0.5 };
-    const dc_out = os.processAndDecimate(dc_samples);
-    try std.testing.expect(@abs(dc_out - 0.5) < 0.1);
+    var dc_out: T = 0.0;
+    for (0..16) |_| {
+        dc_out = os.processAndDecimate(dc_samples);
+    }
+    try std.testing.expect(@abs(dc_out - 0.5) < 0.05);
 }
