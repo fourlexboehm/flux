@@ -1601,6 +1601,8 @@ fn editPaste(ctx: *EditCtx) void {
     pasteNotes(
         ctx.state,
         ctx.clip,
+        ctx.track_index,
+        ctx.scene_index,
         ctx.mouse,
         ctx.grid_pos,
         ctx.pixels_per_beat,
@@ -1635,7 +1637,7 @@ fn menuCut(ctx: *MenuCtx) void {
 
 fn menuPaste(ctx: *MenuCtx) void {
     if (ctx.state.clipboard.items.len == 0 or !ctx.state.context_in_grid) return;
-    pasteNotesFromContextMenu(ctx.state, ctx.clip, ctx.min_note_duration);
+    pasteNotesFromContextMenu(ctx.state, ctx.clip, ctx.track_index, ctx.scene_index, ctx.min_note_duration);
 }
 
 fn menuDelete(ctx: *MenuCtx) void {
@@ -1671,7 +1673,13 @@ fn copyNotes(state: *PianoRollState, clip: *const PianoRollClip) void {
     }
 }
 
-fn pasteNotesFromContextMenu(state: *PianoRollState, clip: *PianoRollClip, min_duration: f32) void {
+fn pasteNotesFromContextMenu(
+    state: *PianoRollState,
+    clip: *PianoRollClip,
+    track_index: usize,
+    scene_index: usize,
+    min_duration: f32,
+) void {
     const snapped_start = state.context_start;
     const first_pitch: i32 = @intCast(state.clipboard.items[0].pitch);
     const pitch_offset = @as(i32, state.context_pitch) - first_pitch;
@@ -1685,7 +1693,18 @@ fn pasteNotesFromContextMenu(state: *PianoRollState, clip: *PianoRollClip, min_d
                 var new_pitch_i: i32 = @as(i32, copied.pitch) + pitch_offset;
                 new_pitch_i = std.math.clamp(new_pitch_i, 0, 127);
                 clip.addNote(@intCast(new_pitch_i), new_start, duration) catch {};
-                state.selectNote(clip.notes.items.len - 1);
+                if (clip.notes.items.len > 0) {
+                    const note_index = clip.notes.items.len - 1;
+                    const note = clip.notes.items[note_index];
+                    state.emitUndoRequest(.{
+                        .kind = .note_add,
+                        .track = track_index,
+                        .scene = scene_index,
+                        .note_index = note_index,
+                        .note = note,
+                    });
+                    state.selectNote(note_index);
+                }
             }
         }
     }
@@ -1720,6 +1739,8 @@ fn deleteSelectedNotes(state: *PianoRollState, clip: *PianoRollClip, track_index
 fn pasteNotes(
     state: *PianoRollState,
     clip: *PianoRollClip,
+    track_index: usize,
+    scene_index: usize,
     mouse: [2]f32,
     grid_pos: [2]f32,
     pixels_per_beat: f32,
@@ -1745,7 +1766,18 @@ fn pasteNotes(
                 var new_pitch_i: i32 = @as(i32, copied.pitch) + pitch_offset;
                 new_pitch_i = std.math.clamp(new_pitch_i, 0, 127);
                 clip.addNote(@intCast(new_pitch_i), new_start, duration) catch {};
-                state.selectNote(clip.notes.items.len - 1);
+                if (clip.notes.items.len > 0) {
+                    const note_index = clip.notes.items.len - 1;
+                    const note = clip.notes.items[note_index];
+                    state.emitUndoRequest(.{
+                        .kind = .note_add,
+                        .track = track_index,
+                        .scene = scene_index,
+                        .note_index = note_index,
+                        .note = note,
+                    });
+                    state.selectNote(note_index);
+                }
             }
         }
     }

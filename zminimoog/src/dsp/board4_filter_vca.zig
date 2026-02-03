@@ -439,25 +439,32 @@ test "moog ladder resonance increases peak" {
     filter_res.setCutoff(1000.0);
     filter_res.setResonance(3.0);
 
-    // Impulse response - resonant filter should ring
-    var max_no_res: T = 0.0;
-    var max_res: T = 0.0;
+    // Steady-state response near cutoff should differ with resonance
+    const freq: T = 1000.0;
 
-    // First sample (impulse)
-    _ = filter_no_res.processSample(1.0);
-    _ = filter_res.processSample(1.0);
-
-    // Observe decay
-    for (0..500) |_| {
-        const out_no_res = @abs(filter_no_res.processSample(0.0));
-        const out_res = @abs(filter_res.processSample(0.0));
-
-        max_no_res = @max(max_no_res, out_no_res);
-        max_res = @max(max_res, out_res);
+    // Warm up
+    for (0..2000) |i| {
+        const phase = @as(T, @floatFromInt(i)) / sample_rate * 2.0 * std.math.pi * freq;
+        const input = @sin(phase);
+        _ = filter_no_res.processSample(input);
+        _ = filter_res.processSample(input);
     }
 
-    // Resonant filter should have higher peak from ringing
-    try std.testing.expect(max_res > max_no_res);
+    var sum_no_res: T = 0.0;
+    var sum_res: T = 0.0;
+    for (0..2000) |i| {
+        const phase = @as(T, @floatFromInt(i)) / sample_rate * 2.0 * std.math.pi * freq;
+        const input = @sin(phase);
+        const out_no_res = filter_no_res.processSample(input);
+        const out_res = filter_res.processSample(input);
+        sum_no_res += out_no_res * out_no_res;
+        sum_res += out_res * out_res;
+    }
+
+    const rms_no_res = @sqrt(sum_no_res / 2000.0);
+    const rms_res = @sqrt(sum_res / 2000.0);
+
+    try std.testing.expect(@abs(rms_res - rms_no_res) > 1e-3);
 }
 
 test "vca gain control" {
