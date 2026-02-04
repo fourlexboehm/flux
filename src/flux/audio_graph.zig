@@ -2,8 +2,17 @@ const std = @import("std");
 const clap = @import("clap-bindings");
 const tracy = @import("tracy");
 const ui = @import("ui.zig");
+const session_view = @import("ui/session_view.zig");
+const session_constants = @import("ui/session_view/constants.zig");
+const piano_roll_types = @import("ui/piano_roll/types.zig");
 const audio_engine = @import("audio_engine.zig");
 const libz_jobs = @import("libz_jobs");
+const PianoNote = piano_roll_types.Note;
+
+const max_tracks = session_constants.max_tracks;
+const max_scenes = session_constants.max_scenes;
+const beats_per_bar = session_constants.beats_per_bar;
+const default_clip_bars = session_constants.default_clip_bars;
 
 pub const JobQueue = libz_jobs.JobQueue(.{
     .max_jobs_per_thread = 64, // Enough for tracks + root job
@@ -43,19 +52,19 @@ pub const StateSnapshot = struct {
     playhead_beat: f32,
     track_count: usize,
     scene_count: usize,
-    tracks: [ui.track_count]ui.Track,
-    clips: [ui.track_count][ui.scene_count]ui.ClipSlot,
-    piano_clips: [ui.track_count][ui.scene_count]ClipNotes,
-    track_plugins: [ui.track_count]?*const clap.Plugin,
-    track_fx_plugins: [ui.track_count][ui.max_fx_slots]?*const clap.Plugin,
-    live_key_states: [ui.track_count][128]bool,
-    live_key_velocities: [ui.track_count][128]f32,
+    tracks: [max_tracks]session_view.Track,
+    clips: [max_tracks][max_scenes]session_view.ClipSlot,
+    piano_clips: [max_tracks][max_scenes]ClipNotes,
+    track_plugins: [max_tracks]?*const clap.Plugin,
+    track_fx_plugins: [max_tracks][ui.max_fx_slots]?*const clap.Plugin,
+    live_key_states: [max_tracks][128]bool,
+    live_key_velocities: [max_tracks][128]f32,
 };
 
 pub const ClipNotes = struct {
-    length_beats: f32 = ui.default_clip_bars * ui.beats_per_bar,
+    length_beats: f32 = default_clip_bars * beats_per_bar,
     count: u16 = 0,
-    notes: [max_clip_notes]ui.Note = [_]ui.Note{
+    notes: [max_clip_notes]PianoNote = [_]PianoNote{
         .{ .pitch = 0, .start = 0, .duration = 0 },
     } ** max_clip_notes,
     automation_lane_count: u8 = 0,
@@ -300,8 +309,8 @@ pub const NoteSource = struct {
         }
 
         var active_scene: ?usize = null;
-        const scene_count = @min(snapshot.scene_count, ui.scene_count);
-        for (0..scene_count) |scene_index| {
+        const active_scene_count = @min(snapshot.scene_count, max_scenes);
+        for (0..active_scene_count) |scene_index| {
             const slot = snapshot.clips[self.track_index][scene_index];
             if (slot.state == .playing) {
                 active_scene = scene_index;
@@ -516,6 +525,10 @@ pub const SynthNode = struct {
     },
     /// Plugin requested sleep - skip processing until new events arrive
     sleeping: bool = false,
+    /// Output buffers are already zeroed - skip redundant memset
+    buffer_zeroed: bool = false,
+    /// Node marked for removal - skip processing entirely
+    removed: bool = false,
 
     pub fn init(track_index: usize) SynthNode {
         return SynthNode{ .track_index = track_index };
@@ -528,6 +541,10 @@ pub const FxNode = struct {
     output_left: []f32 = &.{},
     output_right: []f32 = &.{},
     sleeping: bool = false,
+    /// Output buffers are already zeroed - skip redundant memset
+    buffer_zeroed: bool = false,
+    /// Node marked for removal - skip processing entirely
+    removed: bool = false,
 
     pub fn init(track_index: usize, fx_index: usize) FxNode {
         return FxNode{
@@ -771,6 +788,27 @@ pub const Graph = struct {
         };
     }
 
+    /// Mark a synth or fx node for soft removal. The node will be skipped during processing
+    /// but remains in the graph until compactRemovedNodes() is called.
+    pub fn markNodeRemoved(self: *Graph, node_id: NodeId) void {
+        var node = &self.nodes.items[node_id];
+        switch (node.kind) {
+            .synth => node.data.synth.removed = true,
+            .fx => node.data.fx.removed = true,
+            else => {},
+        }
+    }
+
+    /// Check if a node is marked for removal.
+    pub fn isNodeRemoved(self: *const Graph, node_id: NodeId) bool {
+        const node = &self.nodes.items[node_id];
+        return switch (node.kind) {
+            .synth => node.data.synth.removed,
+            .fx => node.data.fx.removed,
+            else => false,
+        };
+    }
+
     fn sumAudioInputs(self: *Graph, node_id: NodeId, frame_count: u32, out_left: []f32, out_right: []f32) void {
         @memset(out_left[0..frame_count], 0);
         @memset(out_right[0..frame_count], 0);
@@ -813,8 +851,8 @@ pub const Graph = struct {
         defer zone.End();
 
         var solo_active = false;
-        const track_count = @min(snapshot.track_count, ui.track_count);
-        for (0..track_count) |t| {
+        const active_track_count = @min(snapshot.track_count, max_tracks);
+        for (0..active_track_count) |t| {
             const track = snapshot.tracks[t];
             if (track.solo) {
                 solo_active = true;
@@ -849,20 +887,29 @@ pub const Graph = struct {
 
             const synth_count = self.synth_node_ids.items.len;
             if (synth_count > 0) {
-                var active_tasks: [ui.track_count]u32 = undefined;
+                var active_tasks: [max_tracks]u32 = undefined;
                 var active_count: usize = 0;
 
                 for (self.synth_node_ids.items, 0..) |node_id, i| {
                     var node = &self.nodes.items[node_id];
 
+                    // Skip removed nodes entirely
+                    if (node.data.synth.removed) continue;
+
                     const plugin = snapshot.track_plugins[node.data.synth.track_index];
                     if (plugin == null) {
-                        const outputs = self.getAudioOutput(node_id);
-                        @memset(outputs.left[0..frame_count], 0);
-                        @memset(outputs.right[0..frame_count], 0);
+                        // Only zero buffers once when plugin becomes null
+                        if (!node.data.synth.buffer_zeroed) {
+                            const outputs = self.getAudioOutput(node_id);
+                            @memset(outputs.left[0..frame_count], 0);
+                            @memset(outputs.right[0..frame_count], 0);
+                            node.data.synth.buffer_zeroed = true;
+                        }
                         node.data.synth.sleeping = false;
                         continue;
                     }
+                    // Reset flag when plugin is active
+                    node.data.synth.buffer_zeroed = false;
 
                     if (ctx.wake_requested) {
                         active_tasks[active_count] = @intCast(i);
@@ -876,9 +923,13 @@ pub const Graph = struct {
                         active_tasks[active_count] = @intCast(i);
                         active_count += 1;
                     } else {
-                        const outputs = self.getAudioOutput(node_id);
-                        @memset(outputs.left[0..frame_count], 0);
-                        @memset(outputs.right[0..frame_count], 0);
+                        // Sleeping with no events - only zero once
+                        if (!node.data.synth.buffer_zeroed) {
+                            const outputs = self.getAudioOutput(node_id);
+                            @memset(outputs.left[0..frame_count], 0);
+                            @memset(outputs.right[0..frame_count], 0);
+                            node.data.synth.buffer_zeroed = true;
+                        }
                     }
                 }
 
@@ -958,9 +1009,12 @@ pub const Graph = struct {
     }
 
     fn processFxNode(self: *Graph, ctx: *const ProcessContext, node_id: NodeId) void {
-        const node = &self.nodes.items[node_id];
+        var node = &self.nodes.items[node_id];
         const track_index = node.data.fx.track_index;
         const fx_index = node.data.fx.fx_index;
+
+        // Skip removed nodes entirely
+        if (node.data.fx.removed) return;
 
         const outputs = self.getAudioOutput(node_id);
         const input_left = self.scratch_input_left[0..ctx.frame_count];
@@ -971,8 +1025,10 @@ pub const Graph = struct {
             @memcpy(outputs.left[0..ctx.frame_count], input_left);
             @memcpy(outputs.right[0..ctx.frame_count], input_right);
             node.data.fx.sleeping = false;
+            node.data.fx.buffer_zeroed = false; // Has input data, not zeroed
             return;
         };
+        node.data.fx.buffer_zeroed = false; // Active plugin, not zeroed
 
         if (ctx.shared.checkAndClearStartProcessingFx(track_index, fx_index)) {
             if (!ctx.shared.isFxPluginStarted(track_index, fx_index)) {
