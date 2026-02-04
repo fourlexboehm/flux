@@ -20,6 +20,8 @@ const zsynth = @import("zsynth-core");
 const zminimoog = @import("zminimoog-core");
 const plugins = @import("plugins.zig");
 const presets = @import("presets.zig");
+
+const clap_preset_load_compat_id = "clap.preset-load.draft/2";
 const dawproject_io = @import("dawproject/io.zig");
 const dawproject_types = @import("dawproject/types.zig");
 const dawproject_io_types = @import("dawproject/io_types.zig");
@@ -114,8 +116,8 @@ const Host = struct {
     // Undo state
     ui_state: ?*ui.State = null,
     allocator: ?std.mem.Allocator = null,
-    track_plugins_ptr: ?*[ui.track_count]TrackPlugin = null,
-    track_fx_ptr: ?*[ui.track_count][ui.max_fx_slots]TrackPlugin = null,
+    track_plugins_ptr: ?*[track_count]TrackPlugin = null,
+    track_fx_ptr: ?*[track_count][ui.max_fx_slots]TrackPlugin = null,
     catalog_ptr: ?*const plugins.PluginCatalog = null,
     undo_change_in_progress: bool = false,
     undo_track_index: ?usize = null, // Track that started the change
@@ -143,6 +145,11 @@ const Host = struct {
         .rescan = _paramsRescan,
         .clear = _paramsClear,
         .requestFlush = _paramsRequestFlush,
+    };
+
+    const preset_load_ext = clap.ext.preset_load.Host{
+        .onError = _presetLoadOnError,
+        .loaded = _presetLoadLoaded,
     };
 
     pub fn init() Host {
@@ -175,6 +182,11 @@ const Host = struct {
         }
         if (std.mem.eql(u8, std.mem.span(id), clap.ext.params.id)) {
             return &params_ext;
+        }
+        if (std.mem.eql(u8, std.mem.span(id), clap.ext.preset_load.id) or
+            std.mem.eql(u8, std.mem.span(id), clap_preset_load_compat_id))
+        {
+            return &preset_load_ext;
         }
         return null;
     }
@@ -322,7 +334,7 @@ const Host = struct {
     /// Get the CLAP plugin for a given track (external or builtin)
     fn getPluginForTrack(self: *Host, state: *ui.State, track_idx: usize) ?*const clap.Plugin {
         _ = state;
-        if (track_idx >= ui.track_count) return null;
+        if (track_idx >= track_count) return null;
 
         // All plugins (builtin and external) are now in TrackPlugin
         if (self.track_plugins_ptr) |track_plugins| {
@@ -466,6 +478,26 @@ const Host = struct {
     fn _paramsRequestFlush(_: *const clap.Host) callconv(.c) void {
         // Plugin is requesting a parameter flush outside of process().
         // Not implemented - we always process parameters during process().
+    }
+
+    fn _presetLoadOnError(
+        _: *const clap.Host,
+        _: clap.preset_discovery.Location.Kind,
+        _: ?[*:0]const u8,
+        _: ?[*:0]const u8,
+        os_error: i32,
+        msg: [*:0]const u8,
+    ) callconv(.c) void {
+        std.log.warn("Preset load error (os_error={d}): {s}", .{ os_error, std.mem.span(msg) });
+    }
+
+    fn _presetLoadLoaded(
+        _: *const clap.Host,
+        _: clap.preset_discovery.Location.Kind,
+        _: ?[*:0]const u8,
+        _: ?[*:0]const u8,
+    ) callconv(.c) void {
+        // Selection is tracked in UI state; nothing to do here yet.
     }
 };
 
@@ -702,8 +734,8 @@ fn applyBufferFramesChange(
     device_config: *zaudio.Device.Config,
     engine: *audio_engine.AudioEngine,
     shared: *audio_engine.SharedState,
-    track_plugins: *[ui.track_count]TrackPlugin,
-    track_fx: *[ui.track_count][ui.max_fx_slots]TrackPlugin,
+    track_plugins: *[track_count]TrackPlugin,
+    track_fx: *[track_count][ui.max_fx_slots]TrackPlugin,
     new_frames: u32,
 ) !void {
     if (new_frames == engine.max_frames) return;
@@ -720,7 +752,7 @@ fn applyBufferFramesChange(
     defer is_audio_thread = was_audio;
 
     const plugins_for_tracks = collectPlugins(track_plugins, track_fx);
-    for (0..ui.track_count) |t| {
+    for (0..track_count) |t| {
         if (shared.isPluginStarted(t)) {
             if (plugins_for_tracks.instruments[t]) |plugin| {
                 plugin.stopProcessing(plugin);
@@ -737,7 +769,7 @@ fn applyBufferFramesChange(
         }
     }
 
-    for (0..ui.track_count) |t| {
+    for (0..track_count) |t| {
         if (plugins_for_tracks.instruments[t]) |plugin| {
             plugin.deactivate(plugin);
             if (!plugin.activate(plugin, SampleRate, 1, new_frames)) {
@@ -775,11 +807,11 @@ pub fn main(init: std.process.Init) !void {
     const cpu_count = std.Thread.getCpuCount() catch 4;
     host.jobs_fanout = @intCast(if (cpu_count > 1) @min(cpu_count - 1, 16) else 0);
 
-    var track_plugins: [ui.track_count]TrackPlugin = undefined;
+    var track_plugins: [track_count]TrackPlugin = undefined;
     for (&track_plugins) |*track| {
         track.* = .{};
     }
-    var track_fx: [ui.track_count][ui.max_fx_slots]TrackPlugin = undefined;
+    var track_fx: [track_count][ui.max_fx_slots]TrackPlugin = undefined;
     for (&track_fx) |*track_slots| {
         for (track_slots) |*slot| {
             slot.* = .{};
@@ -792,6 +824,9 @@ pub fn main(init: std.process.Init) !void {
     var catalog = try plugins.discover(allocator, io);
     defer catalog.deinit();
 
+    var preset_catalog = try presets.build(allocator, io, &catalog, init.environ_map);
+    defer preset_catalog.deinit();
+
     var state = ui.State.init(allocator);
     defer state.deinit();
     state.plugin_items = catalog.items_z;
@@ -800,6 +835,8 @@ pub fn main(init: std.process.Init) !void {
     state.plugin_instrument_items = catalog.instrument_items_z;
     state.plugin_instrument_indices = catalog.instrument_indices;
     state.plugin_divider_index = catalog.divider_index;
+    state.preset_catalog = &preset_catalog;
+    ui.rebuildInstrumentFilter(&state);
     var buffer_frames: u32 = state.buffer_frames;
 
     // Set up host references for undo support
@@ -844,6 +881,7 @@ pub fn main(init: std.process.Init) !void {
     zgui.io.setIniFilename(null);
     zgui.plot.init();
     defer zgui.plot.deinit();
+    ui.rebuildPresetFilter(&state);
 
     ui.Colors.setTheme(resolveTheme());
 
@@ -989,6 +1027,7 @@ pub fn main(init: std.process.Init) !void {
                 engine.updateFromUi(&state);
                 try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 try syncFxPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
+                applyPresetLoadRequests(&state, &catalog, &track_plugins);
                 const frame_plugins = collectPlugins(&track_plugins, &track_fx);
                 engine.updatePlugins(frame_plugins.instruments, frame_plugins.fx);
                 zgui.backend.draw(command_buffer, command_encoder);
@@ -1161,6 +1200,7 @@ pub fn main(init: std.process.Init) !void {
                 engine.updateFromUi(&state);
                 try syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 try syncFxPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
+                applyPresetLoadRequests(&state, &catalog, &track_plugins);
                 const frame_plugins = collectPlugins(&track_plugins, &track_fx);
                 engine.updatePlugins(frame_plugins.instruments, frame_plugins.fx);
                 zgui.backend.draw();
@@ -1210,7 +1250,6 @@ pub fn main(init: std.process.Init) !void {
     for (&track_plugins) |*track| {
         closePluginGui(track);
     }
-
     for (&track_plugins, 0..) |*track, t| {
         unloadPlugin(track, allocator, &engine.shared, t);
     }
@@ -1223,10 +1262,10 @@ fn sleepNs(io: std.Io, ns: u64) void {
 fn updateDeviceState(
     state: *ui.State,
     catalog: *const plugins.PluginCatalog,
-    track_plugins: *const [ui.track_count]TrackPlugin,
-    track_fx: *const [ui.track_count][ui.max_fx_slots]TrackPlugin,
+    track_plugins: *const [track_count]TrackPlugin,
+    track_fx: *const [track_count][ui.max_fx_slots]TrackPlugin,
 ) void {
-    const track_idx = state.selectedTrack();
+    const track_idx = state.device_target_track;
     const choice = switch (state.device_target_kind) {
         .instrument => state.track_plugins[track_idx].choice_index,
         .fx => state.track_fx[track_idx][state.device_target_fx].choice_index,
@@ -1815,13 +1854,53 @@ fn handleFileRequests(
     }
 }
 
+fn applyPresetLoadRequests(
+    state: *ui.State,
+    catalog: *const plugins.PluginCatalog,
+    track_plugins: *[track_count]TrackPlugin,
+) void {
+    const request = state.preset_load_request orelse return;
+    const track_idx = request.track_index;
+    if (track_idx >= track_count) {
+        state.preset_load_request = null;
+        return;
+    }
+
+    const choice = state.track_plugins[track_idx].choice_index;
+    const entry = catalog.entryForIndex(choice) orelse {
+        state.preset_load_request = null;
+        return;
+    };
+    if (entry.id == null or !std.mem.eql(u8, entry.id.?, request.plugin_id)) {
+        state.preset_load_request = null;
+        return;
+    }
+
+    const plugin = track_plugins[track_idx].getPlugin() orelse return;
+    const preset_ext_raw = plugin.getExtension(plugin, clap.ext.preset_load.id) orelse
+        plugin.getExtension(plugin, clap_preset_load_compat_id);
+    if (preset_ext_raw) |ext_raw| {
+        const ext: *const clap.ext.preset_load.Plugin = @ptrCast(@alignCast(ext_raw));
+        const load_key_ptr: ?[*:0]const u8 = if (request.load_key) |key| key.ptr else null;
+        const location_ptr: ?[*:0]const u8 = if (request.location_kind == .plugin) null else request.location.ptr;
+        const ok = ext.fromLocation(plugin, request.location_kind, location_ptr, load_key_ptr);
+        if (!ok) {
+            std.log.warn("Preset load failed (plugin returned false)", .{});
+        }
+    } else {
+        std.log.warn("Plugin does not support preset-load extension", .{});
+    }
+
+    state.preset_load_request = null;
+}
+
 fn handleSaveProject(
     allocator: std.mem.Allocator,
     io: std.Io,
     state: *const ui.State,
     catalog: *const plugins.PluginCatalog,
-    track_plugins: *const [ui.track_count]TrackPlugin,
-    track_fx: *const [ui.track_count][ui.max_fx_slots]TrackPlugin,
+    track_plugins: *const [track_count]TrackPlugin,
+    track_fx: *const [track_count][ui.max_fx_slots]TrackPlugin,
     shared: ?*audio_engine.SharedState,
 ) !void {
     const path = state.project_path orelse return;
@@ -1833,8 +1912,8 @@ fn handleSaveProjectAs(
     io: std.Io,
     state: *ui.State,
     catalog: *const plugins.PluginCatalog,
-    track_plugins: *const [ui.track_count]TrackPlugin,
-    track_fx: *const [ui.track_count][ui.max_fx_slots]TrackPlugin,
+    track_plugins: *const [track_count]TrackPlugin,
+    track_fx: *const [track_count][ui.max_fx_slots]TrackPlugin,
     shared: ?*audio_engine.SharedState,
 ) !void {
     const default_name = if (state.project_path) |path| std.fs.path.basename(path) else "project.dawproject";
@@ -1953,7 +2032,7 @@ fn saveProjectToPath(
     }
 
     // Save the project
-    dawproject.save(
+    dawproject_io.save(
         allocator,
         io,
         path,
@@ -2197,8 +2276,14 @@ fn applyDawprojectToState(
             state.track_fx[t][fx_index].last_valid_choice = 0;
         }
     }
+    for (0..ui.max_fx_slots) |fx_index| {
+        state.track_fx[master_track_index][fx_index].choice_index = 0;
+        state.track_fx[master_track_index][fx_index].gui_open = false;
+        state.track_fx[master_track_index][fx_index].last_valid_choice = 0;
+    }
+    state.track_fx_slot_count[master_track_index] = 1;
 
-    for (0..track_count) |t| {
+    for (0..project_track_count) |t| {
         const track = proj.tracks[t];
         state.session.tracks[t].setName(track.name);
 
@@ -2231,11 +2316,38 @@ fn applyDawprojectToState(
         }
     }
 
-    // Apply scenes
-    const scene_count = @min(proj.scenes.len, ui.scene_count);
-    state.session.scene_count = scene_count;
+    if (proj.master_track) |master_track| {
+        if (master_track.channel) |channel| {
+            if (channel.volume) |vol| {
+                state.session.tracks[master_track_index].volume = @floatCast(vol.value);
+            }
+            if (channel.mute) |mute| {
+                state.session.tracks[master_track_index].mute = mute.value;
+            }
+            if (channel.devices.len > 0) {
+                var fx_slot: usize = 0;
+                for (channel.devices) |device| {
+                    const choice = findPluginInCatalog(catalog, device.device_id);
+                    if (device.device_role == .audioFX and fx_slot < ui.max_fx_slots) {
+                        state.track_fx[master_track_index][fx_slot].choice_index = choice;
+                        state.track_fx[master_track_index][fx_slot].last_valid_choice = choice;
+                        fx_slot += 1;
+                    }
+                }
+                if (fx_slot > 0 and fx_slot < ui.max_fx_slots) {
+                    state.track_fx_slot_count[master_track_index] = fx_slot + 1;
+                } else if (fx_slot >= ui.max_fx_slots) {
+                    state.track_fx_slot_count[master_track_index] = ui.max_fx_slots;
+                }
+            }
+        }
+    }
 
-    for (0..scene_count) |s| {
+    // Apply scenes
+    const project_scene_count = @min(proj.scenes.len, scene_count);
+    state.session.scene_count = project_scene_count;
+
+    for (0..project_scene_count) |s| {
         state.session.scenes[s].setName(proj.scenes[s].name);
     }
 
@@ -2270,7 +2382,7 @@ fn applyDawprojectToState(
     try syncFxPlugins(allocator, host, track_plugins, track_fx, state, catalog, shared, io, state.buffer_frames, true);
 
     // Load plugin states from dawproject
-    for (0..track_count) |t| {
+    for (0..project_track_count) |t| {
         const track = proj.tracks[t];
         if (track.channel) |channel| {
             var fx_slot: usize = 0;
@@ -2306,10 +2418,10 @@ fn findPluginInCatalog(catalog: *const plugins.PluginCatalog, device_id: []const
 
 fn applyLanes(
     state: *ui.State,
-    lanes: *const dawproject.Lanes,
-    tracks: []const dawproject.Track,
-    instrument_device_ids: *const [ui.track_count]?[]const u8,
-    fx_device_ids: *const [ui.track_count][ui.max_fx_slots]?[]const u8,
+    lanes: *const dawproject_types.Lanes,
+    tracks: []const dawproject_types.Track,
+    instrument_device_ids: *const [track_count]?[]const u8,
+    fx_device_ids: *const [track_count][ui.max_fx_slots]?[]const u8,
 ) !void {
     // Find track index for this lane
     var track_idx: ?usize = null;
@@ -2325,9 +2437,9 @@ fn applyLanes(
     // Process clips in this lane
     if (lanes.clips) |clips| {
         if (track_idx) |t| {
-            if (t < ui.track_count) {
+            if (t < track_count) {
                 for (clips.clips, 0..) |clip, s| {
-                    if (s >= ui.scene_count) break;
+                    if (s >= scene_count) break;
 
                     // Set clip slot state
                     state.session.clips[t][s] = .{
@@ -2376,14 +2488,14 @@ fn applyLanes(
 
 fn applyScenes(
     state: *ui.State,
-    scenes: []const dawproject.Scene,
-    tracks: []const dawproject.Track,
-    master_track: ?dawproject.Track,
-    instrument_device_ids: *const [ui.track_count]?[]const u8,
-    fx_device_ids: *const [ui.track_count][ui.max_fx_slots]?[]const u8,
+    scenes: []const dawproject_types.Scene,
+    tracks: []const dawproject_types.Track,
+    master_track: ?dawproject_types.Track,
+    instrument_device_ids: *const [track_count]?[]const u8,
+    fx_device_ids: *const [track_count][ui.max_fx_slots]?[]const u8,
 ) !void {
-    const scene_count = @min(scenes.len, ui.scene_count);
-    for (0..scene_count) |s| {
+    const project_scene_count = @min(scenes.len, scene_count);
+    for (0..project_scene_count) |s| {
         const scene = scenes[s];
         for (scene.clip_slots) |slot| {
             var track_idx: ?usize = null;
@@ -2399,7 +2511,7 @@ fn applyScenes(
                 }
             }
             if (track_idx) |t| {
-                if (t >= ui.track_count) continue;
+                if (t >= track_count) continue;
                 if (slot.clip) |clip| {
                     state.session.clips[t][s] = .{
                         .state = .stopped,
@@ -2441,8 +2553,8 @@ fn applyScenes(
 
 fn applyAutomationToClip(
     allocator: std.mem.Allocator,
-    piano: *ui.PianoRollClip,
-    points_list: []const dawproject.Points,
+    piano: *piano_roll_types.PianoRollClip,
+    points_list: []const dawproject_types.Points,
     instrument_device_id: ?[]const u8,
     fx_device_ids: *const [ui.max_fx_slots]?[]const u8,
     track_volume_param_id: ?[]const u8,
@@ -2450,7 +2562,7 @@ fn applyAutomationToClip(
 ) !void {
     piano.automation.clear(allocator);
     for (points_list) |points| {
-        var new_lane = ui.AutomationLane{
+        var new_lane = piano_roll_types.AutomationLane{
             .target_kind = .parameter,
             .target_id = "",
             .param_id = null,

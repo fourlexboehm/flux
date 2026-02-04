@@ -78,6 +78,7 @@ const PluginCache = struct {
     allocator: std.mem.Allocator,
     libs: std.StringHashMapUnmanaged([]CachedPlugin) = .{},
     dirty: bool = false,
+    loaded: bool = false,
 
     pub fn deinit(self: *PluginCache) void {
         var it = self.libs.iterator();
@@ -97,6 +98,10 @@ const PluginCache = struct {
         if (plugins.len == 0) return null;
         if (plugins[0].mtime_ns != mtime_ns) return null;
         return plugins;
+    }
+
+    pub fn hasPath(self: *PluginCache, path: []const u8) bool {
+        return self.libs.contains(path);
     }
 
     pub fn set(self: *PluginCache, path: []const u8, plugins: []CachedPlugin) !void {
@@ -203,6 +208,7 @@ fn loadPluginCache(allocator: std.mem.Allocator, io: Io) !PluginCache {
         error.FileNotFound => return cache,
         else => return err,
     };
+    cache.loaded = true;
     defer file.close(io);
 
     const stat = try file.stat(io);
@@ -535,7 +541,7 @@ fn scanClapDir(
             if (full_scan) {
                 discoverPluginEntries(allocator, io, entries, entry_path, .clap, cache) catch {};
             } else {
-                appendClapBundleEntry(allocator, io, entries, entry_path, cache) catch {};
+                appendClapBundleEntry(allocator, io, entries, entry_path, cache, full_scan) catch {};
             }
             continue;
         }
@@ -614,6 +620,7 @@ fn appendClapBundleEntry(
     entries: *std.ArrayListUnmanaged(PluginEntry),
     bundle_path: []const u8,
     cache: ?*PluginCache,
+    full_scan: bool,
 ) !void {
     const binary_path = resolveClapBinaryPath(allocator, io, bundle_path) catch return;
     defer allocator.free(binary_path);
@@ -621,6 +628,9 @@ fn appendClapBundleEntry(
         if (statMtimeNs(io, binary_path)) |mtime| {
             if (cache_ptr.get(binary_path, mtime)) |plugins| {
                 try appendCachedPluginEntries(allocator, entries, binary_path, plugins);
+                return;
+            }
+            if (!full_scan and !cache_ptr.hasPath(binary_path)) {
                 return;
             }
         }
