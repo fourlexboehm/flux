@@ -21,19 +21,27 @@ pub fn build(b: *std.Build) void {
         "Disable profiling. This will override the enable profiling flag",
     ) orelse false;
 
+    const target = b.standardTargetOptions(.{});
+    const optimize = b.standardOptimizeOption(.{});
+
+    const GuiBackend = enum { osx_metal, win32_dx12, glfw_opengl3 };
+    const gui_backend = b.option(GuiBackend, "gui-backend", "GUI backend (default: auto-detect from target)") orelse switch (builtin.os.tag) {
+        .macos => .osx_metal,
+        .windows => .win32_dx12,
+        else => .glfw_opengl3,
+    };
+
     const use_wayland = b.option(
         bool,
         "wayland",
         "Use Wayland on Linux (default: true)",
-    ) orelse (builtin.os.tag == .linux);
+    ) orelse (gui_backend == .glfw_opengl3);
     const use_x11 = b.option(
         bool,
         "x11",
         "Use X11 on Linux (default: false when wayland=true)",
     ) orelse (!use_wayland);
-
-    const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{});
+    const use_llvm = b.option(bool, "use-llvm", "Use LLVM backend") orelse true;
     const enable_segfault_handler = b.option(
         bool,
         "enable_segfault_handler",
@@ -44,11 +52,7 @@ pub fn build(b: *std.Build) void {
     const zgui = b.dependency("zgui", .{
         .shared = false,
         .with_implot = true,
-        .backend = switch (builtin.os.tag) {
-            .macos => .osx_metal,
-            .windows => .win32_dx12,
-            else => .glfw_opengl3,
-        },
+        .backend = gui_backend,
     });
     const zglfw = b.dependency("zglfw", .{
         .shared = false,
@@ -99,15 +103,18 @@ pub fn build(b: *std.Build) void {
         .name = "zsynth",
         .root_module = lib_module,
         .linkage = .dynamic,
+        .use_llvm = use_llvm,
     });
 
     const exe = b.addExecutable(.{
         .name = "zsynth",
         .root_module = exe_module,
+        .use_llvm = use_llvm,
     });
     const flux = b.addExecutable(.{
         .name = "flux",
         .root_module = flux_module,
+        .use_llvm = use_llvm,
     });
 
     // Allow options to be passed in to source files
@@ -139,7 +146,8 @@ pub fn build(b: *std.Build) void {
     shared.addImport("zgui", zgui.module("root"));
     shared.addImport("zglfw", zglfw.module("root"));
     shared.addImport("zopengl", zopengl.module("root"));
-    if (builtin.os.tag == .macos) {
+    const target_os = target.result.os.tag;
+    if (target_os == .macos) {
         shared.addImport("objc", objc.module("mach-objc"));
     }
 
@@ -166,7 +174,7 @@ pub fn build(b: *std.Build) void {
         pkg.root_module.addOptions("options", options);
         pkg.root_module.addImport("static_data", static_data_module);
 
-        if (builtin.os.tag == .macos) {
+        if (target_os == .macos) {
             pkg.root_module.addImport("objc", objc.module("mach-objc"));
             pkg.root_module.linkFramework("AppKit", .{});
             pkg.root_module.linkFramework("Cocoa", .{});
@@ -175,7 +183,7 @@ pub fn build(b: *std.Build) void {
             pkg.root_module.linkFramework("Metal", .{});
             pkg.root_module.linkFramework("QuartzCore", .{});
         }
-        if (builtin.os.tag == .linux) {
+        if (target_os == .linux) {
             if (use_wayland) {
                 pkg.root_module.linkSystemLibrary("wayland-client", .{});
                 pkg.root_module.linkSystemLibrary("wayland-cursor", .{});
@@ -196,7 +204,7 @@ pub fn build(b: *std.Build) void {
     zsynth_core.addImport("shared", shared);
     zsynth_core.addImport("options", options_core_module);
     zsynth_core.addImport("static_data", static_data_module);
-    if (builtin.os.tag == .macos) {
+    if (target_os == .macos) {
         zsynth_core.addImport("objc", objc.module("mach-objc"));
     }
 
@@ -209,7 +217,7 @@ pub fn build(b: *std.Build) void {
     zminimoog_core.addImport("shared", shared);
     zminimoog_core.addImport("options", options_core_module);
     zminimoog_core.addImport("static_data", static_data_module);
-    if (builtin.os.tag == .macos) {
+    if (target_os == .macos) {
         zminimoog_core.addImport("objc", objc.module("mach-objc"));
     }
 
@@ -252,7 +260,7 @@ pub fn build(b: *std.Build) void {
     flux.root_module.addIncludePath(portmidi.path("pm_mac"));
     flux.root_module.addIncludePath(portmidi.path("pm_linux"));
     flux.root_module.addIncludePath(portmidi.path("porttime"));
-    if (builtin.os.tag == .macos) {
+    if (target_os == .macos) {
         flux.root_module.addImport("objc", objc.module("mach-objc"));
         flux.root_module.linkFramework("AppKit", .{});
         flux.root_module.linkFramework("Cocoa", .{});
@@ -277,7 +285,7 @@ pub fn build(b: *std.Build) void {
             .flags = &.{},
         });
     }
-    if (builtin.os.tag == .linux) {
+    if (target_os == .linux) {
         flux.root_module.linkSystemLibrary("asound", .{});
         flux.root_module.linkSystemLibrary("pthread", .{});
         flux.root_module.addCSourceFiles(.{
@@ -318,6 +326,7 @@ pub fn build(b: *std.Build) void {
 
     const filter_tests = b.addTest(.{
         .root_module = filter_test_module,
+        .use_llvm = use_llvm,
     });
 
     const run_filter_tests = b.addRunArtifact(filter_tests);
@@ -332,6 +341,7 @@ pub fn build(b: *std.Build) void {
 
     const dsp_tests = b.addTest(.{
         .root_module = dsp_test_module,
+        .use_llvm = use_llvm,
     });
 
     const run_dsp_tests = b.addRunArtifact(dsp_tests);
