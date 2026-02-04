@@ -215,7 +215,7 @@ pub const SessionView = struct {
     clipboard: std.ArrayListUnmanaged(ClipboardEntry) = .{},
     clipboard_origin_track: usize = 0,
     clipboard_origin_scene: usize = 0,
-    // Piano clip copy requests (processed by ui.zig)
+    // Piano clip copy requests (processed by ui/undo_requests.zig)
     piano_copy_requests: [constants.max_tracks * constants.max_scenes]PianoCopyRequest = undefined,
     piano_copy_count: usize = 0,
     pending_piano_copies: bool = false,
@@ -235,14 +235,14 @@ pub const SessionView = struct {
     start_playback_request: bool = false,
     reset_playhead_request: bool = false,
 
-    // Undo requests (populated by operations, processed by ui.zig)
+    // Undo requests (populated by operations, processed by ui/undo_requests.zig)
     undo_requests: [16]UndoRequest = undefined,
     undo_request_count: usize = 0,
 
     // Clip move undo (separate since it can involve multiple clips)
     clip_move_requests: [constants.max_tracks * constants.max_scenes]ClipMoveEntry = undefined,
     clip_move_count: usize = 0,
-    // Also used to signal ui.zig to move piano clips
+    // Also used to signal ui/undo_requests.zig to move piano clips
     pending_piano_moves: bool = false,
 
     // Volume drag tracking for undo

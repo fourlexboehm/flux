@@ -1,6 +1,6 @@
 //! Undo history manager - maintains stacks of commands for undo/redo.
 //!
-//! Note: Actual command execution is handled by the caller (ui.zig)
+//! Note: Actual command execution is handled by the caller (ui/state.zig)
 //! to avoid circular dependencies.
 
 const std = @import("std");

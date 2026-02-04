@@ -1,5 +1,5 @@
 const std = @import("std");
-const ui = @import("../ui.zig");
+const ui_state = @import("../ui/state.zig");
 const plugins = @import("../plugins.zig");
 const undo = @import("../undo/root.zig");
 const types = @import("types.zig");
@@ -33,11 +33,11 @@ pub fn save(
     allocator: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
-    state: *const ui.State,
+    state: *const ui_state.State,
     catalog: *const plugins.PluginCatalog,
     plugin_states: []const PluginStateFile,
     track_plugin_info: []const TrackPluginInfo,
-    track_fx_plugin_info: []const [ui.max_fx_slots]TrackPluginInfo,
+    track_fx_plugin_info: []const [ui_state.max_fx_slots]TrackPluginInfo,
 ) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();

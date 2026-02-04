@@ -514,7 +514,7 @@ pub fn moveSelectedClips(self: *session_view.SessionView, delta_track: i32, delt
     self.drag_start_track = self.primary_track;
     self.drag_start_scene = self.primary_scene;
 
-    // Emit undo request for clip moves (also signals ui.zig to move piano clips)
+    // Emit undo request for clip moves (also signals ui/undo_requests.zig to move piano clips)
     self.clip_move_count = 0;
     for (moves[0..move_count]) |m| {
         if (self.clip_move_count < self.clip_move_requests.len) {
