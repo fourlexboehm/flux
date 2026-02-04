@@ -4,12 +4,14 @@ const clap = @import("clap-bindings");
 
 const ui = @import("ui.zig");
 const session_constants = @import("ui/session_view/constants.zig");
+const session_view = @import("ui/session_view.zig");
 const audio_graph = @import("audio_graph.zig");
 
 const max_tracks = session_constants.max_tracks;
 const max_scenes = session_constants.max_scenes;
 const beats_per_bar = session_constants.beats_per_bar;
 const default_clip_bars = session_constants.default_clip_bars;
+const master_track_index = session_view.master_track_index;
 
 const Channels = 2;
 
@@ -185,6 +187,7 @@ pub const SharedState = struct {
     pub fn clearFxPluginStarted(self: *SharedState, track_index: usize, fx_index: usize) void {
         self.plugins_started_fx[track_index][fx_index].store(false, .release);
     }
+
 
     pub fn snapshot(self: *SharedState) *const audio_graph.StateSnapshot {
         const current = self.active_index.load(.acquire);
@@ -400,6 +403,21 @@ fn buildGraph(
         try graph.connect(gain_nodes[track_index], 0, mixer_id, 0, .audio);
     }
 
+    var prev_master_node = mixer_id;
+    for (0..ui.max_fx_slots) |fx_index| {
+        var master_fx_node = audio_graph.Node{
+            .id = 0,
+            .kind = .fx,
+            .data = .{ .fx = audio_graph.FxNode.init(master_track_index, fx_index) },
+        };
+        master_fx_node.addInput(.audio);
+        master_fx_node.addInput(.events);
+        master_fx_node.addOutput(.audio);
+        const master_fx_id = try graph.addNode(master_fx_node);
+        try graph.connect(prev_master_node, 0, master_fx_id, 0, .audio);
+        prev_master_node = master_fx_id;
+    }
+
     var master_node = audio_graph.Node{
         .id = 0,
         .kind = .master,
@@ -408,7 +426,7 @@ fn buildGraph(
     master_node.addInput(.audio);
     master_node.addOutput(.audio);
     const master_id = try graph.addNode(master_node);
-    try graph.connect(mixer_id, 0, master_id, 0, .audio);
+    try graph.connect(prev_master_node, 0, master_id, 0, .audio);
     graph.master_node = master_id;
 
     try graph.prepare(sample_rate, max_frames);
