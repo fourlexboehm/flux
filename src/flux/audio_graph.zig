@@ -13,6 +13,7 @@ const max_tracks = session_constants.max_tracks;
 const max_scenes = session_constants.max_scenes;
 const beats_per_bar = session_constants.beats_per_bar;
 const default_clip_bars = session_constants.default_clip_bars;
+const master_track_index = session_view.master_track_index;
 
 pub const JobQueue = libz_jobs.JobQueue(.{
     .max_jobs_per_thread = 64, // Enough for tracks + root job
@@ -1001,6 +1002,15 @@ pub const Graph = struct {
                     .mixer, .master => {
                         const outputs = self.getAudioOutput(node_id);
                         self.sumAudioInputs(node_id, frame_count, outputs.left, outputs.right);
+                        if (node.kind == .master) {
+                            const master_track = snapshot.tracks[master_track_index];
+                            const master_mute = master_track.mute;
+                            const gain = if (master_mute) 0.0 else master_track.volume;
+                            for (0..frame_count) |i| {
+                                outputs.left[i] *= gain;
+                                outputs.right[i] *= gain;
+                            }
+                        }
                     },
                     else => {},
                 }
@@ -1012,7 +1022,6 @@ pub const Graph = struct {
         var node = &self.nodes.items[node_id];
         const track_index = node.data.fx.track_index;
         const fx_index = node.data.fx.fx_index;
-
         // Skip removed nodes entirely
         if (node.data.fx.removed) return;
 

@@ -42,6 +42,7 @@ pub const Track = struct {
     volume: f32 = 0.8,
     mute: bool = false,
     solo: bool = false,
+    is_master: bool = false,
 
     pub fn init(name: []const u8) Track {
         var t = Track{};
@@ -57,6 +58,13 @@ pub const Track = struct {
         return self.name.get();
     }
 };
+
+pub const MixerTarget = enum {
+    track,
+    master,
+};
+
+pub const master_track_index: usize = constants.max_tracks - 1;
 
 pub const Scene = struct {
     name: NameField = .{},
@@ -195,6 +203,7 @@ pub const SessionView = struct {
     clips: [constants.max_tracks][constants.max_scenes]ClipSlot = undefined,
     track_count: usize = 4,
     scene_count: usize = 8,
+    mixer_target: MixerTarget = .track,
 
     // Selection - simple 2D bool array
     clip_selected: [constants.max_tracks][constants.max_scenes]bool = [_][constants.max_scenes]bool{[_]bool{false} ** constants.max_scenes} ** constants.max_tracks,

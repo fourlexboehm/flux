@@ -1,7 +1,9 @@
 const std = @import("std");
 const ui = @import("../ui.zig");
 const session_constants = @import("../ui/session_view/constants.zig");
+const session_view = @import("../ui/session_view.zig");
 const track_count = session_constants.max_tracks;
+const master_track_index = session_view.master_track_index;
 const plugins = @import("../plugins.zig");
 const types = @import("types.zig");
 const io_types = @import("io_types.zig");
@@ -204,6 +206,52 @@ pub fn fromFluxProject(
     }
 
     // Master track
+    var master_devices = std.ArrayList(ClapPlugin).empty;
+    for (0..ui.max_fx_slots) |fx_index| {
+        const fx_choice = state.track_fx[master_track_index][fx_index].choice_index;
+        if (catalog.entryForIndex(fx_choice)) |entry| {
+            if (entry.kind != .clap) continue;
+            const device_id = try ids.next();
+            const enabled_id = try ids.next();
+            const info = if (master_track_index < track_fx_plugin_info.len)
+                track_fx_plugin_info[master_track_index][fx_index]
+            else
+                TrackPluginInfo{};
+            const clap_plugin_id = info.plugin_id orelse entry.id orelse "";
+            var params = std.ArrayList(RealParameter).empty;
+            if (info.params.len > 0) {
+                for (info.params) |param| {
+                    const param_id = try std.fmt.allocPrint(allocator, "{s}_p{d}", .{ device_id, param.id });
+                    try params.append(allocator, .{
+                        .id = param_id,
+                        .name = try allocator.dupe(u8, param.name),
+                        .value = param.value,
+                        .min = param.min,
+                        .max = param.max,
+                        .unit = .linear,
+                    });
+                }
+            }
+
+            try master_devices.append(allocator, .{
+                .id = device_id,
+                .name = try allocator.dupe(u8, entry.name),
+                .device_id = try allocator.dupe(u8, clap_plugin_id),
+                .device_name = try allocator.dupe(u8, entry.name),
+                .device_role = .audioFX,
+                .parameters = try params.toOwnedSlice(allocator),
+                .enabled = .{
+                    .id = enabled_id,
+                    .name = "On/Off",
+                    .value = true,
+                },
+                .state = if (info.state_path) |sp| .{
+                    .path = try allocator.dupe(u8, sp),
+                } else null,
+            });
+        }
+    }
+
     const master_track_id = try ids.next();
     const master_vol_id = try ids.next();
     const master_mute_id = try ids.next();
@@ -219,7 +267,7 @@ pub fn fromFluxProject(
             .volume = .{
                 .id = master_vol_id,
                 .name = "Volume",
-                .value = 1.0,
+                .value = state.session.tracks[master_track_index].volume,
                 .min = 0.0,
                 .max = 2.0,
                 .unit = .linear,
@@ -227,7 +275,7 @@ pub fn fromFluxProject(
             .mute = .{
                 .id = master_mute_id,
                 .name = "Mute",
-                .value = false,
+                .value = state.session.tracks[master_track_index].mute,
             },
             .pan = .{
                 .id = master_pan_id,
@@ -237,6 +285,7 @@ pub fn fromFluxProject(
                 .max = 1.0,
                 .unit = .normalized,
             },
+            .devices = try master_devices.toOwnedSlice(allocator),
         },
     };
 

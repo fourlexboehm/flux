@@ -19,6 +19,9 @@ pub fn init(allocator: std.mem.Allocator) session_view.SessionView {
         const name = std.fmt.bufPrint(&buf, "Inst {d}", .{i + 1}) catch "Inst";
         self.tracks[i] = TrackType.init(name);
     }
+    self.tracks[session_view.master_track_index] = TrackType.init("Master");
+    self.tracks[session_view.master_track_index].is_master = true;
+    self.tracks[session_view.master_track_index].volume = 0.9;
 
     // Initialize scenes
     const SceneType = @TypeOf(self.scenes[0]);
@@ -35,6 +38,8 @@ pub fn init(allocator: std.mem.Allocator) session_view.SessionView {
         }
     }
 
+    self.mixer_target = .track;
+
     return self;
 }
 
@@ -50,6 +55,7 @@ pub fn selectClip(self: *session_view.SessionView, track: usize, scene: usize) v
     self.clip_selected[track][scene] = true;
     self.primary_track = track;
     self.primary_scene = scene;
+    self.mixer_target = .track;
 }
 
 pub fn deselectClip(self: *session_view.SessionView, track: usize, scene: usize) void {
@@ -102,6 +108,7 @@ pub fn handleClipClick(self: *session_view.SessionView, track: usize, scene: usi
         self.primary_track = track;
         self.primary_scene = scene;
     }
+    self.mixer_target = .track;
 }
 
 /// Create a new clip at the given position
@@ -249,7 +256,7 @@ pub fn paste(self: *session_view.SessionView) void {
 
 /// Add a new track
 pub fn addTrack(self: *session_view.SessionView) bool {
-    if (self.track_count >= max_tracks) return false;
+    if (self.track_count >= max_tracks - 1) return false;
 
     var buf: [16]u8 = undefined;
     const name = std.fmt.bufPrint(&buf, "Inst {d}", .{self.track_count + 1}) catch "Inst";
