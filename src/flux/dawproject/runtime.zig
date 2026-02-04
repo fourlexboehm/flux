@@ -1,12 +1,12 @@
 const std = @import("std");
 const clap = @import("clap-bindings");
 
-const audio_engine = @import("../audio_engine.zig");
+const audio_engine = @import("../audio/audio_engine.zig");
 const clap_ids = @import("../clap_ids.zig");
 const file_dialog = @import("../file_dialog.zig");
 const piano_roll_types = @import("../ui/piano_roll/types.zig");
-const plugin_runtime = @import("../plugin_runtime.zig");
-const plugins = @import("../plugins.zig");
+const plugin_runtime = @import("../plugin/plugin_runtime.zig");
+const plugins = @import("../plugin/plugins.zig");
 const session_constants = @import("../ui/session_view/constants.zig");
 const session_ops = @import("../ui/session_view/ops.zig");
 const session_view = @import("../ui/session_view.zig");
