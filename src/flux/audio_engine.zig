@@ -2,7 +2,7 @@ const std = @import("std");
 const zaudio = @import("zaudio");
 const clap = @import("clap-bindings");
 
-const ui = @import("ui.zig");
+const ui_state = @import("ui/state.zig");
 const session_constants = @import("ui/session_view/constants.zig");
 const session_view = @import("ui/session_view.zig");
 const audio_graph = @import("audio_graph.zig");
@@ -22,19 +22,19 @@ pub const SharedState = struct {
     suspend_processing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     snapshots: []audio_graph.StateSnapshot,
     track_plugins: [max_tracks]?*const clap.Plugin = [_]?*const clap.Plugin{null} ** max_tracks,
-    track_fx_plugins: [max_tracks][ui.max_fx_slots]?*const clap.Plugin =
-        [_][ui.max_fx_slots]?*const clap.Plugin{[_]?*const clap.Plugin{null} ** ui.max_fx_slots} ** max_tracks,
+    track_fx_plugins: [max_tracks][ui_state.max_fx_slots]?*const clap.Plugin =
+        [_][ui_state.max_fx_slots]?*const clap.Plugin{[_]?*const clap.Plugin{null} ** ui_state.max_fx_slots} ** max_tracks,
     /// Tracks which plugins need startProcessing called (done from audio thread)
     plugins_need_start: [max_tracks]std.atomic.Value(bool) = [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** max_tracks,
     /// Tracks which plugins have had startProcessing called (for stopProcessing on cleanup)
     plugins_started: [max_tracks]std.atomic.Value(bool) = [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** max_tracks,
-    plugins_need_start_fx: [max_tracks][ui.max_fx_slots]std.atomic.Value(bool) =
-        [_][ui.max_fx_slots]std.atomic.Value(bool){
-            [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** ui.max_fx_slots,
+    plugins_need_start_fx: [max_tracks][ui_state.max_fx_slots]std.atomic.Value(bool) =
+        [_][ui_state.max_fx_slots]std.atomic.Value(bool){
+            [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** ui_state.max_fx_slots,
         } ** max_tracks,
-    plugins_started_fx: [max_tracks][ui.max_fx_slots]std.atomic.Value(bool) =
-        [_][ui.max_fx_slots]std.atomic.Value(bool){
-            [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** ui.max_fx_slots,
+    plugins_started_fx: [max_tracks][ui_state.max_fx_slots]std.atomic.Value(bool) =
+        [_][ui_state.max_fx_slots]std.atomic.Value(bool){
+            [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** ui_state.max_fx_slots,
         } ** max_tracks,
 
     pub fn init(allocator: std.mem.Allocator) !SharedState {
@@ -50,7 +50,7 @@ pub const SharedState = struct {
         allocator.free(self.snapshots);
     }
 
-    pub fn updateFromUi(self: *SharedState, state: *const ui.State) void {
+    pub fn updateFromUi(self: *SharedState, state: *const ui_state.State) void {
         while (self.processing.load(.acquire) != 0) {
             std.atomic.spinLoopHint();
         }
@@ -119,7 +119,7 @@ pub const SharedState = struct {
     pub fn updatePlugins(
         self: *SharedState,
         plugins: [max_tracks]?*const clap.Plugin,
-        fx_plugins: [max_tracks][ui.max_fx_slots]?*const clap.Plugin,
+        fx_plugins: [max_tracks][ui_state.max_fx_slots]?*const clap.Plugin,
     ) void {
         self.track_plugins = plugins;
         self.track_fx_plugins = fx_plugins;
@@ -251,7 +251,7 @@ pub const AudioEngine = struct {
         self.shared.deinit(self.allocator);
     }
 
-    pub fn updateFromUi(self: *AudioEngine, state: *const ui.State) void {
+    pub fn updateFromUi(self: *AudioEngine, state: *const ui_state.State) void {
         if (state.session.track_count != self.track_count) {
             self.rebuildGraph(state.session.track_count, false) catch |err| {
                 std.log.warn("Failed to rebuild graph: {}", .{err});
@@ -269,7 +269,7 @@ pub const AudioEngine = struct {
     pub fn updatePlugins(
         self: *AudioEngine,
         plugins: [max_tracks]?*const clap.Plugin,
-        fx_plugins: [max_tracks][ui.max_fx_slots]?*const clap.Plugin,
+        fx_plugins: [max_tracks][ui_state.max_fx_slots]?*const clap.Plugin,
     ) void {
         self.shared.updatePlugins(plugins, fx_plugins);
     }
@@ -354,7 +354,7 @@ fn buildGraph(
         synth_nodes[track_index] = try graph.addNode(synth_node);
 
         var prev_node = synth_nodes[track_index];
-        for (0..ui.max_fx_slots) |fx_index| {
+        for (0..ui_state.max_fx_slots) |fx_index| {
             var fx_note_node = audio_graph.Node{
                 .id = 0,
                 .kind = .note_source,
@@ -404,7 +404,7 @@ fn buildGraph(
     }
 
     var prev_master_node = mixer_id;
-    for (0..ui.max_fx_slots) |fx_index| {
+    for (0..ui_state.max_fx_slots) |fx_index| {
         var master_fx_node = audio_graph.Node{
             .id = 0,
             .kind = .fx,

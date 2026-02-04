@@ -1,7 +1,7 @@
 const std = @import("std");
 const clap = @import("clap-bindings");
 const tracy = @import("tracy");
-const ui = @import("ui.zig");
+const ui_state = @import("ui/state.zig");
 const session_view = @import("ui/session_view.zig");
 const session_constants = @import("ui/session_view/constants.zig");
 const piano_roll_types = @import("ui/piano_roll/types.zig");
@@ -57,7 +57,7 @@ pub const StateSnapshot = struct {
     clips: [max_tracks][max_scenes]session_view.ClipSlot,
     piano_clips: [max_tracks][max_scenes]ClipNotes,
     track_plugins: [max_tracks]?*const clap.Plugin,
-    track_fx_plugins: [max_tracks][ui.max_fx_slots]?*const clap.Plugin,
+    track_fx_plugins: [max_tracks][ui_state.max_fx_slots]?*const clap.Plugin,
     live_key_states: [max_tracks][128]bool,
     live_key_velocities: [max_tracks][128]f32,
 };
@@ -1137,10 +1137,10 @@ pub const Graph = struct {
     }
 
     fn processSynthTaskDirect(ctx: *ProcessContext, task_index: u32) void {
-        const main = @import("main.zig");
-        main.is_audio_thread = true;
-        main.in_jobs_worker = true;
-        defer main.in_jobs_worker = false;
+        const thread_context = @import("thread_context.zig");
+        thread_context.is_audio_thread = true;
+        thread_context.in_jobs_worker = true;
+        defer thread_context.in_jobs_worker = false;
 
         const zone = tracy.ZoneN(@src(), "Synth task");
         defer zone.End();
