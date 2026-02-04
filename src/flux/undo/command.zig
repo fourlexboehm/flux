@@ -3,11 +3,12 @@
 
 const std = @import("std");
 const session_view = @import("../ui/session_view.zig");
-const piano_roll = @import("../ui/piano_roll.zig");
+const session_view_constants = @import("../ui/session_view/constants.zig");
+const piano_roll_types = @import("../ui/piano_roll/types.zig");
 
-pub const Note = piano_roll.Note;
-pub const max_tracks = session_view.max_tracks;
-pub const max_scenes = session_view.max_scenes;
+pub const Note = piano_roll_types.Note;
+pub const max_tracks = session_view_constants.max_tracks;
+pub const max_scenes = session_view_constants.max_scenes;
 
 /// Command type enumeration
 pub const CommandKind = enum {

@@ -3,7 +3,13 @@ const zaudio = @import("zaudio");
 const clap = @import("clap-bindings");
 
 const ui = @import("ui.zig");
+const session_constants = @import("ui/session_view/constants.zig");
 const audio_graph = @import("audio_graph.zig");
+
+const max_tracks = session_constants.max_tracks;
+const max_scenes = session_constants.max_scenes;
+const beats_per_bar = session_constants.beats_per_bar;
+const default_clip_bars = session_constants.default_clip_bars;
 
 const Channels = 2;
 
@@ -13,21 +19,21 @@ pub const SharedState = struct {
     process_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     suspend_processing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     snapshots: []audio_graph.StateSnapshot,
-    track_plugins: [ui.track_count]?*const clap.Plugin = [_]?*const clap.Plugin{null} ** ui.track_count,
-    track_fx_plugins: [ui.track_count][ui.max_fx_slots]?*const clap.Plugin =
-        [_][ui.max_fx_slots]?*const clap.Plugin{[_]?*const clap.Plugin{null} ** ui.max_fx_slots} ** ui.track_count,
+    track_plugins: [max_tracks]?*const clap.Plugin = [_]?*const clap.Plugin{null} ** max_tracks,
+    track_fx_plugins: [max_tracks][ui.max_fx_slots]?*const clap.Plugin =
+        [_][ui.max_fx_slots]?*const clap.Plugin{[_]?*const clap.Plugin{null} ** ui.max_fx_slots} ** max_tracks,
     /// Tracks which plugins need startProcessing called (done from audio thread)
-    plugins_need_start: [ui.track_count]std.atomic.Value(bool) = [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** ui.track_count,
+    plugins_need_start: [max_tracks]std.atomic.Value(bool) = [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** max_tracks,
     /// Tracks which plugins have had startProcessing called (for stopProcessing on cleanup)
-    plugins_started: [ui.track_count]std.atomic.Value(bool) = [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** ui.track_count,
-    plugins_need_start_fx: [ui.track_count][ui.max_fx_slots]std.atomic.Value(bool) =
+    plugins_started: [max_tracks]std.atomic.Value(bool) = [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** max_tracks,
+    plugins_need_start_fx: [max_tracks][ui.max_fx_slots]std.atomic.Value(bool) =
         [_][ui.max_fx_slots]std.atomic.Value(bool){
             [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** ui.max_fx_slots,
-        } ** ui.track_count,
-    plugins_started_fx: [ui.track_count][ui.max_fx_slots]std.atomic.Value(bool) =
+        } ** max_tracks,
+    plugins_started_fx: [max_tracks][ui.max_fx_slots]std.atomic.Value(bool) =
         [_][ui.max_fx_slots]std.atomic.Value(bool){
             [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** ui.max_fx_slots,
-        } ** ui.track_count,
+        } ** max_tracks,
 
     pub fn init(allocator: std.mem.Allocator) !SharedState {
         var snapshots = try allocator.alloc(audio_graph.StateSnapshot, 2);
@@ -60,8 +66,8 @@ pub const SharedState = struct {
         back.track_fx_plugins = self.track_fx_plugins;
         back.live_key_states = state.live_key_states;
         back.live_key_velocities = state.live_key_velocities;
-        for (0..ui.track_count) |t| {
-            for (0..ui.scene_count) |s| {
+        for (0..max_tracks) |t| {
+            for (0..max_scenes) |s| {
                 const src = &state.piano_clips[t][s];
                 var dst = &back.piano_clips[t][s];
                 dst.length_beats = src.length_beats;
@@ -110,8 +116,8 @@ pub const SharedState = struct {
 
     pub fn updatePlugins(
         self: *SharedState,
-        plugins: [ui.track_count]?*const clap.Plugin,
-        fx_plugins: [ui.track_count][ui.max_fx_slots]?*const clap.Plugin,
+        plugins: [max_tracks]?*const clap.Plugin,
+        fx_plugins: [max_tracks][ui.max_fx_slots]?*const clap.Plugin,
     ) void {
         self.track_plugins = plugins;
         self.track_fx_plugins = fx_plugins;
@@ -226,15 +232,14 @@ pub const AudioEngine = struct {
         max_frames: u32,
     ) !AudioEngine {
         const shared = try SharedState.init(allocator);
-        const track_count = ui.track_count;
-        const graph = try buildGraph(allocator, track_count, sample_rate, max_frames);
+        const graph = try buildGraph(allocator, max_tracks, sample_rate, max_frames);
         return .{
             .allocator = allocator,
             .graph = graph,
             .shared = shared,
             .sample_rate = sample_rate,
             .max_frames = max_frames,
-            .track_count = track_count,
+            .track_count = max_tracks,
         };
     }
 
@@ -260,8 +265,8 @@ pub const AudioEngine = struct {
 
     pub fn updatePlugins(
         self: *AudioEngine,
-        plugins: [ui.track_count]?*const clap.Plugin,
-        fx_plugins: [ui.track_count][ui.max_fx_slots]?*const clap.Plugin,
+        plugins: [max_tracks]?*const clap.Plugin,
+        fx_plugins: [max_tracks][ui.max_fx_slots]?*const clap.Plugin,
     ) void {
         self.shared.updatePlugins(plugins, fx_plugins);
     }
@@ -300,32 +305,32 @@ pub const AudioEngine = struct {
         _ = device;
     }
 
-    fn rebuildGraph(self: *AudioEngine, track_count: usize, force: bool) !void {
-        if (!force and track_count == self.track_count) return;
+    fn rebuildGraph(self: *AudioEngine, track_count_in: usize, force: bool) !void {
+        if (!force and track_count_in == self.track_count) return;
         self.rebuilding.store(1, .release);
         while (self.shared.processing.load(.acquire) != 0) {
             std.atomic.spinLoopHint();
         }
-        const new_graph = try buildGraph(self.allocator, track_count, self.sample_rate, self.max_frames);
+        const new_graph = try buildGraph(self.allocator, track_count_in, self.sample_rate, self.max_frames);
         self.graph.deinit();
         self.graph = new_graph;
-        self.track_count = track_count;
+        self.track_count = track_count_in;
         self.rebuilding.store(0, .release);
     }
 };
 
 fn buildGraph(
     allocator: std.mem.Allocator,
-    track_count: usize,
+    track_count_in: usize,
     sample_rate: f32,
     max_frames: u32,
 ) !audio_graph.Graph {
     var graph = audio_graph.Graph.init(allocator);
 
-    var note_nodes: [ui.track_count]audio_graph.NodeId = undefined;
-    var synth_nodes: [ui.track_count]audio_graph.NodeId = undefined;
-    var gain_nodes: [ui.track_count]audio_graph.NodeId = undefined;
-    const count = @min(track_count, ui.track_count);
+    var note_nodes: [max_tracks]audio_graph.NodeId = undefined;
+    var synth_nodes: [max_tracks]audio_graph.NodeId = undefined;
+    var gain_nodes: [max_tracks]audio_graph.NodeId = undefined;
+    const count = @min(track_count_in, max_tracks);
 
     for (0..count) |track_index| {
         var note_node = audio_graph.Node{
@@ -412,12 +417,12 @@ fn buildGraph(
 fn initSnapshot(snapshot: *audio_graph.StateSnapshot) void {
     const bytes: [*]u8 = @ptrCast(snapshot);
     @memset(bytes[0..@sizeOf(audio_graph.StateSnapshot)], 0);
-    snapshot.track_count = ui.track_count;
-    snapshot.scene_count = ui.scene_count;
-    for (0..ui.track_count) |t| {
-        for (0..ui.scene_count) |s| {
-            snapshot.clips[t][s].length_beats = ui.default_clip_bars * ui.beats_per_bar;
-            snapshot.piano_clips[t][s].length_beats = ui.default_clip_bars * ui.beats_per_bar;
+    snapshot.track_count = max_tracks;
+    snapshot.scene_count = max_scenes;
+    for (0..max_tracks) |t| {
+        for (0..max_scenes) |s| {
+            snapshot.clips[t][s].length_beats = default_clip_bars * beats_per_bar;
+            snapshot.piano_clips[t][s].length_beats = default_clip_bars * beats_per_bar;
             snapshot.piano_clips[t][s].count = 0;
         }
     }

@@ -3,35 +3,33 @@ const zgui = @import("zgui");
 const zsynth = @import("zsynth-core");
 const zminimoog = @import("zminimoog-core");
 const clap = @import("clap-bindings");
+const presets = @import("presets.zig");
 const zsynth_view = zsynth.View;
 const zminimoog_view = zminimoog.View;
 
 // Import UI modules
 pub const ui = @import("ui/root.zig");
+const session_view = @import("ui/session_view.zig");
+const session_constants = @import("ui/session_view/constants.zig");
+const session_ops = @import("ui/session_view/ops.zig");
+const session_draw = @import("ui/session_view/draw.zig");
+const session_playback = @import("ui/session_view/playback.zig");
+const session_recording = @import("ui/session_view/recording.zig");
 
 // Import undo system
 pub const undo = @import("undo/root.zig");
 pub const Colors = ui.Colors;
-pub const SessionView = ui.SessionView;
-pub const PianoRollClip = ui.PianoRollClip;
-pub const PianoRollState = ui.PianoRollState;
-pub const Note = ui.Note;
-pub const AutomationTargetKind = ui.AutomationTargetKind;
-pub const AutomationPoint = ui.AutomationPoint;
-pub const AutomationLane = ui.AutomationLane;
-pub const ClipAutomation = ui.ClipAutomation;
-pub const ClipState = ui.ClipState;
-pub const ClipSlot = ui.ClipSlot;
-pub const Track = ui.Track;
+const SessionView = session_view.SessionView;
+const ClipState = session_view.ClipState;
+const ClipSlot = session_view.ClipSlot;
+const Track = session_view.Track;
+const max_tracks = session_constants.max_tracks;
+const max_scenes = session_constants.max_scenes;
+const beats_per_bar = session_constants.beats_per_bar;
+const default_clip_bars = session_constants.default_clip_bars;
 
 // Re-export constants for compatibility
-pub const track_count = ui.max_tracks;
-pub const scene_count = ui.max_scenes;
 pub const max_fx_slots = 4;
-pub const beats_per_bar = ui.beats_per_bar;
-pub const default_clip_bars = ui.default_clip_bars;
-pub const total_pitches = ui.total_pitches;
-pub const quantizeIndexToBeats = ui.quantizeIndexToBeats;
 pub const buffer_frame_options = [_]u32{ 64, 128, 256, 512, 1024 };
 pub const default_buffer_frames: u32 = buffer_frame_options[1];
 
@@ -124,26 +122,31 @@ pub const State = struct {
     session: SessionView,
 
     // Piano roll state
-    piano_state: PianoRollState,
+    piano_state: ui.piano_roll_types.PianoRollState,
 
     // Piano clips storage (separate from session view's clip metadata)
-    piano_clips: [ui.max_tracks][ui.max_scenes]PianoRollClip,
+    piano_clips: [max_tracks][max_scenes]ui.piano_roll_types.PianoRollClip,
 
     // Track plugin UI state
-    track_plugins: [ui.max_tracks]TrackPluginUI,
-    track_fx: [ui.max_tracks][max_fx_slots]TrackPluginUI,
-    track_fx_slot_count: [ui.max_tracks]usize,
+    track_plugins: [max_tracks]TrackPluginUI,
+    track_fx: [max_tracks][max_fx_slots]TrackPluginUI,
+    track_fx_slot_count: [max_tracks]usize,
     plugin_items: [:0]const u8,
     plugin_fx_items: [:0]const u8,
     plugin_fx_indices: []i32,
     plugin_instrument_items: [:0]const u8,
     plugin_instrument_indices: []i32,
+    instrument_filter_items_z: [:0]const u8,
+    instrument_filter_indices: []i32,
+    preset_filter_items_z: [:0]const u8,
+    preset_filter_indices: []i32,
+    preset_combo_width: f32 = 260.0,
     plugin_divider_index: ?i32,
-    track_plugin_ptrs: [ui.max_tracks]?*const clap.Plugin,
-    track_fx_plugin_ptrs: [ui.max_tracks][max_fx_slots]?*const clap.Plugin,
-    live_key_states: [ui.max_tracks][128]bool,
-    previous_key_states: [ui.max_tracks][128]bool,
-    live_key_velocities: [ui.max_tracks][128]f32,
+    track_plugin_ptrs: [max_tracks]?*const clap.Plugin,
+    track_fx_plugin_ptrs: [max_tracks][max_fx_slots]?*const clap.Plugin,
+    live_key_states: [max_tracks][128]bool,
+    previous_key_states: [max_tracks][128]bool,
+    live_key_velocities: [max_tracks][128]f32,
     midi_note_states: [128]bool,
     midi_note_velocities: [128]f32,
     keyboard_octave: i8,
@@ -172,8 +175,16 @@ pub const State = struct {
         state_data: []const u8,
     };
 
+    pub const PresetLoadRequest = struct {
+        track_index: usize,
+        plugin_id: []const u8,
+        location_kind: clap.preset_discovery.Location.Kind,
+        location: [:0]const u8,
+        load_key: ?[:0]const u8,
+    };
+
     pub fn init(allocator: std.mem.Allocator) State {
-        var track_plugins_data: [ui.max_tracks]TrackPluginUI = undefined;
+        var track_plugins_data: [max_tracks]TrackPluginUI = undefined;
         for (&track_plugins_data) |*plugin| {
             plugin.* = .{
                 .choice_index = 0,
@@ -181,7 +192,7 @@ pub const State = struct {
                 .last_valid_choice = 0,
             };
         }
-        var track_fx_data: [ui.max_tracks][max_fx_slots]TrackPluginUI = undefined;
+        var track_fx_data: [max_tracks][max_fx_slots]TrackPluginUI = undefined;
         for (&track_fx_data) |*track| {
             for (track) |*plugin| {
                 plugin.* = .{
@@ -192,10 +203,10 @@ pub const State = struct {
             }
         }
 
-        var piano_clips_data: [ui.max_tracks][ui.max_scenes]PianoRollClip = undefined;
+        var piano_clips_data: [max_tracks][max_scenes]ui.piano_roll_types.PianoRollClip = undefined;
         for (&piano_clips_data) |*track_clips| {
             for (track_clips) |*clip| {
-                clip.* = PianoRollClip.init(allocator);
+                clip.* = ui.piano_roll_types.PianoRollClip.init(allocator);
             }
         }
 
@@ -218,25 +229,29 @@ pub const State = struct {
             .device_target_fx = 0,
             .playhead_beat = 0,
             .focused_pane = .session,
-            .session = SessionView.init(allocator),
-            .piano_state = PianoRollState.init(allocator),
+            .session = session_ops.init(allocator),
+            .piano_state = ui.piano_roll_types.PianoRollState.init(allocator),
             .piano_clips = piano_clips_data,
             .track_plugins = track_plugins_data,
             .track_fx = track_fx_data,
-            .track_fx_slot_count = [_]usize{1} ** ui.max_tracks,
+            .track_fx_slot_count = [_]usize{1} ** max_tracks,
             .plugin_items = plugin_items,
             .plugin_fx_items = &[_:0]u8{},
             .plugin_fx_indices = &[_]i32{},
             .plugin_instrument_items = &[_:0]u8{},
             .plugin_instrument_indices = &[_]i32{},
+            .instrument_filter_items_z = &[_:0]u8{},
+            .instrument_filter_indices = &[_]i32{},
+            .preset_filter_items_z = &[_:0]u8{},
+            .preset_filter_indices = &[_]i32{},
             .plugin_divider_index = null,
-            .track_plugin_ptrs = [_]?*const clap.Plugin{null} ** ui.max_tracks,
+            .track_plugin_ptrs = [_]?*const clap.Plugin{null} ** max_tracks,
             .track_fx_plugin_ptrs = [_][max_fx_slots]?*const clap.Plugin{
                 [_]?*const clap.Plugin{null} ** max_fx_slots,
-            } ** ui.max_tracks,
-            .live_key_states = [_][128]bool{[_]bool{false} ** 128} ** ui.max_tracks,
-            .previous_key_states = [_][128]bool{[_]bool{false} ** 128} ** ui.max_tracks,
-            .live_key_velocities = [_][128]f32{[_]f32{0.0} ** 128} ** ui.max_tracks,
+            } ** max_tracks,
+            .live_key_states = [_][128]bool{[_]bool{false} ** 128} ** max_tracks,
+            .previous_key_states = [_][128]bool{[_]bool{false} ** 128} ** max_tracks,
+            .live_key_velocities = [_][128]f32{[_]f32{0.0} ** 128} ** max_tracks,
             .midi_note_states = [_]bool{false} ** 128,
             .midi_note_velocities = [_]f32{0.0} ** 128,
             .keyboard_octave = 0,
@@ -252,13 +267,25 @@ pub const State = struct {
         if (self.project_path) |path| {
             self.allocator.free(path);
         }
+        if (self.instrument_filter_items_z.len > 0) {
+            self.allocator.free(self.instrument_filter_items_z);
+        }
+        if (self.instrument_filter_indices.len > 0) {
+            self.allocator.free(self.instrument_filter_indices);
+        }
+        if (self.preset_filter_items_z.len > 0) {
+            self.allocator.free(self.preset_filter_items_z);
+        }
+        if (self.preset_filter_indices.len > 0) {
+            self.allocator.free(self.preset_filter_indices);
+        }
         self.undo_history.deinit();
         for (&self.piano_clips) |*track_clips| {
             for (track_clips) |*clip| {
                 clip.deinit();
             }
         }
-        self.session.deinit();
+        session_ops.deinit(&self.session);
         self.piano_state.deinit();
     }
 
@@ -318,6 +345,22 @@ pub const State = struct {
                 self.piano_clips[c.track][c.scene].notes.clearRetainingCapacity();
                 for (c.notes) |note| {
                     self.piano_clips[c.track][c.scene].addNote(note.pitch, note.start, note.duration) catch {};
+                }
+            },
+            .clip_paste => |c| {
+                if (c.old_clip.has_clip) {
+                    self.session.clips[c.track][c.scene] = .{
+                        .state = .stopped,
+                        .length_beats = c.old_clip.length_beats,
+                    };
+                    const clip = &self.piano_clips[c.track][c.scene];
+                    clip.notes.clearRetainingCapacity();
+                    for (c.old_notes) |note| {
+                        clip.addNote(note.pitch, note.start, note.duration) catch {};
+                    }
+                } else {
+                    self.session.clips[c.track][c.scene] = .{};
+                    self.piano_clips[c.track][c.scene].clear();
                 }
             },
             .note_add => |c| {
@@ -442,6 +485,22 @@ pub const State = struct {
                 self.session.clips[c.track][c.scene] = .{};
                 self.piano_clips[c.track][c.scene].clear();
             },
+            .clip_paste => |c| {
+                if (c.new_clip.has_clip) {
+                    self.session.clips[c.track][c.scene] = .{
+                        .state = .stopped,
+                        .length_beats = c.new_clip.length_beats,
+                    };
+                    const clip = &self.piano_clips[c.track][c.scene];
+                    clip.notes.clearRetainingCapacity();
+                    for (c.new_notes) |note| {
+                        clip.addNote(note.pitch, note.start, note.duration) catch {};
+                    }
+                } else {
+                    self.session.clips[c.track][c.scene] = .{};
+                    self.piano_clips[c.track][c.scene].clear();
+                }
+            },
             .note_add => |c| {
                 // Redo add
                 const clip = &self.piano_clips[c.track][c.scene];
@@ -478,7 +537,7 @@ pub const State = struct {
             },
             .track_add => |c| {
                 // Redo add track
-                if (self.session.track_count < ui.max_tracks) {
+                if (self.session.track_count < max_tracks) {
                     self.session.tracks[self.session.track_count] = .{};
                     self.session.tracks[self.session.track_count].name = c.name;
                     self.session.track_count += 1;
@@ -499,7 +558,7 @@ pub const State = struct {
             },
             .scene_add => |c| {
                 // Redo add scene
-                if (self.session.scene_count < ui.max_scenes) {
+                if (self.session.scene_count < max_scenes) {
                     self.session.scenes[self.session.scene_count] = .{};
                     self.session.scenes[self.session.scene_count].name = c.name;
                     self.session.scene_count += 1;
@@ -525,7 +584,7 @@ pub const State = struct {
                     // Move piano notes
                     const temp_notes = self.piano_clips[m.src_track][m.src_scene];
                     self.piano_clips[m.dst_track][m.dst_scene] = temp_notes;
-                    self.piano_clips[m.src_track][m.src_scene] = ui.piano_roll.PianoRollClip.init(self.allocator);
+                    self.piano_clips[m.src_track][m.src_scene] = ui.piano_roll_types.PianoRollClip.init(self.allocator);
                 }
             },
             .clip_resize => |c| {
@@ -762,29 +821,29 @@ pub fn tick(state: *State, dt: f64) void {
     state.playhead_beat += @as(f32, @floatCast(dt)) * @as(f32, @floatCast(beats_per_second));
 
     // Check quantize boundary for scene switches
-    const quantize_beats = quantizeIndexToBeats(state.quantize_index);
+    const quantize_beats = ui.piano_roll_types.quantizeIndexToBeats(state.quantize_index);
     const prev_quantize = @floor(prev_beat / quantize_beats);
     const curr_quantize = @floor(state.playhead_beat / quantize_beats);
 
     if (curr_quantize > prev_quantize) {
-        state.session.processQuantizedSwitches();
+        session_playback.processQuantizedSwitches(&state.session);
 
         // Start queued recording at quantize boundary (not waiting for loop)
-        if (state.session.hasQueuedRecording()) {
+        if (session_recording.hasQueuedRecording(&state.session)) {
             // Calculate the beat position at the quantize boundary
             const quantize_boundary = curr_quantize * quantize_beats;
-            state.session.processRecordingQuantize(quantize_boundary);
+            session_recording.processRecordingQuantize(&state.session, quantize_boundary);
         }
     }
 
     // Fallback: ensure queued recordings start at the next quantize boundary after being armed.
-    if (state.session.hasQueuedRecording()) {
+    if (session_recording.hasQueuedRecording(&state.session)) {
         if (state.session.recording.track) |track| {
             if (state.session.recording.scene) |scene| {
                 const queued_at = state.session.recording.queued_at_beat;
                 const next_boundary = (@floor(queued_at / quantize_beats) + 1) * quantize_beats;
                 if (state.session.clips[track][scene].state == .record_queued and state.playhead_beat >= next_boundary) {
-                    state.session.processRecordingQuantize(next_boundary);
+                    session_recording.processRecordingQuantize(&state.session, next_boundary);
                 }
             }
         }
@@ -821,7 +880,7 @@ pub fn tick(state: *State, dt: f64) void {
     }
 
     // Process MIDI recording (before loop so we can finalize held notes at loop point)
-    if (state.session.isActivelyRecording()) {
+    if (session_recording.isActivelyRecording(&state.session)) {
         // If about to loop, finalize any held notes at the end of the clip
         if (will_loop) {
             finalizeHeldNotesAtPosition(state, loop_length);
@@ -835,8 +894,8 @@ pub fn tick(state: *State, dt: f64) void {
     // Handle playhead looping
     if (will_loop) {
         // At clip loop boundary, start queued recording BEFORE wrapping
-        if (state.session.hasQueuedRecording()) {
-            state.session.processRecordingQuantize(0);
+        if (session_recording.hasQueuedRecording(&state.session)) {
+            session_recording.processRecordingQuantize(&state.session, 0);
         }
 
         state.playhead_beat = @mod(state.playhead_beat, loop_length);
@@ -974,7 +1033,7 @@ pub fn updateKeyboardMidi(state: *State) void {
     // This prevents piano keys from triggering while typing
     if (zgui.io.getWantTextInput() and zgui.isAnyItemActive()) {
         // Clear all key states when text input is active to release any held notes
-        for (0..ui.max_tracks) |track_index| {
+        for (0..max_tracks) |track_index| {
             state.live_key_states[track_index] = [_]bool{false} ** 128;
             state.live_key_velocities[track_index] = [_]f32{0.0} ** 128;
         }
@@ -1034,7 +1093,7 @@ pub fn updateKeyboardMidi(state: *State) void {
 
     // Route keyboard to armed track if one is armed, otherwise to selected track
     const target_track = state.session.armed_track orelse state.selectedTrack();
-    for (0..ui.max_tracks) |track_index| {
+    for (0..max_tracks) |track_index| {
         if (track_index == target_track) {
             state.live_key_states[track_index] = pressed;
             state.live_key_velocities[track_index] = pressed_velocities;
@@ -1234,13 +1293,13 @@ fn drawTransport(state: *State, ui_scale: f32) void {
 fn drawClipGrid(state: *State, ui_scale: f32) void {
     // Draw session view
     const is_focused = state.focused_pane == .session;
-    state.session.draw(ui_scale, state.playing, is_focused, state.playhead_beat);
+    session_draw.draw(&state.session, ui_scale, state.playing, is_focused, state.playhead_beat);
     // Lock selection to the active recording clip to avoid cross-clip input confusion.
     if (state.session.recording.isRecording()) {
         if (state.session.recording.track) |track| {
             if (state.session.recording.scene) |scene| {
                 if (state.session.primary_track != track or state.session.primary_scene != scene) {
-                    state.session.selectOnly(track, scene);
+                    session_ops.selectOnly(&state.session, track, scene);
                 }
             }
         }
@@ -1296,6 +1355,32 @@ fn processUndoRequests(state: *State) void {
                 // Clear the piano clip notes
                 state.piano_clips[req.track][req.scene].clear();
             },
+            .clip_paste => {
+                const old_notes = state.allocator.dupe(
+                    undo.Note,
+                    state.piano_clips[req.track][req.scene].notes.items,
+                ) catch &.{};
+                const new_notes = state.allocator.dupe(
+                    undo.Note,
+                    state.piano_clips[req.src_track][req.src_scene].notes.items,
+                ) catch &.{};
+                state.undo_history.push(.{
+                    .clip_paste = .{
+                        .track = req.track,
+                        .scene = req.scene,
+                        .old_clip = .{
+                            .has_clip = req.old_clip.state != .empty,
+                            .length_beats = req.old_clip.length_beats,
+                        },
+                        .new_clip = .{
+                            .has_clip = req.length_beats > 0,
+                            .length_beats = req.length_beats,
+                        },
+                        .old_notes = old_notes,
+                        .new_notes = new_notes,
+                    },
+                });
+            },
             .track_add => {
                 const track = &state.session.tracks[req.track];
                 state.undo_history.push(.{
@@ -1306,16 +1391,16 @@ fn processUndoRequests(state: *State) void {
                 });
             },
             .track_delete => {
-                var clips: [ui.max_scenes]undo.ClipSlotData = undefined;
-                for (0..ui.max_scenes) |s| {
+                var clips: [max_scenes]undo.ClipSlotData = undefined;
+                for (0..max_scenes) |s| {
                     clips[s] = .{
                         .has_clip = req.track_clips[s].has_clip,
                         .length_beats = req.track_clips[s].length_beats,
                     };
                 }
 
-                if (state.allocator.alloc([]const undo.Note, ui.max_scenes)) |notes| {
-                    for (0..ui.max_scenes) |s| {
+                if (state.allocator.alloc([]const undo.Note, max_scenes)) |notes| {
+                    for (0..max_scenes) |s| {
                         if (req.track_clips[s].has_clip) {
                             const note_items = state.piano_clips[req.track][s].notes.items;
                             notes[s] = state.allocator.dupe(undo.Note, note_items) catch &.{};
@@ -1338,7 +1423,7 @@ fn processUndoRequests(state: *State) void {
                     });
                 } else |_| {}
 
-                const old_track_count = @min(state.session.track_count + 1, ui.max_tracks);
+                const old_track_count = @min(state.session.track_count + 1, max_tracks);
                 deleteTrackPianoClips(state, req.track, old_track_count);
             },
             .scene_add => {
@@ -1351,16 +1436,16 @@ fn processUndoRequests(state: *State) void {
                 });
             },
             .scene_delete => {
-                var clips: [ui.max_tracks]undo.ClipSlotData = undefined;
-                for (0..ui.max_tracks) |t| {
+                var clips: [max_tracks]undo.ClipSlotData = undefined;
+                for (0..max_tracks) |t| {
                     clips[t] = .{
                         .has_clip = req.scene_clips[t].has_clip,
                         .length_beats = req.scene_clips[t].length_beats,
                     };
                 }
 
-                if (state.allocator.alloc([]const undo.Note, ui.max_tracks)) |notes| {
-                    for (0..ui.max_tracks) |t| {
+                if (state.allocator.alloc([]const undo.Note, max_tracks)) |notes| {
+                    for (0..max_tracks) |t| {
                         if (req.scene_clips[t].has_clip) {
                             const note_items = state.piano_clips[t][req.scene].notes.items;
                             notes[t] = state.allocator.dupe(undo.Note, note_items) catch &.{};
@@ -1380,7 +1465,7 @@ fn processUndoRequests(state: *State) void {
                     });
                 } else |_| {}
 
-                const old_scene_count = @min(state.session.scene_count + 1, ui.max_scenes);
+                const old_scene_count = @min(state.session.scene_count + 1, max_scenes);
                 deleteScenePianoClips(state, req.scene, old_scene_count);
             },
             .track_volume => {
@@ -1404,7 +1489,7 @@ fn processUndoRequests(state: *State) void {
                 // Swap piano clips from src to dst
                 const temp = state.piano_clips[req.src_track][req.src_scene];
                 state.piano_clips[req.dst_track][req.dst_scene] = temp;
-                state.piano_clips[req.src_track][req.src_scene] = ui.piano_roll.PianoRollClip.init(state.allocator);
+                state.piano_clips[req.src_track][req.src_scene] = ui.piano_roll_types.PianoRollClip.init(state.allocator);
             }
             state.session.pending_piano_moves = false;
         }
@@ -1430,15 +1515,15 @@ fn processUndoRequests(state: *State) void {
 
     // Process piano clip copy requests (from session view paste)
     if (state.session.pending_piano_copies and state.session.piano_copy_count > 0) {
-        var temp_clips: [ui.max_tracks * ui.max_scenes]ui.piano_roll.PianoRollClip = undefined;
-        var temp_valid: [ui.max_tracks * ui.max_scenes]bool = undefined;
+        var temp_clips: [max_tracks * max_scenes]ui.piano_roll_types.PianoRollClip = undefined;
+        var temp_valid: [max_tracks * max_scenes]bool = undefined;
         for (state.session.piano_copy_requests[0..state.session.piano_copy_count], 0..) |req, i| {
             if (req.src_track == req.dst_track and req.src_scene == req.dst_scene) {
                 temp_valid[i] = false;
                 continue;
             }
             temp_valid[i] = true;
-            temp_clips[i] = ui.piano_roll.PianoRollClip.init(state.allocator);
+            temp_clips[i] = ui.piano_roll_types.PianoRollClip.init(state.allocator);
             temp_clips[i].copyFrom(&state.piano_clips[req.src_track][req.src_scene]);
             temp_clips[i].length_beats = state.session.clips[req.dst_track][req.dst_scene].length_beats;
         }
@@ -1520,28 +1605,28 @@ fn processPianoRollUndoRequests(state: *State) void {
 
 fn deleteTrackPianoClips(state: *State, track: usize, old_track_count: usize) void {
     if (track >= old_track_count) return;
-    for (0..ui.max_scenes) |s| {
+    for (0..max_scenes) |s| {
         state.piano_clips[track][s].deinit();
     }
     if (track + 1 > old_track_count - 1) return;
     for (track..old_track_count - 1) |t| {
-        for (0..ui.max_scenes) |s| {
+        for (0..max_scenes) |s| {
             state.piano_clips[t][s] = state.piano_clips[t + 1][s];
-            state.piano_clips[t + 1][s] = ui.piano_roll.PianoRollClip.init(state.allocator);
+            state.piano_clips[t + 1][s] = ui.piano_roll_types.PianoRollClip.init(state.allocator);
         }
     }
 }
 
 fn deleteScenePianoClips(state: *State, scene: usize, old_scene_count: usize) void {
     if (scene >= old_scene_count) return;
-    for (0..ui.max_tracks) |t| {
+    for (0..max_tracks) |t| {
         state.piano_clips[t][scene].deinit();
     }
     if (scene + 1 > old_scene_count - 1) return;
-    for (0..ui.max_tracks) |t| {
+    for (0..max_tracks) |t| {
         for (scene..old_scene_count - 1) |s| {
             state.piano_clips[t][s] = state.piano_clips[t][s + 1];
-            state.piano_clips[t][s + 1] = ui.piano_roll.PianoRollClip.init(state.allocator);
+            state.piano_clips[t][s + 1] = ui.piano_roll_types.PianoRollClip.init(state.allocator);
         }
     }
 }
@@ -1552,16 +1637,16 @@ fn deleteTrackInState(state: *State, track: usize) void {
 
     const old_track_count = state.session.track_count;
     for (0..state.session.scene_count) |s| {
-        state.session.deselectClip(track, s);
+        session_ops.deselectClip(&state.session, track, s);
     }
     for (track..state.session.track_count - 1) |t| {
         state.session.tracks[t] = state.session.tracks[t + 1];
-        for (0..ui.max_scenes) |s| {
+        for (0..max_scenes) |s| {
             state.session.clips[t][s] = state.session.clips[t + 1][s];
             state.session.clip_selected[t][s] = state.session.clip_selected[t + 1][s];
         }
     }
-    for (0..ui.max_scenes) |s| {
+    for (0..max_scenes) |s| {
         state.session.clips[state.session.track_count - 1][s] = .{};
         state.session.clip_selected[state.session.track_count - 1][s] = false;
     }
@@ -1579,16 +1664,16 @@ fn deleteSceneInState(state: *State, scene: usize) void {
 
     const old_scene_count = state.session.scene_count;
     for (0..state.session.track_count) |t| {
-        state.session.deselectClip(t, scene);
+        session_ops.deselectClip(&state.session, t, scene);
     }
     for (scene..state.session.scene_count - 1) |s| {
         state.session.scenes[s] = state.session.scenes[s + 1];
-        for (0..ui.max_tracks) |t| {
+        for (0..max_tracks) |t| {
             state.session.clips[t][s] = state.session.clips[t][s + 1];
             state.session.clip_selected[t][s] = state.session.clip_selected[t][s + 1];
         }
     }
-    for (0..ui.max_tracks) |t| {
+    for (0..max_tracks) |t| {
         state.session.clips[t][state.session.scene_count - 1] = .{};
         state.session.clip_selected[t][state.session.scene_count - 1] = false;
     }
@@ -1601,16 +1686,16 @@ fn deleteSceneInState(state: *State, scene: usize) void {
 }
 
 fn insertTrackInState(state: *State, cmd: *const undo.command.TrackDeleteCmd) void {
-    if (state.session.track_count >= ui.max_tracks) return;
+    if (state.session.track_count >= max_tracks) return;
 
     var t = state.session.track_count;
     while (t > cmd.track_index) : (t -= 1) {
         state.session.tracks[t] = state.session.tracks[t - 1];
-        for (0..ui.max_scenes) |s| {
+        for (0..max_scenes) |s| {
             state.session.clips[t][s] = state.session.clips[t - 1][s];
             state.session.clip_selected[t][s] = state.session.clip_selected[t - 1][s];
             state.piano_clips[t][s] = state.piano_clips[t - 1][s];
-            state.piano_clips[t - 1][s] = ui.piano_roll.PianoRollClip.init(state.allocator);
+            state.piano_clips[t - 1][s] = ui.piano_roll_types.PianoRollClip.init(state.allocator);
         }
     }
 
@@ -1620,7 +1705,7 @@ fn insertTrackInState(state: *State, cmd: *const undo.command.TrackDeleteCmd) vo
         .mute = cmd.track_data.mute,
         .solo = cmd.track_data.solo,
     };
-    for (0..ui.max_scenes) |s| {
+    for (0..max_scenes) |s| {
         const slot = cmd.clips[s];
         state.session.clips[cmd.track_index][s] = if (slot.has_clip) .{
             .state = .stopped,
@@ -1645,23 +1730,23 @@ fn insertTrackInState(state: *State, cmd: *const undo.command.TrackDeleteCmd) vo
 }
 
 fn insertSceneInState(state: *State, cmd: *const undo.command.SceneDeleteCmd) void {
-    if (state.session.scene_count >= ui.max_scenes) return;
+    if (state.session.scene_count >= max_scenes) return;
 
     var s = state.session.scene_count;
     while (s > cmd.scene_index) : (s -= 1) {
         state.session.scenes[s] = state.session.scenes[s - 1];
-        for (0..ui.max_tracks) |t| {
+        for (0..max_tracks) |t| {
             state.session.clips[t][s] = state.session.clips[t][s - 1];
             state.session.clip_selected[t][s] = state.session.clip_selected[t][s - 1];
             state.piano_clips[t][s] = state.piano_clips[t][s - 1];
-            state.piano_clips[t][s - 1] = ui.piano_roll.PianoRollClip.init(state.allocator);
+            state.piano_clips[t][s - 1] = ui.piano_roll_types.PianoRollClip.init(state.allocator);
         }
     }
 
     state.session.scenes[cmd.scene_index] = .{
         .name = cmd.scene_data.name,
     };
-    for (0..ui.max_tracks) |t| {
+    for (0..max_tracks) |t| {
         const slot = cmd.clips[t];
         state.session.clips[t][cmd.scene_index] = if (slot.has_clip) .{
             .state = .stopped,
@@ -1736,7 +1821,7 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
                 const track_idx = state.selectedTrack();
                 const instrument_plugin = state.track_plugin_ptrs[track_idx];
                 const fx_plugins = state.track_fx_plugin_ptrs[track_idx][0..state.track_fx_slot_count[track_idx]];
-                ui.piano_roll.drawSequencer(
+                ui.piano_roll_draw.drawSequencer(
                     &state.piano_state,
                     state.currentClip(),
                     state.currentClipLabel(),
@@ -1753,7 +1838,7 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
                 );
                 if (state.piano_state.preview_pitch) |pitch| {
                     if (state.piano_state.preview_track) |track| {
-                        if (track < ui.max_tracks) {
+                        if (track < max_tracks) {
                             state.live_key_states[track][pitch] = true;
                             state.live_key_velocities[track][pitch] = 0.8;
                         }
