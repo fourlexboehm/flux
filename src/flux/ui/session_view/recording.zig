@@ -62,7 +62,7 @@ pub fn startRecording(self: *session_view.SessionView, track: usize, scene: usiz
 pub fn stopRecording(self: *session_view.SessionView, mode: session_view.StopRecordingMode) void {
     if (self.recording.track) |track| {
         if (self.recording.scene) |scene| {
-            // Request finalization of held notes (handled in ui.zig tick)
+            // Request finalization of held notes (handled in ui/recording.zig tick)
             if (self.clips[track][scene].state == .recording) {
                 self.finalize_recording_track = track;
                 self.finalize_recording_scene = scene;

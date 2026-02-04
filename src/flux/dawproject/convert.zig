@@ -1,5 +1,5 @@
 const std = @import("std");
-const ui = @import("../ui.zig");
+const ui_state = @import("../ui/state.zig");
 const session_constants = @import("../ui/session_view/constants.zig");
 const session_view = @import("../ui/session_view.zig");
 const track_count = session_constants.max_tracks;
@@ -37,10 +37,10 @@ pub const IdGenerator = struct {
 /// Convert Flux project state to DAWproject format
 pub fn fromFluxProject(
     allocator: std.mem.Allocator,
-    state: *const ui.State,
+    state: *const ui_state.State,
     catalog: *const plugins.PluginCatalog,
     track_plugin_info: []const TrackPluginInfo,
-    track_fx_plugin_info: []const [ui.max_fx_slots]TrackPluginInfo,
+    track_fx_plugin_info: []const [ui_state.max_fx_slots]TrackPluginInfo,
 ) !Project {
     var ids = IdGenerator{ .allocator = allocator };
 
@@ -51,8 +51,8 @@ pub fn fromFluxProject(
     var instrument_device_ids: [track_count]?[]const u8 = [_]?[]const u8{null} ** track_count;
     var track_volume_param_ids: [track_count]?[]const u8 = [_]?[]const u8{null} ** track_count;
     var track_pan_param_ids: [track_count]?[]const u8 = [_]?[]const u8{null} ** track_count;
-    var fx_device_ids: [track_count][ui.max_fx_slots]?[]const u8 = [_][ui.max_fx_slots]?[]const u8{
-        [_]?[]const u8{null} ** ui.max_fx_slots,
+    var fx_device_ids: [track_count][ui_state.max_fx_slots]?[]const u8 = [_][ui_state.max_fx_slots]?[]const u8{
+        [_]?[]const u8{null} ** ui_state.max_fx_slots,
     } ** track_count;
 
     const master_channel_id = try ids.next();
@@ -109,7 +109,7 @@ pub fn fromFluxProject(
                 });
             }
         }
-        for (0..ui.max_fx_slots) |fx_index| {
+        for (0..ui_state.max_fx_slots) |fx_index| {
             const fx_choice = state.track_fx[t][fx_index].choice_index;
             if (catalog.entryForIndex(fx_choice)) |entry| {
                 if (entry.kind != .clap) continue;
@@ -207,7 +207,7 @@ pub fn fromFluxProject(
 
     // Master track
     var master_devices = std.ArrayList(ClapPlugin).empty;
-    for (0..ui.max_fx_slots) |fx_index| {
+    for (0..ui_state.max_fx_slots) |fx_index| {
         const fx_choice = state.track_fx[master_track_index][fx_index].choice_index;
         if (catalog.entryForIndex(fx_choice)) |entry| {
             if (entry.kind != .clap) continue;
@@ -345,7 +345,7 @@ pub fn fromFluxProject(
                                 var idx_str = lane.target_id["fx".len..];
                                 if (std.mem.startsWith(u8, idx_str, ":")) idx_str = idx_str[1..];
                                 const fx_idx = std.fmt.parseInt(usize, idx_str, 10) catch continue;
-                                if (fx_idx >= ui.max_fx_slots) continue;
+                                if (fx_idx >= ui_state.max_fx_slots) continue;
                                 break :blk fx_device_ids[t][fx_idx] orelse continue;
                             } else {
                                 continue;
