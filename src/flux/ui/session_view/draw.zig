@@ -187,10 +187,12 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
         if (zgui.selectable(track_label, .{ .selected = is_track_selected, .w = track_col_w - track_pad * 2.0 })) {
             self.primary_track = t;
             ops.clearSelection(self);
+            self.mixer_target = .track;
         }
         // Right-click on track header opens context menu
         if (zgui.isItemClicked(.right)) {
             self.primary_track = t;
+            self.mixer_target = .track;
             zgui.openPopup("session_ctx", .{});
         }
         zgui.popStyleColor(.{ .count = 1 });
@@ -380,7 +382,7 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
     // Draw mixer using a table to guarantee alignment with grid
     zgui.pushStyleColor4f(.{ .idx = .table_row_bg, .c = colors.Colors.current.bg_header });
     if (zgui.beginTable("mixer_strip", .{
-        .column = @intCast(self.track_count + 2),
+        .column = @intCast(self.track_count + 4),
         .flags = .{ .borders = .{ .inner_v = true }, .row_bg = true, .sizing = .fixed_fit },
     })) {
         // Setup columns to match grid exactly
@@ -389,6 +391,8 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
             zgui.tableSetupColumn("##mix_track", .{ .flags = .{ .width_fixed = true }, .init_width_or_height = track_col_w });
         }
         zgui.tableSetupColumn("##mix_add", .{ .flags = .{ .width_fixed = true }, .init_width_or_height = add_btn_size + 8.0 });
+        zgui.tableSetupColumn("##mix_spacer", .{ .flags = .{ .width_stretch = true } });
+        zgui.tableSetupColumn("##mix_master", .{ .flags = .{ .width_fixed = true }, .init_width_or_height = track_col_w });
 
         zgui.tableNextRow(.{ .min_row_height = mixer_height - 8.0 * ui_scale });
         _ = zgui.tableNextColumn(); // Empty scene column
@@ -397,6 +401,10 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
             _ = zgui.tableNextColumn();
             drawTrackMixer(self, t, track_col_w, mixer_height - 8.0 * ui_scale, ui_scale);
         }
+        _ = zgui.tableNextColumn(); // Empty add column
+        _ = zgui.tableNextColumn(); // Stretch spacer
+        _ = zgui.tableNextColumn();
+        drawTrackMixer(self, session_view.master_track_index, track_col_w, mixer_height - 8.0 * ui_scale, ui_scale);
 
         zgui.endTable();
     }
@@ -722,8 +730,9 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
     const padding = 4.0 * ui_scale;
     const spacing = 4.0 * ui_scale;
     const usable_width = width - padding * 2;
-    const btn_width = (usable_width - spacing * 2) / 3.0; // 3 buttons: M, S, R
+    const is_master = self.tracks[track].is_master;
     const btn_height = 36.0 * ui_scale;
+    const btn_width = if (is_master) usable_width else (usable_width - spacing * 2) / 3.0; // 3 buttons: M, S, R
     const slider_width = 28.0 * ui_scale;
     const label_height = 24.0 * ui_scale;
     const slider_height = height - btn_height - spacing * 2 - label_height - 4.0 * ui_scale;
@@ -752,59 +761,69 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
 
     if (zgui.button(mute_id, .{ .w = btn_width, .h = btn_height })) {
         self.tracks[track].mute = !self.tracks[track].mute;
-    }
-    zgui.popStyleColor(.{ .count = 4 });
-
-    zgui.sameLine(.{ .spacing = spacing });
-
-    // Solo button
-    var solo_buf: [32]u8 = undefined;
-    const solo_id = std.fmt.bufPrintZ(&solo_buf, "S##solo{d}", .{track}) catch "S";
-
-    const solo_bg = if (self.tracks[track].solo) colors.Colors.current.clip_queued else colors.Colors.current.bg_cell;
-    const solo_text = if (self.tracks[track].solo) colors.Colors.current.text_bright else colors.Colors.current.text_dim;
-
-    zgui.pushStyleColor4f(.{ .idx = .button, .c = solo_bg });
-    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ solo_bg[0] + 0.1, solo_bg[1] + 0.1, solo_bg[2] + 0.1, 1.0 } });
-    zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.current.accent_dim });
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = solo_text });
-
-    if (zgui.button(solo_id, .{ .w = btn_width, .h = btn_height })) {
-        self.tracks[track].solo = !self.tracks[track].solo;
-    }
-    zgui.popStyleColor(.{ .count = 4 });
-
-    zgui.sameLine(.{ .spacing = spacing });
-
-    // Record Arm button
-    var arm_buf: [32]u8 = undefined;
-    const arm_id = std.fmt.bufPrintZ(&arm_buf, "R##arm{d}", .{track}) catch "R";
-
-    const is_armed = self.armed_track != null and self.armed_track.? == track;
-    const arm_bg = if (is_armed) colors.Colors.current.record_armed else colors.Colors.current.bg_cell;
-    const arm_text = if (is_armed) colors.Colors.current.text_bright else colors.Colors.current.text_dim;
-
-    zgui.pushStyleColor4f(.{ .idx = .button, .c = arm_bg });
-    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = if (is_armed) colors.Colors.current.record_armed_hover else .{ arm_bg[0] + 0.1, arm_bg[1] + 0.1, arm_bg[2] + 0.1, 1.0 } });
-    zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.current.accent_dim });
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = arm_text });
-
-    if (zgui.button(arm_id, .{ .w = btn_width, .h = btn_height })) {
-        if (is_armed) {
-            // Disarm - also stop any active recording
-            if (self.recording.isRecording()) {
-                recording_impl.stopRecording(self,.stop);
-            }
-            self.armed_track = null;
-        } else {
-            // Arm this track (disarm any other)
-            if (self.recording.isRecording()) {
-                recording_impl.stopRecording(self,.stop);
-            }
-            self.armed_track = track;
+        if (!is_master) {
+            self.primary_track = track;
         }
+        self.mixer_target = if (is_master) .master else .track;
     }
     zgui.popStyleColor(.{ .count = 4 });
+
+    if (!is_master) {
+        zgui.sameLine(.{ .spacing = spacing });
+
+        // Solo button
+        var solo_buf: [32]u8 = undefined;
+        const solo_id = std.fmt.bufPrintZ(&solo_buf, "S##solo{d}", .{track}) catch "S";
+
+        const solo_bg = if (self.tracks[track].solo) colors.Colors.current.clip_queued else colors.Colors.current.bg_cell;
+        const solo_text = if (self.tracks[track].solo) colors.Colors.current.text_bright else colors.Colors.current.text_dim;
+
+        zgui.pushStyleColor4f(.{ .idx = .button, .c = solo_bg });
+        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ solo_bg[0] + 0.1, solo_bg[1] + 0.1, solo_bg[2] + 0.1, 1.0 } });
+        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.current.accent_dim });
+        zgui.pushStyleColor4f(.{ .idx = .text, .c = solo_text });
+
+        if (zgui.button(solo_id, .{ .w = btn_width, .h = btn_height })) {
+            self.tracks[track].solo = !self.tracks[track].solo;
+            self.primary_track = track;
+            self.mixer_target = .track;
+        }
+        zgui.popStyleColor(.{ .count = 4 });
+
+        zgui.sameLine(.{ .spacing = spacing });
+
+        // Record Arm button
+        var arm_buf: [32]u8 = undefined;
+        const arm_id = std.fmt.bufPrintZ(&arm_buf, "R##arm{d}", .{track}) catch "R";
+
+        const is_armed = self.armed_track != null and self.armed_track.? == track;
+        const arm_bg = if (is_armed) colors.Colors.current.record_armed else colors.Colors.current.bg_cell;
+        const arm_text = if (is_armed) colors.Colors.current.text_bright else colors.Colors.current.text_dim;
+
+        zgui.pushStyleColor4f(.{ .idx = .button, .c = arm_bg });
+        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = if (is_armed) colors.Colors.current.record_armed_hover else .{ arm_bg[0] + 0.1, arm_bg[1] + 0.1, arm_bg[2] + 0.1, 1.0 } });
+        zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.current.accent_dim });
+        zgui.pushStyleColor4f(.{ .idx = .text, .c = arm_text });
+
+        if (zgui.button(arm_id, .{ .w = btn_width, .h = btn_height })) {
+            if (is_armed) {
+                // Disarm - also stop any active recording
+                if (self.recording.isRecording()) {
+                    recording_impl.stopRecording(self,.stop);
+                }
+                self.armed_track = null;
+            } else {
+                // Arm this track (disarm any other)
+                if (self.recording.isRecording()) {
+                    recording_impl.stopRecording(self,.stop);
+                }
+                self.armed_track = track;
+            }
+            self.primary_track = track;
+            self.mixer_target = .track;
+        }
+        zgui.popStyleColor(.{ .count = 4 });
+    }
     zgui.popStyleVar(.{ .count = 1 });
 
     // Row 2: Volume slider (centered, wider)
@@ -840,6 +859,10 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
             self.volume_drag_track = track;
             self.volume_drag_start = volume_before;
         }
+        if (!is_master) {
+            self.primary_track = track;
+        }
+        self.mixer_target = if (is_master) .master else .track;
     } else if (self.volume_drag_track == track) {
         // Drag ended - emit undo request if changed
         if (self.tracks[track].volume != self.volume_drag_start) {
@@ -886,7 +909,10 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
         20.0 * @log10(self.tracks[track].volume)
     else
         -60.0;
-    var label_buf: [16]u8 = undefined;
-    const label = std.fmt.bufPrintZ(&label_buf, "{d:.0}dB", .{db}) catch "";
+    var label_buf: [24]u8 = undefined;
+    const label = if (is_master)
+        std.fmt.bufPrintZ(&label_buf, "Master {d:.0}dB", .{db}) catch "Master"
+    else
+        std.fmt.bufPrintZ(&label_buf, "{d:.0}dB", .{db}) catch "";
     zgui.textColored(colors.Colors.current.text_dim, "{s}", .{label});
 }
