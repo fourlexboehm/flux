@@ -3,15 +3,61 @@ name: build-test
 on: [push]
 
 jobs:
-  test:
+  build:
     runs-on: codeberg-tiny
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
-      - run: |
+        with:
+          submodules: recursive
+
+      - name: Install Linux dependencies
+        run: |
+          apt-get update
+          apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libx11-dev libgl1-mesa-dev
+
+      - name: Setup Zig
+        run: |
           set -euo pipefail
           ZIG_URL="https://ziglang.org/builds/zig-x86_64-linux-0.16.0-dev.2368+380ea6fb5.tar.xz"
           curl -fL "${ZIG_URL}" -o zig.tar.xz
           tar -xf zig.tar.xz
           ZIG_DIR="zig-x86_64-linux-0.16.0-dev.2368+380ea6fb5"
           echo "$PWD/${ZIG_DIR}" >> "$GITHUB_PATH"
-      - run: zig build test
+
+      - name: Download macOS SDK
+        run: |
+          set -euo pipefail
+          curl -fL "https://github.com/joseluisq/macosx-sdks/releases/download/26.1/MacOSX26.1.sdk.tar.xz" -o macos-sdk.tar.xz
+          tar -xf macos-sdk.tar.xz
+          echo "MACOS_SDK=$PWD/MacOSX26.1.sdk" >> "$GITHUB_ENV"
+
+      - name: Run tests
+        run: zig build test
+
+      - name: Build for Linux x86_64
+        run: |
+          zig build -Doptimize=ReleaseFast
+          mkdir -p artifacts/linux-x86_64
+          cp zig-out/lib/*.clap artifacts/linux-x86_64/ 2>/dev/null || true
+          cp zig-out/lib/*.so artifacts/linux-x86_64/ 2>/dev/null || true
+          cp zig-out/bin/* artifacts/linux-x86_64/ 2>/dev/null || true
+
+      - name: Build for macOS aarch64
+        run: |
+          zig build -Dtarget=aarch64-macos -Doptimize=ReleaseFast -Dgui-backend=osx_metal --sysroot "$MACOS_SDK"
+          mkdir -p artifacts/macos-aarch64
+          cp -r zig-out/lib/*.clap artifacts/macos-aarch64/ 2>/dev/null || true
+          cp zig-out/lib/*.dylib artifacts/macos-aarch64/ 2>/dev/null || true
+          cp zig-out/bin/* artifacts/macos-aarch64/ 2>/dev/null || true
+
+      - name: Upload Linux artifacts
+        uses: https://data.forgejo.org/actions/upload-artifact@v4
+        with:
+          name: zsynth-linux-x86_64
+          path: artifacts/linux-x86_64/
+
+      - name: Upload macOS artifacts
+        uses: https://data.forgejo.org/actions/upload-artifact@v4
+        with:
+          name: zsynth-macos-aarch64
+          path: artifacts/macos-aarch64/
