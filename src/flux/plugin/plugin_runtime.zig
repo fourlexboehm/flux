@@ -3,13 +3,13 @@ const std = @import("std");
 const clap = @import("clap-bindings");
 const objc = if (builtin.os.tag == .macos) @import("objc") else struct {};
 
-const audio_constants = @import("audio_constants.zig");
-const audio_engine = @import("audio_engine.zig");
+const audio_constants = @import("../audio/audio_constants.zig");
+const audio_engine = @import("../audio/audio_engine.zig");
 const plugins = @import("plugins.zig");
-const session_constants = @import("ui/session_view/constants.zig");
-const session_view = @import("ui/session_view.zig");
-const ui_state = @import("ui/state.zig");
-const thread_context = @import("thread_context.zig");
+const session_constants = @import("../ui/session_view/constants.zig");
+const session_view = @import("../ui/session_view.zig");
+const ui_state = @import("../ui/state.zig");
+const thread_context = @import("../thread_context.zig");
 const zsynth = @import("zsynth-core");
 const zminimoog = @import("zminimoog-core");
 

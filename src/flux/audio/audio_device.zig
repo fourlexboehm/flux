@@ -3,10 +3,10 @@ const zaudio = @import("zaudio");
 
 const audio_constants = @import("audio_constants.zig");
 const audio_engine = @import("audio_engine.zig");
-const plugin_runtime = @import("plugin_runtime.zig");
-const session_constants = @import("ui/session_view/constants.zig");
-const thread_context = @import("thread_context.zig");
-const ui_state = @import("ui/state.zig");
+const plugin_runtime = @import("../plugin/plugin_runtime.zig");
+const session_constants = @import("../ui/session_view/constants.zig");
+const thread_context = @import("../thread_context.zig");
+const ui_state = @import("../ui/state.zig");
 
 const track_count = session_constants.max_tracks;
 const TrackPlugin = plugin_runtime.TrackPlugin;

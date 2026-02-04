@@ -1,12 +1,12 @@
 const std = @import("std");
 const clap = @import("clap-bindings");
 
-const audio_engine = @import("audio_engine.zig");
-const audio_graph = @import("audio_graph.zig");
+const audio_engine = @import("audio/audio_engine.zig");
+const audio_graph = @import("audio/audio_graph.zig");
 const clap_ids = @import("clap_ids.zig");
 const dawproject_runtime = @import("dawproject/runtime.zig");
-const plugins = @import("plugins.zig");
-const plugin_runtime = @import("plugin_runtime.zig");
+const plugins = @import("plugin/plugins.zig");
+const plugin_runtime = @import("plugin/plugin_runtime.zig");
 const session_constants = @import("ui/session_view/constants.zig");
 const thread_context = @import("thread_context.zig");
 const ui_state = @import("ui/state.zig");
