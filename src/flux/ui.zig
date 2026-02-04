@@ -92,6 +92,7 @@ pub const TrackPluginUI = struct {
     choice_index: i32,
     gui_open: bool,
     last_valid_choice: i32,
+    preset_choice_index: ?usize = null,
 };
 
 const keyboard_base_pitch: u8 = 60; // Middle C (C4)
@@ -159,6 +160,12 @@ pub const State = struct {
 
     // Undo/redo history
     undo_history: undo.UndoHistory,
+    preset_catalog: ?*const presets.PresetCatalog = null,
+    instrument_search_buf: [64:0]u8 = [_:0]u8{0} ** 64,
+    preset_search_buf: [128:0]u8 = [_:0]u8{0} ** 128,
+
+    // Preset load request (handled by main.zig)
+    preset_load_request: ?PresetLoadRequest = null,
 
     // BPM drag tracking for undo
     bpm_drag_active: bool = false,
@@ -202,7 +209,6 @@ pub const State = struct {
                 };
             }
         }
-
         var piano_clips_data: [max_tracks][max_scenes]ui.piano_roll_types.PianoRollClip = undefined;
         for (&piano_clips_data) |*track_clips| {
             for (track_clips) |*clip| {
@@ -297,7 +303,7 @@ pub const State = struct {
         return self.session.primary_scene;
     }
 
-    pub fn currentClip(self: *State) *PianoRollClip {
+    pub fn currentClip(self: *State) *ui.piano_roll_types.PianoRollClip {
         return &self.piano_clips[self.selectedTrack()][self.selectedScene()];
     }
 
@@ -446,7 +452,7 @@ pub const State = struct {
                     // Move piano notes back
                     const temp_notes = self.piano_clips[m.dst_track][m.dst_scene];
                     self.piano_clips[m.src_track][m.src_scene] = temp_notes;
-                    self.piano_clips[m.dst_track][m.dst_scene] = ui.piano_roll.PianoRollClip.init(self.allocator);
+                    self.piano_clips[m.dst_track][m.dst_scene] = ui.piano_roll_types.PianoRollClip.init(self.allocator);
                 }
             },
             .clip_resize => |c| {
@@ -1798,7 +1804,10 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
     zgui.sameLine(.{});
     zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
     var track_buf: [64]u8 = undefined;
-    const track_info = std.fmt.bufPrintZ(&track_buf, "  Track {d} / Scene {d}", .{ state.selectedTrack() + 1, state.selectedScene() + 1 }) catch "";
+    const track_info = if (state.session.mixer_target == .master)
+        std.fmt.bufPrintZ(&track_buf, "  Master", .{}) catch "  Master"
+    else
+        std.fmt.bufPrintZ(&track_buf, "  Track {d} / Scene {d}", .{ state.selectedTrack() + 1, state.selectedScene() + 1 }) catch "";
     zgui.textUnformatted(track_info);
     zgui.popStyleColor(.{ .count = 1 });
 
@@ -1858,11 +1867,130 @@ fn findPluginListIndex(indices: []const i32, choice_index: i32) i32 {
     return 0;
 }
 
+fn findPresetListIndex(indices: []const i32, choice_index: ?usize) i32 {
+    if (choice_index == null) return 0;
+    const target: i32 = @intCast(choice_index.?);
+    for (indices, 0..) |preset_index, list_index| {
+        if (preset_index == target) {
+            return @intCast(list_index);
+        }
+    }
+    return 0;
+}
+
 fn catalogIndexFromList(indices: []const i32, list_index: i32) ?i32 {
     if (indices.len == 0) return null;
     const idx: usize = @intCast(list_index);
     if (idx >= indices.len) return null;
     return indices[idx];
+}
+
+fn presetIndexFromList(indices: []const i32, list_index: i32) ?usize {
+    if (indices.len == 0) return null;
+    const idx: usize = @intCast(list_index);
+    if (idx >= indices.len) return null;
+    if (indices[idx] < 0) return null;
+    return @intCast(indices[idx]);
+}
+
+fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (haystack.len < needle.len) return false;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        var j: usize = 0;
+        while (j < needle.len) : (j += 1) {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(needle[j])) break;
+        }
+        if (j == needle.len) return true;
+    }
+    return false;
+}
+
+fn sanitizePresetName(name: []const u8) []const u8 {
+    const slash_pos = std.mem.lastIndexOfScalar(u8, name, '/') orelse std.mem.lastIndexOfScalar(u8, name, '\\');
+    const base = if (slash_pos) |idx| name[idx + 1 ..] else name;
+    const ext = std.fs.path.extension(base);
+    if (ext.len == 0) return base;
+    return base[0 .. base.len - ext.len];
+}
+
+pub fn rebuildInstrumentFilter(state: *State) void {
+    const filter = std.mem.sliceTo(&state.instrument_search_buf, 0);
+    var buffer: std.ArrayList(u8) = .empty;
+    defer buffer.deinit(state.allocator);
+    var indices: std.ArrayList(i32) = .empty;
+    defer indices.deinit(state.allocator);
+
+    var list_index: usize = 0;
+    var start: usize = 0;
+    while (start < state.plugin_instrument_items.len) {
+        const end = std.mem.indexOfScalarPos(u8, state.plugin_instrument_items, start, 0) orelse break;
+        if (end == start) break;
+        const item = state.plugin_instrument_items[start..end];
+        if (containsIgnoreCase(item, filter)) {
+            buffer.appendSlice(state.allocator, item) catch {};
+            buffer.append(state.allocator, 0) catch {};
+            if (list_index < state.plugin_instrument_indices.len) {
+                indices.append(state.allocator, state.plugin_instrument_indices[list_index]) catch {};
+            }
+        }
+        list_index += 1;
+        start = end + 1;
+    }
+    buffer.append(state.allocator, 0) catch {};
+
+    if (state.instrument_filter_items_z.len > 0) {
+        state.allocator.free(state.instrument_filter_items_z);
+    }
+    if (state.instrument_filter_indices.len > 0) {
+        state.allocator.free(state.instrument_filter_indices);
+    }
+    state.instrument_filter_items_z = state.allocator.dupeZ(u8, buffer.items) catch &[_:0]u8{};
+    state.instrument_filter_indices = indices.toOwnedSlice(state.allocator) catch &[_]i32{};
+}
+
+pub fn rebuildPresetFilter(state: *State) void {
+    const filter = std.mem.sliceTo(&state.preset_search_buf, 0);
+    var buffer: std.ArrayList(u8) = .empty;
+    defer buffer.deinit(state.allocator);
+    var indices: std.ArrayList(i32) = .empty;
+    defer indices.deinit(state.allocator);
+
+    var max_width: f32 = 0.0;
+    if (state.preset_catalog) |catalog| {
+        const fonts_ready = zgui.io.getFontsTexRef().tex_data != null;
+        // Compute max width from all presets so the combo width is stable.
+        for (catalog.entries.items) |entry| {
+            const clean_name = sanitizePresetName(entry.name);
+            var label_buf: [256]u8 = undefined;
+            const label = std.fmt.bufPrint(&label_buf, "{s} - {s}", .{ clean_name, entry.plugin_name }) catch clean_name;
+            if (fonts_ready) {
+                const text_size = zgui.calcTextSize(label, .{});
+                if (text_size[0] > max_width) max_width = text_size[0];
+            }
+        }
+        for (catalog.entries.items, 0..) |entry, idx| {
+            const clean_name = sanitizePresetName(entry.name);
+            if (!containsIgnoreCase(clean_name, filter) and !containsIgnoreCase(entry.plugin_name, filter)) continue;
+            var label_buf: [256]u8 = undefined;
+            const label = std.fmt.bufPrint(&label_buf, "{s} - {s}", .{ clean_name, entry.plugin_name }) catch clean_name;
+            buffer.appendSlice(state.allocator, label) catch {};
+            buffer.append(state.allocator, 0) catch {};
+            indices.append(state.allocator, @intCast(idx)) catch {};
+        }
+    }
+    buffer.append(state.allocator, 0) catch {};
+
+    if (state.preset_filter_items_z.len > 0) {
+        state.allocator.free(state.preset_filter_items_z);
+    }
+    if (state.preset_filter_indices.len > 0) {
+        state.allocator.free(state.preset_filter_indices);
+    }
+    state.preset_filter_items_z = state.allocator.dupeZ(u8, buffer.items) catch &[_:0]u8{};
+    state.preset_filter_indices = indices.toOwnedSlice(state.allocator) catch &[_]i32{};
+    state.preset_combo_width = @max(260.0, max_width + 24.0);
 }
 
 fn calcToggleButtonWidth(open_label: []const u8, close_label: []const u8, ui_scale: f32) f32 {
@@ -1875,67 +2003,137 @@ fn calcToggleButtonWidth(open_label: []const u8, close_label: []const u8, ui_sca
 }
 
 fn drawDevicePanel(state: *State, ui_scale: f32) void {
-    // Track device selector
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
-    zgui.textUnformatted("Instrument:");
-    zgui.popStyleColor(.{ .count = 1 });
+    const is_master = state.session.mixer_target == .master;
+    const track_idx = if (is_master) session_view.master_track_index else state.selectedTrack();
 
-    zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
-    zgui.setNextItemWidth(200.0 * ui_scale);
+    if (!is_master) {
+        // Track device selector
+        zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
+        zgui.textUnformatted("Instrument:");
+        zgui.popStyleColor(.{ .count = 1 });
 
-    const track_idx = state.selectedTrack();
-    if (state.device_target_track != track_idx) {
-        state.device_target_track = track_idx;
-        state.device_target_kind = .instrument;
-        state.device_target_fx = 0;
-    }
-    const track_plugin = &state.track_plugins[track_idx];
+        zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
+        zgui.setNextItemWidth(140.0 * ui_scale);
+        if (state.instrument_filter_items_z.len == 0) {
+            rebuildInstrumentFilter(state);
+        }
+        if (zgui.inputTextWithHint("##instrument_search", .{
+            .hint = "Search instruments",
+            .buf = state.instrument_search_buf[0..],
+        })) {
+            rebuildInstrumentFilter(state);
+        }
 
-    // Convert catalog index to instrument list index for display
-    var instrument_list_index: i32 = findPluginListIndex(state.plugin_instrument_indices, track_plugin.choice_index);
+        zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
+        zgui.setNextItemWidth(200.0 * ui_scale);
 
-    if (zgui.combo("##device_select", .{
-        .current_item = &instrument_list_index,
-        .items_separated_by_zeros = state.plugin_instrument_items,
-    })) {
-        // Selection changed - convert back to catalog index
-        if (catalogIndexFromList(state.plugin_instrument_indices, instrument_list_index)) |new_choice| {
-            track_plugin.choice_index = new_choice;
-            track_plugin.gui_open = false;
+        if (state.device_target_track != track_idx) {
+            state.device_target_track = track_idx;
             state.device_target_kind = .instrument;
+            state.device_target_fx = 0;
+        }
+        const track_plugin = &state.track_plugins[track_idx];
+
+        // Convert catalog index to instrument list index for display
+        var instrument_list_index: i32 = findPluginListIndex(state.instrument_filter_indices, track_plugin.choice_index);
+
+        if (zgui.combo("##device_select", .{
+            .current_item = &instrument_list_index,
+            .items_separated_by_zeros = state.instrument_filter_items_z,
+        })) {
+            // Selection changed - convert back to catalog index
+            if (catalogIndexFromList(state.instrument_filter_indices, instrument_list_index)) |new_choice| {
+                track_plugin.choice_index = new_choice;
+                track_plugin.gui_open = false;
+                track_plugin.preset_choice_index = null;
+                state.device_target_kind = .instrument;
+                state.device_target_fx = 0;
+            }
+        }
+
+        zgui.sameLine(.{ .spacing = 12.0 * ui_scale });
+        const instrument_ready = state.track_plugin_ptrs[track_idx] != null;
+        const inst_open_label = "Open Instrument";
+        const inst_close_label = "Close Instrument";
+        const inst_button_w = calcToggleButtonWidth(inst_open_label, inst_close_label, ui_scale);
+        const inst_button_label = if (track_plugin.gui_open) inst_close_label else inst_open_label;
+        var inst_button_buf: [64]u8 = undefined;
+        const inst_button_text = std.fmt.bufPrintZ(&inst_button_buf, "{s}##instrument_open", .{inst_button_label}) catch "##instrument_open";
+        zgui.beginDisabled(.{ .disabled = !instrument_ready });
+        if (zgui.button(inst_button_text, .{ .w = inst_button_w, .h = 0 })) {
+            const opening = !track_plugin.gui_open;
+            if (opening) {
+                for (0..max_fx_slots) |fx_index| {
+                    state.track_fx[track_idx][fx_index].gui_open = false;
+                }
+                track_plugin.gui_open = true;
+            } else {
+                track_plugin.gui_open = false;
+            }
+            state.device_target_kind = .instrument;
+            state.device_target_fx = 0;
+        }
+        zgui.endDisabled();
+
+        zgui.spacing();
+        zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
+        zgui.textUnformatted("Preset:");
+        zgui.popStyleColor(.{ .count = 1 });
+
+        zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
+        zgui.setNextItemWidth(180.0 * ui_scale);
+        if (state.preset_filter_items_z.len == 0) {
+            rebuildPresetFilter(state);
+        }
+        if (zgui.inputTextWithHint("##preset_search", .{
+            .hint = "Search presets",
+            .buf = state.preset_search_buf[0..],
+        })) {
+            rebuildPresetFilter(state);
+        }
+
+        zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
+        zgui.setNextItemWidth(260.0 * ui_scale);
+        var preset_list_index: i32 = findPresetListIndex(state.preset_filter_indices, track_plugin.preset_choice_index);
+        if (zgui.combo("##preset_select", .{
+            .current_item = &preset_list_index,
+            .items_separated_by_zeros = state.preset_filter_items_z,
+        })) {
+            if (presetIndexFromList(state.preset_filter_indices, preset_list_index)) |preset_index| {
+                if (state.preset_catalog) |catalog| {
+                    if (preset_index < catalog.entries.items.len) {
+                        const entry = catalog.entries.items[preset_index];
+                        track_plugin.preset_choice_index = preset_index;
+                        if (entry.catalog_index >= 0 and entry.catalog_index != track_plugin.choice_index) {
+                            track_plugin.choice_index = entry.catalog_index;
+                            track_plugin.gui_open = false;
+                            state.device_target_kind = .instrument;
+                            state.device_target_fx = 0;
+                        }
+                        state.preset_load_request = .{
+                            .track_index = track_idx,
+                            .plugin_id = entry.plugin_id,
+                            .location_kind = entry.location_kind,
+                            .location = entry.location_z,
+                            .load_key = entry.load_key_z,
+                        };
+                    }
+                }
+            }
+        }
+
+        zgui.separator();
+    } else {
+        state.device_target_track = track_idx;
+        state.device_target_kind = .fx;
+        if (state.device_target_fx >= state.track_fx_slot_count[track_idx]) {
             state.device_target_fx = 0;
         }
     }
 
-    zgui.sameLine(.{ .spacing = 12.0 * ui_scale });
-    const instrument_ready = state.track_plugin_ptrs[track_idx] != null;
-    const inst_open_label = "Open Instrument";
-    const inst_close_label = "Close Instrument";
-    const inst_button_w = calcToggleButtonWidth(inst_open_label, inst_close_label, ui_scale);
-    const inst_button_label = if (track_plugin.gui_open) inst_close_label else inst_open_label;
-    var inst_button_buf: [64]u8 = undefined;
-    const inst_button_text = std.fmt.bufPrintZ(&inst_button_buf, "{s}##instrument_open", .{inst_button_label}) catch "##instrument_open";
-    zgui.beginDisabled(.{ .disabled = !instrument_ready });
-    if (zgui.button(inst_button_text, .{ .w = inst_button_w, .h = 0 })) {
-        const opening = !track_plugin.gui_open;
-        if (opening) {
-            for (0..max_fx_slots) |fx_index| {
-                state.track_fx[track_idx][fx_index].gui_open = false;
-            }
-            track_plugin.gui_open = true;
-        } else {
-            track_plugin.gui_open = false;
-        }
-        state.device_target_kind = .instrument;
-        state.device_target_fx = 0;
-    }
-    zgui.endDisabled();
-
-    zgui.separator();
-
     zgui.spacing();
     zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
-    zgui.textUnformatted("Audio FX:");
+    zgui.textUnformatted(if (is_master) "Master FX:" else "Audio FX:");
     zgui.popStyleColor(.{ .count = 1 });
 
     // Dynamic FX slots - show only the number of slots currently in use for this track
@@ -1980,10 +2178,14 @@ fn drawDevicePanel(state: *State, ui_scale: f32) void {
         if (zgui.button(button_text, .{ .w = button_w, .h = 0 })) {
             const opening = !fx_slot.gui_open;
             if (opening) {
-                state.track_plugins[track_idx].gui_open = false;
-                for (0..max_fx_slots) |other_fx| {
-                    if (other_fx != fx_index) {
-                        state.track_fx[track_idx][other_fx].gui_open = false;
+                if (!is_master) {
+                    state.track_plugins[track_idx].gui_open = false;
+                }
+                for (0..max_tracks) |t| {
+                    for (0..max_fx_slots) |other_fx| {
+                        if (t != track_idx or other_fx != fx_index) {
+                            state.track_fx[t][other_fx].gui_open = false;
+                        }
                     }
                 }
                 fx_slot.gui_open = true;
@@ -2037,7 +2239,10 @@ fn drawClapDevice(state: *State, ui_scale: f32) void {
     const plugin_ready = plugin != null;
 
     zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_bright });
-    const device_label = switch (state.device_target_kind) {
+    const is_master = state.session.mixer_target == .master;
+    const device_label = if (is_master)
+        "Master FX"
+    else switch (state.device_target_kind) {
         .instrument => "Instrument",
         .fx => "FX",
     };
@@ -2045,7 +2250,7 @@ fn drawClapDevice(state: *State, ui_scale: f32) void {
     zgui.popStyleColor(.{ .count = 1 });
 
     zgui.sameLine(.{ .spacing = 12.0 * ui_scale });
-    const track_idx = state.selectedTrack();
+    const track_idx = if (is_master) session_view.master_track_index else state.selectedTrack();
     const target = switch (state.device_target_kind) {
         .instrument => &state.track_plugins[track_idx],
         .fx => &state.track_fx[track_idx][state.device_target_fx],
@@ -2072,10 +2277,14 @@ fn drawClapDevice(state: *State, ui_scale: f32) void {
                     }
                 },
                 .fx => {
-                    state.track_plugins[track_idx].gui_open = false;
-                    for (0..max_fx_slots) |fx_index| {
-                        if (fx_index != state.device_target_fx) {
-                            state.track_fx[track_idx][fx_index].gui_open = false;
+                    if (!is_master) {
+                        state.track_plugins[track_idx].gui_open = false;
+                    }
+                    for (0..max_tracks) |t| {
+                        for (0..max_fx_slots) |fx_index| {
+                            if (t != track_idx or fx_index != state.device_target_fx) {
+                                state.track_fx[t][fx_index].gui_open = false;
+                            }
                         }
                     }
                 },
