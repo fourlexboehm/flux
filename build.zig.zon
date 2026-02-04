@@ -29,8 +29,8 @@
             .hash = "regex-0.1.3-axC35-HYAQAjUXGzwsZQucpNWl9RtVkv65bbQKg2WxaK",
         },
         .@"clap-bindings" = .{
-            .url = "git+https://codeberg.org/fellowtraveler/clap-zig-bindings#87696f8d3da55a2f5dd5b05ce5e53eb9dbe32e9a",
-            .hash = "clap_bindings-1.0.3-9TIcDV9LAQCFHwmA0O4166YWAhcLiunCcjUGANcBxynG",
+            .url = "git+https://codeberg.org/fellowtraveler/clap-zig-bindings#8e9d97d3e85256c35dddd6823000171f27faa97c",                           │
+            .hash = "clap_bindings-1.0.3-9TIcDWVLAQCvN3AaarfWupPtWYgUW6JfBVKy3AYswPSj",
         },
         .zopengl = .{
             .url = "git+https://github.com/fourlexboehm/zopengl#update-for-zig-0-16",
