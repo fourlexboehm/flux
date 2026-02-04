@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const plugins = @import("plugins.zig");
-const plugin_runtime = @import("plugin_runtime.zig");
+const plugins = @import("plugin/plugins.zig");
+const plugin_runtime = @import("plugin/plugin_runtime.zig");
 const session_constants = @import("ui/session_view/constants.zig");
 const ui_state = @import("ui/state.zig");
 

@@ -1,6 +1,6 @@
 const std = @import("std");
 const clap = @import("clap-bindings");
-const presets = @import("../presets.zig");
+const presets = @import("../plugin/presets.zig");
 
 const undo = @import("../undo/root.zig");
 const session_view = @import("session_view.zig");

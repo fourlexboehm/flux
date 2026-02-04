@@ -1,6 +1,6 @@
 const std = @import("std");
 const ui_state = @import("../ui/state.zig");
-const plugins = @import("../plugins.zig");
+const plugins = @import("../plugin/plugins.zig");
 const undo = @import("../undo/root.zig");
 const types = @import("types.zig");
 const convert = @import("convert.zig");
