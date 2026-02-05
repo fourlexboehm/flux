@@ -255,11 +255,12 @@ pub fn FilterOutputs(comptime T: type) type {
 /// Soft clipping function to simulate transistor saturation
 fn softClip(x: anytype) @TypeOf(x) {
     const T = @TypeOf(x);
-    const threshold: T = 1.0;
+    const threshold: T = 0.8;
+    const softness: T = 0.2;
     if (x > threshold) {
-        return threshold + (1.0 - threshold) * std.math.tanh(x - threshold);
+        return threshold + softness * std.math.tanh((x - threshold) / softness);
     } else if (x < -threshold) {
-        return -threshold + (1.0 - threshold) * std.math.tanh(x + threshold);
+        return -threshold + softness * std.math.tanh((x + threshold) / softness);
     }
     return x;
 }

@@ -91,11 +91,29 @@ pub fn PinkNoiseFilter(comptime T: type) type {
         b4: T = 0.0,
         b5: T = 0.0,
         b6: T = 0.0,
+        sample_rate: T = 44100.0,
+
+        // Coefficients (sample-rate aware for the positive poles)
+        a0: T = 0.99886,
+        a1: T = 0.99332,
+        a2: T = 0.96900,
+        a3: T = 0.86650,
+        a4: T = 0.55000,
+        a5: T = -0.7616,
+        c0: T = 0.0555179,
+        c1: T = 0.0750759,
+        c2: T = 0.1538520,
+        c3: T = 0.3104856,
+        c4: T = 0.5329522,
+        c5: T = -0.0168980,
+        c6: T = 0.115926,
 
         const Self = @This();
 
-        pub fn init() Self {
-            return .{};
+        pub fn init(sample_rate: T) Self {
+            var self = Self{};
+            self.prepare(sample_rate);
+            return self;
         }
 
         pub fn reset(self: *Self) void {
@@ -108,24 +126,63 @@ pub fn PinkNoiseFilter(comptime T: type) type {
             self.b6 = 0.0;
         }
 
+        pub fn prepare(self: *Self, sample_rate: T) void {
+            self.sample_rate = sample_rate;
+            self.updateCoefficients();
+        }
+
+        fn updateCoefficients(self: *Self) void {
+            const ref_rate: T = 44100.0;
+
+            const c0_pair = scaleCoef(T, 0.99886, 0.0555179, ref_rate, self.sample_rate);
+            const c1_pair = scaleCoef(T, 0.99332, 0.0750759, ref_rate, self.sample_rate);
+            const c2_pair = scaleCoef(T, 0.96900, 0.1538520, ref_rate, self.sample_rate);
+            const c3_pair = scaleCoef(T, 0.86650, 0.3104856, ref_rate, self.sample_rate);
+            const c4_pair = scaleCoef(T, 0.55000, 0.5329522, ref_rate, self.sample_rate);
+
+            self.a0 = c0_pair.a;
+            self.a1 = c1_pair.a;
+            self.a2 = c2_pair.a;
+            self.a3 = c3_pair.a;
+            self.a4 = c4_pair.a;
+            self.c0 = c0_pair.c;
+            self.c1 = c1_pair.c;
+            self.c2 = c2_pair.c;
+            self.c3 = c3_pair.c;
+            self.c4 = c4_pair.c;
+            self.a5 = -0.7616;
+            self.c5 = -0.0168980;
+            self.c6 = 0.115926;
+        }
+
         /// Process white noise sample to produce pink noise
         pub inline fn processSample(self: *Self, white: T) T {
             // Paul Kellet's economy method
             // http://www.firstpr.com.au/dsp/pink-noise/
-            self.b0 = 0.99886 * self.b0 + white * 0.0555179;
-            self.b1 = 0.99332 * self.b1 + white * 0.0750759;
-            self.b2 = 0.96900 * self.b2 + white * 0.1538520;
-            self.b3 = 0.86650 * self.b3 + white * 0.3104856;
-            self.b4 = 0.55000 * self.b4 + white * 0.5329522;
-            self.b5 = -0.7616 * self.b5 - white * 0.0168980;
+            self.b0 = self.a0 * self.b0 + white * self.c0;
+            self.b1 = self.a1 * self.b1 + white * self.c1;
+            self.b2 = self.a2 * self.b2 + white * self.c2;
+            self.b3 = self.a3 * self.b3 + white * self.c3;
+            self.b4 = self.a4 * self.b4 + white * self.c4;
+            self.b5 = self.a5 * self.b5 + white * self.c5;
 
             const pink = self.b0 + self.b1 + self.b2 + self.b3 + self.b4 + self.b5 + self.b6 + white * 0.5362;
-            self.b6 = white * 0.115926;
+            self.b6 = white * self.c6;
 
             // Scale to roughly unit amplitude
             return pink * 0.11;
         }
     };
+}
+
+fn scaleCoef(comptime T: type, orig_a: T, orig_c: T, ref_rate: T, sample_rate: T) struct { a: T, c: T } {
+    if (@abs(sample_rate - ref_rate) < 1e-6) {
+        return .{ .a = orig_a, .c = orig_c };
+    }
+    const pole_freq = -@log(orig_a) * ref_rate / (2.0 * std.math.pi);
+    const new_a = @exp(-2.0 * std.math.pi * pole_freq / sample_rate);
+    const scale = (1.0 - new_a) / (1.0 - orig_a);
+    return .{ .a = new_a, .c = orig_c * scale };
 }
 
 // ============================================================================
@@ -143,16 +200,20 @@ pub fn NoiseSource(comptime T: type) type {
 
         const Self = @This();
 
-        pub fn init() Self {
+        pub fn init(sample_rate: T) Self {
             return .{
                 .white_gen = WhiteNoiseGenerator(T).init(),
-                .pink_filter = PinkNoiseFilter(T).init(),
+                .pink_filter = PinkNoiseFilter(T).init(sample_rate),
             };
         }
 
         pub fn reset(self: *Self) void {
             self.white_gen.reset();
             self.pink_filter.reset();
+        }
+
+        pub fn prepare(self: *Self, sample_rate: T) void {
+            self.pink_filter.prepare(sample_rate);
         }
 
         pub fn setSeed(self: *Self, seed: u64) void {
@@ -256,7 +317,7 @@ test "white noise has zero mean" {
 test "pink noise has lower high frequency content" {
     const T = f64;
 
-    var noise = NoiseSource(T).init();
+    var noise = NoiseSource(T).init(48000.0);
 
     // Compute variance of sample differences (proxy for high freq energy)
     var white_diff_var: T = 0.0;
@@ -286,7 +347,7 @@ test "pink noise has lower high frequency content" {
 test "noise source produces both outputs" {
     const T = f64;
 
-    var noise = NoiseSource(T).init();
+    var noise = NoiseSource(T).init(48000.0);
 
     var has_white = false;
     var has_pink = false;

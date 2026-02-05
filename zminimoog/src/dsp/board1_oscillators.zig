@@ -64,6 +64,7 @@ pub const AntiAliasMode = enum {
 pub const Waveform = enum {
     sawtooth,
     triangle,
+    shark_tooth,
     square,
     pulse, // Variable pulse width
 };
@@ -422,6 +423,7 @@ pub fn VCO(comptime T: type) type {
             const output = switch (self.waveform) {
                 .sawtooth => self.generateSaw(cap_voltage),
                 .triangle => self.generateTriangle(cap_voltage),
+                .shark_tooth => self.generateSharkTooth(cap_voltage),
                 .square => self.generateSquare(),
                 .pulse => self.generatePulse(),
             };
@@ -444,6 +446,7 @@ pub fn VCO(comptime T: type) type {
                     break :blk output;
                 },
                 .triangle => PolyBLAMP(T).triangleCorrection(self.phase, self.phase_increment, raw),
+                .shark_tooth => PolyBLEP(T).sawtoothCorrection(self.phase, self.phase_increment, raw),
                 .square => PolyBLEP(T).pulseCorrection(self.phase, self.phase_increment, 0.5, raw),
                 .pulse => PolyBLEP(T).pulseCorrection(self.phase, self.phase_increment, self.pulse_width, raw),
             };
@@ -480,6 +483,13 @@ pub fn VCO(comptime T: type) type {
             const saw = self.generateSaw(cap_voltage);
             // Fold: abs(saw) gives 0->1->0, then scale to -1->1->-1
             return @abs(saw) * 2.0 - 1.0;
+        }
+
+        /// Shark tooth: blend triangle and sawtooth (Minimoog-style hybrid)
+        fn generateSharkTooth(self: *Self, cap_voltage: T) T {
+            const tri = self.generateTriangle(cap_voltage);
+            const saw = self.generateSaw(cap_voltage);
+            return (tri + saw) * 0.5;
         }
 
         /// Square: comparator on phase
@@ -629,7 +639,7 @@ pub fn OscillatorBank(comptime T: type) type {
 
         /// Analog saturation curve (bypassed; keep linear until tuned)
         pub fn analogSaturate(x: T) T {
-            return x;
+            return std.math.tanh(x);
         }
     };
 }
@@ -798,13 +808,14 @@ test "oscillator bank mixes three oscillators" {
     try std.testing.expect(max_output > 0.1);
 }
 
-test "analog saturation bypasses (linear)" {
+test "analog saturation soft clips" {
     const T = f64;
 
     const input: T = 10.0;
     const saturated = OscillatorBank(T).analogSaturate(input);
 
-    try std.testing.expectEqual(input, saturated);
+    try std.testing.expect(saturated < input);
+    try std.testing.expect(@abs(saturated) <= 1.0);
 }
 
 test "polyblep reduces discontinuity" {
