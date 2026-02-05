@@ -16,6 +16,7 @@ const GUI = extensions.GUI;
 pub const View = ViewType;
 pub const font = shared.core.Core(Plugin, ViewType).font;
 const options = @import("options");
+const dsp = @import("dsp/dsp.zig");
 const Voices = @import("audio/voices.zig");
 const Filter = @import("audio/filter.zig");
 
@@ -117,22 +118,20 @@ pub fn notifyHostParamsChanged(self: *Plugin) bool {
 }
 
 pub fn applyParamsToVoice(self: *Plugin, voice: *Voice) void {
-    const dsp = @import("dsp/dsp.zig");
-
     // Oscillator 1
     voice.synth.osc1_level = @floatCast(self.params.get(.Osc1Level).Float);
-    voice.synth.oscillators.osc1.setWaveform(indexToWaveform(@intFromFloat(self.params.get(.Osc1Waveform).Float)));
+    applyWaveform(&voice.synth.oscillators.osc1, @intFromFloat(self.params.get(.Osc1Waveform).Float));
     voice.synth.panel.switches.osc1_range = indexToRange(@intFromFloat(self.params.get(.Osc1Range).Float));
 
     // Oscillator 2
     voice.synth.osc2_level = @floatCast(self.params.get(.Osc2Level).Float);
-    voice.synth.oscillators.osc2.setWaveform(indexToWaveform(@intFromFloat(self.params.get(.Osc2Waveform).Float)));
+    applyWaveform(&voice.synth.oscillators.osc2, @intFromFloat(self.params.get(.Osc2Waveform).Float));
     voice.synth.panel.switches.osc2_range = indexToRange(@intFromFloat(self.params.get(.Osc2Range).Float));
     voice.synth.oscillators.osc2.setDetune(@floatCast(self.params.get(.Osc2Detune).Float));
 
     // Oscillator 3
     voice.synth.osc3_level = @floatCast(self.params.get(.Osc3Level).Float);
-    voice.synth.oscillators.osc3.setWaveform(indexToWaveform(@intFromFloat(self.params.get(.Osc3Waveform).Float)));
+    applyWaveform(&voice.synth.oscillators.osc3, @intFromFloat(self.params.get(.Osc3Waveform).Float));
     voice.synth.panel.switches.osc3_range = indexToRange(@intFromFloat(self.params.get(.Osc3Range).Float));
     voice.synth.oscillators.osc3.setDetune(@floatCast(self.params.get(.Osc3Detune).Float));
     voice.synth.panel.switches.osc3_keyboard_control = self.params.get(.Osc3KeyboardCtrl).Float >= 0.5;
@@ -168,13 +167,26 @@ fn indexToWaveform(index: usize) @import("dsp/dsp.zig").Waveform {
     const Waveform = @import("dsp/dsp.zig").Waveform;
     return switch (index) {
         0 => Waveform.triangle,
-        1 => Waveform.triangle, // shark -> triangle for now
+        1 => Waveform.shark_tooth,
         2 => Waveform.sawtooth,
         3 => Waveform.square,
         4 => Waveform.pulse,
         5 => Waveform.pulse,
         else => Waveform.sawtooth,
     };
+}
+
+fn applyWaveform(osc: *dsp.VCO(f32), index: usize) void {
+    const waveform = indexToWaveform(index);
+    osc.setWaveform(waveform);
+    if (waveform == .pulse) {
+        const pulse_width: f32 = switch (index) {
+            4 => 0.6, // wide pulse
+            5 => 0.2, // narrow pulse
+            else => 0.5,
+        };
+        osc.setPulseWidth(pulse_width);
+    }
 }
 
 fn indexToRange(index: usize) @import("dsp/dsp.zig").OscRange {
