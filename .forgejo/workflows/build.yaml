@@ -7,8 +7,6 @@ jobs:
     runs-on: codeberg-tiny
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
-        with:
-          submodules: true
 
       - name: Install Linux dependencies
         run: |
