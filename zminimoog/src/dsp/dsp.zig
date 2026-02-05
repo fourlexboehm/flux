@@ -128,14 +128,15 @@ pub fn Minimoog(comptime T: type) type {
         filter_cutoff: T = 5000.0, // Hz
         filter_emphasis: T = 0.0, // Resonance (0 to ~4)
         filter_contour_amount: T = 0.5, // Envelope amount
-        filter_mod_amount: T = 0.0, // Mod wheel to filter
+        filter_mod_amount: T = 1.0, // Mod wheel to filter
 
         // Oscillator modulation
-        osc_mod_amount: T = 0.0, // Mod wheel to oscillators (vibrato)
+        osc_mod_amount: T = 1.0, // Mod wheel to oscillators (vibrato)
 
         // Current note state
         current_note_cv: T = 0.0,
         gate: bool = false,
+        last_osc3: T = 0.0,
 
         const Self = @This();
 
@@ -143,7 +144,7 @@ pub fn Minimoog(comptime T: type) type {
             var self = Self{
                 .oscillators = OscillatorBank(T).init(sample_rate),
                 .contours = Board2Contours(T).init(sample_rate),
-                .noise = NoiseSource(T).init(),
+                .noise = NoiseSource(T).init(sample_rate),
                 .filter = MoogLadderFilter(T).init(sample_rate),
                 .vca = VCA(T).init(),
                 .panel = FrontPanel(T).init(),
@@ -161,6 +162,7 @@ pub fn Minimoog(comptime T: type) type {
             self.sample_rate = sample_rate;
             self.oscillators.prepare(sample_rate);
             self.contours.prepare(sample_rate);
+            self.noise.prepare(sample_rate);
             self.filter.prepare(sample_rate);
         }
 
@@ -209,6 +211,10 @@ pub fn Minimoog(comptime T: type) type {
 
         /// Note off
         pub fn noteOff(self: *Self) void {
+            if (self.panel.switches.decay_mode == .decay) {
+                self.contours.filter_env.setRelease(self.contours.filter_env.decay_time);
+                self.contours.loudness_env.setRelease(self.contours.loudness_env.decay_time);
+            }
             self.contours.filter_env.noteOff();
             self.contours.loudness_env.noteOff();
             self.gate = false;
@@ -324,13 +330,14 @@ pub fn Minimoog(comptime T: type) type {
             // Get pitch with glide
             const glide_pitch = self.contours.glide.processSample();
 
-            // Calculate final pitch CV (base + pitch wheel + vibrato)
             const mod_amount = wheels.mod_amount;
-            const vibrato = if (self.osc_mod_amount > 0)
-                self.getOsc3Mod() * mod_amount * self.osc_mod_amount
+            const osc_mod_depth: T = 0.1; // Vibrato depth in volts (1V/oct)
+            const vibrato = if (self.panel.switches.osc3_to_osc)
+                self.last_osc3 * mod_amount * osc_mod_depth * self.osc_mod_amount
             else
                 0.0;
 
+            // Calculate final pitch CV (base + pitch wheel + vibrato)
             const final_pitch_cv = glide_pitch + wheels.pitch_bend_cv + vibrato;
 
             // Set oscillator frequencies
@@ -340,10 +347,13 @@ pub fn Minimoog(comptime T: type) type {
             // Osc 3: either keyboard controlled or free-running
             if (self.panel.switches.osc3_keyboard_control) {
                 self.oscillators.osc3.setCV(final_pitch_cv + @as(T, @floatFromInt(self.panel.switches.osc3_range.getOctaveOffset())));
+            } else {
+                self.oscillators.setOsc3Frequency(self.getOsc3LfoFrequency());
             }
 
             // Generate oscillator outputs
             const osc_outputs = self.oscillators.processSampleIndividual();
+            self.last_osc3 = osc_outputs.osc3;
 
             // Mix oscillators
             var audio: T = 0.0;
@@ -357,37 +367,48 @@ pub fn Minimoog(comptime T: type) type {
                 audio += osc_outputs.osc3 * self.osc3_level;
             }
 
-            // Add noise
-            if (self.panel.switches.noise_on and self.noise_level > 0.0) {
-                const noise_sample = switch (self.panel.switches.noise_type) {
+            var noise_sample: T = 0.0;
+            var noise_mod: T = 0.0;
+            if (self.panel.switches.noise_on or self.panel.switches.noise_to_filter) {
+                noise_sample = switch (self.panel.switches.noise_type) {
                     .white => self.noise.processWhite(),
                     .pink => self.noise.processPink(),
                 };
+                if (self.panel.switches.noise_to_filter) {
+                    noise_mod = noise_sample;
+                }
+            }
+            if (self.panel.switches.noise_on and self.noise_level > 0.0) {
                 audio += noise_sample * self.noise_level;
             }
 
-            // Calculate filter cutoff with modulation
-            var cutoff = self.filter_cutoff;
+            // Calculate filter cutoff in 1V/oct domain
+            const osc3_mod = self.last_osc3;
+            const base_cutoff = self.getLadderBaseCutoff();
+            const safe_cutoff = @max(20.0, self.filter_cutoff);
+            var cutoff_cv = @log2(safe_cutoff / base_cutoff);
 
-            // Filter envelope modulation
-            cutoff += filter_env * self.filter_contour_amount * 10000.0;
+            // Filter envelope modulation (0..1V scaled by amount)
+            cutoff_cv += filter_env * self.filter_contour_amount;
 
-            // Keyboard tracking
+            // Keyboard tracking (glide_pitch is already in V/oct)
             const tracking = self.panel.switches.filter_keyboard_tracking.getAmount(T);
-            cutoff += glide_pitch * tracking * 1000.0;
+            cutoff_cv += glide_pitch * tracking;
 
-            // Mod wheel to filter
-            if (self.filter_mod_amount > 0.0) {
-                cutoff += self.getOsc3Mod() * mod_amount * self.filter_mod_amount * 5000.0;
-            }
-
-            // Osc 3 to filter (when switch enabled)
+            // Mod wheel to filter (osc3/noise sources)
+            var filter_mod: T = 0.0;
             if (self.panel.switches.osc3_to_filter) {
-                cutoff += osc_outputs.osc3 * 2000.0;
+                filter_mod += osc3_mod;
             }
+            if (self.panel.switches.noise_to_filter) {
+                filter_mod += noise_mod;
+            }
+            const filter_mod_depth: T = 0.5; // depth in volts
+            cutoff_cv += filter_mod * mod_amount * filter_mod_depth * self.filter_mod_amount;
 
             // Clamp and set filter cutoff
-            self.filter.setCutoff(std.math.clamp(cutoff, 20.0, 20000.0));
+            cutoff_cv = std.math.clamp(cutoff_cv, -6.0, 6.0);
+            self.filter.setCutoffCV(cutoff_cv);
 
             // Process through filter
             const filtered = self.filter.processSample(audio);
@@ -400,11 +421,20 @@ pub fn Minimoog(comptime T: type) type {
             return output * self.panel.master_volume;
         }
 
-        /// Get Osc 3 output for modulation (normalized)
-        fn getOsc3Mod(self: *Self) T {
-            // Use the last osc3 sample value for modulation
-            // This gives LFO-like behavior when osc3 is set to low range
-            return self.oscillators.osc3.processSample();
+        fn getLadderBaseCutoff(self: *Self) T {
+            _ = self;
+            return 1.0 / (2.0 * std.math.pi * FilterComponents.stage_resistance * FilterComponents.ladder_cap);
+        }
+
+        fn getOsc3LfoFrequency(self: *Self) T {
+            return switch (self.panel.switches.osc3_range) {
+                .lo => 0.5,
+                .@"32" => 1.0,
+                .@"16" => 2.0,
+                .@"8" => 4.0,
+                .@"4" => 8.0,
+                .@"2" => 16.0,
+            };
         }
     };
 }
