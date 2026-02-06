@@ -54,7 +54,6 @@ pub const NoiseOutputs = board3_noise.NoiseOutputs;
 pub const board4_filter_vca = @import("board4_filter_vca.zig");
 
 pub const MoogLadderFilter = board4_filter_vca.MoogLadderFilter;
-pub const LadderStage = board4_filter_vca.LadderStage;
 pub const VCA = board4_filter_vca.VCA;
 pub const Board4FilterVCA = board4_filter_vca.Board4FilterVCA;
 pub const FilterComponents = board4_filter_vca.FilterComponents;
