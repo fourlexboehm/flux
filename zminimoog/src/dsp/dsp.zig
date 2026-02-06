@@ -406,9 +406,10 @@ pub fn Minimoog(comptime T: type) type {
             const filter_mod_depth: T = 0.5; // depth in volts
             cutoff_cv += filter_mod * mod_amount * filter_mod_depth * self.filter_mod_amount;
 
-            // Clamp and set filter cutoff
+            // Clamp and set filter cutoff (convert from V/oct to Hz)
             cutoff_cv = std.math.clamp(cutoff_cv, -6.0, 6.0);
-            self.filter.setCutoffCV(cutoff_cv);
+            const cutoff_hz = base_cutoff * std.math.pow(T, 2.0, cutoff_cv);
+            self.filter.setCutoff(cutoff_hz);
 
             // Process through filter
             const filtered = self.filter.processSample(audio);
@@ -532,8 +533,9 @@ test "minimoog responds to note off" {
 
     synth.noteOff();
 
-    // Process release
-    for (0..5000) |_| {
+    // Process release (filter_env has decay_time=0.3s which overrides release
+    // during noteOff when decay_mode=.decay, requiring ~20200 samples to finish)
+    for (0..24000) |_| {
         _ = synth.processSample();
     }
 
