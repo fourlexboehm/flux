@@ -7,6 +7,7 @@ const plugin_runtime = @import("../plugin/plugin_runtime.zig");
 const session_constants = @import("../ui/session_view/constants.zig");
 const thread_context = @import("../thread_context.zig");
 const ui_state = @import("../ui/state.zig");
+const clock_io: std.Io = std.Io.Threaded.global_single_threaded.ioBasic();
 
 const track_count = session_constants.max_tracks;
 const TrackPlugin = plugin_runtime.TrackPlugin;
@@ -14,7 +15,11 @@ const TrackPlugin = plugin_runtime.TrackPlugin;
 var perf_total_us: u64 = 0;
 var perf_max_us: u64 = 0;
 var perf_count: u64 = 0;
-var perf_last_print: ?std.time.Instant = null;
+var perf_last_print: ?std.Io.Timestamp = null;
+
+fn nsSince(from: std.Io.Timestamp, to: std.Io.Timestamp) u64 {
+    return @intCast(from.durationTo(to).toNanoseconds());
+}
 
 pub fn dataCallback(
     device: *zaudio.Device,
@@ -22,7 +27,7 @@ pub fn dataCallback(
     _: ?*const anyopaque,
     frame_count: u32,
 ) callconv(.c) void {
-    const start = std.time.Instant.now() catch null;
+    const start = std.Io.Clock.awake.now(clock_io);
     thread_context.is_audio_thread = true;
     defer thread_context.is_audio_thread = false;
 
@@ -35,9 +40,9 @@ pub fn dataCallback(
     engine.render(device, output, frame_count);
 
     // Perf timing and adaptive sleep
-    if (start) |s| {
-        const end = std.time.Instant.now() catch return;
-        const elapsed_us = end.since(s) / 1000;
+    {
+        const end = std.Io.Clock.awake.now(clock_io);
+        const elapsed_us = nsSince(start, end) / 1000;
         perf_total_us += elapsed_us;
         perf_max_us = @max(perf_max_us, elapsed_us);
         perf_count += 1;

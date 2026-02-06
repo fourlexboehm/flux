@@ -1,6 +1,7 @@
 const clap = @import("clap-bindings");
 const std = @import("std");
 const tracy = @import("tracy");
+const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.ioBasic();
 
 pub fn create(comptime Params: type, comptime PluginType: type) clap.ext.state.Plugin {
     return .{
@@ -23,7 +24,7 @@ fn SaveLoad(comptime Params: type, comptime PluginType: type) type {
                 std.log.debug("_save: couldn't get lock!", .{});
                 return false;
             }
-            defer plugin.params.mutex.unlock();
+            defer plugin.params.mutex.unlock(mutex_io);
 
             const str = std.json.Stringify.valueAlloc(plugin.allocator, plugin.params.values.values, .{}) catch return false;
             std.log.debug("Plugin data saved: {s}", .{str});
@@ -85,7 +86,7 @@ fn SaveLoad(comptime Params: type, comptime PluginType: type) type {
 
             if (plugin.params.mutex.tryLock()) {
                 plugin.params.values = params.?;
-                plugin.params.mutex.unlock();
+                plugin.params.mutex.unlock(mutex_io);
 
                 plugin.applyParamChanges(true);
                 std.log.debug("Plugin state restored successfully", .{});

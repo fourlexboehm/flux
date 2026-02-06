@@ -94,7 +94,7 @@ pub const RenderPayload = struct {
 voices: std.ArrayList(Voice),
 allocator: std.mem.Allocator,
 render_payload: ?RenderPayload = null,
-render_mutex: std.Thread.Mutex = .{},
+render_mutex: std.Io.Mutex = .init,
 current_oversample_factor: OversampleFactor = .x4,
 
 pub fn init(allocator: std.mem.Allocator) Voices {

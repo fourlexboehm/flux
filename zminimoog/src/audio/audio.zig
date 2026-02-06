@@ -1,6 +1,7 @@
 const std = @import("std");
 const clap = @import("clap-bindings");
 const tracy = @import("tracy");
+const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.ioBasic();
 
 const Plugin = @import("../plugin.zig");
 const Voices = @import("voices.zig");
@@ -101,9 +102,9 @@ pub fn processVoice(plugin: *Plugin, voice_index: u32) void {
     for (payload.start..payload.end) |i| {
         const sample = voice.synth.processSample() * scale;
 
-        plugin.voices.render_mutex.lock();
+        plugin.voices.render_mutex.lockUncancelable(mutex_io);
         payload.output_left[i] += sample;
         payload.output_right[i] += sample;
-        plugin.voices.render_mutex.unlock();
+        plugin.voices.render_mutex.unlock(mutex_io);
     }
 }

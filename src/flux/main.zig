@@ -33,6 +33,10 @@ const colors = @import("ui/colors.zig");
 
 const track_count = session_constants.max_tracks;
 
+fn nsSince(from: std.Io.Timestamp, to: std.Io.Timestamp) u64 {
+    return @intCast(from.durationTo(to).toNanoseconds());
+}
+
 pub const std_options: std.Options = .{
     .enable_segfault_handler = options.enable_segfault_handler,
 };
@@ -134,7 +138,7 @@ pub fn main(init: std.process.Init) !void {
     };
     defer midi.deinit();
 
-    var last_time = try std.time.Instant.now();
+    var last_time = std.Io.Clock.awake.now(io);
     var dsp_last_update = last_time;
     var last_interaction_time = last_time;
     var window_was_focused = true;
@@ -150,11 +154,11 @@ pub fn main(init: std.process.Init) !void {
             defer zgui.backend.deinit();
 
             while (app.window.isVisible()) {
-                const frame_start = std.time.Instant.now() catch last_time;
+                const frame_start = std.Io.Clock.awake.now(io);
                 host.pumpMainThreadCallbacks();
 
-                const now = std.time.Instant.now() catch last_time;
-                const delta_ns = now.since(last_time);
+                const now = std.Io.Clock.awake.now(io);
+                const delta_ns = nsSince(last_time, now);
                 last_time = now;
                 if (delta_ns > 0) {
                     const dt = @as(f64, @floatFromInt(delta_ns)) / std.time.ns_per_s;
@@ -164,7 +168,7 @@ pub fn main(init: std.process.Init) !void {
                 midi.poll();
                 state.midi_note_states = midi.note_states;
                 state.midi_note_velocities = midi.note_velocities;
-                if (now.since(dsp_last_update) >= 250 * std.time.ns_per_ms) {
+                if (nsSince(dsp_last_update, now) >= 250 * std.time.ns_per_ms) {
                     state.dsp_load_pct = engine.dsp_load_pct.load(.acquire);
                     dsp_last_update = now;
                 }
@@ -296,7 +300,7 @@ pub fn main(init: std.process.Init) !void {
                 if (active) {
                     last_interaction_time = now;
                 }
-                const idle_ns = now.since(last_interaction_time);
+                const idle_ns = nsSince(last_interaction_time, now);
                 const target_fps: u32 = if (active)
                     60
                 else if (idle_ns >= std.time.ns_per_s)
@@ -304,8 +308,8 @@ pub fn main(init: std.process.Init) !void {
                 else
                     20;
                 const target_frame_ns: u64 = std.time.ns_per_s / @as(u64, target_fps);
-                const frame_end = std.time.Instant.now() catch frame_start;
-                const frame_elapsed_ns = frame_end.since(frame_start);
+                const frame_end = std.Io.Clock.awake.now(io);
+                const frame_elapsed_ns = nsSince(frame_start, frame_end);
                 if (frame_elapsed_ns < target_frame_ns) {
                     time_utils.sleepNs(io, target_frame_ns - frame_elapsed_ns);
                 }
@@ -348,11 +352,11 @@ pub fn main(init: std.process.Init) !void {
             const gl = zopengl.bindings;
 
             while (!window.shouldClose()) {
-                const frame_start = std.time.Instant.now() catch last_time;
+                const frame_start = std.Io.Clock.awake.now(io);
                 host.pumpMainThreadCallbacks();
 
-                const now = std.time.Instant.now() catch last_time;
-                const delta_ns = now.since(last_time);
+                const now = std.Io.Clock.awake.now(io);
+                const delta_ns = nsSince(last_time, now);
                 last_time = now;
                 if (delta_ns > 0) {
                     const dt = @as(f64, @floatFromInt(delta_ns)) / std.time.ns_per_s;
@@ -362,7 +366,7 @@ pub fn main(init: std.process.Init) !void {
                 midi.poll();
                 state.midi_note_states = midi.note_states;
                 state.midi_note_velocities = midi.note_velocities;
-                if (now.since(dsp_last_update) >= 250 * std.time.ns_per_ms) {
+                if (nsSince(dsp_last_update, now) >= 250 * std.time.ns_per_ms) {
                     state.dsp_load_pct = engine.dsp_load_pct.load(.acquire);
                     dsp_last_update = now;
                 }
@@ -466,7 +470,7 @@ pub fn main(init: std.process.Init) !void {
                 if (active) {
                     last_interaction_time = now;
                 }
-                const idle_ns = now.since(last_interaction_time);
+                const idle_ns = nsSince(last_interaction_time, now);
                 const target_fps: u32 = if (active)
                     60
                 else if (idle_ns >= std.time.ns_per_s)
@@ -474,8 +478,8 @@ pub fn main(init: std.process.Init) !void {
                 else
                     20;
                 const target_frame_ns: u64 = std.time.ns_per_s / @as(u64, target_fps);
-                const frame_end = std.time.Instant.now() catch frame_start;
-                const frame_elapsed_ns = frame_end.since(frame_start);
+                const frame_end = std.Io.Clock.awake.now(io);
+                const frame_elapsed_ns = nsSince(frame_start, frame_end);
                 if (frame_elapsed_ns < target_frame_ns) {
                     time_utils.sleepNs(io, target_frame_ns - frame_elapsed_ns);
                 }
