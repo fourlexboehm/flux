@@ -28,7 +28,7 @@ const VoiceRenderPayload = struct {
 voices: std.ArrayList(Voice),
 allocator: std.mem.Allocator,
 render_payload: ?VoiceRenderPayload = null,
-render_mutex: std.Thread.Mutex = .{},
+render_mutex: std.Io.Mutex = .init,
 
 pub fn init(allocator: std.mem.Allocator) Voices {
     return .{

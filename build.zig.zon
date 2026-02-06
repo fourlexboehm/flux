@@ -16,7 +16,7 @@
     // This field is optional.
     // This is currently advisory only; Zig does not yet do anything
     // with this value.
-    .minimum_zig_version = "0.16.0-dev.2193+fc517bd01",
+    .minimum_zig_version = "0.16.0-dev.2490+fce7878a9",
 
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
@@ -33,8 +33,8 @@
             .hash = "clap_bindings-1.0.3-9TIcDWVLAQCvN3AaarfWupPtWYgUW6JfBVKy3AYswPSj",
         },
         .zopengl = .{
-            .url = "git+https://github.com/fourlexboehm/zopengl#update-for-zig-0-16",
-            .hash = "zopengl-0.6.0-dev-5-tnz1S4CwAgYCQeg_9QQ3z9-zDAQcSH-L6DkTHzOlcG",
+            .url = "git+https://github.com/fourlexboehm/zopengl#11c8bd1d77629858193d13969cc4d6164349b436",
+            .hash = "zopengl-0.6.0-dev-5-tnzyG4CwCdDDTU7pq4LK4bg9RLOY9p3N6ZT25uzRu7",
         },
         .@"mach-objc" = .{
             .path = "deps/mach-objc",
@@ -47,15 +47,15 @@
             .hash = "ztracy-0.14.0-dev-zHJSqzUHGQAmhJybhlwtl1QKevUBw4M5YKZqPfWx2y99",
         },
         .zgui = .{
-            .url = "git+https://github.com/fourlexboehm/zgui#00e5b6ec393574e754ab42db3507f60db440623a",
-            .hash = "zgui-0.6.0-dev--L6sZHr7bQDWTAtIgTBXBGCX-fiGyfUQLLRY0k-8owNX",
+            .url = "git+https://github.com/fourlexboehm/zgui#27c0357493cf81b3ffd39e4c80bbdbde3d10dd98",
+            .hash = "zgui-0.6.0-dev--L6sZPv7bQB1IyXTkLVuBQ_Kla7ZIxZdnsUNT52-NKcT",
         },
         .zaudio = .{
             .path = "deps/zaudio",
         },
         .libz_jobs = .{
-            .url = "git+https://github.com/fourlexboehm/LibZ.Jobs#06025ae410ba855a14f4cee6cadbe47dde459c9a",
-            .hash = "libz_jobs-0.0.0-WDIbgXiIAAAwCKdI97qqcjcvna1YHJeBruqqOsAAVlCT",
+            .url = "git+https://github.com/fourlexboehm/LibZ.Jobs#bc7168bcced8c81db8ab6d0b147a1f838ebc3dd8",
+            .hash = "libz_jobs-0.0.0-WDIbgauJAACnPDI_93KHeVFXu_o35dPoYs_sVl2b5bEA",
         },
         // DAWproject support
         .@"zig-xml" = .{
