@@ -3,6 +3,7 @@ const Params = @This();
 const std = @import("std");
 const clap = @import("clap-bindings");
 const tracy = @import("tracy");
+const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.ioBasic();
 
 const Plugin = @import("../plugin.zig");
 
@@ -119,14 +120,14 @@ pub const param_defaults = std.enums.EnumFieldStruct(Parameter, ParameterValue, 
 pub const param_count = std.meta.fields(Parameter).len;
 
 values: ParameterArray = .init(param_defaults),
-mutex: std.Thread.Mutex,
+mutex: std.Io.Mutex,
 events: std.ArrayList(clap.events.ParamValue),
 allocator: std.mem.Allocator,
 
 pub fn init(allocator: std.mem.Allocator) Params {
     return .{
         .events = .empty,
-        .mutex = .{},
+        .mutex = .init,
         .allocator = allocator,
     };
 }
@@ -136,8 +137,8 @@ pub fn deinit(self: *Params) void {
 }
 
 pub fn get(self: *Params, param: Parameter) ParameterValue {
-    self.mutex.lock();
-    defer self.mutex.unlock();
+    self.mutex.lockUncancelable(mutex_io);
+    defer self.mutex.unlock(mutex_io);
     return self.values.get(param);
 }
 
@@ -146,8 +147,8 @@ const ParamSetFlags = struct {
 };
 
 pub fn set(self: *Params, param: Parameter, val: ParameterValue, flags: ParamSetFlags) !void {
-    self.mutex.lock();
-    defer self.mutex.unlock();
+    self.mutex.lockUncancelable(mutex_io);
+    defer self.mutex.unlock(mutex_io);
     self.values.set(param, val);
 
     if (flags.should_notify_host) {
@@ -550,7 +551,7 @@ pub fn _flush(
     }
 
     if (plugin.params.mutex.tryLock()) {
-        defer plugin.params.mutex.unlock();
+        defer plugin.params.mutex.unlock(mutex_io);
 
         if (plugin.params.events.items.len > 0) {
             params_did_change = true;

@@ -2,6 +2,7 @@ const builtin = @import("builtin");
 const std = @import("std");
 const clap = @import("clap-bindings");
 const tracy = @import("tracy");
+const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.ioBasic();
 
 const Plugin = @import("../plugin.zig");
 const Params = @import("../ext/params.zig");
@@ -212,8 +213,8 @@ pub fn processVoice(plugin: *Plugin, voice_index: u32) !void {
 
         const zone_access_render_mutex = tracy.ZoneN(@src(), "Wave wait for render mutex and write");
         defer zone_access_render_mutex.End();
-        voices.render_mutex.lock();
-        defer voices.render_mutex.unlock();
+        voices.render_mutex.lockUncancelable(mutex_io);
+        defer voices.render_mutex.unlock(mutex_io);
 
         render_payload.output_left[index] += output_l;
         render_payload.output_right[index] += output_r;

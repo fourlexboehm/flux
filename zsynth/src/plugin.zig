@@ -3,6 +3,7 @@ pub const Plugin = @This();
 const std = @import("std");
 const clap = @import("clap-bindings");
 const tracy = @import("tracy");
+const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.ioBasic();
 
 const shared = @import("shared");
 
@@ -33,7 +34,7 @@ filter_right: Filter,
 gui: ?*GUI,
 
 jobs: Jobs = .{},
-job_mutex: std.Thread.Mutex,
+job_mutex: std.Io.Mutex,
 
 const Jobs = packed struct(u32) {
     notify_host_params_changed: bool = false,
@@ -84,7 +85,7 @@ pub fn init(allocator: std.mem.Allocator, host: *const clap.Host) !*Plugin {
         .voices = voices,
         .params = params,
         .gui = null,
-        .job_mutex = .{},
+        .job_mutex = .init,
         .filter_left = undefined,
         .filter_right = undefined,
     };
@@ -106,8 +107,8 @@ pub fn create(host: *const clap.Host, allocator: std.mem.Allocator) !*const clap
 
 // Notify the host that the params have changed, which will request a main thread refresh from the host
 pub fn notifyHostParamsChanged(self: *Plugin) bool {
-    self.job_mutex.lock();
-    defer self.job_mutex.unlock();
+    self.job_mutex.lockUncancelable(mutex_io);
+    defer self.job_mutex.unlock(mutex_io);
 
     if (self.jobs.notify_host_params_changed) {
         std.log.debug("Host is already queued for notify params changed, discarding request", .{});
@@ -372,8 +373,8 @@ fn _onMainThread(clap_plugin: *const clap.Plugin) callconv(.c) void {
     const plugin = fromClapPlugin(clap_plugin);
 
     if (plugin.jobs.notify_host_params_changed) {
-        plugin.job_mutex.lock();
-        defer plugin.job_mutex.unlock();
+        plugin.job_mutex.lockUncancelable(mutex_io);
+        defer plugin.job_mutex.unlock(mutex_io);
         if (plugin.host.getExtension(plugin.host, clap.ext.params.id)) |host_header| {
             std.log.debug("Notifying host that params changed", .{});
             var params_host: *clap.ext.params.Host = @constCast(@ptrCast(@alignCast(host_header)));
