@@ -13,16 +13,18 @@
 //   - Differential pair VCA
 //   - Controlled by loudness envelope
 //
-// WDF Implementation based on:
-//   "Direct Synthesis of Ladder Wave Digital Filters with Tunable Parameters"
-//   by S.A. Samad, AJSTD Vol. 20 Issue 1, 2003
+// D'Angelo & Välimäki ODE-based Moog Ladder Filter
+// Based on: "Generalized Moog Ladder Filter: Part II -
+// Explicit Nonlinear Model through a Novel Delay-Free Loop Implementation"
+// IEEE/ACM Transactions on Audio, Speech, and Language Processing, 2014
 //
-// Key equations from paper:
-//   - First-order WDF coefficient: m = tan(ωc/2) / (1 + tan(ωc/2))  [eq. 50]
-//   - First-order lowpass: y[n] = m*(x[n] + x[n-1]) + (1-2m)*y[n-1]  [eq. 48]
+// The continuous-time model (4 state variables = capacitor voltages):
+//   dV1/dt = -(Ictl/2C) * [tanh(V1/2Vt) + tanh((Vin + k*V4)/2Vt)]
+//   dVi/dt =  (Ictl/2C) * [tanh(Vi-1/2Vt) - tanh(Vi/2Vt)]  for i=2,3,4
+//
+// Discretized using semi-implicit trapezoidal integration (Huovilainen method).
 
 const std = @import("std");
-const wdft = @import("wdf");
 
 // ============================================================================
 // Component Values from Schematic
@@ -47,24 +49,6 @@ pub const FilterComponents = struct {
     // Transistor saturation level (normalized)
     // Models the soft clipping in each differential pair
     pub const saturation_level: comptime_float = 1.0;
-
-    // WDF ladder input/feedback/load resistances (Ohms)
-    // R_in is small relative to R_stage so voltage divider doesn't
-    // attenuate the signal (one-port BJT provides no voltage gain).
-    pub const input_resistance: comptime_float = 100.0;
-    // R_fb is high so the feedback path doesn't load the filter
-    // (feedback is applied at the voltage source, not through R_fb).
-    pub const feedback_resistance: comptime_float = 100000.0;
-    pub const load_resistance: comptime_float = 100000.0;
-    pub const feedback_gain: comptime_float = 4.0;
-    pub const cutoff_scale: comptime_float = 1.0;
-
-    // BJT parameters (RT-WDF defaults for Ebers-Moll model)
-    pub const bjt_is: comptime_float = 5.911e-15;
-    pub const bjt_vt: comptime_float = 25.85e-3;
-    pub const bjt_beta_f: comptime_float = 1.434e3;
-    pub const bjt_beta_r: comptime_float = 1.262;
-    pub const bjt_is_scale: comptime_float = 1.0;
 };
 
 pub const VCAComponents = struct {
@@ -91,343 +75,20 @@ fn fastTanh(x: anytype) @TypeOf(x) {
 }
 
 // ============================================================================
-// WDF One-Port BJT Pair (Reduced Differential Pair)
-// ============================================================================
-
-/// One-port nonlinear element using a reduced BJT differential pair model.
-/// The port current is computed from a symmetric Ebers-Moll pair:
-///   i(v) = Is/alpha_f*(exp(v/Vt)-1) - Is/alpha_r*(exp(-v/Vt)-1)
-/// This preserves a true WDF topology while using full BJT equations.
-pub fn WdfBjtPairOnePort(comptime T: type) type {
-    comptime if (@typeInfo(T) != .float) @compileError("WdfBjtPairOnePort requires a scalar float type");
-
-    return struct {
-        wdf: wdft.Wdf(T) = .{},
-        r_value: T,
-        is: T,
-        vt: T,
-        beta_f: T,
-        beta_r: T,
-        alpha_f: T = 0.0,
-        alpha_r: T = 0.0,
-        last_v: T = 0.0,
-        max_iters: u8 = 50,
-        tol: T = 1.0e-6,
-
-        const Self = @This();
-
-        pub fn init(resistance: T, saturation_current: T, thermal_voltage: T, beta_f: T, beta_r: T) Self {
-            var self = Self{
-                .r_value = resistance,
-                .is = saturation_current,
-                .vt = thermal_voltage,
-                .beta_f = beta_f,
-                .beta_r = beta_r,
-            };
-            self.updateAlphas();
-            self.calcImpedance();
-            return self;
-        }
-
-        pub fn calcImpedance(self: *Self) void {
-            self.wdf.R = self.r_value;
-            self.wdf.G = 1.0 / self.wdf.R;
-        }
-
-        pub fn setResistance(self: *Self, r: T) void {
-            self.r_value = r;
-        }
-
-        pub fn setIs(self: *Self, is: T) void {
-            self.is = is;
-        }
-
-        pub fn setVt(self: *Self, vt: T) void {
-            self.vt = vt;
-        }
-
-        pub fn setBetaF(self: *Self, beta_f: T) void {
-            self.beta_f = beta_f;
-            self.updateAlphas();
-        }
-
-        pub fn setBetaR(self: *Self, beta_r: T) void {
-            self.beta_r = beta_r;
-            self.updateAlphas();
-        }
-
-        fn updateAlphas(self: *Self) void {
-            const eps: T = 1.0e-12;
-            const denom_f = @max(eps, 1.0 + self.beta_f);
-            const denom_r = @max(eps, 1.0 + self.beta_r);
-            self.alpha_f = self.beta_f / denom_f;
-            self.alpha_r = self.beta_r / denom_r;
-        }
-
-        pub inline fn incident(self: *Self, x: T) void {
-            self.wdf.a = x;
-        }
-
-        fn clampExp(x: T) T {
-            return @max(-40.0, @min(40.0, x));
-        }
-
-        fn iBjtPair(self: *Self, v: T) T {
-            const one_over_vt = 1.0 / self.vt;
-            const exp_pos = std.math.exp(clampExp(v * one_over_vt));
-            const exp_neg = std.math.exp(clampExp(-v * one_over_vt));
-            return (self.is / self.alpha_f) * (exp_pos - 1.0) - (self.is / self.alpha_r) * (exp_neg - 1.0);
-        }
-
-        fn dIdV(self: *Self, v: T) T {
-            const one_over_vt = 1.0 / self.vt;
-            const exp_pos = std.math.exp(clampExp(v * one_over_vt));
-            const exp_neg = std.math.exp(clampExp(-v * one_over_vt));
-            return (self.is / (self.alpha_f * self.vt)) * exp_pos + (self.is / (self.alpha_r * self.vt)) * exp_neg;
-        }
-
-        pub inline fn reflected(self: *Self) T {
-            const a = self.wdf.a;
-            const r = self.wdf.R;
-
-            var v = self.last_v;
-            var iter: u8 = 0;
-            while (iter < self.max_iters) : (iter += 1) {
-                const f = self.iBjtPair(v) - (a - v) / r;
-                const df = self.dIdV(v) + (1.0 / r);
-                if (@abs(df) < 1.0e-12) break;
-                var dv = -f / df;
-                // Dampen large Newton steps to prevent overshoot
-                const max_step: T = 0.5;
-                dv = @max(-max_step, @min(max_step, dv));
-                v += dv;
-                if (@abs(dv) < self.tol) break;
-            }
-
-            self.last_v = v;
-            self.wdf.b = 2.0 * v - a;
-            return self.wdf.b;
-        }
-    };
-}
-
-fn countNlPortsComptime(comptime models: []const wdft.NlModelType) usize {
-    var total: usize = 0;
-    for (models) |m| {
-        switch (m) {
-            .diode, .diode_ap => total += 1,
-            .npn_em, .pnp_em, .tri_dw => total += 2,
-        }
-    }
-    return total;
-}
-
-pub fn WdfNlRootOnePort(comptime T: type, comptime models: []const wdft.NlModelType) type {
-    comptime if (@typeInfo(T) != .float) @compileError("WdfNlRootOnePort requires a scalar float type");
-
-    const num_nl_ports = countNlPortsComptime(models);
-    const buffer_size = 8192;
-
-    return struct {
-        wdf: wdft.Wdf(T) = .{},
-        r_value: T,
-        nonlinear_r: [num_nl_ports]f64 = undefined,
-        buffer: [buffer_size]u8 = undefined,
-        fba: std.heap.FixedBufferAllocator = undefined,
-        mat_data: wdft.MatData = undefined,
-        solver: wdft.NlNewtonSolver = undefined,
-        in_waves: [1]f64 = .{0.0},
-        out_waves: [1]f64 = .{0.0},
-        initialized: bool = false,
-
-        const Self = @This();
-
-        pub fn init(resistance: T) Self {
-            var self: Self = undefined;
-            self.wdf = .{};
-            self.r_value = resistance;
-            self.in_waves = .{0.0};
-            self.out_waves = .{0.0};
-            self.initialized = false;
-            self.buffer = [_]u8{0} ** buffer_size;
-            self.fba = std.heap.FixedBufferAllocator.init(self.buffer[0..]);
-            var i: usize = 0;
-            while (i < num_nl_ports) : (i += 1) {
-                self.nonlinear_r[i] = @floatCast(resistance);
-            }
-            self.rebuildMatrices();
-            return self;
-        }
-
-        pub fn calcImpedance(self: *Self) void {
-            self.wdf.R = self.r_value;
-            self.wdf.G = 1.0 / self.wdf.R;
-        }
-
-        pub fn setResistance(self: *Self, r: T) void {
-            self.r_value = r;
-            var i: usize = 0;
-            while (i < num_nl_ports) : (i += 1) {
-                self.nonlinear_r[i] = @floatCast(r);
-            }
-            self.rebuildMatrices();
-        }
-
-        fn rebuildMatrices(self: *Self) void {
-            if (self.initialized) {
-                self.solver.deinit();
-                wdft.deinitMatData(&self.mat_data);
-                self.fba = std.heap.FixedBufferAllocator.init(self.buffer[0..]);
-            }
-
-            const allocator = self.fba.allocator();
-            const linear_r = [_]f64{ @floatCast(self.r_value) };
-            self.mat_data = wdft.buildParallelRootMatrices(allocator, &linear_r, &self.nonlinear_r) catch @panic("buildParallelRootMatrices failed");
-            self.solver = wdft.NlNewtonSolver.init(allocator, models, &self.mat_data) catch @panic("NlNewtonSolver init failed");
-            self.calcImpedance();
-            self.initialized = true;
-        }
-
-        pub inline fn incident(self: *Self, x: T) void {
-            self.wdf.a = x;
-        }
-
-        pub inline fn reflected(self: *Self) T {
-            self.in_waves[0] = @floatCast(self.wdf.a);
-            self.solver.nlSolve(&self.in_waves, &self.out_waves);
-            self.wdf.b = @floatCast(self.out_waves[0]);
-            return self.wdf.b;
-        }
-    };
-}
-
-// ============================================================================
-// First-Order WDF Ladder Section
-// ============================================================================
-
-/// Single stage of the WDF ladder filter
-/// Implements a first-order lowpass with tunable cutoff coefficient
-///
-/// Based on the paper "Direct Synthesis of Ladder Wave Digital Filters"
-/// Transfer function from eq. 48:
-///   G(z) = (m + m*z^-1) / (1 + (2m-1)*z^-1)
-///        = m*(1 + z^-1) / (1 - (1-2m)*z^-1)
-///
-/// Difference equation:
-///   y[n] = m*(x[n] + x[n-1]) + (1-2m)*y[n-1]
-///
-/// The coefficient m = tan(ωc/2) / (1 + tan(ωc/2)) controls cutoff
-pub fn WdfLadderSection(comptime T: type) type {
-    return struct {
-        // Adaptor coefficient (controls cutoff frequency)
-        m: T = 0.5,
-
-        // State variables
-        x1: T = 0.0, // Previous input x[n-1]
-        y1: T = 0.0, // Previous output y[n-1]
-
-        const Self = @This();
-
-        pub fn init() Self {
-            return .{};
-        }
-
-        pub fn reset(self: *Self) void {
-            self.x1 = 0.0;
-            self.y1 = 0.0;
-        }
-
-        /// Set the adaptor coefficient directly
-        /// m should be in range (0, 1)
-        pub fn setCoefficient(self: *Self, coeff: T) void {
-            self.m = @max(0.001, @min(0.999, coeff));
-        }
-
-        /// Set cutoff frequency and compute coefficient
-        /// ωc is the digital cutoff frequency in radians (0 to π)
-        pub fn setCutoffOmega(self: *Self, omega_c: T) void {
-            // From paper equation (50): m = tan(ωc/2) / (1 + tan(ωc/2))
-            // Clamp omega to avoid tan explosion near π
-            const clamped_omega = @min(omega_c, std.math.pi * 0.98);
-            const half_omega = clamped_omega * 0.5;
-            const tan_half = std.math.tan(half_omega);
-            self.m = tan_half / (1.0 + tan_half);
-            // Clamp for stability
-            self.m = @max(0.001, @min(0.999, self.m));
-        }
-
-        /// Set cutoff frequency in Hz given sample rate
-        pub fn setCutoffHz(self: *Self, freq_hz: T, sample_rate: T) void {
-            // Digital frequency: ω = 2π * f / fs
-            // Clamp to prevent instability near Nyquist
-            const max_freq = sample_rate * 0.45;
-            const min_freq: T = 20.0;
-            const clamped_freq = @max(min_freq, @min(freq_hz, max_freq));
-            const omega_c = 2.0 * std.math.pi * clamped_freq / sample_rate;
-            self.setCutoffOmega(omega_c);
-        }
-
-        /// Process one sample through the WDF section (linear)
-        /// Implements: y[n] = m*(x[n] + x[n-1]) + (1-2m)*y[n-1]
-        pub inline fn processSample(self: *Self, input: T) T {
-            // First-order lowpass from bilinear transform of RC filter
-            // This gives proper frequency warping and zero at Nyquist
-            const x0 = input;
-            const one_minus_2m = 1.0 - 2.0 * self.m;
-
-            const output = self.m * (x0 + self.x1) + one_minus_2m * self.y1;
-
-            // Update state
-            self.x1 = x0;
-            self.y1 = output;
-
-            return output;
-        }
-
-        /// Process with nonlinear saturation (models transistor clipping)
-        pub inline fn processSampleNonlinear(self: *Self, input: T, saturation: T) T {
-            // Apply soft saturation to input (models transistor differential pair)
-            const saturated_input = fastTanh(input / saturation) * saturation;
-            return self.processSample(saturated_input);
-        }
-    };
-}
-
-pub const LadderStage = WdfLadderSection;
-
-// ============================================================================
 // Moog Ladder Filter (4-Pole with Resonance)
+// D'Angelo & Välimäki nonlinear ODE model
 // ============================================================================
 
 /// Classic Moog 4-pole ladder filter with resonance
-/// Four cascaded WDF lowpass stages with global feedback
+/// Implements the D'Angelo & Välimäki nonlinear ODE model using
+/// semi-implicit trapezoidal integration. Four cascaded nonlinear
+/// integrator stages with global feedback from stage 4 to input.
 ///
-/// The resonance is implemented by feeding the 4th stage output back
-/// to the input, scaled by k. At k=4, the filter self-oscillates.
+/// At k=4, the filter self-oscillates with tanh providing amplitude limiting.
 pub fn MoogLadderFilter(comptime T: type) type {
-    const Rin = wdft.Resistor(T);
-    const Rfb = wdft.ResistiveVoltageSource(T);
-    const Rload = wdft.Resistor(T);
-    const Cap = wdft.Capacitor(T);
-    const StageNl = WdfBjtPairOnePort(T);
-
-    const P4 = wdft.Parallel(T, Cap, Rload);
-    const S4 = wdft.Series(T, StageNl, P4);
-    const P3 = wdft.Parallel(T, Cap, S4);
-    const S3 = wdft.Series(T, StageNl, P3);
-    const P2 = wdft.Parallel(T, Cap, S3);
-    const S2 = wdft.Series(T, StageNl, P2);
-    const P1 = wdft.Parallel(T, Cap, S2);
-    const S1 = wdft.Series(T, StageNl, P1);
-
-    const Pfb = wdft.Parallel(T, Rfb, S1);
-    const Sin = wdft.Series(T, Rin, Pfb);
-    const Inv = wdft.PolarityInverter(T, Sin);
-    const Root = wdft.IdealVoltageSource(T, Inv);
-
     return struct {
-        // WDF circuit tree
-        circuit: Root,
+        // State variables: capacitor voltages for each stage
+        V: [4]T = .{ 0.0, 0.0, 0.0, 0.0 },
 
         // Current parameters
         cutoff_hz: T = 1000.0,
@@ -438,102 +99,47 @@ pub fn MoogLadderFilter(comptime T: type) type {
         cutoff_target: T = 1000.0,
         resonance_target: T = 0.0,
 
-        // Feedback state (delayed by one sample for stability)
+        // Precomputed coefficient: g = tan(π * fc / fs)
+        g: T = 0.0,
+
+        // Feedback state (one-sample delay for stability)
         feedback: T = 0.0,
 
         // Compensation for gain loss at high resonance
         compensation: T = 1.0,
         compensation_target: T = 1.0,
 
+        // Nonlinear mode: when false, skips tanh for CPU savings
+        nonlinear: bool = true,
+
+        // Thermal scale controls saturation character.
+        // With normalized audio (-1..+1), physical Vt (25.85mV) puts everything
+        // in hard saturation. thermal_scale ~1.0 gives musical saturation behavior.
+        thermal_scale: T = 1.0,
+
         const Self = @This();
 
         pub fn init(sample_rate: T) Self {
-            const r_stage = stageResistance(1000.0, sample_rate);
             var self = Self{
-                .circuit = Root.init(
-                    Inv.init(
-                        Sin.init(
-                            Rin.init(FilterComponents.input_resistance),
-                            Pfb.init(
-                                Rfb.init(FilterComponents.feedback_resistance),
-                                S1.init(
-                                    StageNl.init(
-                                        r_stage,
-                                        FilterComponents.bjt_is * FilterComponents.bjt_is_scale,
-                                        FilterComponents.bjt_vt,
-                                        FilterComponents.bjt_beta_f,
-                                        FilterComponents.bjt_beta_r,
-                                    ),
-                                    P1.init(
-                                        Cap.init(FilterComponents.ladder_cap, sample_rate),
-                                        S2.init(
-                                            StageNl.init(
-                                                r_stage,
-                                                FilterComponents.bjt_is * FilterComponents.bjt_is_scale,
-                                                FilterComponents.bjt_vt,
-                                                FilterComponents.bjt_beta_f,
-                                                FilterComponents.bjt_beta_r,
-                                            ),
-                                            P2.init(
-                                                Cap.init(FilterComponents.ladder_cap, sample_rate),
-                                                S3.init(
-                                                    StageNl.init(
-                                                        r_stage,
-                                                        FilterComponents.bjt_is * FilterComponents.bjt_is_scale,
-                                                        FilterComponents.bjt_vt,
-                                                        FilterComponents.bjt_beta_f,
-                                                        FilterComponents.bjt_beta_r,
-                                                    ),
-                                                    P3.init(
-                                                        Cap.init(FilterComponents.ladder_cap, sample_rate),
-                                                        S4.init(
-                                                            StageNl.init(
-                                                                r_stage,
-                                                                FilterComponents.bjt_is * FilterComponents.bjt_is_scale,
-                                                                FilterComponents.bjt_vt,
-                                                                FilterComponents.bjt_beta_f,
-                                                                FilterComponents.bjt_beta_r,
-                                                            ),
-                                                            P4.init(
-                                                                Cap.init(FilterComponents.ladder_cap, sample_rate),
-                                                                Rload.init(FilterComponents.load_resistance),
-                                                            ),
-                                                        ),
-                                                    ),
-                                                ),
-                                            ),
-                                        ),
-                                    ),
-                                ),
-                            ),
-                        ),
-                    ),
-                ),
                 .sample_rate = sample_rate,
             };
             self.setCutoff(1000.0);
-            self.updateImpedances();
+            self.updateCoefficients();
             return self;
         }
 
         pub fn prepare(self: *Self, sample_rate: T) void {
             self.sample_rate = sample_rate;
-            self.cap1().prepare(sample_rate);
-            self.cap2().prepare(sample_rate);
-            self.cap3().prepare(sample_rate);
-            self.cap4().prepare(sample_rate);
-            self.updateImpedances();
+            self.updateCoefficients();
         }
 
         pub fn reset(self: *Self) void {
-            self.cap1().reset();
-            self.cap2().reset();
-            self.cap3().reset();
-            self.cap4().reset();
+            self.V = .{ 0.0, 0.0, 0.0, 0.0 };
             self.feedback = 0.0;
             self.cutoff_hz = self.cutoff_target;
             self.resonance = self.resonance_target;
             self.compensation = self.compensation_target;
+            self.updateCoefficients();
         }
 
         /// Set cutoff frequency in Hz
@@ -543,8 +149,6 @@ pub fn MoogLadderFilter(comptime T: type) type {
 
         /// Set cutoff via 1V/octave CV (0V = 261.63 Hz, middle C)
         pub fn setCutoffCV(self: *Self, cv_volts: T) void {
-            // 1V/octave: each volt doubles frequency
-            // 0V = middle C (261.63 Hz)
             const base_freq: T = 261.63;
             const frequency_hz = base_freq * std.math.pow(T, 2.0, cv_volts);
             self.setCutoff(frequency_hz);
@@ -555,96 +159,32 @@ pub fn MoogLadderFilter(comptime T: type) type {
         /// ~3.9 = near self-oscillation
         /// 4.0 = self-oscillation
         pub fn setResonance(self: *Self, res: T) void {
-            self.resonance_target = @max(0.0, @min(res, FilterComponents.max_resonance));
+            // Slightly boost feedback to compensate for one-sample delay loss.
+            // The semi-implicit discretization with unit delay on feedback
+            // reduces the effective loop gain; scale by ~1.12 so k=4 reliably
+            // self-oscillates as the analog circuit does.
+            const clamped = @max(0.0, @min(res, FilterComponents.max_resonance));
+            self.resonance_target = clamped * 1.12;
             // Compensate for gain loss at high resonance
-            // Each pole reduces passband gain by ~1/(1+k/4) factor
-            self.compensation_target = 1.0 + self.resonance_target * 0.25;
+            self.compensation_target = 1.0 + clamped * 0.5;
         }
 
         /// Enable/disable transistor nonlinearity modeling
         pub fn setNonlinear(self: *Self, enabled: bool) void {
-            _ = self;
-            _ = enabled;
+            self.nonlinear = enabled;
         }
 
         /// Set saturation level for nonlinear mode
+        /// Controls the thermal_scale: higher = softer saturation
         pub fn setSaturation(self: *Self, level: T) void {
-            _ = self;
-            _ = level;
+            self.thermal_scale = @max(0.1, level);
         }
 
-        fn stageResistance(cutoff_hz: T, sample_rate: T) T {
-            const max_freq = sample_rate * 0.49;
-            const min_freq: T = 20.0;
-            const scaled = cutoff_hz * FilterComponents.cutoff_scale;
-            const clamped = @max(min_freq, @min(scaled, max_freq));
-            // Bilinear pre-warped: R_stage = R_cap / tan(π * fc / fs)
-            // R_cap is the WDF capacitor port resistance = 1/(2*C*fs)
-            // This ensures correct frequency mapping through the WDF adaptors.
-            // At low frequencies this approximates 1/(2π*fc*C), the analog value.
-            const r_cap = 1.0 / (2.0 * FilterComponents.ladder_cap * sample_rate);
-            const omega_d = std.math.pi * clamped / sample_rate;
-            const tan_omega = std.math.tan(omega_d);
-            if (tan_omega < 1.0e-10) return r_cap * 1.0e10; // prevent division by zero
-            return r_cap / tan_omega;
-        }
-
-        fn updateImpedances(self: *Self) void {
-            const r_stage = stageResistance(self.cutoff_target, self.sample_rate);
-            // Dynamically adjust BJT saturation current to match operating point.
-            // In the real Moog, bias current sets both cutoff and transistor gm.
-            // Is_eff = Vt / (r_stage * (1/αf + 1/αr)) models this coupling.
-            const alpha_recip_sum = 1.0 / self.stage1().alpha_f + 1.0 / self.stage1().alpha_r;
-            const is_eff = FilterComponents.bjt_vt / (r_stage * alpha_recip_sum);
-            self.stage1().setResistance(r_stage);
-            self.stage1().setIs(is_eff);
-            self.stage2().setResistance(r_stage);
-            self.stage2().setIs(is_eff);
-            self.stage3().setResistance(r_stage);
-            self.stage3().setIs(is_eff);
-            self.stage4().setResistance(r_stage);
-            self.stage4().setIs(is_eff);
-            self.circuit.calcImpedance();
-        }
-
-        fn stage1(self: *Self) *StageNl {
-            return &self.circuit.next.port1.port2.port2.port1;
-        }
-
-        fn stage2(self: *Self) *StageNl {
-            return &self.circuit.next.port1.port2.port2.port2.port2.port1;
-        }
-
-        fn stage3(self: *Self) *StageNl {
-            return &self.circuit.next.port1.port2.port2.port2.port2.port2.port2.port1;
-        }
-
-        fn stage4(self: *Self) *StageNl {
-            return &self.circuit.next.port1.port2.port2.port2.port2.port2.port2.port2.port2.port1;
-        }
-
-        fn cap1(self: *Self) *Cap {
-            return &self.circuit.next.port1.port2.port2.port2.port1;
-        }
-
-        fn cap2(self: *Self) *Cap {
-            return &self.circuit.next.port1.port2.port2.port2.port2.port2.port1;
-        }
-
-        fn cap3(self: *Self) *Cap {
-            return &self.circuit.next.port1.port2.port2.port2.port2.port2.port2.port2.port1;
-        }
-
-        fn cap4(self: *Self) *Cap {
-            return &self.circuit.next.port1.port2.port2.port2.port2.port2.port2.port2.port2.port2.port1;
-        }
-
-        fn feedbackSource(self: *Self) *Rfb {
-            return &self.circuit.next.port1.port2.port1;
-        }
-
-        fn outputWdf(self: *Self) *const wdft.Wdf(T) {
-            return &self.cap4().wdf;
+        /// Compute the bilinear pre-warped cutoff coefficient
+        fn updateCoefficients(self: *Self) void {
+            const max_freq = self.sample_rate * 0.49;
+            const clamped = @max(20.0, @min(self.cutoff_hz, max_freq));
+            self.g = std.math.tan(std.math.pi * clamped / self.sample_rate);
         }
 
         /// Smooth parameter changes to avoid clicks
@@ -652,7 +192,7 @@ pub fn MoogLadderFilter(comptime T: type) type {
             return current + (target - current) * coeff;
         }
 
-        /// Process one sample through the 4-pole filter
+        /// Process one sample through the 4-pole nonlinear ladder filter
         pub inline fn processSample(self: *Self, input: T) T {
             // Parameter smoothing (~1ms time constant at 48kHz)
             const smooth_coeff: T = 0.02;
@@ -661,27 +201,54 @@ pub fn MoogLadderFilter(comptime T: type) type {
             const prev_cutoff = self.cutoff_hz;
             self.cutoff_hz = smoothParam(self.cutoff_hz, self.cutoff_target, smooth_coeff);
             if (@abs(self.cutoff_hz - prev_cutoff) > 0.01) {
-                self.updateImpedances();
+                self.updateCoefficients();
             }
 
             // Smooth resonance and compensation
             self.resonance = smoothParam(self.resonance, self.resonance_target, smooth_coeff);
             self.compensation = smoothParam(self.compensation, self.compensation_target, smooth_coeff);
 
-            // Apply resonance feedback at the voltage source (before WDF tree).
-            // feedback_gain compensates for one-port BJT not providing voltage gain.
-            // Tanh saturation models transistor pair limiting in the real feedback path.
-            const fb_raw = self.resonance * FilterComponents.feedback_gain * self.feedback;
-            const fb = fastTanh(fb_raw / FilterComponents.saturation_level) * FilterComponents.saturation_level;
-            self.circuit.setVoltage(input - fb);
-            self.feedbackSource().setVoltage(0.0);
-            self.circuit.process();
+            const g = self.g;
+            const k = self.resonance;
 
-            const output = wdft.voltage(T, self.outputWdf());
-            self.feedback = output;
+            if (self.nonlinear) {
+                const thermal_inv = 1.0 / self.thermal_scale;
 
-            // Apply output compensation (after filter — avoids amplifying feedback)
-            return output * self.compensation;
+                // Feedback from stage 4 (one-sample delay)
+                const fb = k * fastTanh(self.feedback * thermal_inv);
+
+                // Input with DC compensation and resonance feedback subtracted
+                const u = (input * (1.0 + k * 0.5)) - fb;
+
+                // Input nonlinearity
+                var prev_tanh = fastTanh(u * thermal_inv);
+
+                // Process 4 stages sequentially (semi-implicit)
+                inline for (0..4) |i| {
+                    const stage_tanh = fastTanh(self.V[i] * thermal_inv);
+                    self.V[i] += g * (prev_tanh - stage_tanh);
+                    prev_tanh = fastTanh(self.V[i] * thermal_inv);
+                }
+
+                // Store feedback for next sample
+                self.feedback = self.V[3];
+
+                return self.V[3] * self.compensation;
+            } else {
+                // Linear mode: skip tanh, becomes standard 4-pole cascade
+                // V[i] += g * (prev - V[i]) => semi-implicit 1-pole lowpass
+                const u = (input * (1.0 + k * 0.5)) - k * self.feedback;
+
+                var prev = u;
+                inline for (0..4) |i| {
+                    self.V[i] += g * (prev - self.V[i]) / (1.0 + g);
+                    prev = self.V[i];
+                }
+
+                self.feedback = self.V[3];
+
+                return self.V[3] * self.compensation;
+            }
         }
 
         /// Get intermediate outputs for multimode operation
@@ -692,33 +259,54 @@ pub fn MoogLadderFilter(comptime T: type) type {
             const prev_cutoff = self.cutoff_hz;
             self.cutoff_hz = smoothParam(self.cutoff_hz, self.cutoff_target, smooth_coeff);
             if (@abs(self.cutoff_hz - prev_cutoff) > 0.01) {
-                self.updateImpedances();
+                self.updateCoefficients();
             }
 
             self.resonance = smoothParam(self.resonance, self.resonance_target, smooth_coeff);
             self.compensation = smoothParam(self.compensation, self.compensation_target, smooth_coeff);
 
-            // Apply resonance feedback at the voltage source
-            const fb_raw = self.resonance * FilterComponents.feedback_gain * self.feedback;
-            const fb = fastTanh(fb_raw / FilterComponents.saturation_level) * FilterComponents.saturation_level;
-            self.circuit.setVoltage(input - fb);
-            self.feedbackSource().setVoltage(0.0);
-            self.circuit.process();
+            const g = self.g;
+            const k = self.resonance;
 
-            const s1_out = wdft.voltage(T, &self.cap1().wdf);
-            const s2_out = wdft.voltage(T, &self.cap2().wdf);
-            const s3_out = wdft.voltage(T, &self.cap3().wdf);
-            const s4_out = wdft.voltage(T, self.outputWdf());
+            if (self.nonlinear) {
+                const thermal_inv = 1.0 / self.thermal_scale;
 
-            self.feedback = s4_out;
+                const fb = k * fastTanh(self.feedback * thermal_inv);
+                const u = (input * (1.0 + k * 0.5)) - fb;
+                var prev_tanh = fastTanh(u * thermal_inv);
 
-            // Apply output compensation
-            return .{
-                .lp6 = s1_out * self.compensation,
-                .lp12 = s2_out * self.compensation,
-                .lp18 = s3_out * self.compensation,
-                .lp24 = s4_out * self.compensation,
-            };
+                inline for (0..4) |i| {
+                    const stage_tanh = fastTanh(self.V[i] * thermal_inv);
+                    self.V[i] += g * (prev_tanh - stage_tanh);
+                    prev_tanh = fastTanh(self.V[i] * thermal_inv);
+                }
+
+                self.feedback = self.V[3];
+
+                return .{
+                    .lp6 = self.V[0] * self.compensation,
+                    .lp12 = self.V[1] * self.compensation,
+                    .lp18 = self.V[2] * self.compensation,
+                    .lp24 = self.V[3] * self.compensation,
+                };
+            } else {
+                const u = (input * (1.0 + k * 0.5)) - k * self.feedback;
+
+                var prev = u;
+                inline for (0..4) |i| {
+                    self.V[i] += g * (prev - self.V[i]) / (1.0 + g);
+                    prev = self.V[i];
+                }
+
+                self.feedback = self.V[3];
+
+                return .{
+                    .lp6 = self.V[0] * self.compensation,
+                    .lp12 = self.V[1] * self.compensation,
+                    .lp18 = self.V[2] * self.compensation,
+                    .lp24 = self.V[3] * self.compensation,
+                };
+            }
         }
     };
 }
@@ -848,94 +436,22 @@ fn expectApproxEq(actual: f64, expected: f64, tolerance: f64) !void {
     }
 }
 
-test "wdf ladder section coefficient calculation" {
-    var section = WdfLadderSection(f64).init();
-
-    // At ωc = π/2 (quarter Nyquist), tan(π/4) = 1, so m = 0.5
-    section.setCutoffOmega(std.math.pi / 2.0);
-    try expectApproxEq(section.m, 0.5, 1e-6);
-
-    // At very low frequency, m approaches 0
-    section.setCutoffOmega(0.01);
-    try std.testing.expect(section.m < 0.01);
-    try std.testing.expect(section.m > 0.0);
-
-    // At high frequency (0.9π), m should be reasonably high
-    // Note: we clamp omega to prevent tan() explosion, so m won't reach 0.9
-    section.setCutoffOmega(std.math.pi * 0.9);
-    try std.testing.expect(section.m > 0.8); // Relaxed from 0.9 due to clamping
-    try std.testing.expect(section.m < 1.0);
-}
-
-test "wdf ladder section basic operation" {
-    const sample_rate: f64 = 48000.0;
-    var section = WdfLadderSection(f64).init();
-    section.setCutoffHz(1000.0, sample_rate);
-
-    // Process a step response
-    var output: f64 = 0.0;
-    for (0..500) |_| {
-        output = section.processSample(1.0);
-    }
-
-    // Lowpass should approach input value (DC gain = 1)
-    try std.testing.expect(output > 0.99);
-    try std.testing.expect(output <= 1.01);
-}
-
-test "wdf ladder section is lowpass" {
-    const sample_rate: f64 = 48000.0;
-    var section = WdfLadderSection(f64).init();
-    section.setCutoffHz(1000.0, sample_rate);
-
-    // Generate low frequency signal (100 Hz) - well below cutoff
-    var sum_low: f64 = 0.0;
-    const low_freq: f64 = 100.0;
-    for (0..2000) |i| {
-        const phase = @as(f64, @floatFromInt(i)) / sample_rate * 2.0 * std.math.pi * low_freq;
-        const input = @sin(phase);
-        const output = section.processSample(input);
-        // Skip first 500 samples for settling
-        if (i >= 500) {
-            sum_low += output * output;
-        }
-    }
-
-    section.reset();
-
-    // Generate high frequency signal (10000 Hz) - well above cutoff
-    var sum_high: f64 = 0.0;
-    const high_freq: f64 = 10000.0;
-    for (0..2000) |i| {
-        const phase = @as(f64, @floatFromInt(i)) / sample_rate * 2.0 * std.math.pi * high_freq;
-        const input = @sin(phase);
-        const output = section.processSample(input);
-        if (i >= 500) {
-            sum_high += output * output;
-        }
-    }
-
-    // Low frequency should pass with much more energy than high frequency
-    // For a 1-pole lowpass at 1kHz, 10kHz should be attenuated by ~20dB (factor of 100 in power)
-    try std.testing.expect(sum_low > sum_high * 10.0);
-}
-
 test "moog ladder filter reduces high frequencies" {
-    const T = f64;
-    const sample_rate: T = 48000.0;
+    const TF = f64;
+    const sample_rate: TF = 48000.0;
 
-    var filter = MoogLadderFilter(T).init(sample_rate);
+    var filter = MoogLadderFilter(TF).init(sample_rate);
     filter.setCutoff(1000.0); // 1kHz cutoff
     filter.setResonance(0.0); // No resonance
     filter.setNonlinear(false); // Linear for predictable test
 
     // Generate high frequency test signal (10kHz)
-    var sum_input: T = 0.0;
-    var sum_output: T = 0.0;
-    const freq: T = 10000.0;
+    var sum_input: TF = 0.0;
+    var sum_output: TF = 0.0;
+    const freq: TF = 10000.0;
 
     for (0..3000) |i| {
-        const phase = @as(T, @floatFromInt(i)) / sample_rate * 2.0 * std.math.pi * freq;
+        const phase = @as(TF, @floatFromInt(i)) / sample_rate * 2.0 * std.math.pi * freq;
         const input = @sin(phase);
         const output = filter.processSample(input);
 
@@ -946,41 +462,40 @@ test "moog ladder filter reduces high frequencies" {
         }
     }
 
-    // 4-pole filter at 10kHz (10x cutoff) should attenuate by ~80dB
-    // In power terms that's 10^8, but we'll use a conservative threshold
+    // 4-pole filter at 10kHz (10x cutoff) should attenuate significantly
     try std.testing.expect(sum_output < sum_input * 0.01);
 }
 
 test "moog ladder resonance increases peak" {
-    const T = f64;
-    const sample_rate: T = 48000.0;
+    const TF = f64;
+    const sample_rate: TF = 48000.0;
 
-    var filter_no_res = MoogLadderFilter(T).init(sample_rate);
+    var filter_no_res = MoogLadderFilter(TF).init(sample_rate);
     filter_no_res.setCutoff(1000.0);
     filter_no_res.setResonance(0.0);
     filter_no_res.setNonlinear(false);
 
-    var filter_res = MoogLadderFilter(T).init(sample_rate);
+    var filter_res = MoogLadderFilter(TF).init(sample_rate);
     filter_res.setCutoff(1000.0);
     filter_res.setResonance(3.5);
     filter_res.setNonlinear(false);
 
     // Generate signal at cutoff frequency
-    const freq: T = 1000.0;
+    const freq: TF = 1000.0;
 
     // Warm up filters to reach steady state
     for (0..4000) |i| {
-        const phase = @as(T, @floatFromInt(i)) / sample_rate * 2.0 * std.math.pi * freq;
+        const phase = @as(TF, @floatFromInt(i)) / sample_rate * 2.0 * std.math.pi * freq;
         const input = @sin(phase) * 0.3;
         _ = filter_no_res.processSample(input);
         _ = filter_res.processSample(input);
     }
 
     // Measure steady-state response
-    var sum_no_res: T = 0.0;
-    var sum_res: T = 0.0;
+    var sum_no_res: TF = 0.0;
+    var sum_res: TF = 0.0;
     for (0..2000) |i| {
-        const phase = @as(T, @floatFromInt(i + 4000)) / sample_rate * 2.0 * std.math.pi * freq;
+        const phase = @as(TF, @floatFromInt(i + 4000)) / sample_rate * 2.0 * std.math.pi * freq;
         const input = @sin(phase) * 0.3;
         const out_no_res = filter_no_res.processSample(input);
         const out_res = filter_res.processSample(input);
@@ -996,18 +511,18 @@ test "moog ladder resonance increases peak" {
 }
 
 test "moog ladder nonlinear output is finite" {
-    const T = f64;
-    const sample_rate: T = 48000.0;
+    const TF = f64;
+    const sample_rate: TF = 48000.0;
 
-    var filter = MoogLadderFilter(T).init(sample_rate);
+    var filter = MoogLadderFilter(TF).init(sample_rate);
     filter.setCutoff(1000.0);
     filter.setResonance(3.9); // Near self-oscillation
     filter.setNonlinear(true);
 
-    var out: T = 0.0;
-    var max_out: T = 0.0;
+    var out: TF = 0.0;
+    var max_out: TF = 0.0;
     for (0..4000) |i| {
-        const input = @sin(@as(T, @floatFromInt(i)) * 0.1) * 0.5;
+        const input = @sin(@as(TF, @floatFromInt(i)) * 0.1) * 0.5;
         out = filter.processSample(input);
         try std.testing.expect(std.math.isFinite(out));
         max_out = @max(max_out, @abs(out));
@@ -1020,10 +535,10 @@ test "moog ladder nonlinear output is finite" {
 }
 
 test "moog ladder self-oscillation" {
-    const T = f64;
-    const sample_rate: T = 48000.0;
+    const TF = f64;
+    const sample_rate: TF = 48000.0;
 
-    var filter = MoogLadderFilter(T).init(sample_rate);
+    var filter = MoogLadderFilter(TF).init(sample_rate);
     filter.setCutoff(440.0); // A4
     filter.setResonance(4.0); // Self-oscillation
     filter.setNonlinear(true);
@@ -1032,7 +547,7 @@ test "moog ladder self-oscillation" {
     filter.cutoff_hz = filter.cutoff_target;
     filter.resonance = filter.resonance_target;
     filter.compensation = filter.compensation_target;
-    filter.prepare(sample_rate);
+    filter.updateCoefficients();
 
     // Give it a kick to start oscillation
     _ = filter.processSample(0.5);
@@ -1040,30 +555,29 @@ test "moog ladder self-oscillation" {
     _ = filter.processSample(0.0);
 
     // Let it run with zero input - give it time to build up
-    var sum: T = 0.0;
+    var sum: TF = 0.0;
     for (0..8000) |_| {
         const out = filter.processSample(0.0);
         sum += out * out;
     }
 
     // Should self-oscillate (have significant output with zero input)
-    // Using a lower threshold since nonlinearity limits amplitude
     const rms = @sqrt(sum / 8000.0);
     try std.testing.expect(rms > 0.05);
 }
 
 test "board4 chain produces output" {
-    const T = f64;
-    const sample_rate: T = 48000.0;
+    const TF = f64;
+    const sample_rate: TF = 48000.0;
 
-    var board4 = Board4FilterVCA(T).init(sample_rate);
+    var board4 = Board4FilterVCA(TF).init(sample_rate);
     board4.setCutoff(800.0);
     board4.setResonance(2.5);
     board4.setAmplitude(0.9);
 
-    var sum_out: T = 0.0;
+    var sum_out: TF = 0.0;
     for (0..2000) |i| {
-        const input = @sin(@as(T, @floatFromInt(i)) * 0.05);
+        const input = @sin(@as(TF, @floatFromInt(i)) * 0.05);
         const out = board4.processSample(input);
         sum_out += out * out;
     }
@@ -1072,9 +586,9 @@ test "board4 chain produces output" {
 }
 
 test "vca gain control" {
-    const T = f64;
+    const TF = f64;
 
-    var vca = VCA(T).init();
+    var vca = VCA(TF).init();
 
     // Zero gain
     vca.setGainEnvelope(0.0);
@@ -1090,18 +604,18 @@ test "vca gain control" {
 }
 
 test "board4 complete chain" {
-    const T = f64;
-    const sample_rate: T = 48000.0;
+    const TF = f64;
+    const sample_rate: TF = 48000.0;
 
-    var board4 = Board4FilterVCA(T).init(sample_rate);
+    var board4 = Board4FilterVCA(TF).init(sample_rate);
     board4.setCutoff(5000.0);
     board4.setResonance(1.0);
     board4.setAmplitude(0.8);
 
     // Process some samples
-    var out: T = 0.0;
+    var out: TF = 0.0;
     for (0..100) |i| {
-        const input = @sin(@as(T, @floatFromInt(i)) * 0.1);
+        const input = @sin(@as(TF, @floatFromInt(i)) * 0.1);
         out = board4.processSample(input);
     }
 
@@ -1110,23 +624,23 @@ test "board4 complete chain" {
 }
 
 test "multimode outputs are progressively filtered" {
-    const T = f64;
-    const sample_rate: T = 48000.0;
+    const TF = f64;
+    const sample_rate: TF = 48000.0;
 
-    var filter = MoogLadderFilter(T).init(sample_rate);
+    var filter = MoogLadderFilter(TF).init(sample_rate);
     filter.setCutoff(500.0);
     filter.setResonance(0.0);
     filter.setNonlinear(false);
 
     // High frequency signal
-    const freq: T = 8000.0;
-    var sum_6: T = 0.0;
-    var sum_12: T = 0.0;
-    var sum_18: T = 0.0;
-    var sum_24: T = 0.0;
+    const freq: TF = 8000.0;
+    var sum_6: TF = 0.0;
+    var sum_12: TF = 0.0;
+    var sum_18: TF = 0.0;
+    var sum_24: TF = 0.0;
 
     for (0..3000) |i| {
-        const phase = @as(T, @floatFromInt(i)) / sample_rate * 2.0 * std.math.pi * freq;
+        const phase = @as(TF, @floatFromInt(i)) / sample_rate * 2.0 * std.math.pi * freq;
         const input = @sin(phase);
         const outputs = filter.processSampleMultimode(input);
 
