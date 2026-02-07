@@ -16,11 +16,13 @@ jobs:
       - name: Setup Zig
         run: |
           set -euo pipefail
-          ZIG_URL="https://ziglang.org/builds/zig-x86_64-linux-0.16.0-dev.2368+380ea6fb5.tar.xz"
+          ZIG_VERSION=$(grep -oP '\.minimum_zig_version\s*=\s*"\K[^"]+' build.zig.zon)
+          ZIG_DIR="zig-x86_64-linux-${ZIG_VERSION}"
+          ZIG_URL="https://ziglang.org/builds/${ZIG_DIR}.tar.xz"
           curl -fL "${ZIG_URL}" -o zig.tar.xz
           tar -xf zig.tar.xz
-          ZIG_DIR="zig-x86_64-linux-0.16.0-dev.2368+380ea6fb5"
           echo "$PWD/${ZIG_DIR}" >> "$GITHUB_PATH"
+
 
       - name: Download macOS SDK
         run: |
