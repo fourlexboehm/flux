@@ -6,3 +6,15 @@ zig-out/
 .DS_Store
 Folder.DotSettings.user
 .vscode/
+zminimoog/Minimoog-schematics.pdf
+zminimoog/schematic6.json
+zminimoog/schematic5.json
+zminimoog/schematic4.json
+zminimoog/schematic3.json
+zminimoog/schematic2.json
+zminimoog/schematic1.json
+deps
+zigsrc
+AGENTS.md
+AGENTS.md
+generalized_moog_ladder_filter.txt
