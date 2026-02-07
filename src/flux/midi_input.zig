@@ -104,12 +104,15 @@ const NoopInput = struct {
 
 const PortMidiInput = struct {
     const max_streams = 64;
+    const short_note_hold_polls: u8 = 2;
 
     streams: [max_streams]?*pm.Stream = [_]?*pm.Stream{null} ** max_streams,
     stream_count: usize = 0,
     device_count: i32 = 0,
     rescan_counter: u32 = 0,
     rescan_interval: u32 = 120,
+    note_on_hold_polls: [128]u8 = [_]u8{0} ** 128,
+    note_off_pending: [128]bool = [_]bool{false} ** 128,
 
     pub fn init(self: *PortMidiInput, _: std.mem.Allocator) !void {
         pm.initialize();
@@ -126,25 +129,36 @@ const PortMidiInput = struct {
         if (self.rescan_counter >= self.rescan_interval) {
             self.rescan_counter = 0;
             const count = pm.countDevices();
-            if (count != self.device_count) {
-                self.closeAllInputs();
-                self.openAllInputs();
+            if (count != self.device_count or (count > 0 and self.stream_count == 0)) {
+                self.reopenInputs(notes, velocities);
             }
         }
 
+        var need_reopen = false;
         var event: pm.Event = undefined;
         for (self.streams[0..self.stream_count]) |stream| {
             if (stream == null) continue;
             while (true) {
-                const read_count = pm.read(stream.?, &event, 1) catch break;
+                const read_count = pm.read(stream.?, &event, 1) catch {
+                    need_reopen = true;
+                    break;
+                };
                 if (read_count <= 0) break;
                 const msg = event.message;
                 const status = pm.messageStatus(msg);
                 const data1 = pm.messageData1(msg);
                 const data2 = pm.messageData2(msg);
-                applyNoteEvent(notes, velocities, .{ .status = status, .data1 = data1, .data2 = data2 });
+                self.applyMidiMessage(notes, velocities, status, data1, data2);
             }
+            if (need_reopen) break;
         }
+
+        if (need_reopen) {
+            self.reopenInputs(notes, velocities);
+            return;
+        }
+
+        self.flushDeferredNoteOffs(notes, velocities);
     }
 
     fn openAllInputs(self: *PortMidiInput) void {
@@ -170,11 +184,71 @@ const PortMidiInput = struct {
     }
 
     fn closeAllInputs(self: *PortMidiInput) void {
-        for (self.streams[0..self.stream_count]) |stream| {
+        for (0..self.stream_count) |idx| {
+            const stream = self.streams[idx];
             if (stream) |s| {
                 _ = pm.close(s) catch {};
             }
+            self.streams[idx] = null;
         }
         self.stream_count = 0;
+    }
+
+    fn reopenInputs(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32) void {
+        self.clearInputState(notes, velocities);
+        self.closeAllInputs();
+        self.openAllInputs();
+    }
+
+    fn clearInputState(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32) void {
+        notes.* = [_]bool{false} ** 128;
+        velocities.* = [_]f32{0.0} ** 128;
+        self.note_on_hold_polls = [_]u8{0} ** 128;
+        self.note_off_pending = [_]bool{false} ** 128;
+    }
+
+    fn applyMidiMessage(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32, status: u8, data1: u8, data2: u8) void {
+        const msg = status & 0xF0;
+        if (data1 >= 128) return;
+        const note: usize = data1;
+        switch (msg) {
+            0x90 => {
+                if (data2 == 0) {
+                    self.queueNoteOff(notes, velocities, note);
+                } else {
+                    notes[note] = true;
+                    velocities[note] = @as(f32, @floatFromInt(data2)) / 127.0;
+                    self.note_on_hold_polls[note] = short_note_hold_polls;
+                    self.note_off_pending[note] = false;
+                }
+            },
+            0x80 => self.queueNoteOff(notes, velocities, note),
+            else => {},
+        }
+    }
+
+    fn queueNoteOff(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32, note: usize) void {
+        if (self.note_on_hold_polls[note] > 0) {
+            self.note_off_pending[note] = true;
+            return;
+        }
+        notes[note] = false;
+        velocities[note] = 0.0;
+        self.note_off_pending[note] = false;
+    }
+
+    fn flushDeferredNoteOffs(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32) void {
+        for (0..128) |note| {
+            if (self.note_on_hold_polls[note] > 0) {
+                self.note_on_hold_polls[note] -= 1;
+                notes[note] = true;
+                continue;
+            }
+            if (self.note_off_pending[note]) {
+                notes[note] = false;
+                velocities[note] = 0.0;
+                self.note_off_pending[note] = false;
+            }
+        }
     }
 };
