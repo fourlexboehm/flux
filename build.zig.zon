@@ -54,8 +54,8 @@
             .path = "deps/zaudio",
         },
         .libz_jobs = .{
-            .url = "git+https://github.com/fourlexboehm/LibZ.Jobs#bc7168bcced8c81db8ab6d0b147a1f838ebc3dd8",
-            .hash = "libz_jobs-0.0.0-WDIbgauJAACnPDI_93KHeVFXu_o35dPoYs_sVl2b5bEA",
+            .url = "git+https://github.com/fourlexboehm/LibZ.Jobs#main",
+            .hash = "libz_jobs-0.0.0-WDIbgYiWAAAhj2_EdZf5ZlPyp9DrUrVCOztHNBEJcfU5",
         },
         // DAWproject support
         .@"zig-xml" = .{
