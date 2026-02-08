@@ -283,14 +283,7 @@ pub fn main(init: std.process.Init) !void {
                 try plugin_runtime.syncFxPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 dawproject_runtime.applyPresetLoadRequests(&state, &catalog, &track_plugins);
                 const frame_plugins = plugin_runtime.collectPlugins(&track_plugins, &track_fx);
-                engine.updatePlugins(
-                    frame_plugins.instruments,
-                    frame_plugins.fx,
-                    frame_plugins.instrument_input_channels,
-                    frame_plugins.instrument_output_channels,
-                    frame_plugins.fx_input_channels,
-                    frame_plugins.fx_output_channels,
-                );
+                engine.updatePlugins(frame_plugins.instruments, frame_plugins.fx);                                           ║
                 zgui.backend.draw(command_buffer, command_encoder);
                 command_encoder.as(objc.metal.CommandEncoder).endEncoding();
                 command_buffer.presentDrawable(drawable.as(objc.metal.Drawable));
@@ -463,14 +456,7 @@ pub fn main(init: std.process.Init) !void {
                 try plugin_runtime.syncFxPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 dawproject_runtime.applyPresetLoadRequests(&state, &catalog, &track_plugins);
                 const frame_plugins = plugin_runtime.collectPlugins(&track_plugins, &track_fx);
-                engine.updatePlugins(
-                    frame_plugins.instruments,
-                    frame_plugins.fx,
-                    frame_plugins.instrument_input_channels,
-                    frame_plugins.instrument_output_channels,
-                    frame_plugins.fx_input_channels,
-                    frame_plugins.fx_output_channels,
-                );
+                engine.updatePlugins(frame_plugins.instruments, frame_plugins.fx);                                           ║
                 zgui.backend.draw();
 
                 window.swapBuffers();
