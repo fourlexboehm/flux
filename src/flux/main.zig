@@ -96,14 +96,22 @@ pub fn main(init: std.process.Init) !void {
     defer engine.deinit();
     host.shared_state = &engine.shared;
 
-    // Initialize libz_jobs work-stealing queue
-    var jobs = try audio_graph.JobQueue.init(allocator, io);
-    defer jobs.deinit();
-    try jobs.start();
-    defer jobs.join();
-    defer jobs.stop();
-    engine.jobs = &jobs;
-    host.jobs = &jobs;
+    // Initialize libz_jobs work-stealing queue (FLUX_SINGLE_THREAD=1 to disable)
+    const single_thread = if (std.c.getenv("FLUX_SINGLE_THREAD")) |v| v[0] == '1' else false;
+    var jobs_storage: audio_graph.JobQueue = undefined;
+    if (!single_thread) {
+        jobs_storage = try audio_graph.JobQueue.init(allocator, io);
+        try jobs_storage.start();
+        engine.jobs = &jobs_storage;
+        host.jobs = &jobs_storage;
+    } else {
+        std.log.info("Single-threaded mode (FLUX_SINGLE_THREAD=1)", .{});
+    }
+    defer if (!single_thread) {
+        jobs_storage.stop();
+        jobs_storage.join();
+        jobs_storage.deinit();
+    };
 
     engine.updateFromUi(&state);
     // Initial plugin sync will happen on first frame - plugins are loaded lazily
@@ -275,7 +283,14 @@ pub fn main(init: std.process.Init) !void {
                 try plugin_runtime.syncFxPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 dawproject_runtime.applyPresetLoadRequests(&state, &catalog, &track_plugins);
                 const frame_plugins = plugin_runtime.collectPlugins(&track_plugins, &track_fx);
-                engine.updatePlugins(frame_plugins.instruments, frame_plugins.fx);
+                engine.updatePlugins(
+                    frame_plugins.instruments,
+                    frame_plugins.fx,
+                    frame_plugins.instrument_input_channels,
+                    frame_plugins.instrument_output_channels,
+                    frame_plugins.fx_input_channels,
+                    frame_plugins.fx_output_channels,
+                );
                 zgui.backend.draw(command_buffer, command_encoder);
                 command_encoder.as(objc.metal.CommandEncoder).endEncoding();
                 command_buffer.presentDrawable(drawable.as(objc.metal.Drawable));
@@ -448,7 +463,14 @@ pub fn main(init: std.process.Init) !void {
                 try plugin_runtime.syncFxPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 dawproject_runtime.applyPresetLoadRequests(&state, &catalog, &track_plugins);
                 const frame_plugins = plugin_runtime.collectPlugins(&track_plugins, &track_fx);
-                engine.updatePlugins(frame_plugins.instruments, frame_plugins.fx);
+                engine.updatePlugins(
+                    frame_plugins.instruments,
+                    frame_plugins.fx,
+                    frame_plugins.instrument_input_channels,
+                    frame_plugins.instrument_output_channels,
+                    frame_plugins.fx_input_channels,
+                    frame_plugins.fx_output_channels,
+                );
                 zgui.backend.draw();
 
                 window.swapBuffers();

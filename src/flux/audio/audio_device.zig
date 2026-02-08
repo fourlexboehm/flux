@@ -74,6 +74,10 @@ pub fn dataCallback(
                 current_sleep; // stay in current state
 
             jobs.setSleepNs(sleep_ns);
+        } else {
+            const usage_pct = elapsed_us * 100 / budget_us;
+            const usage_pct_clamped: u32 = @intCast(@min(usage_pct, 999));
+            engine.dsp_load_pct.store(usage_pct_clamped, .release);
         }
     }
 }

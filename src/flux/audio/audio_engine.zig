@@ -291,7 +291,7 @@ pub const AudioEngine = struct {
         var frame_offset: usize = 0;
         while (frames_left > 0) {
             const chunk: u32 = @min(frames_left, self.max_frames);
-            self.graph.process(snapshot, &self.shared, self.jobs.?, chunk, self.steady_time);
+            self.graph.process(snapshot, &self.shared, self.jobs, chunk, self.steady_time);
             self.steady_time += chunk;
 
             const master_id = self.graph.master_node orelse break;
