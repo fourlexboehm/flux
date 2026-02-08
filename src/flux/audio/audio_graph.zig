@@ -847,7 +847,7 @@ pub const Graph = struct {
         wake_requested: bool,
     };
 
-    pub fn process(self: *Graph, snapshot: *const StateSnapshot, shared: *audio_engine.SharedState, jobs: *JobQueue, frame_count: u32, steady_time: u64) void {
+    pub fn process(self: *Graph, snapshot: *const StateSnapshot, shared: *audio_engine.SharedState, jobs: ?*JobQueue, frame_count: u32, steady_time: u64) void {
         const zone = tracy.ZoneN(@src(), "Graph.process");
         defer zone.End();
 
@@ -935,32 +935,39 @@ pub const Graph = struct {
                 }
 
                 if (active_count > 0) {
-                    // Use libz_jobs work-stealing queue
-                    const RootJob = struct {
-                        pub fn exec(_: *@This()) void {}
-                    };
-                    const root = jobs.allocate(RootJob{});
-
-                    // Allocate and schedule synth jobs
-                    for (active_tasks[0..active_count]) |task_index| {
-                        const SynthJob = struct {
-                            ctx: *ProcessContext,
-                            task_index: u32,
-                            pub fn exec(job: *@This()) void {
-                                processSynthTaskDirect(job.ctx, job.task_index);
-                            }
+                    if (jobs) |jq| {
+                        // Use libz_jobs work-stealing queue
+                        const RootJob = struct {
+                            pub fn exec(_: *@This()) void {}
                         };
-                        const synth_job = jobs.allocate(SynthJob{
-                            .ctx = &ctx,
-                            .task_index = task_index,
-                        });
-                        jobs.finishWith(synth_job, root);
-                        jobs.schedule(synth_job);
-                    }
+                        const root = jq.allocate(RootJob{});
 
-                    // Schedule root and wait - main thread helps process
-                    jobs.schedule(root);
-                    jobs.wait(root);
+                        // Allocate and schedule synth jobs
+                        for (active_tasks[0..active_count]) |task_index| {
+                            const SynthJob = struct {
+                                ctx: *ProcessContext,
+                                task_index: u32,
+                                pub fn exec(job: *@This()) void {
+                                    processSynthTaskDirect(job.ctx, job.task_index);
+                                }
+                            };
+                            const synth_job = jq.allocate(SynthJob{
+                                .ctx = &ctx,
+                                .task_index = task_index,
+                            });
+                            jq.finishWith(synth_job, root);
+                            jq.schedule(synth_job);
+                        }
+
+                        // Schedule root and wait - main thread helps process
+                        jq.schedule(root);
+                        jq.wait(root);
+                    } else {
+                        // Single-threaded fallback
+                        for (active_tasks[0..active_count]) |task_index| {
+                            processSynthTaskDirect(&ctx, task_index);
+                        }
+                    }
                 }
             }
         }
