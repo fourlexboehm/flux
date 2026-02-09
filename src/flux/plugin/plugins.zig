@@ -541,7 +541,7 @@ fn scanClapDir(
             if (full_scan) {
                 discoverPluginEntries(allocator, io, entries, entry_path, .clap, cache) catch {};
             } else {
-                appendClapBundleEntry(allocator, io, entries, entry_path, cache, full_scan) catch {};
+                appendClapBundleEntry(allocator, io, entries, entry_path, cache) catch {};
             }
             continue;
         }
@@ -620,7 +620,6 @@ fn appendClapBundleEntry(
     entries: *std.ArrayListUnmanaged(PluginEntry),
     bundle_path: []const u8,
     cache: ?*PluginCache,
-    full_scan: bool,
 ) !void {
     const binary_path = resolveClapBinaryPath(allocator, io, bundle_path) catch return;
     defer allocator.free(binary_path);
@@ -628,9 +627,6 @@ fn appendClapBundleEntry(
         if (statMtimeNs(io, binary_path)) |mtime| {
             if (cache_ptr.get(binary_path, mtime)) |plugins| {
                 try appendCachedPluginEntries(allocator, entries, binary_path, plugins);
-                return;
-            }
-            if (!full_scan and !cache_ptr.hasPath(binary_path)) {
                 return;
             }
         }

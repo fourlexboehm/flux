@@ -823,10 +823,6 @@ pub fn build(
     var total_presets: usize = 0;
     var total_providers: usize = 0;
 
-    if (!cache.loaded and !rescan_all) {
-        ensurePresetCacheFile(&cache, io);
-        return preset_catalog;
-    }
 
     var seen_paths: std.StringHashMapUnmanaged(void) = .{};
     defer {
@@ -855,9 +851,6 @@ pub fn build(
 
         const mtime_ns = statMtimeNs(io, scan_path) orelse continue;
         if (!rescan_all) {
-            if (!cache.hasPath(scan_path)) {
-                continue;
-            }
             if (cache.get(scan_path, mtime_ns)) |cached_presets| {
                 try appendCachedPresets(allocator, catalog, &preset_catalog.entries, cached_presets);
                 if (debug) {
