@@ -18,6 +18,7 @@ const device_state = @import("device_state.zig");
 const host_mod = @import("host.zig");
 const midi_input = @import("midi_input.zig");
 const options = @import("options");
+const static_data = @import("static_data");
 const plugin_runtime = @import("plugin/plugin_runtime.zig");
 const plugins = @import("plugin/plugins.zig");
 const presets = @import("plugin/presets.zig");
@@ -157,7 +158,7 @@ pub fn main(init: std.process.Init) !void {
             var app = try app_window.AppWindow.init("flux", 1280, 720);
             defer app.deinit();
 
-            shared_mod.imgui_style.applyScaleFromFile("assets/Roboto-Medium.ttf", app.scale_factor);
+            shared_mod.imgui_style.applyScaleFromMemory(static_data.font, app.scale_factor);
             zgui.backend.init(app.view, app.device);
             defer zgui.backend.deinit();
 
@@ -352,7 +353,7 @@ pub fn main(init: std.process.Init) !void {
                 const parsed = std.fmt.parseFloat(f32, std.mem.span(env)) catch break :blk 1.0;
                 break :blk if (parsed > 0) parsed else 1.0;
             };
-            shared_mod.imgui_style.applyScaleFromFile("assets/Roboto-Medium.ttf", ui_scale);
+            shared_mod.imgui_style.applyScaleFromMemory(static_data.font, ui_scale);
 
             zgui.backend.init(window);
             defer zgui.backend.deinit();
