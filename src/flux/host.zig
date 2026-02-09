@@ -41,6 +41,14 @@ pub const Host = struct {
         .isAudioThread = _isAudioThread,
     };
 
+    const gui_ext = clap.ext.gui.Host{
+        .resizeHintsChanged = _guiResizeHintsChanged,
+        .requestResize = _guiRequestResize,
+        .requestShow = _guiRequestShow,
+        .requestHide = _guiRequestHide,
+        .closed = _guiClosed,
+    };
+
     const undo_ext = clap.ext.undo.Host{
         .begin_change = _undoBeginChange,
         .cancel_change = _undoCancelChange,
@@ -85,6 +93,9 @@ pub const Host = struct {
         }
         if (std.mem.eql(u8, std.mem.span(id), clap.ext.thread_check.id)) {
             return &thread_check_ext;
+        }
+        if (std.mem.eql(u8, std.mem.span(id), clap.ext.gui.id)) {
+            return &gui_ext;
         }
         if (std.mem.eql(u8, std.mem.span(id), clap.ext.undo.id)) {
             return &undo_ext;
@@ -195,6 +206,22 @@ pub const Host = struct {
         const self: *Host = @ptrCast(@alignCast(host.host_data));
         self.callback_requested.store(true, .release);
     }
+
+    fn _guiResizeHintsChanged(_: *const clap.Host) callconv(.c) void {}
+
+    fn _guiRequestResize(_: *const clap.Host, _: u32, _: u32) callconv(.c) bool {
+        return true;
+    }
+
+    fn _guiRequestShow(_: *const clap.Host) callconv(.c) bool {
+        return true;
+    }
+
+    fn _guiRequestHide(_: *const clap.Host) callconv(.c) bool {
+        return true;
+    }
+
+    fn _guiClosed(_: *const clap.Host, _: bool) callconv(.c) void {}
 
     pub fn pumpMainThreadCallbacks(self: *Host) void {
         if (!self.callback_requested.swap(false, .acq_rel)) return;
