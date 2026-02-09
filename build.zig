@@ -250,6 +250,7 @@ pub fn build(b: *std.Build) void {
     flux.root_module.addImport("tracy", ztracy.module("root"));
     flux.root_module.linkLibrary(ztracy.artifact("tracy"));
     flux.root_module.addOptions("options", options);
+    flux.root_module.addImport("static_data", static_data_module);
     flux.root_module.addImport("shared", shared);
     flux.root_module.addImport("libz_jobs", libz_jobs.module("libz_jobs"));
     flux.root_module.addImport("xml", zig_xml.module("xml"));
@@ -315,6 +316,18 @@ pub fn build(b: *std.Build) void {
     const run_flux = b.addRunArtifact(flux);
     const run_flux_step = b.step("run-flux", "Run the flux application");
     run_flux_step.dependOn(&run_flux.step);
+    const bundle_flux_app_step = b.step("bundle-flux-app", "Build Flux.app bundle (macOS)");
+    const run_flux_app_step = b.step("run-flux-app", "Build and run Flux.app (macOS)");
+    if (target_os == .macos) {
+        const create_flux_app_step = CreateFluxAppBundleStep.create(b);
+        create_flux_app_step.step.dependOn(b.getInstallStep());
+        bundle_flux_app_step.dependOn(&create_flux_app_step.step);
+
+        const open_flux_app = b.addSystemCommand(&.{ "open", "zig-out/Flux.app" });
+        open_flux_app.step.dependOn(&create_flux_app_step.step);
+        run_flux_app_step.dependOn(&open_flux_app.step);
+
+    }
 
     // Unit tests for zminimoog DSP - filter module
     const filter_test_module = b.createModule(.{
@@ -415,6 +428,71 @@ pub const CreateClapPluginStep = struct {
         }
     }
 };
+
+pub const CreateFluxAppBundleStep = struct {
+    pub const base_id = .top_level;
+
+    const Self = @This();
+
+    step: Step,
+    build: *std.Build,
+
+    pub fn create(b: *std.Build) *Self {
+        const self = b.allocator.create(Self) catch unreachable;
+        const name = "create flux app bundle";
+        self.* = Self{
+            .step = Step.init(Step.StepOptions{ .id = .top_level, .name = name, .owner = b, .makeFn = make }),
+            .build = b,
+        };
+        return self;
+    }
+
+    fn make(step: *Step, _: Step.MakeOptions) !void {
+        const self: *Self = @fieldParentPtr("step", step);
+        if (self.build.build_root.path) |path| {
+            const io = self.build.graph.io;
+            var dir = try std.Io.Dir.openDirAbsolute(io, path, .{});
+            defer dir.close(io);
+
+            try dir.createDirPath(io, "zig-out/Flux.app/Contents/MacOS");
+            _ = try dir.updateFile(io, "zig-out/bin/flux", dir, "zig-out/Flux.app/Contents/MacOS/flux", .{});
+            try dir.writeFile(io, .{
+                .sub_path = "zig-out/Flux.app/Contents/Info.plist",
+                .data = flux_info_plist,
+            });
+            try dir.writeFile(io, .{
+                .sub_path = "zig-out/Flux.app/Contents/PkgInfo",
+                .data = "APPL????\n",
+            });
+        }
+    }
+};
+
+const flux_info_plist =
+    \\<?xml version="1.0" encoding="UTF-8"?>
+    \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    \\<plist version="1.0">
+    \\<dict>
+    \\    <key>CFBundleName</key>
+    \\    <string>Flux</string>
+    \\    <key>CFBundleDisplayName</key>
+    \\    <string>Flux</string>
+    \\    <key>CFBundleIdentifier</key>
+    \\    <string>com.gearmulator.flux</string>
+    \\    <key>CFBundleVersion</key>
+    \\    <string>0.1</string>
+    \\    <key>CFBundleShortVersionString</key>
+    \\    <string>0.1</string>
+    \\    <key>CFBundlePackageType</key>
+    \\    <string>APPL</string>
+    \\    <key>CFBundleExecutable</key>
+    \\    <string>flux</string>
+    \\    <key>LSMinimumSystemVersion</key>
+    \\    <string>13.0</string>
+    \\</dict>
+    \\</plist>
+    \\
+;
 
 fn copyDirRecursiveToHome(
     allocator: std.mem.Allocator,
