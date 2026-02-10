@@ -124,12 +124,15 @@ fn loadFromFile(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File) !Lo
     var read_buf: [8192]u8 = undefined;
     var file_reader = file.reader(io, &read_buf);
 
-    // Create temp directory for extraction
-    var tmp_dir = try std.Io.Dir.cwd().createDirPathOpen(io, ".dawproject_tmp", .{});
+    // Create temp directory for extraction in /tmp so app-bundle launch works
+    // even when the current working directory is not writable.
+    const tmp_extract_path = "/tmp/flux_dawproject_tmp";
+    std.Io.Dir.cwd().deleteTree(io, tmp_extract_path) catch {};
+    var tmp_dir = try std.Io.Dir.cwd().createDirPathOpen(io, tmp_extract_path, .{});
     defer {
         tmp_dir.close(io);
         // Clean up temp directory
-        std.Io.Dir.cwd().deleteTree(io, ".dawproject_tmp") catch {};
+        std.Io.Dir.cwd().deleteTree(io, tmp_extract_path) catch {};
     }
 
     // Extract ZIP contents

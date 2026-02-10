@@ -14,12 +14,20 @@ const max_scenes = session_constants.max_scenes;
 const beats_per_bar = session_constants.beats_per_bar;
 const default_clip_bars = session_constants.default_clip_bars;
 const master_track_index = session_view.master_track_index;
+const simd_lanes = 4;
+const F32xN = @Vector(simd_lanes, f32);
 
 pub const JobQueue = libz_jobs.JobQueue(.{
     .max_jobs_per_thread = 64, // Enough for tracks + root job
     .max_threads = 16, // Cap at 16, runtime uses min(this, cpu_count - 1)
     .idle_sleep_ns = 1_500_000,
 });
+
+var parallel_threshold_cfg: std.atomic.Value(u32) = std.atomic.Value(u32).init(3);
+
+pub fn setParallelThreshold(threshold: u32) void {
+    parallel_threshold_cfg.store(@max(threshold, 1), .release);
+}
 
 /// Thread-local storage for tracking which plugin is currently being processed.
 /// Used by the CLAP thread_pool extension to identify the calling plugin.
@@ -621,6 +629,7 @@ pub const Graph = struct {
     note_source_node_ids: std.ArrayList(NodeId),
     fx_node_ids: std.ArrayList(NodeId),
     gain_node_ids: std.ArrayList(NodeId),
+    incoming_audio: []std.ArrayList(NodeId) = &.{},
 
     pub fn init(allocator: std.mem.Allocator) Graph {
         return .{
@@ -674,6 +683,12 @@ pub const Graph = struct {
         self.note_source_node_ids.deinit(self.allocator);
         self.fx_node_ids.deinit(self.allocator);
         self.gain_node_ids.deinit(self.allocator);
+        if (self.incoming_audio.len > 0) {
+            for (self.incoming_audio) |*list| {
+                list.deinit(self.allocator);
+            }
+            self.allocator.free(self.incoming_audio);
+        }
     }
 
     pub fn addNode(self: *Graph, node: Node) !NodeId {
@@ -726,6 +741,7 @@ pub const Graph = struct {
         }
 
         try self.buildRenderOrder();
+        try self.buildIncomingAudioLists();
     }
 
     fn buildRenderOrder(self: *Graph) !void {
@@ -813,15 +829,70 @@ pub const Graph = struct {
     fn sumAudioInputs(self: *Graph, node_id: NodeId, frame_count: u32, out_left: []f32, out_right: []f32) void {
         @memset(out_left[0..frame_count], 0);
         @memset(out_right[0..frame_count], 0);
+        const frames: usize = @intCast(frame_count);
+        const incoming = if (node_id < self.incoming_audio.len) self.incoming_audio[node_id].items else &[_]NodeId{};
+        for (incoming) |src_id| {
+            const src = self.getAudioOutput(src_id);
+            addStereoBuffers(out_left, out_right, src.left, src.right, frames);
+        }
+    }
+
+    fn buildIncomingAudioLists(self: *Graph) !void {
+        if (self.incoming_audio.len > 0) {
+            for (self.incoming_audio) |*list| {
+                list.deinit(self.allocator);
+            }
+            self.allocator.free(self.incoming_audio);
+            self.incoming_audio = &.{};
+        }
+
+        const node_count = self.nodes.items.len;
+        self.incoming_audio = try self.allocator.alloc(std.ArrayList(NodeId), node_count);
+        for (self.incoming_audio) |*list| {
+            list.* = .empty;
+        }
         for (self.connections.items) |conn| {
-            if (conn.to != node_id or conn.kind != .audio) {
-                continue;
-            }
-            const src = self.getAudioOutput(conn.from);
-            for (0..frame_count) |i| {
-                out_left[i] += src.left[i];
-                out_right[i] += src.right[i];
-            }
+            if (conn.kind != .audio) continue;
+            try self.incoming_audio[conn.to].append(self.allocator, conn.from);
+        }
+    }
+
+    inline fn addStereoBuffers(
+        out_left: []f32,
+        out_right: []f32,
+        src_left: []const f32,
+        src_right: []const f32,
+        frame_count: usize,
+    ) void {
+        var i: usize = 0;
+        const vec_end = frame_count - (frame_count % simd_lanes);
+        while (i < vec_end) : (i += simd_lanes) {
+            const dst_l = @as(F32xN, out_left[i..][0..simd_lanes].*);
+            const dst_r = @as(F32xN, out_right[i..][0..simd_lanes].*);
+            const src_l = @as(F32xN, src_left[i..][0..simd_lanes].*);
+            const src_r = @as(F32xN, src_right[i..][0..simd_lanes].*);
+            out_left[i..][0..simd_lanes].* = @as([simd_lanes]f32, dst_l + src_l);
+            out_right[i..][0..simd_lanes].* = @as([simd_lanes]f32, dst_r + src_r);
+        }
+        while (i < frame_count) : (i += 1) {
+            out_left[i] += src_left[i];
+            out_right[i] += src_right[i];
+        }
+    }
+
+    inline fn mulStereoBuffers(out_left: []f32, out_right: []f32, frame_count: usize, gain: f32) void {
+        var i: usize = 0;
+        const vec_end = frame_count - (frame_count % simd_lanes);
+        const gain_vec: F32xN = @splat(gain);
+        while (i < vec_end) : (i += simd_lanes) {
+            const dst_l = @as(F32xN, out_left[i..][0..simd_lanes].*);
+            const dst_r = @as(F32xN, out_right[i..][0..simd_lanes].*);
+            out_left[i..][0..simd_lanes].* = @as([simd_lanes]f32, dst_l * gain_vec);
+            out_right[i..][0..simd_lanes].* = @as([simd_lanes]f32, dst_r * gain_vec);
+        }
+        while (i < frame_count) : (i += 1) {
+            out_left[i] *= gain;
+            out_right[i] *= gain;
         }
     }
 
@@ -935,7 +1006,16 @@ pub const Graph = struct {
                 }
 
                 if (active_count > 0) {
-                    if (jobs) |jq| {
+                    // Per-buffer adaptation: skip queue overhead for small
+                    // synth workloads in this block.
+                    const configured_threshold = parallel_threshold_cfg.load(.acquire);
+                    const parallel_threshold: usize = @intCast(if (frame_count <= 128)
+                        @max(@as(u32, 2), configured_threshold -| 1)
+                    else
+                        configured_threshold);
+                    const use_parallel_jobs = jobs != null and active_count >= parallel_threshold;
+                    if (use_parallel_jobs) {
+                        const jq = jobs.?;
                         // Use libz_jobs work-stealing queue
                         const RootJob = struct {
                             pub fn exec(_: *@This()) void {}
@@ -963,7 +1043,7 @@ pub const Graph = struct {
                         jq.schedule(root);
                         jq.wait(root);
                     } else {
-                        // Single-threaded fallback
+                        // Single-threaded path (either no queue, or only one active synth task).
                         for (active_tasks[0..active_count]) |task_index| {
                             processSynthTaskDirect(&ctx, task_index);
                         }
@@ -992,10 +1072,7 @@ pub const Graph = struct {
                 const track = snapshot.tracks[node.data.gain.track_index];
                 const mute = track.mute or (solo_active and !track.solo);
                 const gain = if (mute) 0.0 else track.volume;
-                for (0..frame_count) |i| {
-                    outputs.left[i] *= gain;
-                    outputs.right[i] *= gain;
-                }
+                mulStereoBuffers(outputs.left, outputs.right, @intCast(frame_count), gain);
             }
         }
 
@@ -1013,10 +1090,7 @@ pub const Graph = struct {
                             const master_track = snapshot.tracks[master_track_index];
                             const master_mute = master_track.mute;
                             const gain = if (master_mute) 0.0 else master_track.volume;
-                            for (0..frame_count) |i| {
-                                outputs.left[i] *= gain;
-                                outputs.right[i] *= gain;
-                            }
+                            mulStereoBuffers(outputs.left, outputs.right, @intCast(frame_count), gain);
                         }
                     },
                     else => {},
