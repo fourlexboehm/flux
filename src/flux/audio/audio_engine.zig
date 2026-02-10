@@ -14,6 +14,8 @@ const default_clip_bars = session_constants.default_clip_bars;
 const master_track_index = session_view.master_track_index;
 
 const Channels = 2;
+const interleave_lanes = 4;
+const F32xN = @Vector(interleave_lanes, f32);
 
 pub const SharedState = struct {
     processing: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
@@ -296,16 +298,38 @@ pub const AudioEngine = struct {
 
             const master_id = self.graph.master_node orelse break;
             const outputs = self.graph.getAudioOutput(master_id);
-            for (0..chunk) |i| {
-                const idx = (frame_offset + i) * Channels;
-                out_ptr[idx] = outputs.left[i];
-                out_ptr[idx + 1] = outputs.right[i];
-            }
+            interleaveStereo(out_ptr, frame_offset, outputs.left, outputs.right, chunk);
             frame_offset += chunk;
             frames_left -= chunk;
         }
 
         _ = device;
+    }
+
+    inline fn interleaveStereo(out_ptr: [*]align(1) f32, frame_offset: usize, left: []const f32, right: []const f32, chunk: u32) void {
+        const frame_count: usize = @intCast(chunk);
+        var i: usize = 0;
+        const vec_end = frame_count - (frame_count % interleave_lanes);
+        while (i < vec_end) : (i += interleave_lanes) {
+            const l_vec = @as(F32xN, left[i..][0..interleave_lanes].*);
+            const r_vec = @as(F32xN, right[i..][0..interleave_lanes].*);
+            const l_arr = @as([interleave_lanes]f32, l_vec);
+            const r_arr = @as([interleave_lanes]f32, r_vec);
+            const base = (frame_offset + i) * Channels;
+            out_ptr[base + 0] = l_arr[0];
+            out_ptr[base + 1] = r_arr[0];
+            out_ptr[base + 2] = l_arr[1];
+            out_ptr[base + 3] = r_arr[1];
+            out_ptr[base + 4] = l_arr[2];
+            out_ptr[base + 5] = r_arr[2];
+            out_ptr[base + 6] = l_arr[3];
+            out_ptr[base + 7] = r_arr[3];
+        }
+        while (i < frame_count) : (i += 1) {
+            const idx = (frame_offset + i) * Channels;
+            out_ptr[idx] = left[i];
+            out_ptr[idx + 1] = right[i];
+        }
     }
 
     fn rebuildGraph(self: *AudioEngine, track_count_in: usize, force: bool) !void {
