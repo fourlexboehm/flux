@@ -366,7 +366,8 @@ pub const NoteSource = struct {
         const beat_start = @mod(self.current_beat, clip_len);
         const beat_end = beat_start + block_beats;
 
-        if (self.emit_notes) {
+        const near_clip_start = beat_start < block_beats;
+        if (self.emit_notes and (scene_changed or live_changed or !self.last_playing or beat_end >= clip_len or near_clip_start)) {
             self.updateNotesAtBeat(clip, @floatCast(beat_start), 0, live_should, live_velocities);
         }
 
