@@ -71,6 +71,15 @@ pub const SharedState = struct {
         back.live_key_states = state.live_key_states;
         back.live_key_velocities = state.live_key_velocities;
         for (0..max_tracks) |t| {
+            back.active_scene_by_track[t] = -1;
+            const active_scene_count = @min(state.session.scene_count, max_scenes);
+            for (0..active_scene_count) |scene_index| {
+                const slot = state.session.clips[t][scene_index];
+                if (slot.state == .playing) {
+                    back.active_scene_by_track[t] = @intCast(scene_index);
+                    break;
+                }
+            }
             for (0..max_scenes) |s| {
                 const src = &state.piano_clips[t][s];
                 var dst = &back.piano_clips[t][s];
@@ -462,6 +471,7 @@ fn initSnapshot(snapshot: *audio_graph.StateSnapshot) void {
     snapshot.track_count = max_tracks;
     snapshot.scene_count = max_scenes;
     for (0..max_tracks) |t| {
+        snapshot.active_scene_by_track[t] = -1;
         for (0..max_scenes) |s| {
             snapshot.clips[t][s].length_beats = default_clip_bars * beats_per_bar;
             snapshot.piano_clips[t][s].length_beats = default_clip_bars * beats_per_bar;
