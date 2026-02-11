@@ -15,7 +15,45 @@ const TrackPlugin = plugin_runtime.TrackPlugin;
 var perf_total_us: u64 = 0;
 var perf_max_us: u64 = 0;
 var perf_count: u64 = 0;
+var perf_over_budget_count: u64 = 0;
+var perf_budget_total_us: u64 = 0;
 var perf_last_print: ?std.Io.Timestamp = null;
+
+pub const PerfCounters = struct {
+    callbacks: u64,
+    total_us: u64,
+    max_us: u64,
+    budget_total_us: u64,
+    over_budget: u64,
+};
+
+var worker_min_sleep_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(10_000);
+var worker_max_sleep_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(2_000_000);
+
+pub fn setWorkerSleepBounds(min_sleep_ns: u64, max_sleep_ns: u64) void {
+    const min_ns = @max(min_sleep_ns, 1_000);
+    const max_ns = @max(max_sleep_ns, min_ns);
+    worker_min_sleep_ns.store(min_ns, .release);
+    worker_max_sleep_ns.store(max_ns, .release);
+}
+
+pub fn resetPerfCounters() void {
+    perf_total_us = 0;
+    perf_max_us = 0;
+    perf_count = 0;
+    perf_over_budget_count = 0;
+    perf_budget_total_us = 0;
+}
+
+pub fn snapshotPerfCounters() PerfCounters {
+    return .{
+        .callbacks = perf_count,
+        .total_us = perf_total_us,
+        .max_us = perf_max_us,
+        .budget_total_us = perf_budget_total_us,
+        .over_budget = perf_over_budget_count,
+    };
+}
 
 fn nsSince(from: std.Io.Timestamp, to: std.Io.Timestamp) u64 {
     return @intCast(from.durationTo(to).toNanoseconds());
@@ -49,6 +87,10 @@ pub fn dataCallback(
 
         const budget_us = @as(u64, frame_count) * 1_000_000 / audio_constants.sample_rate;
         const budget_ns = budget_us * 1000;
+        perf_budget_total_us += budget_us;
+        if (elapsed_us > budget_us) {
+            perf_over_budget_count += 1;
+        }
 
         // Adaptive sleep - update every callback for responsiveness
         if (engine.jobs) |jobs| {
@@ -57,22 +99,21 @@ pub fn dataCallback(
             engine.dsp_load_pct.store(usage_pct_clamped, .release);
             const current_sleep = jobs.dynamic_sleep_ns.load(.monotonic);
             const is_playing = engine.shared.snapshot().playing;
-
-            // Sleep targets as fraction of buffer period
-            const max_sleep = budget_ns / 2; // 50% of buffer - idle
-            const mid_sleep = budget_ns / 10; // 10% of buffer - moderate
-            const min_sleep = budget_ns / 100; // 1% of buffer - high load
+            const configured_min = worker_min_sleep_ns.load(.acquire);
+            const configured_max = worker_max_sleep_ns.load(.acquire);
+            const max_sleep = @min(configured_max, budget_ns / 2);
+            const min_sleep = @max(configured_min, @max(@as(u64, 1_000), budget_ns / 200));
+            const mid_sleep = @min(max_sleep, @max(min_sleep, budget_ns / 10));
             const mid_threshold: u64 = if (is_playing) 5 else 20;
-
-            const sleep_ns: u64 = if (usage_pct >= 40)
+            const next: u64 = if (usage_pct >= 40)
                 min_sleep
             else if (usage_pct >= mid_threshold)
                 mid_sleep
             else if (usage_pct < 5 and current_sleep < max_sleep)
-                @min(current_sleep * 2, max_sleep) // ramp up slowly
+                @min(current_sleep * 2, max_sleep)
             else
-                current_sleep; // stay in current state
-
+                current_sleep;
+            const sleep_ns: u64 = @max(min_sleep, @min(next, max_sleep));
             jobs.setSleepNs(sleep_ns);
         } else {
             const usage_pct = elapsed_us * 100 / budget_us;
