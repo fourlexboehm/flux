@@ -61,6 +61,7 @@ pub const StateSnapshot = struct {
     playhead_beat: f32,
     track_count: usize,
     scene_count: usize,
+    active_scene_by_track: [max_tracks]i16,
     tracks: [max_tracks]session_view.Track,
     clips: [max_tracks][max_scenes]session_view.ClipSlot,
     piano_clips: [max_tracks][max_scenes]ClipNotes,
@@ -178,6 +179,9 @@ pub const NoteSource = struct {
     current_beat: f64 = 0.0,
     // Track which pitches are currently sounding (by MIDI pitch 0-127)
     active_pitches: [128]bool = [_]bool{false} ** 128,
+    last_live_should: [128]bool = [_]bool{false} ** 128,
+    live_cache_valid: bool = false,
+    last_playing: bool = false,
     last_scene: ?usize = null,
     event_list: EventList = .{},
     input_events: clap.events.InputEvents = .{
@@ -357,7 +361,8 @@ pub const NoteSource = struct {
         const beat_start = @mod(self.current_beat, clip_len);
         const beat_end = beat_start + block_beats;
 
-        if (self.emit_notes) {
+        const near_clip_start = beat_start < block_beats;
+        if (self.emit_notes and (scene_changed or live_changed or !self.last_playing or beat_end >= clip_len or near_clip_start)) {
             self.updateNotesAtBeat(clip, @floatCast(beat_start), 0, live_should, live_velocities);
         }
 
@@ -846,6 +851,27 @@ pub const Graph = struct {
         }
     }
 
+    fn sumAudioInputsScaled(self: *Graph, node_id: NodeId, frame_count: u32, gain: f32, out_left: []f32, out_right: []f32) bool {
+        const frames: usize = @intCast(frame_count);
+        const incoming = if (node_id < self.incoming_audio.len) self.incoming_audio[node_id].items else &[_]NodeId{};
+        var any = false;
+        for (incoming) |src_id| {
+            if (!self.node_block_active[src_id]) continue;
+            const src = self.getAudioOutput(src_id);
+            if (!any) {
+                copyScaledStereoBuffers(out_left, out_right, src.left, src.right, frames, gain);
+                any = true;
+            } else {
+                addScaledStereoBuffers(out_left, out_right, src.left, src.right, frames, gain);
+            }
+        }
+        if (!any) {
+            @memset(out_left[0..frame_count], 0);
+            @memset(out_right[0..frame_count], 0);
+        }
+        return any;
+    }
+
     fn sumAudioInputsAll(self: *Graph, node_id: NodeId, frame_count: u32, out_left: []f32, out_right: []f32) void {
         @memset(out_left[0..frame_count], 0);
         @memset(out_right[0..frame_count], 0);
@@ -921,6 +947,54 @@ pub const Graph = struct {
         while (i < frame_count) : (i += 1) {
             out_left[i] *= gain;
             out_right[i] *= gain;
+        }
+    }
+
+    inline fn copyScaledStereoBuffers(
+        out_left: []f32,
+        out_right: []f32,
+        src_left: []const f32,
+        src_right: []const f32,
+        frame_count: usize,
+        gain: f32,
+    ) void {
+        var i: usize = 0;
+        const gain_vec: F32xN = @splat(gain);
+        const vec_end = frame_count - (frame_count % simd_lanes);
+        while (i < vec_end) : (i += simd_lanes) {
+            const src_l = @as(F32xN, src_left[i..][0..simd_lanes].*);
+            const src_r = @as(F32xN, src_right[i..][0..simd_lanes].*);
+            out_left[i..][0..simd_lanes].* = @as([simd_lanes]f32, src_l * gain_vec);
+            out_right[i..][0..simd_lanes].* = @as([simd_lanes]f32, src_r * gain_vec);
+        }
+        while (i < frame_count) : (i += 1) {
+            out_left[i] = src_left[i] * gain;
+            out_right[i] = src_right[i] * gain;
+        }
+    }
+
+    inline fn addScaledStereoBuffers(
+        out_left: []f32,
+        out_right: []f32,
+        src_left: []const f32,
+        src_right: []const f32,
+        frame_count: usize,
+        gain: f32,
+    ) void {
+        var i: usize = 0;
+        const gain_vec: F32xN = @splat(gain);
+        const vec_end = frame_count - (frame_count % simd_lanes);
+        while (i < vec_end) : (i += simd_lanes) {
+            const dst_l = @as(F32xN, out_left[i..][0..simd_lanes].*);
+            const dst_r = @as(F32xN, out_right[i..][0..simd_lanes].*);
+            const src_l = @as(F32xN, src_left[i..][0..simd_lanes].*);
+            const src_r = @as(F32xN, src_right[i..][0..simd_lanes].*);
+            out_left[i..][0..simd_lanes].* = @as([simd_lanes]f32, dst_l + (src_l * gain_vec));
+            out_right[i..][0..simd_lanes].* = @as([simd_lanes]f32, dst_r + (src_r * gain_vec));
+        }
+        while (i < frame_count) : (i += 1) {
+            out_left[i] += src_left[i] * gain;
+            out_right[i] += src_right[i] * gain;
         }
     }
 
@@ -1115,9 +1189,7 @@ pub const Graph = struct {
                     continue;
                 }
                 node.data.gain.buffer_zeroed = false;
-                self.sumAudioInputs(node_id, frame_count, outputs.left, outputs.right);
-                mulStereoBuffers(outputs.left, outputs.right, @intCast(frame_count), gain);
-                self.node_block_active[node_id] = true;
+                self.node_block_active[node_id] = self.sumAudioInputsScaled(node_id, frame_count, gain, outputs.left, outputs.right);
             }
         }
 
