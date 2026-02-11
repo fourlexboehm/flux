@@ -5,6 +5,7 @@ const clap = @import("clap-bindings");
 const colors = @import("colors.zig");
 const filters = @import("filters.zig");
 const embedded_views = @import("embedded_views.zig");
+const controller_mapping = @import("../midi/controller_mapping.zig");
 const session_view = @import("session_view.zig");
 const session_constants = @import("session_view/constants.zig");
 const state_mod = @import("state.zig");
@@ -213,6 +214,7 @@ pub fn drawDevicePanel(state: *State, ui_scale: f32) void {
         }
     }
 
+    drawControllerSummary(state, ui_scale);
     zgui.separator();
     switch (state.device_kind) {
         .plugin => {
@@ -392,4 +394,26 @@ fn calcToggleButtonWidth(open_label: []const u8, close_label: []const u8, ui_sca
         zgui.calcTextSize(close_label, .{})[0],
     );
     return max_label_w + style.frame_padding[0] * 2.0 + 6.0 * ui_scale;
+}
+
+fn drawControllerSummary(state: *State, ui_scale: f32) void {
+    _ = ui_scale;
+    const page_count = controller_mapping.smartPageCount(state);
+    if (page_count == 0) {
+        zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
+        zgui.textUnformatted("Controller Smart 8: no parameters available");
+        zgui.popStyleColor(.{ .count = 1 });
+        return;
+    }
+
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
+    zgui.text("Controller Smart 8 - Page {d}/{d}", .{ state.controller.smart_page + 1, page_count });
+    zgui.popStyleColor(.{ .count = 1 });
+
+    for (0..state_mod.controller_smart_slots) |slot_index| {
+        var row_buf: [160]u8 = undefined;
+        const label = controller_mapping.smartParamLabel(state, slot_index);
+        const row = std.fmt.bufPrintZ(&row_buf, "K{d}: {s}", .{ slot_index + 1, label }) catch "K";
+        zgui.textUnformatted(row);
+    }
 }

@@ -70,6 +70,13 @@ pub const SharedState = struct {
         back.track_fx_plugins = self.track_fx_plugins;
         back.live_key_states = state.live_key_states;
         back.live_key_velocities = state.live_key_velocities;
+        back.controller_param_write_count = state.controller_param_write_count;
+        if (state.controller_param_write_count > 0) {
+            @memcpy(
+                back.controller_param_writes[0..state.controller_param_write_count],
+                state.controller_param_writes[0..state.controller_param_write_count],
+            );
+        }
         for (0..max_tracks) |t| {
             back.active_scene_by_track[t] = -1;
             const active_scene_count = @min(state.session.scene_count, max_scenes);

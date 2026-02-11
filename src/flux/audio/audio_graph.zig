@@ -11,6 +11,7 @@ const PianoNote = piano_roll_types.Note;
 
 const max_tracks = session_constants.max_tracks;
 const max_scenes = session_constants.max_scenes;
+const max_controller_param_writes = ui_state.max_controller_param_writes;
 const beats_per_bar = session_constants.beats_per_bar;
 const default_clip_bars = session_constants.default_clip_bars;
 const master_track_index = session_view.master_track_index;
@@ -70,6 +71,8 @@ pub const StateSnapshot = struct {
     track_fx_plugins: [max_tracks][ui_state.max_fx_slots]?*const clap.Plugin,
     live_key_states: [max_tracks][128]bool,
     live_key_velocities: [max_tracks][128]f32,
+    controller_param_writes: [max_controller_param_writes]ui_state.ControllerParamWrite,
+    controller_param_write_count: usize,
 };
 
 pub const ClipNotes = struct {
@@ -311,6 +314,7 @@ pub const NoteSource = struct {
     fn process(self: *NoteSource, snapshot: *const StateSnapshot, sample_rate: f32, frame_count: u32) *const clap.events.InputEvents {
         self.event_list.reset();
         self.input_events.context = &self.event_list;
+        self.processControllerParamWrites(snapshot, 0);
         const live_should = &snapshot.live_key_states[self.track_index];
         const live_velocities = &snapshot.live_key_velocities[self.track_index];
 
@@ -362,7 +366,7 @@ pub const NoteSource = struct {
         const beat_start = @mod(self.current_beat, clip_len);
         const beat_end = beat_start + block_beats;
 
-        if (self.emit_notes and (scene_changed or live_changed or !self.last_playing or beat_end >= clip_len)) {
+        if (self.emit_notes) {
             self.updateNotesAtBeat(clip, @floatCast(beat_start), 0, live_should, live_velocities);
         }
 
@@ -382,6 +386,16 @@ pub const NoteSource = struct {
         }
 
         return &self.input_events;
+    }
+
+    fn processControllerParamWrites(self: *NoteSource, snapshot: *const StateSnapshot, sample_offset: u32) void {
+        var i: usize = 0;
+        while (i < snapshot.controller_param_write_count) : (i += 1) {
+            const write = snapshot.controller_param_writes[i];
+            if (write.track_index != @as(u8, @intCast(self.track_index))) continue;
+            if (write.target_fx_index != self.target_fx_index) continue;
+            self.emitParamValue(@enumFromInt(write.param_id), write.value, sample_offset);
+        }
     }
 
     fn processSegment(

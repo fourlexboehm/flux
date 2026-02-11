@@ -14,8 +14,11 @@ const max_scenes = session_constants.max_scenes;
 
 // Constants for audio buffer options.
 pub const max_fx_slots = 4;
-pub const buffer_frame_options = [_]u32{ 64, 128, 256, 512, 1024 };
-pub const default_buffer_frames: u32 = buffer_frame_options[1];
+pub const buffer_frame_options = [_]u32{ 16, 32, 64, 128, 256, 512, 1024 };
+pub const default_buffer_frames: u32 = buffer_frame_options[3];
+pub const controller_smart_slots = 8;
+pub const max_controller_param_writes = 64;
+pub const max_controller_smart_params = 256;
 
 pub const BottomMode = enum {
     device,
@@ -42,6 +45,38 @@ pub const TrackPluginUI = struct {
     gui_open: bool,
     last_valid_choice: i32,
     preset_choice_index: ?usize = null,
+};
+
+pub const ControllerParamWrite = struct {
+    track_index: u8,
+    target_fx_index: i8, // -1 for instrument
+    param_id: u32,
+    value: f64,
+};
+
+pub const ControllerSmartParam = struct {
+    param_id: u32 = 0,
+    min_value: f64 = 0.0,
+    max_value: f64 = 1.0,
+    label: [96]u8 = [_]u8{0} ** 96,
+    label_len: usize = 0,
+};
+
+pub const ControllerProfile = enum {
+    axiom_49_g2,
+};
+
+pub const ControllerState = struct {
+    profile: ControllerProfile = .axiom_49_g2,
+    smart_page: usize = 0,
+    smart_param_count: usize = 0,
+    smart_params: [max_controller_smart_params]ControllerSmartParam = [_]ControllerSmartParam{.{}} ** max_controller_smart_params,
+    smart_target_track: usize = 0,
+    smart_target_kind: DeviceTargetKind = .instrument,
+    smart_target_fx: usize = 0,
+    smart_target_plugin: ?*const clap.Plugin = null,
+    cc_button_down: [128]bool = [_]bool{false} ** 128,
+    last_cc_values: [128]u8 = [_]u8{0} ** 128,
 };
 
 pub const State = struct {
@@ -97,6 +132,9 @@ pub const State = struct {
     midi_note_states: [128]bool,
     midi_note_velocities: [128]f32,
     keyboard_octave: i8,
+    controller: ControllerState,
+    controller_param_writes: [max_controller_param_writes]ControllerParamWrite,
+    controller_param_write_count: usize,
 
     // Project file requests (handled by main.zig)
     load_project_request: bool,
@@ -207,6 +245,14 @@ pub const State = struct {
             .midi_note_states = [_]bool{false} ** 128,
             .midi_note_velocities = [_]f32{0.0} ** 128,
             .keyboard_octave = 0,
+            .controller = .{},
+            .controller_param_writes = [_]ControllerParamWrite{.{
+                .track_index = 0,
+                .target_fx_index = -1,
+                .param_id = 0,
+                .value = 0.0,
+            }} ** max_controller_param_writes,
+            .controller_param_write_count = 0,
             .load_project_request = false,
             .save_project_request = false,
             .save_project_as_request = false,
@@ -255,6 +301,27 @@ pub const State = struct {
 
     pub fn currentClipLabel(self: *const State) []const u8 {
         return self.session.scenes[self.selectedScene()].getName();
+    }
+
+    pub fn clearControllerParamWrites(self: *State) void {
+        self.controller_param_write_count = 0;
+    }
+
+    pub fn pushControllerParamWrite(self: *State, write: ControllerParamWrite) void {
+        var i: usize = 0;
+        while (i < self.controller_param_write_count) : (i += 1) {
+            var existing = &self.controller_param_writes[i];
+            if (existing.track_index == write.track_index and
+                existing.target_fx_index == write.target_fx_index and
+                existing.param_id == write.param_id)
+            {
+                existing.value = write.value;
+                return;
+            }
+        }
+        if (self.controller_param_write_count >= self.controller_param_writes.len) return;
+        self.controller_param_writes[self.controller_param_write_count] = write;
+        self.controller_param_write_count += 1;
     }
 
     pub fn setProjectPath(self: *State, path: []const u8) !void {
