@@ -313,6 +313,14 @@ pub fn zminimoogPluginPath() ![]const u8 {
     };
 }
 
+pub fn zobxPluginPath() ![]const u8 {
+    return switch (builtin.os.tag) {
+        .macos => "zig-out/lib/ZOB-X.clap/Contents/MacOS/ZOB-X",
+        .linux => "zig-out/lib/zobx.clap",
+        else => error.UnsupportedOs,
+    };
+}
+
 pub fn discover(allocator: std.mem.Allocator, io: Io) !PluginCatalog {
     var catalog = PluginCatalog{ .allocator = allocator };
 
@@ -323,6 +331,9 @@ pub fn discover(allocator: std.mem.Allocator, io: Io) !PluginCatalog {
 
     const zminimoog_path = try zminimoogPluginPath();
     try appendStaticEntry(&catalog, .builtin, "ZMinimoog", zminimoog_path, "com.fourlex.zminimoog");
+
+    const zobx_path = try zobxPluginPath();
+    try appendStaticEntry(&catalog, .builtin, "ZOB-X", zobx_path, "com.fourlex.zobx");
 
     var clap_entries: std.ArrayListUnmanaged(PluginEntry) = .{};
     defer clap_entries.deinit(allocator);

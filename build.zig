@@ -99,6 +99,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const zobx_core = b.createModule(.{
+        .root_source_file = b.path("zobx/src/core.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const lib = b.addLibrary(.{
         .name = "zsynth",
         .root_module = lib_module,
@@ -221,6 +226,18 @@ pub fn build(b: *std.Build) void {
         zminimoog_core.addImport("objc", objc.module("mach-objc"));
     }
 
+    zobx_core.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
+    zobx_core.addImport("zgui", zgui.module("root"));
+    zobx_core.addImport("zglfw", zglfw.module("root"));
+    zobx_core.addImport("zopengl", zopengl.module("root"));
+    zobx_core.addImport("tracy", ztracy.module("root"));
+    zobx_core.addImport("shared", shared);
+    zobx_core.addImport("options", options_core_module);
+    zobx_core.addImport("static_data", static_data_module);
+    if (target_os == .macos) {
+        zobx_core.addImport("objc", objc.module("mach-objc"));
+    }
+
     // Specific steps for different targets
     // Library
     const rename_dll_step = CreateClapPluginStep.create(b, lib);
@@ -239,6 +256,7 @@ pub fn build(b: *std.Build) void {
     flux.root_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
     flux.root_module.addImport("zsynth-core", zsynth_core);
     flux.root_module.addImport("zminimoog-core", zminimoog_core);
+    flux.root_module.addImport("zobx-core", zobx_core);
     flux.root_module.addImport("zaudio", zaudio.module("root"));
     flux.root_module.addImport("zgui", zgui.module("root"));
     flux.root_module.addImport("zglfw", zglfw.module("root"));
@@ -316,6 +334,7 @@ pub fn build(b: *std.Build) void {
     const run_flux = b.addRunArtifact(flux);
     const run_flux_step = b.step("run-flux", "Run the flux application");
     run_flux_step.dependOn(&run_flux.step);
+
     const bundle_flux_app_step = b.step("bundle-flux-app", "Build Flux.app bundle (macOS)");
     const run_flux_app_step = b.step("run-flux-app", "Build and run Flux.app (macOS)");
     if (target_os == .macos) {
