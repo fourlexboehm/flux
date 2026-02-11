@@ -16,6 +16,7 @@ const audio_graph = @import("audio/audio_graph.zig");
 const dawproject_runtime = @import("dawproject/runtime.zig");
 const device_state = @import("device_state.zig");
 const host_mod = @import("host.zig");
+const controller_mapping = @import("midi/controller_mapping.zig");
 const midi_input = @import("midi_input.zig");
 const options = @import("options");
 const static_data = @import("static_data");
@@ -151,6 +152,7 @@ pub fn main(init: std.process.Init) !void {
     var dsp_last_update = last_time;
     var last_interaction_time = last_time;
     var window_was_focused = true;
+    var midi_events: [256]midi_input.MidiEvent = undefined;
 
     std.log.info("flux running (Ctrl+C to quit)", .{});
     switch (builtin.os.tag) {
@@ -177,6 +179,8 @@ pub fn main(init: std.process.Init) !void {
                 midi.poll();
                 state.midi_note_states = midi.note_states;
                 state.midi_note_velocities = midi.note_velocities;
+                const midi_event_count = midi.drainEvents(midi_events[0..]);
+                controller_mapping.applyMidiEvents(&state, midi_events[0..midi_event_count]);
                 if (nsSince(dsp_last_update, now) >= 250 * std.time.ns_per_ms) {
                     state.dsp_load_pct = engine.dsp_load_pct.load(.acquire);
                     dsp_last_update = now;
@@ -280,6 +284,7 @@ pub fn main(init: std.process.Init) !void {
                     &engine.shared,
                 );
                 engine.updateFromUi(&state);
+                state.clearControllerParamWrites();
                 try plugin_runtime.syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 try plugin_runtime.syncFxPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 dawproject_runtime.applyPresetLoadRequests(&state, &catalog, &track_plugins);
@@ -375,6 +380,8 @@ pub fn main(init: std.process.Init) !void {
                 midi.poll();
                 state.midi_note_states = midi.note_states;
                 state.midi_note_velocities = midi.note_velocities;
+                const midi_event_count = midi.drainEvents(midi_events[0..]);
+                controller_mapping.applyMidiEvents(&state, midi_events[0..midi_event_count]);
                 if (nsSince(dsp_last_update, now) >= 250 * std.time.ns_per_ms) {
                     state.dsp_load_pct = engine.dsp_load_pct.load(.acquire);
                     dsp_last_update = now;
@@ -453,6 +460,7 @@ pub fn main(init: std.process.Init) !void {
                     &engine.shared,
                 );
                 engine.updateFromUi(&state);
+                state.clearControllerParamWrites();
                 try plugin_runtime.syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 try plugin_runtime.syncFxPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 dawproject_runtime.applyPresetLoadRequests(&state, &catalog, &track_plugins);

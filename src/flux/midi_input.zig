@@ -2,10 +2,18 @@ const builtin = @import("builtin");
 const std = @import("std");
 const pm = @import("portmidi");
 
-const MidiEvent = struct {
+pub const MidiEvent = struct {
     status: u8,
     data1: u8,
     data2: u8,
+
+    pub fn message(self: MidiEvent) u8 {
+        return self.status & 0xF0;
+    }
+
+    pub fn channel(self: MidiEvent) u8 {
+        return self.status & 0x0F;
+    }
 };
 
 const EventQueue = struct {
@@ -63,6 +71,7 @@ fn applyNoteEvent(notes: *[128]bool, velocities: *[128]f32, event: MidiEvent) vo
 pub const MidiInput = struct {
     note_states: [128]bool = [_]bool{false} ** 128,
     note_velocities: [128]f32 = [_]f32{0.0} ** 128,
+    event_queue: EventQueue = .{},
     impl: Impl = undefined,
     active: bool = false,
 
@@ -87,7 +96,16 @@ pub const MidiInput = struct {
 
     pub fn poll(self: *MidiInput) void {
         if (!self.active) return;
-        self.impl.poll(&self.note_states, &self.note_velocities);
+        self.impl.poll(&self.note_states, &self.note_velocities, &self.event_queue);
+    }
+
+    pub fn drainEvents(self: *MidiInput, out: []MidiEvent) usize {
+        var count: usize = 0;
+        while (count < out.len) : (count += 1) {
+            const ev = self.event_queue.pop() orelse break;
+            out[count] = ev;
+        }
+        return count;
     }
 };
 
@@ -99,7 +117,7 @@ const Impl = switch (builtin.os.tag) {
 const NoopInput = struct {
     pub fn init(_: *NoopInput, _: std.mem.Allocator) !void {}
     pub fn deinit(_: *NoopInput) void {}
-    pub fn poll(_: *NoopInput, _: *[128]bool, _: *[128]f32) void {}
+    pub fn poll(_: *NoopInput, _: *[128]bool, _: *[128]f32, _: *EventQueue) void {}
 };
 
 const PortMidiInput = struct {
@@ -124,7 +142,7 @@ const PortMidiInput = struct {
         pm.terminate();
     }
 
-    pub fn poll(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32) void {
+    pub fn poll(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32, event_queue: *EventQueue) void {
         self.rescan_counter +%= 1;
         if (self.rescan_counter >= self.rescan_interval) {
             self.rescan_counter = 0;
@@ -148,7 +166,7 @@ const PortMidiInput = struct {
                 const status = pm.messageStatus(msg);
                 const data1 = pm.messageData1(msg);
                 const data2 = pm.messageData2(msg);
-                self.applyMidiMessage(notes, velocities, status, data1, data2);
+                self.applyMidiMessage(notes, velocities, event_queue, status, data1, data2);
             }
             if (need_reopen) break;
         }
@@ -207,8 +225,24 @@ const PortMidiInput = struct {
         self.note_off_pending = [_]bool{false} ** 128;
     }
 
-    fn applyMidiMessage(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32, status: u8, data1: u8, data2: u8) void {
+    fn applyMidiMessage(
+        self: *PortMidiInput,
+        notes: *[128]bool,
+        velocities: *[128]f32,
+        event_queue: *EventQueue,
+        status: u8,
+        data1: u8,
+        data2: u8,
+    ) void {
         const msg = status & 0xF0;
+        // Keep a raw event feed for controller mapping and transport.
+        if (msg == 0x90 or msg == 0x80 or msg == 0xB0 or msg == 0xC0 or msg == 0xE0) {
+            event_queue.push(.{
+                .status = status,
+                .data1 = data1,
+                .data2 = data2,
+            });
+        }
         if (data1 >= 128) return;
         const note: usize = data1;
         switch (msg) {
