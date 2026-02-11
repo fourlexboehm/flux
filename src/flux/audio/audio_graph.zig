@@ -15,6 +15,7 @@ const beats_per_bar = session_constants.beats_per_bar;
 const default_clip_bars = session_constants.default_clip_bars;
 const master_track_index = session_view.master_track_index;
 const simd_lanes = 4;
+const simd_unroll = 16;
 const F32xN = @Vector(simd_lanes, f32);
 
 pub const JobQueue = libz_jobs.JobQueue(.{
@@ -567,16 +568,19 @@ const GainNode = struct {
     track_index: usize,
     output_left: []f32 = &.{},
     output_right: []f32 = &.{},
+    buffer_zeroed: bool = false,
 };
 
 const MixerNode = struct {
     output_left: []f32 = &.{},
     output_right: []f32 = &.{},
+    buffer_zeroed: bool = false,
 };
 
 const MasterNode = struct {
     output_left: []f32 = &.{},
     output_right: []f32 = &.{},
+    buffer_zeroed: bool = false,
 };
 
 pub const Node = struct {
@@ -630,6 +634,7 @@ pub const Graph = struct {
     fx_node_ids: std.ArrayList(NodeId),
     gain_node_ids: std.ArrayList(NodeId),
     incoming_audio: []std.ArrayList(NodeId) = &.{},
+    node_block_active: []bool = &.{},
 
     pub fn init(allocator: std.mem.Allocator) Graph {
         return .{
@@ -689,6 +694,9 @@ pub const Graph = struct {
             }
             self.allocator.free(self.incoming_audio);
         }
+        if (self.node_block_active.len > 0) {
+            self.allocator.free(self.node_block_active);
+        }
     }
 
     pub fn addNode(self: *Graph, node: Node) !NodeId {
@@ -742,6 +750,7 @@ pub const Graph = struct {
 
         try self.buildRenderOrder();
         try self.buildIncomingAudioLists();
+        self.node_block_active = try self.allocator.alloc(bool, self.nodes.items.len);
     }
 
     fn buildRenderOrder(self: *Graph) !void {
@@ -832,9 +841,29 @@ pub const Graph = struct {
         const frames: usize = @intCast(frame_count);
         const incoming = if (node_id < self.incoming_audio.len) self.incoming_audio[node_id].items else &[_]NodeId{};
         for (incoming) |src_id| {
+            if (!self.node_block_active[src_id]) continue;
             const src = self.getAudioOutput(src_id);
             addStereoBuffers(out_left, out_right, src.left, src.right, frames);
         }
+    }
+
+    fn sumAudioInputsAll(self: *Graph, node_id: NodeId, frame_count: u32, out_left: []f32, out_right: []f32) void {
+        @memset(out_left[0..frame_count], 0);
+        @memset(out_right[0..frame_count], 0);
+        const frames: usize = @intCast(frame_count);
+        const incoming = if (node_id < self.incoming_audio.len) self.incoming_audio[node_id].items else &[_]NodeId{};
+        for (incoming) |src_id| {
+            const src = self.getAudioOutput(src_id);
+            addStereoBuffers(out_left, out_right, src.left, src.right, frames);
+        }
+    }
+
+    inline fn hasActiveAudioInput(self: *const Graph, node_id: NodeId) bool {
+        if (node_id >= self.incoming_audio.len) return false;
+        for (self.incoming_audio[node_id].items) |src_id| {
+            if (self.node_block_active[src_id]) return true;
+        }
+        return false;
     }
 
     fn buildIncomingAudioLists(self: *Graph) !void {
@@ -865,6 +894,25 @@ pub const Graph = struct {
         frame_count: usize,
     ) void {
         var i: usize = 0;
+        const unroll_width = simd_lanes * simd_unroll;
+        const vec_unroll_end = frame_count - (frame_count % unroll_width);
+        while (i < vec_unroll_end) : (i += unroll_width) {
+            const dst_l = @as(F32xN, out_left[i..][0..simd_lanes].*);
+            const dst_r = @as(F32xN, out_right[i..][0..simd_lanes].*);
+            const src_l = @as(F32xN, src_left[i..][0..simd_lanes].*);
+            const src_r = @as(F32xN, src_right[i..][0..simd_lanes].*);
+            out_left[i..][0..simd_lanes].* = @as([simd_lanes]f32, dst_l + src_l);
+            out_right[i..][0..simd_lanes].* = @as([simd_lanes]f32, dst_r + src_r);
+
+            const i_next = i + simd_lanes;
+            const dst2_l = @as(F32xN, out_left[i_next..][0..simd_lanes].*);
+            const dst2_r = @as(F32xN, out_right[i_next..][0..simd_lanes].*);
+            const src2_l = @as(F32xN, src_left[i_next..][0..simd_lanes].*);
+            const src2_r = @as(F32xN, src_right[i_next..][0..simd_lanes].*);
+            out_left[i_next..][0..simd_lanes].* = @as([simd_lanes]f32, dst2_l + src2_l);
+            out_right[i_next..][0..simd_lanes].* = @as([simd_lanes]f32, dst2_r + src2_r);
+        }
+
         const vec_end = frame_count - (frame_count % simd_lanes);
         while (i < vec_end) : (i += simd_lanes) {
             const dst_l = @as(F32xN, out_left[i..][0..simd_lanes].*);
@@ -882,8 +930,23 @@ pub const Graph = struct {
 
     inline fn mulStereoBuffers(out_left: []f32, out_right: []f32, frame_count: usize, gain: f32) void {
         var i: usize = 0;
-        const vec_end = frame_count - (frame_count % simd_lanes);
+        const unroll_width = simd_lanes * simd_unroll;
+        const vec_unroll_end = frame_count - (frame_count % unroll_width);
         const gain_vec: F32xN = @splat(gain);
+        while (i < vec_unroll_end) : (i += unroll_width) {
+            const dst_l = @as(F32xN, out_left[i..][0..simd_lanes].*);
+            const dst_r = @as(F32xN, out_right[i..][0..simd_lanes].*);
+            out_left[i..][0..simd_lanes].* = @as([simd_lanes]f32, dst_l * gain_vec);
+            out_right[i..][0..simd_lanes].* = @as([simd_lanes]f32, dst_r * gain_vec);
+
+            const i_next = i + simd_lanes;
+            const dst2_l = @as(F32xN, out_left[i_next..][0..simd_lanes].*);
+            const dst2_r = @as(F32xN, out_right[i_next..][0..simd_lanes].*);
+            out_left[i_next..][0..simd_lanes].* = @as([simd_lanes]f32, dst2_l * gain_vec);
+            out_right[i_next..][0..simd_lanes].* = @as([simd_lanes]f32, dst2_r * gain_vec);
+        }
+
+        const vec_end = frame_count - (frame_count % simd_lanes);
         while (i < vec_end) : (i += simd_lanes) {
             const dst_l = @as(F32xN, out_left[i..][0..simd_lanes].*);
             const dst_r = @as(F32xN, out_right[i..][0..simd_lanes].*);
@@ -921,6 +984,9 @@ pub const Graph = struct {
     pub fn process(self: *Graph, snapshot: *const StateSnapshot, shared: *audio_engine.SharedState, jobs: ?*JobQueue, frame_count: u32, steady_time: u64) void {
         const zone = tracy.ZoneN(@src(), "Graph.process");
         defer zone.End();
+        if (self.node_block_active.len > 0) {
+            @memset(self.node_block_active, false);
+        }
 
         var solo_active = false;
         const active_track_count = @min(snapshot.track_count, max_tracks);
@@ -978,6 +1044,7 @@ pub const Graph = struct {
                             node.data.synth.buffer_zeroed = true;
                         }
                         node.data.synth.sleeping = false;
+                        self.node_block_active[node_id] = false;
                         continue;
                     }
                     // Reset flag when plugin is active
@@ -1002,6 +1069,7 @@ pub const Graph = struct {
                             @memset(outputs.right[0..frame_count], 0);
                             node.data.synth.buffer_zeroed = true;
                         }
+                        self.node_block_active[node_id] = false;
                     }
                 }
 
@@ -1057,7 +1125,7 @@ pub const Graph = struct {
             const fx_zone = tracy.ZoneN(@src(), "Audio FX");
             defer fx_zone.End();
             for (self.fx_node_ids.items) |node_id| {
-                self.processFxNode(&ctx, node_id);
+                self.node_block_active[node_id] = self.processFxNode(&ctx, node_id);
             }
         }
 
@@ -1066,13 +1134,25 @@ pub const Graph = struct {
             const gain_zone = tracy.ZoneN(@src(), "Gains");
             defer gain_zone.End();
             for (self.gain_node_ids.items) |node_id| {
-                const node = &self.nodes.items[node_id];
+                var node = &self.nodes.items[node_id];
                 const outputs = self.getAudioOutput(node_id);
-                self.sumAudioInputs(node_id, frame_count, outputs.left, outputs.right);
                 const track = snapshot.tracks[node.data.gain.track_index];
                 const mute = track.mute or (solo_active and !track.solo);
                 const gain = if (mute) 0.0 else track.volume;
+                const has_input = self.hasActiveAudioInput(node_id);
+                if (!has_input or gain == 0.0) {
+                    if (!node.data.gain.buffer_zeroed) {
+                        @memset(outputs.left[0..frame_count], 0);
+                        @memset(outputs.right[0..frame_count], 0);
+                        node.data.gain.buffer_zeroed = true;
+                    }
+                    self.node_block_active[node_id] = false;
+                    continue;
+                }
+                node.data.gain.buffer_zeroed = false;
+                self.sumAudioInputs(node_id, frame_count, outputs.left, outputs.right);
                 mulStereoBuffers(outputs.left, outputs.right, @intCast(frame_count), gain);
+                self.node_block_active[node_id] = true;
             }
         }
 
@@ -1081,17 +1161,50 @@ pub const Graph = struct {
             const mix_zone = tracy.ZoneN(@src(), "Mixer/Master");
             defer mix_zone.End();
             for (self.render_order.items) |node_id| {
-                const node = &self.nodes.items[node_id];
+                var node = &self.nodes.items[node_id];
                 switch (node.kind) {
                     .mixer, .master => {
                         const outputs = self.getAudioOutput(node_id);
+                        const has_input = self.hasActiveAudioInput(node_id);
+                        if (!has_input) {
+                            switch (node.kind) {
+                                .mixer => {
+                                    if (!node.data.mixer.buffer_zeroed) {
+                                        @memset(outputs.left[0..frame_count], 0);
+                                        @memset(outputs.right[0..frame_count], 0);
+                                        node.data.mixer.buffer_zeroed = true;
+                                    }
+                                },
+                                .master => {
+                                    if (!node.data.master.buffer_zeroed) {
+                                        @memset(outputs.left[0..frame_count], 0);
+                                        @memset(outputs.right[0..frame_count], 0);
+                                        node.data.master.buffer_zeroed = true;
+                                    }
+                                },
+                                else => {},
+                            }
+                            self.node_block_active[node_id] = false;
+                            continue;
+                        }
                         self.sumAudioInputs(node_id, frame_count, outputs.left, outputs.right);
                         if (node.kind == .master) {
                             const master_track = snapshot.tracks[master_track_index];
                             const master_mute = master_track.mute;
                             const gain = if (master_mute) 0.0 else master_track.volume;
+                            if (gain == 0.0) {
+                                @memset(outputs.left[0..frame_count], 0);
+                                @memset(outputs.right[0..frame_count], 0);
+                                node.data.master.buffer_zeroed = true;
+                                self.node_block_active[node_id] = false;
+                                continue;
+                            }
+                            node.data.master.buffer_zeroed = false;
                             mulStereoBuffers(outputs.left, outputs.right, @intCast(frame_count), gain);
+                        } else {
+                            node.data.mixer.buffer_zeroed = false;
                         }
+                        self.node_block_active[node_id] = true;
                     },
                     else => {},
                 }
@@ -1099,24 +1212,39 @@ pub const Graph = struct {
         }
     }
 
-    fn processFxNode(self: *Graph, ctx: *const ProcessContext, node_id: NodeId) void {
+    fn processFxNode(self: *Graph, ctx: *const ProcessContext, node_id: NodeId) bool {
         var node = &self.nodes.items[node_id];
         const track_index = node.data.fx.track_index;
         const fx_index = node.data.fx.fx_index;
+        const allow_fast_skip = track_index != master_track_index;
         // Skip removed nodes entirely
-        if (node.data.fx.removed) return;
+        if (node.data.fx.removed) return false;
 
         const outputs = self.getAudioOutput(node_id);
         const input_left = self.scratch_input_left[0..ctx.frame_count];
         const input_right = self.scratch_input_right[0..ctx.frame_count];
-        self.sumAudioInputs(node_id, ctx.frame_count, input_left, input_right);
+        const has_active_audio = if (allow_fast_skip) self.hasActiveAudioInput(node_id) else true;
 
         const plugin = ctx.snapshot.track_fx_plugins[track_index][fx_index] orelse {
+            if (allow_fast_skip and !has_active_audio) {
+                if (!node.data.fx.buffer_zeroed) {
+                    @memset(outputs.left[0..ctx.frame_count], 0);
+                    @memset(outputs.right[0..ctx.frame_count], 0);
+                    node.data.fx.buffer_zeroed = true;
+                }
+                node.data.fx.sleeping = false;
+                return false;
+            }
+            if (allow_fast_skip) {
+                self.sumAudioInputs(node_id, ctx.frame_count, input_left, input_right);
+            } else {
+                self.sumAudioInputsAll(node_id, ctx.frame_count, input_left, input_right);
+            }
             @memcpy(outputs.left[0..ctx.frame_count], input_left);
             @memcpy(outputs.right[0..ctx.frame_count], input_right);
             node.data.fx.sleeping = false;
             node.data.fx.buffer_zeroed = false; // Has input data, not zeroed
-            return;
+            return true;
         };
         node.data.fx.buffer_zeroed = false; // Active plugin, not zeroed
 
@@ -1155,6 +1283,25 @@ pub const Graph = struct {
             .get = inputEventsGet,
         };
         const input_events = ctx.graph.findEventInput(node_id) orelse &empty_input_events;
+        const has_input_events = input_events.size(input_events) > 0;
+        if (allow_fast_skip and !has_active_audio and node.data.fx.sleeping and !has_input_events) {
+            if (!node.data.fx.buffer_zeroed) {
+                @memset(outputs.left[0..ctx.frame_count], 0);
+                @memset(outputs.right[0..ctx.frame_count], 0);
+                node.data.fx.buffer_zeroed = true;
+            }
+            return false;
+        }
+        if (has_active_audio) {
+            if (allow_fast_skip) {
+                self.sumAudioInputs(node_id, ctx.frame_count, input_left, input_right);
+            } else {
+                self.sumAudioInputsAll(node_id, ctx.frame_count, input_left, input_right);
+            }
+        } else {
+            @memset(input_left[0..ctx.frame_count], 0);
+            @memset(input_right[0..ctx.frame_count], 0);
+        }
 
         const tempo = @as(f64, ctx.snapshot.bpm);
         const beats = @as(f64, ctx.snapshot.playhead_beat);
@@ -1213,8 +1360,10 @@ pub const Graph = struct {
         };
 
         current_processing_plugin = plugin;
-        _ = plugin.process(plugin, &clap_process);
+        const status = plugin.process(plugin, &clap_process);
         current_processing_plugin = null;
+        node.data.fx.sleeping = status == .sleep;
+        return true;
     }
 
     fn processSynthTaskDirect(ctx: *ProcessContext, task_index: u32) void {
@@ -1285,6 +1434,7 @@ pub const Graph = struct {
         } else if (node.data.synth.sleeping) {
             // Plugin requested sleep and no new events - skip processing
             current_processing_plugin = null;
+            ctx.graph.node_block_active[node_id] = false;
             return;
         }
 
@@ -1350,5 +1500,6 @@ pub const Graph = struct {
         } else if (status == .sleep) {
             node.data.synth.sleeping = true;
         }
+        ctx.graph.node_block_active[node_id] = true;
     }
 };
