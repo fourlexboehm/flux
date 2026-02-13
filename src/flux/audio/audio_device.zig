@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const zaudio = @import("zaudio");
 
 const audio_constants = @import("audio_constants.zig");
@@ -29,6 +30,42 @@ pub const PerfCounters = struct {
 
 var worker_min_sleep_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(10_000);
 var worker_max_sleep_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(2_000_000);
+var audio_thread_qos_class: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
+threadlocal var audio_thread_qos_applied: bool = false;
+
+pub const AudioThreadQos = enum(u8) {
+    unchanged = 0,
+    user_interactive = 1,
+    user_initiated = 2,
+    @"default" = 3,
+    utility = 4,
+    background = 5,
+};
+
+pub fn setAudioThreadQos(qos: AudioThreadQos) void {
+    audio_thread_qos_class.store(@intFromEnum(qos), .release);
+}
+
+fn applyAudioThreadQosHint() void {
+    if (builtin.os.tag != .macos) return;
+    if (audio_thread_qos_applied) return;
+
+    const qos_raw = audio_thread_qos_class.load(.acquire);
+    if (qos_raw == @intFromEnum(AudioThreadQos.unchanged)) return;
+
+    const c = std.c;
+    const qos_class: c.qos_class_t = switch (@as(AudioThreadQos, @enumFromInt(qos_raw))) {
+        .unchanged => return,
+        .user_interactive => c.qos_class_t.USER_INTERACTIVE,
+        .user_initiated => c.qos_class_t.USER_INITIATED,
+        .@"default" => c.qos_class_t.DEFAULT,
+        .utility => c.qos_class_t.UTILITY,
+        .background => c.qos_class_t.BACKGROUND,
+    };
+
+    _ = c.pthread_set_qos_class_self_np(qos_class, 0);
+    audio_thread_qos_applied = true;
+}
 
 pub fn setWorkerSleepBounds(min_sleep_ns: u64, max_sleep_ns: u64) void {
     const min_ns = @max(min_sleep_ns, 1_000);
@@ -65,6 +102,8 @@ pub fn dataCallback(
     _: ?*const anyopaque,
     frame_count: u32,
 ) callconv(.c) void {
+    applyAudioThreadQosHint();
+
     const start = std.Io.Clock.awake.now(clock_io);
     thread_context.is_audio_thread = true;
     defer thread_context.is_audio_thread = false;
