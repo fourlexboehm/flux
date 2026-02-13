@@ -1,6 +1,7 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const pm = @import("portmidi");
+const sleep_io: std.Io = std.Io.Threaded.global_single_threaded.ioBasic();
 
 const MidiEvent = struct {
     status: u8,
@@ -37,28 +38,6 @@ const EventQueue = struct {
         return event;
     }
 };
-
-fn applyNoteEvent(notes: *[128]bool, velocities: *[128]f32, event: MidiEvent) void {
-    const msg = event.status & 0xF0;
-    const note = event.data1;
-    if (note >= 128) return;
-    switch (msg) {
-        0x90 => {
-            if (event.data2 == 0) {
-                notes[note] = false;
-                velocities[note] = 0.0;
-            } else {
-                notes[note] = true;
-                velocities[note] = @as(f32, @floatFromInt(event.data2)) / 127.0;
-            }
-        },
-        0x80 => {
-            notes[note] = false;
-            velocities[note] = 0.0;
-        },
-        else => {},
-    }
-}
 
 pub const MidiInput = struct {
     note_states: [128]bool = [_]bool{false} ** 128,
@@ -105,60 +84,98 @@ const NoopInput = struct {
 const PortMidiInput = struct {
     const max_streams = 64;
     const short_note_hold_polls: u8 = 2;
+    const capture_sleep_ns: u64 = 1_000_000; // 1ms
+    const rescan_interval_loops: u32 = 500;
 
     streams: [max_streams]?*pm.Stream = [_]?*pm.Stream{null} ** max_streams,
     stream_count: usize = 0,
     device_count: i32 = 0,
-    rescan_counter: u32 = 0,
-    rescan_interval: u32 = 120,
     note_on_hold_polls: [128]u8 = [_]u8{0} ** 128,
     note_off_pending: [128]bool = [_]bool{false} ** 128,
+    event_queue: EventQueue = .{},
+    reset_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    capture_thread: ?std.Thread = null,
 
     pub fn init(self: *PortMidiInput, _: std.mem.Allocator) !void {
         pm.initialize();
+        errdefer pm.terminate();
+
         self.openAllInputs();
+        errdefer self.closeAllInputs();
+
+        self.running.store(true, .release);
+        self.capture_thread = try std.Thread.spawn(.{}, captureMain, .{self});
     }
 
     pub fn deinit(self: *PortMidiInput) void {
+        self.running.store(false, .release);
+        if (self.capture_thread) |thread| {
+            thread.join();
+            self.capture_thread = null;
+        }
         self.closeAllInputs();
         pm.terminate();
     }
 
     pub fn poll(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32) void {
-        self.rescan_counter +%= 1;
-        if (self.rescan_counter >= self.rescan_interval) {
-            self.rescan_counter = 0;
-            const count = pm.countDevices();
-            if (count != self.device_count or (count > 0 and self.stream_count == 0)) {
-                self.reopenInputs(notes, velocities);
-            }
+        if (self.reset_requested.swap(false, .acq_rel)) {
+            self.clearInputState(notes, velocities);
         }
 
-        var need_reopen = false;
-        var event: pm.Event = undefined;
-        for (self.streams[0..self.stream_count]) |stream| {
-            if (stream == null) continue;
-            while (true) {
-                const read_count = pm.read(stream.?, &event, 1) catch {
-                    need_reopen = true;
-                    break;
-                };
-                if (read_count <= 0) break;
-                const msg = event.message;
-                const status = pm.messageStatus(msg);
-                const data1 = pm.messageData1(msg);
-                const data2 = pm.messageData2(msg);
-                self.applyMidiMessage(notes, velocities, status, data1, data2);
-            }
-            if (need_reopen) break;
-        }
-
-        if (need_reopen) {
-            self.reopenInputs(notes, velocities);
-            return;
+        while (self.event_queue.pop()) |event| {
+            self.applyMidiMessage(notes, velocities, event.status, event.data1, event.data2);
         }
 
         self.flushDeferredNoteOffs(notes, velocities);
+    }
+
+    fn captureMain(self: *PortMidiInput) void {
+        applyCaptureThreadQosHint();
+
+        var rescan_counter: u32 = 0;
+        var event: pm.Event = undefined;
+        while (self.running.load(.acquire)) {
+            var need_reopen = false;
+            var had_event = false;
+
+            rescan_counter +%= 1;
+            if (rescan_counter >= rescan_interval_loops) {
+                rescan_counter = 0;
+                const count = pm.countDevices();
+                if (count != self.device_count or (count > 0 and self.stream_count == 0)) {
+                    self.reopenInputs();
+                }
+            }
+
+            for (self.streams[0..self.stream_count]) |stream| {
+                if (stream == null) continue;
+                while (true) {
+                    const read_count = pm.read(stream.?, &event, 1) catch {
+                        need_reopen = true;
+                        break;
+                    };
+                    if (read_count <= 0) break;
+                    had_event = true;
+                    const msg = event.message;
+                    self.event_queue.push(.{
+                        .status = pm.messageStatus(msg),
+                        .data1 = pm.messageData1(msg),
+                        .data2 = pm.messageData2(msg),
+                    });
+                }
+                if (need_reopen) break;
+            }
+
+            if (need_reopen) {
+                self.reopenInputs();
+                continue;
+            }
+
+            if (!had_event) {
+                _ = sleep_io.sleep(std.Io.Duration.fromNanoseconds(capture_sleep_ns), .awake) catch {};
+            }
+        }
     }
 
     fn openAllInputs(self: *PortMidiInput) void {
@@ -194,8 +211,8 @@ const PortMidiInput = struct {
         self.stream_count = 0;
     }
 
-    fn reopenInputs(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32) void {
-        self.clearInputState(notes, velocities);
+    fn reopenInputs(self: *PortMidiInput) void {
+        self.reset_requested.store(true, .release);
         self.closeAllInputs();
         self.openAllInputs();
     }
@@ -250,5 +267,10 @@ const PortMidiInput = struct {
                 self.note_off_pending[note] = false;
             }
         }
+    }
+
+    fn applyCaptureThreadQosHint() void {
+        if (builtin.os.tag != .macos) return;
+        _ = std.c.pthread_set_qos_class_self_np(std.c.qos_class_t.USER_INITIATED, 0);
     }
 };

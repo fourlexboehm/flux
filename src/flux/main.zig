@@ -112,6 +112,8 @@ fn configureRuntimeTuning(host: *host_mod.Host, cpu_count: usize) void {
 
     const parallel_threshold = envU32("FLUX_AUDIO_PARALLEL_THRESHOLD", 3);
     audio_graph.setParallelThreshold(parallel_threshold);
+    // Bias the CoreAudio callback thread toward P-cores where possible.
+    audio_device.setAudioThreadQos(.user_interactive);
 }
 
 fn writeBenchReport(
