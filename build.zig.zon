@@ -16,7 +16,7 @@
     // This field is optional.
     // This is currently advisory only; Zig does not yet do anything
     // with this value.
-    .minimum_zig_version = "0.16.0-dev.2490+fce7878a9",
+    .minimum_zig_version = "0.16.0-dev.2565+684032671",
 
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
@@ -63,8 +63,8 @@
             .hash = "xml-0.1.0-ZTbP35UoAgBojaHeY1SNlU1m8p9F82i1Qxgiulrp2v4E",
         },
         .@"portmidi-zig" = .{
-            .url = "git+https://github.com/fourlexboehm/portmidi-zig#af8a1502233e6ba9b93185c8313ba5cc26a3ae07",
-            .hash = "portmidi-0.0.0-AAAAAHbTAACtvIy7a4bC8pA3vQp6idDb73g2HbKbBoON",
+            .url = "git+https://github.com/fourlexboehm/portmidi-zig#6fdc0524c8819f015fddee20d3ffc344ef4d6b8b",
+            .hash = "portmidi-0.0.0-u03vWJ3TAAAvapSZey2uJVMSY31XTpKjwUGseQ4dBe7F",
         },
         .portmidi = .{
             .url = "git+https://github.com/PortMidi/portmidi#101dac9455e2718512c94e24cbcae6a6f34b908b",
