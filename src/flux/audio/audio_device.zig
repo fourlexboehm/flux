@@ -13,21 +13,6 @@ const clock_io: std.Io = std.Io.Threaded.global_single_threaded.ioBasic();
 const track_count = session_constants.max_tracks;
 const TrackPlugin = plugin_runtime.TrackPlugin;
 
-var perf_total_us: u64 = 0;
-var perf_max_us: u64 = 0;
-var perf_count: u64 = 0;
-var perf_over_budget_count: u64 = 0;
-var perf_budget_total_us: u64 = 0;
-var perf_last_print: ?std.Io.Timestamp = null;
-
-pub const PerfCounters = struct {
-    callbacks: u64,
-    total_us: u64,
-    max_us: u64,
-    budget_total_us: u64,
-    over_budget: u64,
-};
-
 var worker_min_sleep_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(10_000);
 var worker_max_sleep_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(2_000_000);
 var audio_thread_qos_class: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
@@ -74,26 +59,9 @@ pub fn setWorkerSleepBounds(min_sleep_ns: u64, max_sleep_ns: u64) void {
     worker_max_sleep_ns.store(max_ns, .release);
 }
 
-pub fn resetPerfCounters() void {
-    perf_total_us = 0;
-    perf_max_us = 0;
-    perf_count = 0;
-    perf_over_budget_count = 0;
-    perf_budget_total_us = 0;
-}
-
-pub fn snapshotPerfCounters() PerfCounters {
-    return .{
-        .callbacks = perf_count,
-        .total_us = perf_total_us,
-        .max_us = perf_max_us,
-        .budget_total_us = perf_budget_total_us,
-        .over_budget = perf_over_budget_count,
-    };
-}
-
-fn nsSince(from: std.Io.Timestamp, to: std.Io.Timestamp) u64 {
-    return @intCast(from.durationTo(to).toNanoseconds());
+inline fn nsSince(from: std.Io.Timestamp, to: std.Io.Timestamp) u64 {
+    const ns = from.durationTo(to).toNanoseconds();
+    return if (ns > 0) @intCast(ns) else 0;
 }
 
 pub fn dataCallback(
@@ -116,26 +84,17 @@ pub fn dataCallback(
     }
     engine.render(device, output, frame_count);
 
-    // Perf timing and adaptive sleep
+    // Adaptive sleep tuning based on callback budget usage
     {
         const end = std.Io.Clock.awake.now(clock_io);
         const elapsed_us = nsSince(start, end) / 1000;
-        perf_total_us += elapsed_us;
-        perf_max_us = @max(perf_max_us, elapsed_us);
-        perf_count += 1;
-
         const budget_us = @as(u64, frame_count) * 1_000_000 / audio_constants.sample_rate;
         const budget_ns = budget_us * 1000;
-        perf_budget_total_us += budget_us;
-        if (elapsed_us > budget_us) {
-            perf_over_budget_count += 1;
-        }
+        const usage_pct = elapsed_us * 100 / budget_us;
+        const usage_pct_clamped: u32 = @intCast(@min(usage_pct, 999));
+        engine.dsp_load_pct.store(usage_pct_clamped, .release);
 
-        // Adaptive sleep - update every callback for responsiveness
         if (engine.jobs) |jobs| {
-            const usage_pct = elapsed_us * 100 / budget_us;
-            const usage_pct_clamped: u32 = @intCast(@min(usage_pct, 999));
-            engine.dsp_load_pct.store(usage_pct_clamped, .release);
             const current_sleep = jobs.dynamic_sleep_ns.load(.monotonic);
             const is_playing = engine.shared.snapshot().playing;
             const configured_min = worker_min_sleep_ns.load(.acquire);
@@ -154,10 +113,6 @@ pub fn dataCallback(
                 current_sleep;
             const sleep_ns: u64 = @max(min_sleep, @min(next, max_sleep));
             jobs.setSleepNs(sleep_ns);
-        } else {
-            const usage_pct = elapsed_us * 100 / budget_us;
-            const usage_pct_clamped: u32 = @intCast(@min(usage_pct, 999));
-            engine.dsp_load_pct.store(usage_pct_clamped, .release);
         }
     }
 }

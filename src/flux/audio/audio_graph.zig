@@ -8,7 +8,6 @@ const piano_roll_types = @import("../ui/piano_roll/types.zig");
 const audio_engine = @import("audio_engine.zig");
 const libz_jobs = @import("libz_jobs");
 const PianoNote = piano_roll_types.Note;
-const clock_io: std.Io = std.Io.Threaded.global_single_threaded.ioBasic();
 
 const max_tracks = session_constants.max_tracks;
 const max_scenes = session_constants.max_scenes;
@@ -28,51 +27,6 @@ var parallel_threshold_cfg: std.atomic.Value(u32) = std.atomic.Value(u32).init(3
 
 pub fn setParallelThreshold(threshold: u32) void {
     parallel_threshold_cfg.store(@max(threshold, 1), .release);
-}
-
-pub const MidiPerfCounters = struct {
-    callbacks: u64,
-    total_us: u64,
-    notes_scanned: u64,
-    points_scanned: u64,
-    scene_slots_scanned: u64,
-    events_emitted: u64,
-};
-
-var midi_perf_callbacks: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
-var midi_perf_total_us: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
-var midi_perf_notes_scanned: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
-var midi_perf_points_scanned: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
-var midi_perf_scene_slots_scanned: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
-var midi_perf_events_emitted: std.atomic.Value(u64) = std.atomic.Value(u64).init(0);
-
-inline fn midiPerfAdd(counter: *std.atomic.Value(u64), value: u64) void {
-    _ = counter.fetchAdd(value, .monotonic);
-}
-
-inline fn nsSince(from: std.Io.Timestamp, to: std.Io.Timestamp) u64 {
-    const ns = from.durationTo(to).toNanoseconds();
-    return if (ns > 0) @intCast(ns) else 0;
-}
-
-pub fn resetMidiPerfCounters() void {
-    midi_perf_callbacks.store(0, .release);
-    midi_perf_total_us.store(0, .release);
-    midi_perf_notes_scanned.store(0, .release);
-    midi_perf_points_scanned.store(0, .release);
-    midi_perf_scene_slots_scanned.store(0, .release);
-    midi_perf_events_emitted.store(0, .release);
-}
-
-pub fn snapshotMidiPerfCounters() MidiPerfCounters {
-    return .{
-        .callbacks = midi_perf_callbacks.load(.acquire),
-        .total_us = midi_perf_total_us.load(.acquire),
-        .notes_scanned = midi_perf_notes_scanned.load(.acquire),
-        .points_scanned = midi_perf_points_scanned.load(.acquire),
-        .scene_slots_scanned = midi_perf_scene_slots_scanned.load(.acquire),
-        .events_emitted = midi_perf_events_emitted.load(.acquire),
-    };
 }
 
 /// Thread-local storage for tracking which plugin is currently being processed.
@@ -332,7 +286,6 @@ pub const NoteSource = struct {
         // Determine which pitches should be active at this beat
         var should_be_active: [128]bool = [_]bool{false} ** 128;
         const clip_len = clip.length_beats;
-        midiPerfAdd(&midi_perf_notes_scanned, clip.count);
 
         for (clip.notes[0..clip.count]) |note| {
             const note_end = note.start + note.duration;
@@ -355,8 +308,8 @@ pub const NoteSource = struct {
     }
 
     fn process(self: *NoteSource, snapshot: *const StateSnapshot, sample_rate: f32, frame_count: u32) *const clap.events.InputEvents {
-        const start = std.Io.Clock.awake.now(clock_io);
-        midiPerfAdd(&midi_perf_callbacks, 1);
+        const zone = tracy.ZoneN(@src(), "NoteSource.process");
+        defer zone.End();
         self.event_list.reset();
         self.input_events.context = &self.event_list;
         const live_should = &snapshot.live_key_states[self.track_index];
@@ -366,11 +319,6 @@ pub const NoteSource = struct {
             @memcpy(self.last_live_should[0..], live_should[0..]);
             self.live_cache_valid = true;
             self.last_playing = snapshot.playing;
-        }
-        defer {
-            const end = std.Io.Clock.awake.now(clock_io);
-            midiPerfAdd(&midi_perf_total_us, nsSince(start, end) / 1000);
-            midiPerfAdd(&midi_perf_events_emitted, self.event_list.count);
         }
 
         if (!snapshot.playing) {
@@ -386,7 +334,6 @@ pub const NoteSource = struct {
 
         const active_scene_i = snapshot.active_scene_by_track[self.track_index];
         if (active_scene_i >= 0) {
-            midiPerfAdd(&midi_perf_scene_slots_scanned, 1);
         }
 
         if (active_scene_i < 0) {
@@ -459,7 +406,6 @@ pub const NoteSource = struct {
     ) void {
         if (seg_end <= seg_start) return;
         if (self.emit_notes) {
-            midiPerfAdd(&midi_perf_notes_scanned, clip.count);
             for (clip.notes[0..clip.count]) |note| {
                 const note_start = @as(f64, note.start);
                 const note_end = note_start + @as(f64, note.duration);
@@ -529,7 +475,6 @@ pub const NoteSource = struct {
             var first_overall: ?AutomationPoint = null;
             var last_overall: ?AutomationPoint = null;
             var has_point_at_start = false;
-            midiPerfAdd(&midi_perf_points_scanned, lane.point_count);
             for (lane.points[0..lane.point_count]) |point| {
                 const point_time = @as(f64, point.time);
                 if (first_overall == null or point_time < @as(f64, first_overall.?.time)) {
