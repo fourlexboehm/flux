@@ -136,14 +136,10 @@ const PortMidiInput = struct {
         pm.terminate();
     }
 
-    pub fn poll(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32) void {
+    pub fn poll(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32, event_queue: *EventQueue) void {
         if (self.reset_requested.swap(false, .acq_rel)) {
             self.clearInputState(notes, velocities);
->>>>>>> 9771d8c (Add thread QoS, move midi to own thread)
         }
-    }
-
-    pub fn poll(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32, event_queue: *EventQueue) void {
         while (self.event_queue.pop()) |event| {
             self.applyMidiMessage(notes, velocities, event_queue, event.status, event.data1, event.data2);
         }
