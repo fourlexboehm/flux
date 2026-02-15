@@ -477,41 +477,66 @@ fn isAudioEffectDescriptor(desc: *const clap.Plugin.Descriptor) bool {
         clapDescriptorHasFeature(desc, clap.Plugin.features.note_detector);
 }
 
-fn discoverClapEntries(allocator: std.mem.Allocator, io: Io, entries: *std.ArrayListUnmanaged(PluginEntry)) !void {
-    if (builtin.os.tag != .macos) return;
+const OwnedPath = struct {
+    path: []const u8,
+    owned: bool,
+};
 
+fn discoverClapEntries(allocator: std.mem.Allocator, io: Io, entries: *std.ArrayListUnmanaged(PluginEntry)) !void {
     const full_scan_env = std.c.getenv("FLUX_CLAP_FULL_SCAN");
     const full_scan = if (full_scan_env) |val| val[0] == '1' else false;
 
     var cache = try loadPluginCache(allocator, io);
     defer cache.deinit();
 
-    var paths: std.ArrayList([]const u8) = .empty;
+    var paths: std.ArrayList(OwnedPath) = .empty;
     defer {
-        for (paths.items) |path| {
-            if (!std.mem.eql(u8, path, "/Library/Audio/Plug-Ins/CLAP") and
-                !std.mem.eql(u8, path, "/System/Library/Audio/Plug-Ins/CLAP"))
-            {
-                allocator.free(path);
-            }
+        for (paths.items) |entry| {
+            if (entry.owned) allocator.free(entry.path);
         }
         paths.deinit(allocator);
     }
 
-    try paths.append(allocator, "/Library/Audio/Plug-Ins/CLAP");
-    try paths.append(allocator, "/System/Library/Audio/Plug-Ins/CLAP");
+    switch (builtin.os.tag) {
+        .macos => {
+            try paths.append(allocator, .{ .path = "/Library/Audio/Plug-Ins/CLAP", .owned = false });
+            try paths.append(allocator, .{ .path = "/System/Library/Audio/Plug-Ins/CLAP", .owned = false });
 
-    if (std.c.getenv("HOME")) |home_c| {
-        const home = std.mem.span(home_c);
-        const user_path = try Dir.path.join(allocator, &[_][]const u8{
-            home,
-            "Library/Audio/Plug-Ins/CLAP",
-        });
-        try paths.append(allocator, user_path);
+            if (std.c.getenv("HOME")) |home_c| {
+                const home = std.mem.span(home_c);
+                const user_path = try Dir.path.join(allocator, &[_][]const u8{
+                    home,
+                    "Library/Audio/Plug-Ins/CLAP",
+                });
+                try paths.append(allocator, .{ .path = user_path, .owned = true });
+            }
+        },
+        .linux => {
+            // CLAP_PATH is a ':'-separated list of directories.
+            if (std.c.getenv("CLAP_PATH")) |clap_path_c| {
+                var it = std.mem.splitScalar(u8, std.mem.span(clap_path_c), ':');
+                while (it.next()) |raw_path| {
+                    if (raw_path.len == 0) continue;
+                    const path_copy = try allocator.dupe(u8, raw_path);
+                    try paths.append(allocator, .{ .path = path_copy, .owned = true });
+                }
+            }
+
+            try paths.append(allocator, .{ .path = "/usr/lib/clap", .owned = false });
+            try paths.append(allocator, .{ .path = "/usr/local/lib/clap", .owned = false });
+            try paths.append(allocator, .{ .path = "/usr/lib64/clap", .owned = false });
+
+            if (std.c.getenv("HOME")) |home_c| {
+                const home = std.mem.span(home_c);
+                const user_path = try Dir.path.join(allocator, &[_][]const u8{ home, ".clap" });
+                try paths.append(allocator, .{ .path = user_path, .owned = true });
+            }
+        },
+        else => return,
     }
 
-    for (paths.items) |dir_path| {
-        scanClapDir(allocator, io, entries, dir_path, full_scan, &cache) catch {};
+    for (paths.items) |entry| {
+        scanClapDir(allocator, io, entries, entry.path, full_scan, &cache) catch {};
     }
 
     writePluginCache(&cache, io) catch {};

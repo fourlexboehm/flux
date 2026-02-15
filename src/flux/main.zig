@@ -390,7 +390,8 @@ pub fn main(init: std.process.Init) !void {
             else
                 1.0;
             const ui_scale: f32 = if (initial_scale > 0) 1.0 / initial_scale else 1.0;
-            shared_mod.imgui_style.applyFontFromMemory(static_data.font, ui_scale);
+            // Keep font at logical size; ImGui applies framebuffer scale for rasterization.
+            shared_mod.imgui_style.applyFontFromMemory(static_data.font, 1.0);
 
             zgui.backend.init(window);
             defer zgui.backend.deinit();
