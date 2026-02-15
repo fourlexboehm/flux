@@ -376,14 +376,21 @@ pub fn main(init: std.process.Init) !void {
             zglfw.swapInterval(1);
             try zopengl.loadCoreProfile(zglfw.getProcAddress, gl_major, gl_minor);
 
-            // Font/UI scale: Wayland typically already provides logical sizes, so default to 1.0.
-            // Override via `FLUX_UI_SCALE` (e.g. "1.25") if desired.
-            const ui_scale: f32 = blk: {
-                const env = std.c.getenv("FLUX_UI_SCALE") orelse break :blk 1.0;
-                const parsed = std.fmt.parseFloat(f32, std.mem.span(env)) catch break :blk 1.0;
-                break :blk if (parsed > 0) parsed else 1.0;
-            };
-            shared_mod.imgui_style.applyScaleFromMemory(static_data.font, ui_scale);
+            // Counter double-scaling on Wayland by scaling UI against framebuffer scale.
+            const initial_win_size = window.getSize();
+            const initial_fb_size = window.getFramebufferSize();
+            const initial_win_w: f32 = @floatFromInt(@max(initial_win_size[0], 1));
+            const initial_win_h: f32 = @floatFromInt(@max(initial_win_size[1], 1));
+            const initial_fb_w: f32 = @floatFromInt(@max(initial_fb_size[0], 1));
+            const initial_fb_h: f32 = @floatFromInt(@max(initial_fb_size[1], 1));
+            const initial_scale_x: f32 = initial_fb_w / initial_win_w;
+            const initial_scale_y: f32 = initial_fb_h / initial_win_h;
+            const initial_scale: f32 = if (initial_scale_x > 0 and initial_scale_y > 0)
+                @min(initial_scale_x, initial_scale_y)
+            else
+                1.0;
+            const ui_scale: f32 = if (initial_scale > 0) 1.0 / initial_scale else 1.0;
+            shared_mod.imgui_style.applyFontFromMemory(static_data.font, ui_scale);
 
             zgui.backend.init(window);
             defer zgui.backend.deinit();
@@ -449,7 +456,7 @@ pub fn main(init: std.process.Init) !void {
                 zgui.setNextFrameWantCaptureKeyboard(true);
                 ui_keyboard.updateKeyboardMidi(&state);
                 plugin_runtime.updateUiPluginPointers(&state, &track_plugins, &track_fx);
-                ui_draw.draw(&state, 1.0);
+                ui_draw.draw(&state, ui_scale);
                 if (state.buffer_frames_requested) {
                     const requested_frames = state.buffer_frames;
                     state.buffer_frames_requested = false;
