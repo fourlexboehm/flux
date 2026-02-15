@@ -377,17 +377,21 @@ fn runZenity(allocator: std.mem.Allocator, io: std.Io, args: []const []const u8)
     defer output.deinit(allocator);
 
     // Read stdout
-    var buf: [4096]u8 = undefined;
-    while (true) {
-        const n = child.stdout.?.read(io, &buf) catch break;
-        if (n == 0) break;
-        output.appendSlice(allocator, buf[0..n]) catch return FileDialogError.OutOfMemory;
-    }
+    var stdout_reader = child.stdout.?.readerStreaming(io, &.{});
+    stdout_reader.interface.appendRemaining(allocator, &output, .unlimited) catch |err| switch (err) {
+        error.OutOfMemory => return FileDialogError.OutOfMemory,
+        else => return FileDialogError.DialogFailed,
+    };
 
     const term = child.wait(io) catch return FileDialogError.DialogFailed;
 
     // zenity returns 0 on OK, 1 on Cancel
-    if (term.code != 0) return null;
+    switch (term) {
+        .exited => |code| {
+            if (code != 0) return null;
+        },
+        else => return FileDialogError.DialogFailed,
+    }
 
     // Trim trailing newline
     var result = output.items;
