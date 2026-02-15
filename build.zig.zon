@@ -63,7 +63,7 @@
             .hash = "xml-0.1.0-ZTbP35UoAgBojaHeY1SNlU1m8p9F82i1Qxgiulrp2v4E",
         },
         .@"portmidi-zig" = .{
-            .url = "git+https://github.com/fourlexboehm/portmidi-zig#6fdc0524c8819f015fddee20d3ffc344ef4d6b8b",
+            .url = "git+https://github.com/fourlexboehm/portmidi-zig?ref=main#6fdc0524c8819f015fddee20d3ffc344ef4d6b8b",
             .hash = "portmidi-0.0.0-u03vWJ3TAAAvapSZey2uJVMSY31XTpKjwUGseQ4dBe7F",
         },
         .portmidi = .{
