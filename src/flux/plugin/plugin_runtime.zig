@@ -2,6 +2,19 @@ const builtin = @import("builtin");
 const std = @import("std");
 const clap = @import("clap-bindings");
 const objc = if (builtin.os.tag == .macos) @import("objc") else struct {};
+const options = @import("options");
+
+const x11c = if (builtin.os.tag == .linux) struct {
+    const Display = anyopaque;
+    const XWindow = c_ulong;
+    extern fn XOpenDisplay(?[*:0]const u8) callconv(.c) ?*Display;
+    extern fn XCloseDisplay(*Display) callconv(.c) c_int;
+    extern fn XDefaultRootWindow(*Display) callconv(.c) XWindow;
+    extern fn XCreateSimpleWindow(*Display, XWindow, c_int, c_int, c_uint, c_uint, c_uint, c_ulong, c_ulong) callconv(.c) XWindow;
+    extern fn XMapWindow(*Display, XWindow) callconv(.c) c_int;
+    extern fn XDestroyWindow(*Display, XWindow) callconv(.c) c_int;
+    extern fn XFlush(*Display) callconv(.c) c_int;
+} else struct {};
 
 const audio_constants = @import("../audio/audio_constants.zig");
 const audio_engine = @import("../audio/audio_engine.zig");
@@ -101,6 +114,7 @@ pub const TrackPlugin = struct {
     gui_ext: ?*const clap.ext.gui.Plugin = null,
     gui_window: ?*anyopaque = null,
     gui_view: ?*anyopaque = null,
+    gui_x11_window: c_ulong = 0,
     gui_open: bool = false,
     choice_index: i32 = -1,
 
@@ -401,6 +415,7 @@ pub fn unloadPlugin(track: *TrackPlugin, allocator: std.mem.Allocator, shared: ?
     track.gui_ext = null;
     track.gui_window = null;
     track.gui_view = null;
+    track.gui_x11_window = 0;
     track.gui_open = false;
 }
 
@@ -427,6 +442,7 @@ pub fn unloadFxPlugin(
     track.gui_ext = null;
     track.gui_window = null;
     track.gui_view = null;
+    track.gui_x11_window = 0;
     track.gui_open = false;
 }
 
@@ -447,18 +463,23 @@ fn openPluginGui(track: *TrackPlugin, gui_ext: *const clap.ext.gui.Plugin) !void
     };
     _ = gui_ext.getPreferredApi(plugin, &api_ptr, &is_floating);
 
-    // CLAP Wayland embedding isn't supported (floating only), so on Linux force floating and
-    // pick the best supported API (prefer Wayland).
     if (builtin.os.tag == .linux) {
-        is_floating = true;
-        if (gui_ext.isApiSupported(plugin, clap.ext.gui.window_api.wayland, true)) {
-            api_ptr = clap.ext.gui.window_api.wayland;
-        } else if (gui_ext.isApiSupported(plugin, clap.ext.gui.window_api.x11, true)) {
+        if (options.use_x11 and gui_ext.isApiSupported(plugin, clap.ext.gui.window_api.x11, false)) {
+            // Embedded X11 — most plugins support this; works via XWayland under Wayland
             api_ptr = clap.ext.gui.window_api.x11;
-        } else if (gui_ext.isApiSupported(plugin, api_ptr, true)) {
-            // keep plugin preference
+            is_floating = false;
         } else {
-            return error.GuiUnsupported;
+            // Fall back to floating
+            is_floating = true;
+            if (gui_ext.isApiSupported(plugin, clap.ext.gui.window_api.wayland, true)) {
+                api_ptr = clap.ext.gui.window_api.wayland;
+            } else if (gui_ext.isApiSupported(plugin, clap.ext.gui.window_api.x11, true)) {
+                api_ptr = clap.ext.gui.window_api.x11;
+            } else if (gui_ext.isApiSupported(plugin, api_ptr, true)) {
+                // keep plugin preference
+            } else {
+                return error.GuiUnsupported;
+            }
         }
     }
 
@@ -532,7 +553,39 @@ fn openPluginGui(track: *TrackPlugin, gui_ext: *const clap.ext.gui.Plugin) !void
                 track.gui_view = @ptrCast(view);
             }
         },
-        .linux => {},
+        .linux => {
+            if (!is_floating) {
+                var width: u32 = 0;
+                var height: u32 = 0;
+                if (!gui_ext.getSize(plugin, &width, &height)) {
+                    width = 800;
+                    height = 500;
+                }
+
+                const display = x11c.XOpenDisplay(null) orelse {
+                    gui_ext.destroy(plugin);
+                    return error.X11OpenDisplayFailed;
+                };
+
+                const root = x11c.XDefaultRootWindow(display);
+                const xwin = x11c.XCreateSimpleWindow(display, root, 0, 0, @intCast(width), @intCast(height), 0, 0, 0);
+                _ = x11c.XMapWindow(display, xwin);
+                _ = x11c.XFlush(display);
+
+                const window_handle = clap.ext.gui.Window{
+                    .api = clap.ext.gui.window_api.x11,
+                    .data = .{ .x11 = xwin },
+                };
+                if (!gui_ext.setParent(plugin, &window_handle)) {
+                    _ = x11c.XDestroyWindow(display, xwin);
+                    _ = x11c.XCloseDisplay(display);
+                    gui_ext.destroy(plugin);
+                    return error.GuiSetParentFailed;
+                }
+                track.gui_window = @ptrCast(display);
+                track.gui_x11_window = xwin;
+            }
+        },
         else => {},
     }
 
@@ -549,6 +602,17 @@ fn openPluginGui(track: *TrackPlugin, gui_ext: *const clap.ext.gui.Plugin) !void
                 view.release();
                 track.gui_view = null;
             }
+        } else if (builtin.os.tag == .linux) {
+            if (track.gui_window) |display_raw| {
+                const display: *x11c.Display = @ptrCast(@alignCast(display_raw));
+                if (track.gui_x11_window != 0) {
+                    _ = x11c.XDestroyWindow(display, track.gui_x11_window);
+                    track.gui_x11_window = 0;
+                }
+                _ = x11c.XCloseDisplay(display);
+            }
+            track.gui_window = null;
+            track.gui_view = null;
         }
         gui_ext.destroy(plugin);
         return error.GuiShowFailed;
@@ -587,6 +651,17 @@ pub fn closePluginGui(track: *TrackPlugin) void {
             view.release();
             track.gui_view = null;
         }
+    } else if (builtin.os.tag == .linux) {
+        if (track.gui_window) |display_raw| {
+            const display: *x11c.Display = @ptrCast(@alignCast(display_raw));
+            if (track.gui_x11_window != 0) {
+                _ = x11c.XDestroyWindow(display, track.gui_x11_window);
+                track.gui_x11_window = 0;
+            }
+            _ = x11c.XCloseDisplay(display);
+        }
+        track.gui_window = null;
+        track.gui_view = null;
     } else {
         track.gui_window = null;
         track.gui_view = null;

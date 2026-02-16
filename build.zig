@@ -40,7 +40,7 @@ pub fn build(b: *std.Build) void {
         bool,
         "x11",
         "Use X11 on Linux (default: false when wayland=true)",
-    ) orelse (!use_wayland);
+    ) orelse (gui_backend == .glfw_opengl3);
     const use_llvm = b.option(bool, "use-llvm", "Use LLVM backend") orelse true;
     const enable_segfault_handler = b.option(
         bool,
@@ -122,6 +122,7 @@ pub fn build(b: *std.Build) void {
     options.addOption(bool, "wait_for_debugger", wait_for_debugger);
     options.addOption(bool, "enable_gui", true);
     options.addOption(bool, "enable_segfault_handler", enable_segfault_handler);
+    options.addOption(bool, "use_x11", use_x11);
     const options_core = Step.Options.create(b);
     options_core.addOption(bool, "wait_for_debugger", wait_for_debugger);
     options_core.addOption(bool, "enable_gui", false);
@@ -189,7 +190,8 @@ pub fn build(b: *std.Build) void {
                 pkg.root_module.linkSystemLibrary("wayland-cursor", .{});
                 pkg.root_module.linkSystemLibrary("wayland-egl", .{});
                 pkg.root_module.linkSystemLibrary("xkbcommon", .{});
-            } else {
+            }
+            if (use_x11) {
                 pkg.root_module.linkSystemLibrary("X11", .{});
             }
         }
@@ -307,7 +309,8 @@ pub fn build(b: *std.Build) void {
             flux.root_module.linkSystemLibrary("wayland-cursor", .{});
             flux.root_module.linkSystemLibrary("wayland-egl", .{});
             flux.root_module.linkSystemLibrary("xkbcommon", .{});
-        } else {
+        }
+        if (use_x11) {
             flux.root_module.linkSystemLibrary("X11", .{});
         }
     }
