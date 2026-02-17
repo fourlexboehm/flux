@@ -47,7 +47,6 @@ pub fn build(b: *std.Build) void {
         .flags = &.{
             "-DMA_NO_WEBAUDIO",
             "-DMA_NO_NULL",
-            "-DMA_NO_JACK",
             "-DMA_NO_DSOUND",
             "-DMA_NO_WINMM",
             "-std=c99",
