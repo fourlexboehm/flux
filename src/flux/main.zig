@@ -40,6 +40,11 @@ inline fn nsSince(from: std.Io.Timestamp, to: std.Io.Timestamp) u64 {
     return if (ns > 0) @intCast(ns) else 0;
 }
 
+fn envU8(name: [:0]const u8, default_value: u8) u8 {
+    const v = std.c.getenv(name.ptr) orelse return default_value;
+    return std.fmt.parseInt(u8, std.mem.span(v), 10) catch default_value;
+}
+
 pub const std_options: std.Options = .{
     .enable_segfault_handler = options.enable_segfault_handler,
 };
@@ -55,6 +60,10 @@ pub fn main(init: std.process.Init) !void {
 
     const cpu_count = std.Thread.getCpuCount() catch 4;
     bench.configureRuntimeTuning(&host, cpu_count);
+    if (builtin.os.tag == .linux) {
+        const priority = envU8("FLUX_AUDIO_RT_PRIORITY", 10);
+        audio_device.setAudioThreadRealtimePriority(priority);
+    }
 
     if (bench.envBool("FLUX_KERNEL_BENCH")) {
         try bench.runKernelBench(allocator, io);

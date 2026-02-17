@@ -16,7 +16,9 @@ const TrackPlugin = plugin_runtime.TrackPlugin;
 var worker_min_sleep_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(10_000);
 var worker_max_sleep_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(2_000_000);
 var audio_thread_qos_class: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
+var audio_thread_rt_priority: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
 threadlocal var audio_thread_qos_applied: bool = false;
+threadlocal var audio_thread_rt_applied: bool = false;
 
 pub const AudioThreadQos = enum(u8) {
     unchanged = 0,
@@ -29,6 +31,25 @@ pub const AudioThreadQos = enum(u8) {
 
 pub fn setAudioThreadQos(qos: AudioThreadQos) void {
     audio_thread_qos_class.store(@intFromEnum(qos), .release);
+}
+
+pub fn setAudioThreadRealtimePriority(priority: u8) void {
+    const clamped: u8 = if (priority == 0) 0 else @intCast(@min(priority, 99));
+    audio_thread_rt_priority.store(clamped, .release);
+}
+
+fn applyAudioThreadRealtimeHint() void {
+    if (builtin.os.tag != .linux) return;
+    if (audio_thread_rt_applied) return;
+
+    const prio = audio_thread_rt_priority.load(.acquire);
+    if (prio == 0) return;
+
+    const linux = std.os.linux;
+    var param = linux.sched_param{ .priority = @intCast(prio) };
+    const policy = linux.SCHED{ .mode = .FIFO };
+    _ = linux.sched_setscheduler(linux.gettid(), policy, &param);
+    audio_thread_rt_applied = true;
 }
 
 fn applyAudioThreadQosHint() void {
@@ -70,6 +91,7 @@ pub fn dataCallback(
     _: ?*const anyopaque,
     frame_count: u32,
 ) callconv(.c) void {
+    applyAudioThreadRealtimeHint();
     applyAudioThreadQosHint();
 
     const start = std.Io.Clock.awake.now(clock_io);
