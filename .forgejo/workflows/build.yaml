@@ -13,15 +13,7 @@ jobs:
           apt-get update
           apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libx11-dev libgl1-mesa-dev
 
-      - name: Setup Zig
-        run: |
-          set -euo pipefail
-          ZIG_VERSION=$(grep -oP '\.minimum_zig_version\s*=\s*"\K[^"]+' build.zig.zon)
-          ZIG_DIR="zig-x86_64-linux-${ZIG_VERSION}"
-          ZIG_URL="https://ziglang.org/builds/${ZIG_DIR}.tar.xz"
-          curl -fL "${ZIG_URL}" -o zig.tar.xz
-          tar -xf zig.tar.xz
-          echo "$PWD/${ZIG_DIR}" >> "$GITHUB_PATH"
+      - uses: https://codeberg.org/mlugg/setup-zig@v2
 
 
       - name: Download macOS SDK
