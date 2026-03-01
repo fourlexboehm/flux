@@ -16,7 +16,7 @@ const beats_per_bar = session_constants.beats_per_bar;
 const default_clip_bars = session_constants.default_clip_bars;
 const master_track_index = session_view.master_track_index;
 const simd_lanes = 4;
-const simd_unroll = 16;
+const simd_unroll = 2;
 const F32xN = @Vector(simd_lanes, f32);
 
 pub const JobQueue = libz_jobs.JobQueue(.{

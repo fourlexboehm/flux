@@ -124,33 +124,105 @@ const PortMidiInput = struct {
     const max_streams = 64;
     const short_note_hold_polls: u8 = 2;
 
+    // Protects streams[] and stream_count. The background rescan thread holds
+    // this while opening/closing streams; poll() uses tryLock so it skips one
+    // frame rather than blocking if the rescan is in progress.
+    mutex: std.atomic.Mutex = .unlocked,
     streams: [max_streams]?*pm.Stream = [_]?*pm.Stream{null} ** max_streams,
     stream_count: usize = 0,
-    device_count: i32 = 0,
-    rescan_counter: u32 = 0,
-    rescan_interval: u32 = 120,
+
+    // Background thread drives the slow Pm_Terminate/Pm_Initialize cycle that
+    // is required on macOS to discover newly connected/disconnected devices.
+    rescan_thread: ?std.Thread = null,
+    stop_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    // Set by poll() when a read error is detected (device disconnected).
+    // Causes the rescan thread to wake up early instead of waiting 2 seconds.
+    error_flag: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+
     note_on_hold_polls: [128]u8 = [_]u8{0} ** 128,
     note_off_pending: [128]bool = [_]bool{false} ** 128,
 
+    fn sleepMs(ms: u64) void {
+        const ns = ms * std.time.ns_per_ms;
+        var ts: std.c.timespec = .{
+            .sec = @intCast(ns / std.time.ns_per_s),
+            .nsec = @intCast(ns % std.time.ns_per_s),
+        };
+        _ = std.c.nanosleep(&ts, &ts);
+    }
+
+    // Blocking lock: spin-sleep until the mutex is available.
+    // Only used from the background thread; poll() uses tryLock exclusively.
+    fn lockBlocking(self: *PortMidiInput) void {
+        while (!self.mutex.tryLock()) {
+            sleepMs(1);
+        }
+    }
+
     pub fn init(self: *PortMidiInput, _: std.mem.Allocator) !void {
         pm.initialize();
-        self.openAllInputs();
+        self.lockBlocking();
+        self.openAllInputsLocked();
+        self.mutex.unlock();
+        self.rescan_thread = try std.Thread.spawn(.{}, rescanThread, .{self});
     }
 
     pub fn deinit(self: *PortMidiInput) void {
-        self.closeAllInputs();
+        self.stop_flag.store(true, .release);
+        if (self.rescan_thread) |t| t.join();
+        self.rescan_thread = null;
+        self.lockBlocking();
+        self.closeAllInputsLocked();
+        self.mutex.unlock();
         pm.terminate();
     }
 
-    pub fn poll(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32, event_queue: *EventQueue) void {
-        self.rescan_counter +%= 1;
-        if (self.rescan_counter >= self.rescan_interval) {
-            self.rescan_counter = 0;
-            const count = pm.countDevices();
-            if (count != self.device_count or (count > 0 and self.stream_count == 0)) {
-                self.reopenInputs(notes, velocities);
+    // Background thread: periodically cycles Pm_Terminate/Pm_Initialize to let
+    // PortMIDI discover device changes (required on macOS – countDevices() is
+    // static between init/terminate calls and CFRunLoopRunInMode can take up to
+    // several seconds, so we must not call this from the main thread).
+    fn rescanThread(self: *PortMidiInput) void {
+        while (!self.stop_flag.load(.acquire)) {
+            // Sleep up to 2 seconds in 10 ms increments, waking early on error.
+            var i: u32 = 0;
+            while (i < 200) : (i += 1) {
+                if (self.stop_flag.load(.acquire)) return;
+                if (self.error_flag.load(.acquire)) break;
+                sleepMs(10);
             }
+            if (self.stop_flag.load(.acquire)) return;
+
+            const has_error = self.error_flag.swap(false, .acq_rel);
+
+            // Skip rescan when streams are healthy – only act on errors or when
+            // no device is open (initial connect / reconnect after disconnect).
+            self.lockBlocking();
+            const stream_count = self.stream_count;
+            self.mutex.unlock();
+            if (!has_error and stream_count > 0) continue;
+
+            // Close existing streams under the mutex so poll() sees a
+            // consistent (empty) stream list during the slow reinitialisation.
+            self.lockBlocking();
+            self.closeAllInputsLocked();
+            self.mutex.unlock();
+
+            // Terminate + Initialize outside the mutex: this is the slow part
+            // (CFRunLoopRunInMode on macOS, 20 ms – several seconds). poll()
+            // will see stream_count == 0 and skip cleanly during this window.
+            pm.terminate();
+            pm.initialize();
+
+            self.lockBlocking();
+            self.openAllInputsLocked();
+            self.mutex.unlock();
         }
+    }
+
+    pub fn poll(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32, event_queue: *EventQueue) void {
+        // Non-blocking: skip this frame if the rescan thread is manipulating streams.
+        if (!self.mutex.tryLock()) return;
+        defer self.mutex.unlock();
 
         var need_reopen = false;
         var event: pm.Event = undefined;
@@ -172,17 +244,19 @@ const PortMidiInput = struct {
         }
 
         if (need_reopen) {
-            self.reopenInputs(notes, velocities);
+            self.clearInputState(notes, velocities);
+            self.closeAllInputsLocked();
+            // Wake the rescan thread immediately to cycle terminate/initialize.
+            self.error_flag.store(true, .release);
             return;
         }
 
         self.flushDeferredNoteOffs(notes, velocities);
     }
 
-    fn openAllInputs(self: *PortMidiInput) void {
+    fn openAllInputsLocked(self: *PortMidiInput) void {
         self.stream_count = 0;
         const count = pm.countDevices();
-        self.device_count = count;
         if (count <= 0) return;
 
         const filters = pm.filter.sysex | pm.filter.active_sensing | pm.filter.tick;
@@ -201,7 +275,7 @@ const PortMidiInput = struct {
         }
     }
 
-    fn closeAllInputs(self: *PortMidiInput) void {
+    fn closeAllInputsLocked(self: *PortMidiInput) void {
         for (0..self.stream_count) |idx| {
             const stream = self.streams[idx];
             if (stream) |s| {
@@ -210,12 +284,6 @@ const PortMidiInput = struct {
             self.streams[idx] = null;
         }
         self.stream_count = 0;
-    }
-
-    fn reopenInputs(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32) void {
-        self.clearInputState(notes, velocities);
-        self.closeAllInputs();
-        self.openAllInputs();
     }
 
     fn clearInputState(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32) void {
