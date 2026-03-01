@@ -65,7 +65,6 @@ pub fn build(b: *std.Build) void {
     const libz_jobs = b.dependency("libz_jobs", .{});
     const zig_xml = b.dependency("zig-xml", .{});
     const portmidi_zig = b.dependency("portmidi-zig", .{});
-    const portmidi = b.dependency("portmidi", .{});
     const wdf = b.dependency("wdf", .{});
 
     const ztracy = b.dependency("ztracy", .{
@@ -255,12 +254,12 @@ pub fn build(b: *std.Build) void {
     flux.root_module.addImport("libz_jobs", libz_jobs.module("libz_jobs"));
     flux.root_module.addImport("xml", zig_xml.module("xml"));
     const portmidi_module = portmidi_zig.module("portmidi");
-    portmidi_module.addIncludePath(portmidi.path("pm_common"));
+    portmidi_module.addIncludePath(portmidi_zig.path("pm_common"));
     flux.root_module.addImport("portmidi", portmidi_module);
-    flux.root_module.addIncludePath(portmidi.path("pm_common"));
-    flux.root_module.addIncludePath(portmidi.path("pm_mac"));
-    flux.root_module.addIncludePath(portmidi.path("pm_linux"));
-    flux.root_module.addIncludePath(portmidi.path("porttime"));
+    flux.root_module.addIncludePath(portmidi_zig.path("pm_common"));
+    flux.root_module.addIncludePath(portmidi_zig.path("pm_mac"));
+    flux.root_module.addIncludePath(portmidi_zig.path("pm_linux"));
+    flux.root_module.addIncludePath(portmidi_zig.path("porttime"));
     if (target_os == .macos) {
         flux.root_module.addImport("objc", objc.module("mach-objc"));
         flux.root_module.linkFramework("AppKit", .{});
@@ -274,7 +273,7 @@ pub fn build(b: *std.Build) void {
         flux.root_module.linkFramework("CoreServices", .{});
         flux.root_module.linkFramework("CoreAudio", .{});
         flux.root_module.addCSourceFiles(.{
-            .root = portmidi.path(""),
+            .root = portmidi_zig.path(""),
             .files = &.{
                 "pm_common/portmidi.c",
                 "pm_common/pmutil.c",
@@ -290,7 +289,7 @@ pub fn build(b: *std.Build) void {
         flux.root_module.linkSystemLibrary("asound", .{});
         flux.root_module.linkSystemLibrary("pthread", .{});
         flux.root_module.addCSourceFiles(.{
-            .root = portmidi.path(""),
+            .root = portmidi_zig.path(""),
             .files = &.{
                 "pm_common/portmidi.c",
                 "pm_common/pmutil.c",
