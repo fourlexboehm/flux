@@ -2,9 +2,11 @@ const std = @import("std");
 const clap = @import("clap-bindings");
 const zsynth = @import("zsynth-core");
 const zminimoog = @import("zminimoog-core");
+const zportafm = @import("zportafm-core");
 
 const zsynth_view = zsynth.View;
 const zminimoog_view = zminimoog.View;
+const zportafm_view = zportafm.View;
 
 pub const EmbeddedViewDrawFn = *const fn (*const clap.Plugin) void;
 
@@ -18,9 +20,15 @@ fn zminimoogDraw(clap_plugin: *const clap.Plugin) void {
     zminimoog_view.drawEmbedded(plugin, .{ .notify_host = false });
 }
 
+fn zportafmDraw(clap_plugin: *const clap.Plugin) void {
+    const plugin = zportafm.Plugin.fromClapPlugin(clap_plugin);
+    zportafm_view.drawEmbedded(plugin, .{ .notify_host = false });
+}
+
 pub const embedded_views = std.StaticStringMap(EmbeddedViewDrawFn).initComptime(.{
     .{ "com.juge.zsynth", zsynthDraw },
     .{ "com.fourlex.zminimoog", zminimoogDraw },
+    .{ "com.fourlex.zportafm", zportafmDraw },
 });
 
 /// Check if a plugin has an embedded view available.
