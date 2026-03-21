@@ -313,6 +313,14 @@ pub fn zminimoogPluginPath() ![]const u8 {
     };
 }
 
+pub fn zportafmPluginPath() ![]const u8 {
+    return switch (builtin.os.tag) {
+        .macos => "zig-out/lib/ZPortaFM.clap/Contents/MacOS/ZPortaFM",
+        .linux => "zig-out/lib/zportafm.clap",
+        else => error.UnsupportedOs,
+    };
+}
+
 pub fn discover(allocator: std.mem.Allocator, io: Io) !PluginCatalog {
     var catalog = PluginCatalog{ .allocator = allocator };
 
@@ -323,6 +331,9 @@ pub fn discover(allocator: std.mem.Allocator, io: Io) !PluginCatalog {
 
     const zminimoog_path = try zminimoogPluginPath();
     try appendStaticEntry(&catalog, .builtin, "ZMinimoog", zminimoog_path, "com.fourlex.zminimoog");
+
+    const zportafm_path = try zportafmPluginPath();
+    try appendStaticEntry(&catalog, .builtin, "ZPortaFM", zportafm_path, "com.fourlex.zportafm");
 
     var clap_entries: std.ArrayListUnmanaged(PluginEntry) = .{};
     defer clap_entries.deinit(allocator);
