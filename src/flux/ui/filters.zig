@@ -52,8 +52,17 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
 }
 
 fn sanitizePresetName(name: []const u8) []const u8 {
-    const slash_pos = std.mem.lastIndexOfScalar(u8, name, '/') orelse std.mem.lastIndexOfScalar(u8, name, '\\');
-    const base = if (slash_pos) |idx| name[idx + 1 ..] else name;
+    const slash_pos = std.mem.lastIndexOfScalar(u8, name, '/');
+    const backslash_pos = std.mem.lastIndexOfScalar(u8, name, '\\');
+    const start = if (slash_pos != null and backslash_pos != null)
+        @max(slash_pos.?, backslash_pos.?) + 1
+    else if (slash_pos) |idx|
+        idx + 1
+    else if (backslash_pos) |idx|
+        idx + 1
+    else
+        0;
+    const base = name[start..];
     const ext = std.fs.path.extension(base);
     if (ext.len == 0) return base;
     return base[0 .. base.len - ext.len];

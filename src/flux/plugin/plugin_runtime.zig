@@ -12,6 +12,7 @@ const ui_state = @import("../ui/state.zig");
 const thread_context = @import("../thread_context.zig");
 const zsynth = @import("zsynth-core");
 const zminimoog = @import("zminimoog-core");
+const zportafm = @import("zportafm-core");
 
 const track_count = session_constants.max_tracks;
 const master_track_index = session_view.master_track_index;
@@ -220,6 +221,13 @@ pub fn syncTrackPlugins(
                     const plugin_id = entry.?.id orelse "";
                     if (std.mem.eql(u8, plugin_id, "com.fourlex.zminimoog")) {
                         const plugin = try zminimoog.Plugin.init(allocator, host);
+                        if (!plugin.plugin.init(&plugin.plugin)) return error.PluginInitFailed;
+                        if (!plugin.plugin.activate(&plugin.plugin, audio_constants.sample_rate, 1, max_frames)) {
+                            return error.PluginActivateFailed;
+                        }
+                        track.builtin = .{ .plugin = &plugin.plugin };
+                    } else if (std.mem.eql(u8, plugin_id, "com.fourlex.zportafm")) {
+                        const plugin = try zportafm.Plugin.init(allocator, host);
                         if (!plugin.plugin.init(&plugin.plugin)) return error.PluginInitFailed;
                         if (!plugin.plugin.activate(&plugin.plugin, audio_constants.sample_rate, 1, max_frames)) {
                             return error.PluginActivateFailed;
