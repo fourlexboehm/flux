@@ -212,7 +212,7 @@ pub const SessionView = struct {
     drag_select: selection.DragSelectState = .{},
 
     // Clipboard
-    clipboard: std.ArrayListUnmanaged(ClipboardEntry) = .{},
+    clipboard: std.ArrayListUnmanaged(ClipboardEntry) = .empty,
     clipboard_origin_track: usize = 0,
     clipboard_origin_scene: usize = 0,
     // Piano clip copy requests (processed by ui/undo_requests.zig)

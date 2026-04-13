@@ -1,6 +1,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
-const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.ioBasic();
+const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 //--------------------------------------------------------------------------------------------------
 //
 // Misc

@@ -7,7 +7,7 @@ const plugin_runtime = @import("../plugin/plugin_runtime.zig");
 const session_constants = @import("../ui/session_view/constants.zig");
 const thread_context = @import("../thread_context.zig");
 const ui_state = @import("../ui/state.zig");
-const clock_io: std.Io = std.Io.Threaded.global_single_threaded.ioBasic();
+const clock_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 
 const track_count = session_constants.max_tracks;
 const TrackPlugin = plugin_runtime.TrackPlugin;
