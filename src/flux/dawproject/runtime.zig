@@ -788,7 +788,7 @@ fn applyAutomationToClip(
             .target_id = "",
             .param_id = null,
             .unit = if (points.unit) |unit| try allocator.dupe(u8, unit.toString()) else null,
-            .points = .{},
+            .points = .empty,
         };
         if (points.target.parameter) |param_id| {
             if (track_volume_param_id != null and std.mem.eql(u8, param_id, track_volume_param_id.?)) {
