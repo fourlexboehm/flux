@@ -3,7 +3,7 @@ const Params = @This();
 const std = @import("std");
 const clap = @import("clap-bindings");
 const tracy = @import("tracy");
-const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.ioBasic();
+const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 
 const Plugin = @import("../plugin.zig");
 const bridge = @import("../bridge.zig");
@@ -15,23 +15,7 @@ pub const mode_names = [_][]const u8{
     "Preset Instrument",
 };
 
-pub const instrument_names = [_][]const u8{
-    "Violin",
-    "Guitar",
-    "Piano",
-    "Flute",
-    "Clarinet",
-    "Oboe",
-    "Trumpet",
-    "Organ",
-    "Horn",
-    "Synthesizer",
-    "Harpsichord",
-    "Vibraphone",
-    "S.Bass",
-    "A.Bass",
-    "E.Guitar",
-};
+pub const bank_names = bridge.tone_bank_names;
 
 pub const Parameter = enum {
     VoiceMode,
@@ -58,6 +42,7 @@ pub const Parameter = enum {
     CarTremolo,
     ModVibrato,
     CarVibrato,
+    Bank,
 };
 
 pub const ParameterValue = union(enum) {
@@ -97,6 +82,7 @@ pub const param_defaults = std.enums.EnumFieldStruct(Parameter, ParameterValue, 
     .CarTremolo = .{ .Float = 0.0 },
     .ModVibrato = .{ .Float = 0.0 },
     .CarVibrato = .{ .Float = 0.0 },
+    .Bank = .{ .Float = 0.0 },
 };
 
 pub const param_count = std.meta.fields(Parameter).len;
@@ -227,10 +213,37 @@ fn modeName(value: f64) []const u8 {
     return mode_names[index];
 }
 
-fn instrumentName(value: f64) []const u8 {
+fn bankName(value: f64) []const u8 {
+    const index: usize = @intFromFloat(std.math.clamp(
+        @round(value),
+        0.0,
+        @as(f64, @floatFromInt(bank_names.len - 1)),
+    ));
+    return bank_names[index];
+}
+
+fn bankFromValue(value: f64) bridge.ToneBank {
+    const clamped = std.math.clamp(
+        @round(value),
+        0.0,
+        @as(f64, @floatFromInt(bank_names.len - 1)),
+    );
+    return bridge.toneBankFromInt(@intFromFloat(clamped));
+}
+
+fn currentBank(clap_plugin: *const clap.Plugin) bridge.ToneBank {
+    const plugin = Plugin.fromClapPlugin(clap_plugin);
+    return bankFromValue(plugin.params.get(.Bank).Float);
+}
+
+pub fn instrumentNames(plugin: *Plugin) []const []const u8 {
+    return bridge.presetProgramNames(bankFromValue(plugin.params.get(.Bank).Float));
+}
+
+fn instrumentName(bank: bridge.ToneBank, value: f64) []const u8 {
     const clamped = std.math.clamp(@round(value), 1.0, 15.0);
     const index: usize = @as(usize, @intFromFloat(clamped)) - 1;
-    return instrument_names[index];
+    return bridge.presetProgramNames(bank)[index];
 }
 
 fn getParamInfo(param: Parameter) Info {
@@ -252,6 +265,15 @@ fn getParamInfo(param: Parameter) Info {
             info.flags.is_stepped = true;
             info.flags.is_enum = true;
             copyString(&info.name, "Instrument");
+            copyString(&info.module, "Voice");
+        },
+        .Bank => {
+            info.default_value = param_defaults.Bank.Float;
+            info.min_value = 0.0;
+            info.max_value = @floatFromInt(bank_names.len - 1);
+            info.flags.is_stepped = true;
+            info.flags.is_enum = true;
+            copyString(&info.name, "Bank");
             copyString(&info.module, "Voice");
         },
         .PitchWheelRange => {
@@ -412,7 +434,7 @@ fn _getValue(clap_plugin: *const clap.Plugin, param_id: clap.Id, value: *f64) ca
 }
 
 pub fn _valueToText(
-    _: *const clap.Plugin,
+    clap_plugin: *const clap.Plugin,
     param_id: clap.Id,
     value: f64,
     buffer: [*]u8,
@@ -429,8 +451,12 @@ pub fn _valueToText(
             _ = std.fmt.bufPrintZ(out, "{s}", .{modeName(value)}) catch return false;
             return true;
         },
+        .Bank => {
+            _ = std.fmt.bufPrintZ(out, "{s}", .{bankName(value)}) catch return false;
+            return true;
+        },
         .Instrument => {
-            _ = std.fmt.bufPrintZ(out, "{s}", .{instrumentName(value)}) catch return false;
+            _ = std.fmt.bufPrintZ(out, "{s}", .{instrumentName(currentBank(clap_plugin), value)}) catch return false;
             return true;
         },
         .PitchWheelRange => {
@@ -471,7 +497,7 @@ fn parseFloatWithOptionalSuffix(text: []const u8, suffix: []const u8) ?f64 {
 }
 
 fn _textToValue(
-    _: *const clap.Plugin,
+    clap_plugin: *const clap.Plugin,
     param_id: clap.Id,
     text: [*:0]const u8,
     value: *f64,
@@ -493,8 +519,16 @@ fn _textToValue(
                 return true;
             }
         },
+        .Bank => {
+            for (bank_names, 0..) |name, i| {
+                if (std.ascii.eqlIgnoreCase(slice, name)) {
+                    value.* = @floatFromInt(i);
+                    return true;
+                }
+            }
+        },
         .Instrument => {
-            for (instrument_names, 0..) |name, i| {
+            for (bridge.presetProgramNames(currentBank(clap_plugin)), 0..) |name, i| {
                 if (std.ascii.eqlIgnoreCase(slice, name)) {
                     value.* = @floatFromInt(i + 1);
                     return true;

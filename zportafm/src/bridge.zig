@@ -25,6 +25,18 @@ pub const PatchParam = enum(u8) {
     car_vibrato,
 };
 
+pub const ToneBank = enum(c_int) {
+    ym2413 = c.OPLL_2413_TONE,
+    vrc7 = c.OPLL_VRC7_TONE,
+    ymf281b = c.OPLL_281B_TONE,
+};
+
+pub const tone_bank_names = [_][]const u8{
+    "YM2413",
+    "VRC7",
+    "YMF281B",
+};
+
 const SynthParameter = enum(u8) {
     ar0,
     ar1,
@@ -63,6 +75,7 @@ const ChannelInfo = struct {
 pub const Engine = struct {
     opll: *c.OPLL,
     program: u8,
+    tone_bank: ToneBank,
     parameters: [synth_parameter_count]f32,
     channels: [channel_count]ChannelInfo,
     last_channel: usize,
@@ -80,6 +93,7 @@ pub const Engine = struct {
         engine.* = .{
             .opll = opll,
             .program = 0,
+            .tone_bank = .ym2413,
             .parameters = defaultParameters(),
             .channels = [_]ChannelInfo{.{}} ** channel_count,
             .last_channel = 0,
@@ -102,7 +116,7 @@ pub const Engine = struct {
 
     fn reset(self: *Engine) void {
         c.OPLL_reset(self.opll);
-        c.OPLL_reset_patch(self.opll, 0);
+        c.OPLL_reset_patch(self.opll, @intFromEnum(self.tone_bank));
 
         self.channels = [_]ChannelInfo{.{}} ** channel_count;
         self.last_channel = 0;
@@ -124,6 +138,15 @@ pub const Engine = struct {
         const clamped = std.math.clamp(program, program_first_preset, program_count - 1);
         self.preset_program = @intCast(clamped);
         self.applyProgram();
+    }
+
+    fn setToneBank(self: *Engine, bank: i32) void {
+        const next_bank = toneBankFromInt(bank);
+        if (self.tone_bank == next_bank) return;
+
+        self.tone_bank = next_bank;
+        c.OPLL_reset_patch(self.opll, @intFromEnum(self.tone_bank));
+        self.sendPatchState();
     }
 
     fn keyOn(self: *Engine, note: i32, velocity: f32) void {
@@ -225,8 +248,7 @@ pub const Engine = struct {
     }
 };
 
-const program_names = [_][]const u8{
-    "User",
+const ym2413_program_names = [_][]const u8{
     "Violin",
     "Guitar",
     "Piano",
@@ -243,6 +265,36 @@ const program_names = [_][]const u8{
     "A.Bass",
     "E.Guitar",
 };
+
+const generic_program_names = [_][]const u8{
+    "Program 1",
+    "Program 2",
+    "Program 3",
+    "Program 4",
+    "Program 5",
+    "Program 6",
+    "Program 7",
+    "Program 8",
+    "Program 9",
+    "Program 10",
+    "Program 11",
+    "Program 12",
+    "Program 13",
+    "Program 14",
+    "Program 15",
+};
+
+pub fn toneBankFromInt(bank: i32) ToneBank {
+    const clamped = std.math.clamp(bank, 0, @as(i32, tone_bank_names.len - 1));
+    return @enumFromInt(@as(c_int, @intCast(clamped)));
+}
+
+pub fn presetProgramNames(bank: ToneBank) []const []const u8 {
+    return switch (bank) {
+        .ym2413 => ym2413_program_names[0..],
+        .vrc7, .ymf281b => generic_program_names[0..],
+    };
+}
 
 const multiplier_texts = [_][]const u8{
     "1/2", "1", "2", "3",
@@ -478,6 +530,10 @@ pub fn zportafm_engine_set_preset_mode(engine: *Engine, enabled: bool) void {
 
 pub fn zportafm_engine_set_program(engine: *Engine, program: c_int) void {
     engine.setProgram(program);
+}
+
+pub fn zportafm_engine_set_tone_bank(engine: *Engine, bank: c_int) void {
+    engine.setToneBank(bank);
 }
 
 pub fn zportafm_engine_set_wheel_range(engine: *Engine, semitones: f32) void {

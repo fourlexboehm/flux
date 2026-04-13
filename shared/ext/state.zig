@@ -1,7 +1,7 @@
 const clap = @import("clap-bindings");
 const std = @import("std");
 const tracy = @import("tracy");
-const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.ioBasic();
+const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 
 pub fn create(comptime Params: type, comptime PluginType: type) clap.ext.state.Plugin {
     return .{
@@ -107,15 +107,14 @@ fn SaveLoad(comptime Params: type, comptime PluginType: type) type {
             defer params_data.deinit();
 
             var params = Params.ParameterArray.init(Params.param_defaults);
+            const shared_param_count = @min(Params.param_count, params_data.value.len);
             if (Params.param_count != params_data.value.len) {
                 std.log.warn(
-                    "Parameter count {d} does not match length of previously saved parameter data {d}",
-                    .{ Params.param_count, params_data.value.len },
+                    "Parameter count {d} does not match length of previously saved parameter data {d}; loading {d} shared values and leaving the rest at defaults",
+                    .{ Params.param_count, params_data.value.len, shared_param_count },
                 );
-                return params;
             }
-            for (params_data.value, 0..) |param, i| {
-                if (i >= Params.param_count) break;
+            for (params_data.value[0..shared_param_count], 0..) |param, i| {
                 const param_type = std.enums.fromInt(Params.Parameter, i) orelse {
                     std.log.err("Error creating parameter: invalid index {d}", .{i});
                     return null;

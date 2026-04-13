@@ -23,7 +23,7 @@ pub const PluginEntry = struct {
 
 pub const PluginCatalog = struct {
     allocator: std.mem.Allocator,
-    entries: std.ArrayListUnmanaged(PluginEntry) = .{},
+    entries: std.ArrayListUnmanaged(PluginEntry) = .empty,
     items_z: [:0]const u8 = &[_:0]u8{},
     fx_items_z: [:0]const u8 = &[_:0]u8{},
     fx_indices: []i32 = &[_]i32{},
@@ -335,7 +335,7 @@ pub fn discover(allocator: std.mem.Allocator, io: Io) !PluginCatalog {
     const zportafm_path = try zportafmPluginPath();
     try appendStaticEntry(&catalog, .builtin, "ZPortaFM", zportafm_path, "com.fourlex.zportafm");
 
-    var clap_entries: std.ArrayListUnmanaged(PluginEntry) = .{};
+    var clap_entries: std.ArrayListUnmanaged(PluginEntry) = .empty;
     defer clap_entries.deinit(allocator);
     discoverClapEntries(allocator, io, &clap_entries) catch {};
 

@@ -5,7 +5,12 @@ pub fn Entry(comptime PluginType: type) type {
         const builtin = @import("builtin");
         const clap = @import("clap-bindings");
 
-        var gpa: std.heap.GeneralPurposeAllocator(.{ .thread_safe = true }) = undefined;
+        const allocator = if (builtin.target.cpu.arch.isWasm())
+            std.heap.wasm_allocator
+        else if (!builtin.single_threaded)
+            std.heap.smp_allocator
+        else
+            std.heap.page_allocator;
 
         pub const clap_entry = createEntry();
 
@@ -23,19 +28,12 @@ pub fn Entry(comptime PluginType: type) type {
                 @breakpoint();
             }
 
-            gpa = .{};
             std.log.debug("Plugin initialized with path {s}", .{plugin_path});
             return true;
         }
 
         fn _deinit() callconv(.c) void {
             std.log.debug("Plugin deinitialized", .{});
-            switch (gpa.deinit()) {
-                std.heap.Check.leak => {
-                    std.log.debug("Leaks happened!", .{});
-                },
-                else => {},
-            }
         }
 
         const ClapPluginFactoryId: []const u8 = "clap.plugin-factory";
@@ -89,7 +87,7 @@ pub fn Entry(comptime PluginType: type) type {
                     return null;
                 }
 
-                const plugin = PluginType.create(host, gpa.allocator()) catch {
+                const plugin = PluginType.create(host, allocator) catch {
                     std.log.debug("Error allocating plugin!", .{});
                     return null;
                 };
