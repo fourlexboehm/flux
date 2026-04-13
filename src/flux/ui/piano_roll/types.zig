@@ -54,7 +54,7 @@ pub const AutomationLane = struct {
     target_id: []const u8 = "",
     param_id: ?[]const u8 = null,
     unit: ?[]const u8 = null,
-    points: std.ArrayListUnmanaged(AutomationPoint) = .{},
+    points: std.ArrayListUnmanaged(AutomationPoint) = .empty,
 };
 
 const AutomationAddTarget = enum {
@@ -65,7 +65,7 @@ const AutomationAddTarget = enum {
 };
 
 pub const ClipAutomation = struct {
-    lanes: std.ArrayListUnmanaged(AutomationLane) = .{},
+    lanes: std.ArrayListUnmanaged(AutomationLane) = .empty,
 
     pub fn clear(self: *ClipAutomation, allocator: std.mem.Allocator) void {
         for (self.lanes.items) |*lane| {
@@ -99,7 +99,7 @@ pub const PianoRollClip = struct {
         return .{
             .allocator = allocator,
             .length_beats = default_clip_bars * beats_per_bar,
-            .notes = .{},
+            .notes = .empty,
             .automation = .{},
         };
     }
@@ -171,7 +171,7 @@ pub const PianoRollClip = struct {
                 .target_id = "",
                 .param_id = null,
                 .unit = null,
-                .points = .{},
+                .points = .empty,
             };
             if (lane.target_id.len > 0) {
                 lane_copy.target_id = self.allocator.dupe(u8, lane.target_id) catch "";
@@ -226,12 +226,12 @@ pub const PianoRollState = struct {
     note_selection: selection.SelectionState(usize),
 
     // Clipboard
-    clipboard: std.ArrayListUnmanaged(Note) = .{},
+    clipboard: std.ArrayListUnmanaged(Note) = .empty,
 
     // Drag state
     drag: PianoRollDrag = .{},
     drag_select: selection.DragSelectState = .{},
-    velocity_drag_notes: std.ArrayListUnmanaged(VelocityDragNote) = .{},
+    velocity_drag_notes: std.ArrayListUnmanaged(VelocityDragNote) = .empty,
 
     // Context menu state
     context_note_index: ?usize = null,

@@ -3,7 +3,7 @@ pub const Plugin = @This();
 const std = @import("std");
 const clap = @import("clap-bindings");
 const shared = @import("shared");
-const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.ioBasic();
+const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 
 const Params = @import("ext/params.zig");
 const ViewType = @import("ext/gui/view.zig");
@@ -141,8 +141,14 @@ pub fn applyParamChanges(self: *Plugin, notify_host: bool) void {
     const engine = self.engine orelse return;
 
     const preset_mode = self.params.get(.VoiceMode).Float >= 0.5;
+    const bank: i32 = @intFromFloat(std.math.clamp(
+        @round(self.params.get(.Bank).Float),
+        0.0,
+        @as(f64, @floatFromInt(bridge.tone_bank_names.len - 1)),
+    ));
     const instrument: i32 = @intFromFloat(std.math.clamp(@round(self.params.get(.Instrument).Float), 1.0, 15.0));
 
+    bridge.zportafm_engine_set_tone_bank(engine, bank);
     bridge.zportafm_engine_set_preset_mode(engine, preset_mode);
     bridge.zportafm_engine_set_program(engine, instrument);
     bridge.zportafm_engine_set_wheel_range(engine, @floatCast(self.params.get(.PitchWheelRange).Float));

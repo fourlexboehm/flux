@@ -98,6 +98,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const zportafm_core = b.createModule(.{
+        .root_source_file = b.path("zportafm/src/core.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const lib = b.addLibrary(.{
         .name = "zsynth",
         .root_module = lib_module,
@@ -220,6 +225,14 @@ pub fn build(b: *std.Build) void {
         zminimoog_core.addImport("objc", objc.module("mach-objc"));
     }
 
+    zportafm_core.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
+    zportafm_core.addImport("zgui", zgui.module("root"));
+    zportafm_core.addImport("tracy", ztracy.module("root"));
+    zportafm_core.addImport("shared", shared);
+    zportafm_core.addImport("options", options_core_module);
+    zportafm_core.addImport("static_data", static_data_module);
+    zportafm_core.addIncludePath(b.path("zportafm/native"));
+
     // Specific steps for different targets
     // Library
     const rename_dll_step = CreateClapPluginStep.create(b, lib);
@@ -238,6 +251,7 @@ pub fn build(b: *std.Build) void {
     flux.root_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
     flux.root_module.addImport("zsynth-core", zsynth_core);
     flux.root_module.addImport("zminimoog-core", zminimoog_core);
+    flux.root_module.addImport("zportafm-core", zportafm_core);
     flux.root_module.addImport("zaudio", zaudio.module("root"));
     flux.root_module.addImport("zgui", zgui.module("root"));
     flux.root_module.addImport("zglfw", zglfw.module("root"));
@@ -260,6 +274,15 @@ pub fn build(b: *std.Build) void {
     flux.root_module.addIncludePath(portmidi_zig.path("pm_mac"));
     flux.root_module.addIncludePath(portmidi_zig.path("pm_linux"));
     flux.root_module.addIncludePath(portmidi_zig.path("porttime"));
+    flux.root_module.addIncludePath(b.path("zportafm/native"));
+    flux.root_module.link_libc = true;
+    flux.root_module.addCSourceFiles(.{
+        .root = b.path(""),
+        .files = &.{
+            "zportafm/native/emu2413/emu2413.c",
+        },
+        .flags = &.{"-std=c11"},
+    });
     if (target_os == .macos) {
         flux.root_module.addImport("objc", objc.module("mach-objc"));
         flux.root_module.linkFramework("AppKit", .{});
@@ -384,16 +407,8 @@ pub const CreateClapPluginStep = struct {
     }
 
     fn make(step: *Step, _: Step.MakeOptions) !void {
-        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-        const allocator = gpa.allocator();
-        defer switch (gpa.deinit()) {
-            .ok => {},
-            .leak => {
-                std.log.err("Memory leaks when building!", .{});
-            },
-        };
-
         const self: *Self = @fieldParentPtr("step", step);
+        const allocator = self.build.allocator;
         if (self.build.build_root.path) |path| {
             const io = self.build.graph.io;
             var dir = try std.Io.Dir.openDirAbsolute(io, path, .{});

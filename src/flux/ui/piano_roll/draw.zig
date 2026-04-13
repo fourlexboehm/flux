@@ -908,7 +908,7 @@ fn addAutomationLane(
         .target_id = target_id_copy,
         .param_id = param_id_copy,
         .unit = null,
-        .points = .{},
+        .points = .empty,
     }) catch return;
 
     state.automation_lane_index = clip.automation.lanes.items.len - 1;
@@ -1410,7 +1410,7 @@ fn pasteNotesFromContextMenu(
 fn deleteSelectedNotes(state: *PianoRollState, clip: *PianoRollClip, track_index: usize, scene_index: usize) void {
     if (!state.hasSelection()) return;
 
-    var indices: std.ArrayListUnmanaged(usize) = .{};
+    var indices: std.ArrayListUnmanaged(usize) = .empty;
     defer indices.deinit(state.allocator);
     for (state.note_selection.keys()) |idx| {
         indices.append(state.allocator, idx) catch {};

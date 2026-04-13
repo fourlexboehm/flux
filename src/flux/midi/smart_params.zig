@@ -68,7 +68,7 @@ pub fn rebuildIfNeeded(state: *State) void {
     const count = params.count(plug);
     if (count == 0) return;
 
-    var ranked: std.ArrayListUnmanaged(RankedParam) = .{};
+    var ranked: std.ArrayListUnmanaged(RankedParam) = .empty;
     defer ranked.deinit(state.allocator);
 
     var i: u32 = 0;

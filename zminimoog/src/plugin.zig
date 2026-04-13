@@ -3,7 +3,7 @@ pub const Plugin = @This();
 const std = @import("std");
 const clap = @import("clap-bindings");
 const tracy = @import("tracy");
-const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.ioBasic();
+const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 
 const shared = @import("shared");
 

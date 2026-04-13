@@ -18,7 +18,7 @@ pub const PresetEntry = struct {
 
 pub const PresetCatalog = struct {
     allocator: std.mem.Allocator,
-    entries: std.ArrayListUnmanaged(PresetEntry) = .{},
+    entries: std.ArrayListUnmanaged(PresetEntry) = .empty,
 
     pub fn deinit(self: *PresetCatalog) void {
         for (self.entries.items) |entry| {
@@ -464,8 +464,8 @@ const PresetFiletype = struct {
 
 const PresetIndexer = struct {
     allocator: std.mem.Allocator,
-    locations: std.ArrayListUnmanaged(PresetLocation) = .{},
-    filetypes: std.ArrayListUnmanaged(PresetFiletype) = .{},
+    locations: std.ArrayListUnmanaged(PresetLocation) = .empty,
+    filetypes: std.ArrayListUnmanaged(PresetFiletype) = .empty,
 
     fn deinit(self: *PresetIndexer) void {
         for (self.locations.items) |loc| {
@@ -520,14 +520,14 @@ const PresetMetadataCollector = struct {
     default_name: ?[]const u8 = null,
     current_name: ?[]const u8 = null,
     current_load_key: ?[]const u8 = null,
-    current_plugin_ids: std.ArrayListUnmanaged([]const u8) = .{},
+    current_plugin_ids: std.ArrayListUnmanaged([]const u8) = .empty,
 
     fn reset(self: *PresetMetadataCollector) void {
         for (self.current_plugin_ids.items) |pid| {
             self.allocator.free(@constCast(pid));
         }
         self.current_plugin_ids.deinit(self.allocator);
-        self.current_plugin_ids = .{};
+        self.current_plugin_ids = .empty;
         if (self.current_name) |name| {
             self.allocator.free(@constCast(name));
         }

@@ -55,7 +55,8 @@ fn drawContent(plugin: *Plugin, options: DrawOptions) void {
     if (zgui.beginChild("PortaLeft", .{ .w = column_width, .h = 0 })) {
         zgui.separatorText("Voice");
         renderCombo(plugin, .VoiceMode, &Params.mode_names, options);
-        renderCombo(plugin, .Instrument, &Params.instrument_names, options);
+        renderCombo(plugin, .Bank, &Params.bank_names, options);
+        renderCombo(plugin, .Instrument, Params.instrumentNames(plugin), options);
 
         zgui.separatorText("Performance");
         renderSlider(plugin, .PitchWheelRange, options);
