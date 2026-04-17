@@ -52,7 +52,8 @@
             .hash = "zgui-0.6.0-dev--L6sZPv7bQB1IyXTkLVuBQ_Kla7ZIxZdnsUNT52-NKcT",
         },
         .zaudio = .{
-            .path = "deps/zaudio",
+            .url = "git+https://github.com/fourlexboehm/zaudio#64e90db71ec5a12e8159447e50ede976a39ec46d",
+            .hash = "zaudio-0.11.0-dev-_M-91r0yQQC2tXD4Yrmz_cJK2q_1-EbnznUNNmOcya3e",
         },
         .libz_jobs = .{
             .url = "git+https://github.com/fourlexboehm/LibZ.Jobs#main",
