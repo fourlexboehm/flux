@@ -16,7 +16,7 @@
     // This field is optional.
     // This is currently advisory only; Zig does not yet do anything
     // with this value.
-    .minimum_zig_version = "0.16.0-dev.3146+0606af509",
+    .minimum_zig_version = "0.16.0",
 
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
@@ -52,8 +52,8 @@
             .hash = "zgui-0.6.0-dev--L6sZPv7bQB1IyXTkLVuBQ_Kla7ZIxZdnsUNT52-NKcT",
         },
         .zaudio = .{
-            .url = "git+https://github.com/fourlexboehm/zaudio#64e90db71ec5a12e8159447e50ede976a39ec46d",
-            .hash = "zaudio-0.11.0-dev-_M-91r0yQQC2tXD4Yrmz_cJK2q_1-EbnznUNNmOcya3e",
+            .url = "git+https://github.com/fourlexboehm/zaudio#557f8fcdf0c26e86a57f83e2a67affd09aa6498b",
+            .hash = "zaudio-0.11.0-dev-_M-91qoyQQDfje5uM1OSx8a67bMWZMza4gWUhbqKJCV2",
         },
         .libz_jobs = .{
             .url = "git+https://github.com/fourlexboehm/LibZ.Jobs#main",
