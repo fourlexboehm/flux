@@ -250,20 +250,21 @@ fn writePluginCache(cache: *PluginCache, io: Io) !void {
 
     var arena = std.heap.ArenaAllocator.init(cache.allocator);
     defer arena.deinit();
+    const json_allocator = arena.allocator();
 
-    var root = std.json.ObjectMap.init(arena.allocator());
+    var root: std.json.ObjectMap = .empty;
     var it = cache.libs.iterator();
     while (it.next()) |entry| {
-        var plugin_array = std.json.Array.init(arena.allocator());
+        var plugin_array = std.json.Array.init(json_allocator);
         for (entry.value_ptr.*) |plugin| {
-            var plugin_obj = std.json.ObjectMap.init(arena.allocator());
-            try plugin_obj.put("id", .{ .string = plugin.id });
-            try plugin_obj.put("name", .{ .string = plugin.name });
-            try plugin_obj.put("mtime", .{ .integer = plugin.mtime_ns });
-            try plugin_obj.put("audio_effect", .{ .bool = plugin.is_audio_effect });
+            var plugin_obj: std.json.ObjectMap = .empty;
+            try plugin_obj.put(json_allocator, "id", .{ .string = plugin.id });
+            try plugin_obj.put(json_allocator, "name", .{ .string = plugin.name });
+            try plugin_obj.put(json_allocator, "mtime", .{ .integer = plugin.mtime_ns });
+            try plugin_obj.put(json_allocator, "audio_effect", .{ .bool = plugin.is_audio_effect });
             try plugin_array.append(.{ .object = plugin_obj });
         }
-        try root.put(entry.key_ptr.*, .{ .array = plugin_array });
+        try root.put(json_allocator, entry.key_ptr.*, .{ .array = plugin_array });
     }
 
     const json_value = std.json.Value{ .object = root };
