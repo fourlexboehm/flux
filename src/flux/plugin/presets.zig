@@ -324,36 +324,36 @@ fn writePresetCache(cache: *PresetCache, io: Io) !void {
     defer cache.allocator.free(cache_dir);
     Dir.cwd().createDirPath(io, cache_dir) catch {};
 
-    var root = std.json.ObjectMap.init(cache.allocator);
+    var root: std.json.ObjectMap = .empty;
     var bins_array = std.json.Array.init(cache.allocator);
 
     var it = cache.bins.iterator();
     while (it.next()) |entry| {
         const bin = entry.value_ptr.*;
-        var bin_obj = std.json.ObjectMap.init(cache.allocator);
-        try bin_obj.put("path", .{ .string = entry.key_ptr.* });
-        try bin_obj.put("mtime", .{ .integer = bin.mtime_ns });
+        var bin_obj: std.json.ObjectMap = .empty;
+        try bin_obj.put(cache.allocator, "path", .{ .string = entry.key_ptr.* });
+        try bin_obj.put(cache.allocator, "mtime", .{ .integer = bin.mtime_ns });
 
         var presets_array = std.json.Array.init(cache.allocator);
         for (bin.presets) |preset| {
-            var preset_obj = std.json.ObjectMap.init(cache.allocator);
-            try preset_obj.put("name", .{ .string = preset.name });
-            try preset_obj.put("plugin_id", .{ .string = preset.plugin_id });
-            try preset_obj.put("plugin_name", .{ .string = preset.plugin_name });
-            try preset_obj.put("provider_id", .{ .string = preset.provider_id });
-            try preset_obj.put("location_kind", .{ .integer = @intFromEnum(preset.location_kind) });
-            try preset_obj.put("location", .{ .string = preset.location });
+            var preset_obj: std.json.ObjectMap = .empty;
+            try preset_obj.put(cache.allocator, "name", .{ .string = preset.name });
+            try preset_obj.put(cache.allocator, "plugin_id", .{ .string = preset.plugin_id });
+            try preset_obj.put(cache.allocator, "plugin_name", .{ .string = preset.plugin_name });
+            try preset_obj.put(cache.allocator, "provider_id", .{ .string = preset.provider_id });
+            try preset_obj.put(cache.allocator, "location_kind", .{ .integer = @intFromEnum(preset.location_kind) });
+            try preset_obj.put(cache.allocator, "location", .{ .string = preset.location });
             if (preset.load_key) |key| {
-                try preset_obj.put("load_key", .{ .string = key });
+                try preset_obj.put(cache.allocator, "load_key", .{ .string = key });
             }
             try presets_array.append(.{ .object = preset_obj });
         }
-        try bin_obj.put("presets", .{ .array = presets_array });
+        try bin_obj.put(cache.allocator, "presets", .{ .array = presets_array });
         try bins_array.append(.{ .object = bin_obj });
     }
 
-    try root.put("version", .{ .integer = 1 });
-    try root.put("bins", .{ .array = bins_array });
+    try root.put(cache.allocator, "version", .{ .integer = 1 });
+    try root.put(cache.allocator, "bins", .{ .array = bins_array });
 
     const json_value = std.json.Value{ .object = root };
     const json = try std.json.Stringify.valueAlloc(cache.allocator, json_value, .{ .whitespace = .indent_2 });
@@ -370,16 +370,16 @@ fn writePresetCache(cache: *PresetCache, io: Io) !void {
             if (presets_val == .array) {
                 for (presets_val.array.items) |*preset_val| {
                     if (preset_val.* == .object) {
-                        preset_val.object.deinit();
+                        preset_val.object.deinit(cache.allocator);
                     }
                 }
                 presets_val.array.deinit();
             }
         }
-        bin_val.object.deinit();
+        bin_val.object.deinit(cache.allocator);
     }
     bins_array.deinit();
-    root.deinit();
+    root.deinit(cache.allocator);
 }
 
 fn ensurePresetCacheFile(cache: *PresetCache, io: Io) void {
@@ -391,11 +391,13 @@ fn ensurePresetCacheFile(cache: *PresetCache, io: Io) void {
         return;
     } else |_| {}
 
-    var root = std.json.ObjectMap.init(cache.allocator);
+    var root: std.json.ObjectMap = .empty;
+    defer root.deinit(cache.allocator);
     var bins_array = std.json.Array.init(cache.allocator);
+    defer bins_array.deinit();
 
-    root.put("version", .{ .integer = 1 }) catch return;
-    root.put("bins", .{ .array = bins_array }) catch return;
+    root.put(cache.allocator, "version", .{ .integer = 1 }) catch return;
+    root.put(cache.allocator, "bins", .{ .array = bins_array }) catch return;
 
     const json_value = std.json.Value{ .object = root };
     const json = std.json.Stringify.valueAlloc(cache.allocator, json_value, .{ .whitespace = .indent_2 }) catch return;
@@ -409,9 +411,6 @@ fn ensurePresetCacheFile(cache: *PresetCache, io: Io) void {
         defer file.close(io);
         file.writeStreamingAll(io, json) catch {};
     } else |_| {}
-
-    root.deinit();
-    bins_array.deinit();
 }
 
 fn catalogInfoForPluginId(catalog: *const plugins.PluginCatalog, plugin_id: []const u8) ?struct { name: []const u8, index: i32 } {
