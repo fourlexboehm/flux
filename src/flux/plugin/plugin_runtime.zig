@@ -2,19 +2,12 @@ const builtin = @import("builtin");
 const std = @import("std");
 const clap = @import("clap-bindings");
 const objc = if (builtin.os.tag == .macos) @import("objc") else struct {};
-const options = @import("options");
-
-const x11c = if (builtin.os.tag == .linux) struct {
-    const Display = anyopaque;
-    const XWindow = c_ulong;
-    extern fn XOpenDisplay(?[*:0]const u8) callconv(.c) ?*Display;
-    extern fn XCloseDisplay(*Display) callconv(.c) c_int;
-    extern fn XDefaultRootWindow(*Display) callconv(.c) XWindow;
-    extern fn XCreateSimpleWindow(*Display, XWindow, c_int, c_int, c_uint, c_uint, c_uint, c_ulong, c_ulong) callconv(.c) XWindow;
-    extern fn XMapWindow(*Display, XWindow) callconv(.c) c_int;
-    extern fn XDestroyWindow(*Display, XWindow) callconv(.c) c_int;
-    extern fn XFlush(*Display) callconv(.c) c_int;
-} else struct {};
+const linux_x11 = if (builtin.os.tag == .linux) @import("linux_x11.zig") else struct {
+    pub const HostWindow = struct {};
+    pub fn isAvailable() bool {
+        return false;
+    }
+};
 
 const audio_constants = @import("../audio/audio_constants.zig");
 const audio_engine = @import("../audio/audio_engine.zig");
@@ -115,7 +108,7 @@ pub const TrackPlugin = struct {
     gui_ext: ?*const clap.ext.gui.Plugin = null,
     gui_window: ?*anyopaque = null,
     gui_view: ?*anyopaque = null,
-    gui_x11_window: c_ulong = 0,
+    gui_x11_host_window: ?linux_x11.HostWindow = null,
     gui_open: bool = false,
     choice_index: i32 = -1,
 
@@ -423,7 +416,7 @@ pub fn unloadPlugin(track: *TrackPlugin, allocator: std.mem.Allocator, shared: ?
     track.gui_ext = null;
     track.gui_window = null;
     track.gui_view = null;
-    track.gui_x11_window = 0;
+    track.gui_x11_host_window = null;
     track.gui_open = false;
 }
 
@@ -450,7 +443,7 @@ pub fn unloadFxPlugin(
     track.gui_ext = null;
     track.gui_window = null;
     track.gui_view = null;
-    track.gui_x11_window = 0;
+    track.gui_x11_host_window = null;
     track.gui_open = false;
 }
 
@@ -459,60 +452,125 @@ fn getGuiExt(handle: PluginHandle) ?*const clap.ext.gui.Plugin {
     return @ptrCast(@alignCast(ext_raw));
 }
 
+const plugin_window_title: [:0]const u8 = "Plugin";
+
+const GuiOpenPlan = struct {
+    api: [*:0]const u8,
+    is_floating: bool,
+};
+
+fn isApi(api: [*:0]const u8, expected: [*:0]const u8) bool {
+    return std.mem.eql(u8, std.mem.span(api), std.mem.span(expected));
+}
+
+fn isLinuxFloatingApiUsable(api: [*:0]const u8) bool {
+    if (isApi(api, clap.ext.gui.window_api.x11)) {
+        return linux_x11.isAvailable();
+    }
+    return true;
+}
+
+fn chooseGuiOpenPlan(plugin: *const clap.Plugin, gui_ext: *const clap.ext.gui.Plugin) !GuiOpenPlan {
+    var preferred_api: [*:0]const u8 = switch (builtin.os.tag) {
+        .linux => clap.ext.gui.window_api.wayland,
+        else => clap.ext.gui.window_api.cocoa,
+    };
+    var preferred_floating = false;
+    const has_preferred = gui_ext.getPreferredApi(plugin, &preferred_api, &preferred_floating);
+
+    if (builtin.os.tag == .linux) {
+        if (linux_x11.isAvailable() and gui_ext.isApiSupported(plugin, clap.ext.gui.window_api.x11, false)) {
+            return .{ .api = clap.ext.gui.window_api.x11, .is_floating = false };
+        }
+        if (gui_ext.isApiSupported(plugin, clap.ext.gui.window_api.wayland, true)) {
+            return .{ .api = clap.ext.gui.window_api.wayland, .is_floating = true };
+        }
+        if (linux_x11.isAvailable() and gui_ext.isApiSupported(plugin, clap.ext.gui.window_api.x11, true)) {
+            return .{ .api = clap.ext.gui.window_api.x11, .is_floating = true };
+        }
+        if (has_preferred and preferred_floating and
+            isLinuxFloatingApiUsable(preferred_api) and
+            gui_ext.isApiSupported(plugin, preferred_api, true))
+        {
+            return .{ .api = preferred_api, .is_floating = true };
+        }
+        return error.GuiUnsupported;
+    }
+
+    if (gui_ext.isApiSupported(plugin, clap.ext.gui.window_api.cocoa, false)) {
+        return .{ .api = clap.ext.gui.window_api.cocoa, .is_floating = false };
+    }
+    if (has_preferred and gui_ext.isApiSupported(plugin, preferred_api, preferred_floating)) {
+        return .{ .api = preferred_api, .is_floating = preferred_floating };
+    }
+    return error.GuiUnsupported;
+}
+
+fn pluginGuiSize(plugin: *const clap.Plugin, gui_ext: *const clap.ext.gui.Plugin) [2]u32 {
+    var width: u32 = 0;
+    var height: u32 = 0;
+    if (!gui_ext.getSize(plugin, &width, &height)) {
+        width = 800;
+        height = 500;
+    }
+    return .{ @max(width, 1), @max(height, 1) };
+}
+
+fn destroyHostGuiWindow(track: *TrackPlugin) void {
+    if (builtin.os.tag == .macos) {
+        if (track.gui_window) |window_raw| {
+            const window: *objc.app_kit.Window = @ptrCast(@alignCast(window_raw));
+            const main_window: ?*objc.app_kit.Window = objc.objc.msgSend(
+                objc.app_kit.Application.sharedApplication(),
+                "mainWindow",
+                ?*objc.app_kit.Window,
+                .{},
+            );
+            if (main_window) |mw| {
+                objc.objc.msgSend(mw, "removeChildWindow:", void, .{window});
+            }
+            window.setIsVisible(false);
+            window.release();
+            track.gui_window = null;
+        }
+        if (track.gui_view) |view_raw| {
+            const view: *objc.app_kit.View = @ptrCast(@alignCast(view_raw));
+            view.release();
+            track.gui_view = null;
+        }
+        return;
+    }
+
+    if (builtin.os.tag == .linux) {
+        if (track.gui_x11_host_window) |*host_window| {
+            host_window.destroy();
+            track.gui_x11_host_window = null;
+        }
+    }
+    track.gui_window = null;
+    track.gui_view = null;
+}
+
 fn openPluginGui(track: *TrackPlugin, gui_ext: *const clap.ext.gui.Plugin) !void {
     if (track.handle == null) return;
     if (track.gui_open) return;
 
     const plugin = track.handle.?.plugin;
-    var is_floating: bool = false;
-    var api_ptr: [*:0]const u8 = switch (builtin.os.tag) {
-        .linux => clap.ext.gui.window_api.wayland,
-        else => clap.ext.gui.window_api.cocoa,
-    };
-    _ = gui_ext.getPreferredApi(plugin, &api_ptr, &is_floating);
+    const plan = try chooseGuiOpenPlan(plugin, gui_ext);
 
-    if (builtin.os.tag == .linux) {
-        if (options.use_x11 and gui_ext.isApiSupported(plugin, clap.ext.gui.window_api.x11, false)) {
-            // Embedded X11 — most plugins support this; works via XWayland under Wayland
-            api_ptr = clap.ext.gui.window_api.x11;
-            is_floating = false;
-        } else {
-            // Fall back to floating
-            is_floating = true;
-            if (gui_ext.isApiSupported(plugin, clap.ext.gui.window_api.wayland, true)) {
-                api_ptr = clap.ext.gui.window_api.wayland;
-            } else if (gui_ext.isApiSupported(plugin, clap.ext.gui.window_api.x11, true)) {
-                api_ptr = clap.ext.gui.window_api.x11;
-            } else if (gui_ext.isApiSupported(plugin, api_ptr, true)) {
-                // keep plugin preference
-            } else {
-                return error.GuiUnsupported;
-            }
-        }
-    }
-
-    if (!gui_ext.isApiSupported(plugin, api_ptr, is_floating)) {
-        return error.GuiUnsupported;
-    }
-
-    if (!gui_ext.create(plugin, api_ptr, is_floating)) {
+    if (!gui_ext.create(plugin, plan.api, plan.is_floating)) {
         return error.GuiCreateFailed;
     }
 
     switch (builtin.os.tag) {
         .macos => {
-            if (!is_floating) {
-                var width: u32 = 0;
-                var height: u32 = 0;
-                if (!gui_ext.getSize(plugin, &width, &height)) {
-                    width = 800;
-                    height = 500;
-                }
+            if (!plan.is_floating) {
+                const size = pluginGuiSize(plugin, gui_ext);
                 const rect = objc.app_kit.Rect{
                     .origin = .{ .x = 0, .y = 0 },
                     .size = .{
-                        .width = @floatFromInt(width),
-                        .height = @floatFromInt(height),
+                        .width = @floatFromInt(size[0]),
+                        .height = @floatFromInt(size[1]),
                     },
                 };
                 const style = objc.app_kit.WindowStyleMaskTitled |
@@ -552,8 +610,9 @@ fn openPluginGui(track: *TrackPlugin, gui_ext: *const clap.ext.gui.Plugin) !void
                     .data = .{ .cocoa = @ptrCast(view) },
                 };
                 if (!gui_ext.setParent(plugin, &window_handle)) {
-                    view.release();
-                    window.release();
+                    track.gui_window = @ptrCast(window);
+                    track.gui_view = @ptrCast(view);
+                    destroyHostGuiWindow(track);
                     gui_ext.destroy(plugin);
                     return error.GuiSetParentFailed;
                 }
@@ -562,66 +621,29 @@ fn openPluginGui(track: *TrackPlugin, gui_ext: *const clap.ext.gui.Plugin) !void
             }
         },
         .linux => {
-            if (!is_floating) {
-                var width: u32 = 0;
-                var height: u32 = 0;
-                if (!gui_ext.getSize(plugin, &width, &height)) {
-                    width = 800;
-                    height = 500;
-                }
-
-                const display = x11c.XOpenDisplay(null) orelse {
+            if (!plan.is_floating) {
+                const size = pluginGuiSize(plugin, gui_ext);
+                var host_window = linux_x11.HostWindow.create(size[0], size[1], plugin_window_title) catch |err| {
                     gui_ext.destroy(plugin);
-                    return error.X11OpenDisplayFailed;
+                    return err;
                 };
-
-                const root = x11c.XDefaultRootWindow(display);
-                const xwin = x11c.XCreateSimpleWindow(display, root, 0, 0, @intCast(width), @intCast(height), 0, 0, 0);
-                _ = x11c.XMapWindow(display, xwin);
-                _ = x11c.XFlush(display);
-
-                const window_handle = clap.ext.gui.Window{
-                    .api = clap.ext.gui.window_api.x11,
-                    .data = .{ .x11 = xwin },
-                };
+                const window_handle = host_window.clapWindow();
                 if (!gui_ext.setParent(plugin, &window_handle)) {
-                    _ = x11c.XDestroyWindow(display, xwin);
-                    _ = x11c.XCloseDisplay(display);
+                    host_window.destroy();
                     gui_ext.destroy(plugin);
                     return error.GuiSetParentFailed;
                 }
-                track.gui_window = @ptrCast(display);
-                track.gui_x11_window = xwin;
+                track.gui_x11_host_window = host_window;
             }
         },
         else => {},
     }
+    if (plan.is_floating) {
+        _ = gui_ext.suggestTitle(plugin, plugin_window_title);
+    }
 
     if (!gui_ext.show(plugin)) {
-        if (builtin.os.tag == .macos) {
-            if (track.gui_window) |window_raw| {
-                const window: *objc.app_kit.Window = @ptrCast(@alignCast(window_raw));
-                window.setIsVisible(false);
-                window.release();
-                track.gui_window = null;
-            }
-            if (track.gui_view) |view_raw| {
-                const view: *objc.app_kit.View = @ptrCast(@alignCast(view_raw));
-                view.release();
-                track.gui_view = null;
-            }
-        } else if (builtin.os.tag == .linux) {
-            if (track.gui_window) |display_raw| {
-                const display: *x11c.Display = @ptrCast(@alignCast(display_raw));
-                if (track.gui_x11_window != 0) {
-                    _ = x11c.XDestroyWindow(display, track.gui_x11_window);
-                    track.gui_x11_window = 0;
-                }
-                _ = x11c.XCloseDisplay(display);
-            }
-            track.gui_window = null;
-            track.gui_view = null;
-        }
+        destroyHostGuiWindow(track);
         gui_ext.destroy(plugin);
         return error.GuiShowFailed;
     }
@@ -637,43 +659,7 @@ pub fn closePluginGui(track: *TrackPlugin) void {
         _ = gui_ext.hide(plugin);
         gui_ext.destroy(plugin);
     }
-    if (builtin.os.tag == .macos) {
-        if (track.gui_window) |window_raw| {
-            const window: *objc.app_kit.Window = @ptrCast(@alignCast(window_raw));
-            // Remove from parent window's child list
-            const main_window: ?*objc.app_kit.Window = objc.objc.msgSend(
-                objc.app_kit.Application.sharedApplication(),
-                "mainWindow",
-                ?*objc.app_kit.Window,
-                .{},
-            );
-            if (main_window) |mw| {
-                objc.objc.msgSend(mw, "removeChildWindow:", void, .{window});
-            }
-            window.setIsVisible(false);
-            window.release();
-            track.gui_window = null;
-        }
-        if (track.gui_view) |view_raw| {
-            const view: *objc.app_kit.View = @ptrCast(@alignCast(view_raw));
-            view.release();
-            track.gui_view = null;
-        }
-    } else if (builtin.os.tag == .linux) {
-        if (track.gui_window) |display_raw| {
-            const display: *x11c.Display = @ptrCast(@alignCast(display_raw));
-            if (track.gui_x11_window != 0) {
-                _ = x11c.XDestroyWindow(display, track.gui_x11_window);
-                track.gui_x11_window = 0;
-            }
-            _ = x11c.XCloseDisplay(display);
-        }
-        track.gui_window = null;
-        track.gui_view = null;
-    } else {
-        track.gui_window = null;
-        track.gui_view = null;
-    }
+    destroyHostGuiWindow(track);
     track.gui_open = false;
 }
 
