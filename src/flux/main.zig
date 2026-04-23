@@ -17,6 +17,9 @@ const bench = @import("bench.zig");
 const dawproject_runtime = @import("dawproject/runtime.zig");
 const device_state = @import("device_state.zig");
 const host_mod = @import("host.zig");
+const linux_x11 = if (builtin.os.tag == .linux) @import("plugin/linux_x11.zig") else struct {
+    pub fn initThreads() void {}
+};
 const controller_mapping = @import("midi/controller_mapping.zig");
 const midi_input = @import("midi_input.zig");
 const options = @import("options");
@@ -50,6 +53,8 @@ const TrackPlugin = plugin_runtime.TrackPlugin;
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
+
+    linux_x11.initThreads();
 
     var host = host_mod.Host.init();
     host.clap_host.host_data = &host;
