@@ -39,7 +39,7 @@ pub fn build(b: *std.Build) void {
     const use_x11 = b.option(
         bool,
         "x11",
-        "Use X11 on Linux (default: false when wayland=true)",
+        "Use X11/XWayland on Linux for plugin windows (default: true with GLFW)",
     ) orelse (gui_backend == .glfw_opengl3);
     const use_llvm = b.option(bool, "use-llvm", "Use LLVM backend") orelse true;
     const enable_segfault_handler = b.option(

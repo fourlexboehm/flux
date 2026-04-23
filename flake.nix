@@ -33,7 +33,12 @@
           name = "zsynth";
           src = ./.;
           nativeBuildInputs = [ zig ];
-          buildInputs = with pkgs; [ wayland ];
+          buildInputs = with pkgs; [
+            alsa-lib
+            wayland
+            libxkbcommon
+            xorg.libX11
+          ];
           buildPhase = ''
             zig build
           '';
@@ -44,13 +49,16 @@
             zls
           ];
 
-          packages = with pkgs;[
+          packages = with pkgs; [
+            alsa-lib
             wayland
             glfw-wayland
+            libxkbcommon
             xorg.libX11
           ];
 
           env.LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (with pkgs; [
+            alsa-lib
             wayland
             glfw-wayland
             libxkbcommon
