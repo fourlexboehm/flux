@@ -12,6 +12,7 @@ const linux_x11 = if (builtin.os.tag == .linux) @import("linux_x11.zig") else st
 const audio_constants = @import("../audio/audio_constants.zig");
 const audio_engine = @import("../audio/audio_engine.zig");
 const plugins = @import("plugins.zig");
+const plugin_call_context = @import("call_context.zig");
 const session_constants = @import("../ui/session_view/constants.zig");
 const session_view = @import("../ui/session_view.zig");
 const ui_state = @import("../ui/state.zig");
@@ -556,6 +557,9 @@ fn openPluginGui(track: *TrackPlugin, gui_ext: *const clap.ext.gui.Plugin) !void
     if (track.gui_open) return;
 
     const plugin = track.handle.?.plugin;
+    const previous_plugin_context = plugin_call_context.enter(plugin);
+    defer plugin_call_context.restore(previous_plugin_context);
+
     const plan = try chooseGuiOpenPlan(plugin, gui_ext);
 
     if (!gui_ext.create(plugin, plan.api, plan.is_floating)) {
@@ -655,6 +659,9 @@ pub fn closePluginGui(track: *TrackPlugin) void {
     if (track.handle == null) return;
     if (!track.gui_open) return;
     const plugin = track.handle.?.plugin;
+    const previous_plugin_context = plugin_call_context.enter(plugin);
+    defer plugin_call_context.restore(previous_plugin_context);
+
     if (track.gui_ext) |gui_ext| {
         _ = gui_ext.hide(plugin);
         gui_ext.destroy(plugin);

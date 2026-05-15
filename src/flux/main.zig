@@ -334,9 +334,10 @@ pub fn main(init: std.process.Init) !void {
                 // Update plugin GUIs outside the host ImGui frame to avoid context collisions.
                 for (&track_plugins) |*track| {
                     if (track.gui_open and track.handle != null) {
-                        track.handle.?.plugin.onMainThread(track.handle.?.plugin);
+                        host.callPluginOnMainThread(track.handle.?.plugin);
                     }
                 }
+                host.pumpPluginGuiEvents(io);
 
                 const any_plugin_gui_open = blk: {
                     for (track_plugins) |track| {
@@ -411,6 +412,7 @@ pub fn main(init: std.process.Init) !void {
             while (!window.shouldClose()) {
                 const frame_start = std.Io.Clock.awake.now(io);
                 host.pumpMainThreadCallbacks();
+                host.pumpPluginGuiEvents(io);
 
                 const now = std.Io.Clock.awake.now(io);
                 const delta_ns = nsSince(last_time, now);
@@ -515,9 +517,10 @@ pub fn main(init: std.process.Init) !void {
 
                 for (&track_plugins) |*track| {
                     if (track.gui_open and track.handle != null) {
-                        track.handle.?.plugin.onMainThread(track.handle.?.plugin);
+                        host.callPluginOnMainThread(track.handle.?.plugin);
                     }
                 }
+                host.pumpPluginGuiEvents(io);
 
                 const any_plugin_gui_open = blk: {
                     for (track_plugins) |track| {
