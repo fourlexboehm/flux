@@ -5,6 +5,7 @@ const audio_engine = @import("audio/audio_engine.zig");
 const audio_graph = @import("audio/audio_graph.zig");
 const clap_ids = @import("clap_ids.zig");
 const dawproject_runtime = @import("dawproject/runtime.zig");
+const plugin_call_context = @import("plugin/call_context.zig");
 const plugins = @import("plugin/plugins.zig");
 const plugin_runtime = @import("plugin/plugin_runtime.zig");
 const session_constants = @import("ui/session_view/constants.zig");
@@ -13,6 +14,23 @@ const ui_state = @import("ui/state.zig");
 
 const track_count = session_constants.max_tracks;
 const TrackPlugin = plugin_runtime.TrackPlugin;
+const max_gui_timers = 64;
+const max_gui_fds = 64;
+
+const GuiTimer = struct {
+    plugin: *const clap.Plugin,
+    timer_id: clap.Id,
+    period_ms: u32,
+    next_fire_ns: u64,
+    active: bool = false,
+};
+
+const GuiFd = struct {
+    plugin: *const clap.Plugin,
+    fd: c_int,
+    flags: clap.ext.posix_fd_support.Flags,
+    active: bool = false,
+};
 
 pub const Host = struct {
     clap_host: clap.Host,
@@ -31,6 +49,9 @@ pub const Host = struct {
     undo_change_in_progress: bool = false,
     undo_track_index: ?usize = null, // Track that started the change
     undo_pre_state: ?[]u8 = null, // State captured at begin_change
+    gui_timers: [max_gui_timers]GuiTimer = [_]GuiTimer{.{ .plugin = undefined, .timer_id = .invalid_id, .period_ms = 0, .next_fire_ns = 0 }} ** max_gui_timers,
+    next_gui_timer_id: u32 = 1,
+    gui_fds: [max_gui_fds]GuiFd = [_]GuiFd{.{ .plugin = undefined, .fd = -1, .flags = .{ ._ = 0 } }} ** max_gui_fds,
 
     const thread_pool_ext = clap.ext.thread_pool.Host{
         .requestExec = _requestExec,
@@ -67,6 +88,17 @@ pub const Host = struct {
     const preset_load_ext = clap.ext.preset_load.Host{
         .onError = _presetLoadOnError,
         .loaded = _presetLoadLoaded,
+    };
+
+    const timer_support_ext = clap.ext.timer_support.Host{
+        .registerTimer = _timerRegister,
+        .unregisterTimer = _timerUnregister,
+    };
+
+    const posix_fd_support_ext = clap.ext.posix_fd_support.Host{
+        .registerFd = _posixFdRegister,
+        .modifyFd = _posixFdModify,
+        .unregiserFd = _posixFdUnregister,
     };
 
     pub fn init() Host {
@@ -107,6 +139,12 @@ pub const Host = struct {
             std.mem.eql(u8, std.mem.span(id), clap_ids.preset_load_compat_id))
         {
             return &preset_load_ext;
+        }
+        if (std.mem.eql(u8, std.mem.span(id), clap.ext.timer_support.id)) {
+            return &timer_support_ext;
+        }
+        if (std.mem.eql(u8, std.mem.span(id), clap.ext.posix_fd_support.id)) {
+            return &posix_fd_support_ext;
         }
         return null;
     }
@@ -223,22 +261,228 @@ pub const Host = struct {
 
     fn _guiClosed(_: *const clap.Host, _: bool) callconv(.c) void {}
 
+    pub fn callPluginOnMainThread(self: *Host, plugin: *const clap.Plugin) void {
+        _ = self;
+        const previous = plugin_call_context.enter(plugin);
+        defer plugin_call_context.restore(previous);
+        plugin.onMainThread(plugin);
+    }
+
     pub fn pumpMainThreadCallbacks(self: *Host) void {
         if (!self.callback_requested.swap(false, .acq_rel)) return;
         const shared = self.shared_state orelse return;
         const snapshot = shared.snapshot();
         for (snapshot.track_plugins) |plugin| {
             if (plugin) |p| {
-                p.onMainThread(p);
+                self.callPluginOnMainThread(p);
             }
         }
         for (snapshot.track_fx_plugins) |track_fx| {
             for (track_fx) |plugin| {
                 if (plugin) |p| {
-                    p.onMainThread(p);
+                    self.callPluginOnMainThread(p);
                 }
             }
         }
+    }
+
+    pub fn pumpPluginGuiEvents(self: *Host, io: std.Io) void {
+        self.pumpPluginTimers(io);
+        self.pumpPluginFds();
+    }
+
+    fn _timerRegister(host: *const clap.Host, period_ms: u32, timer_id: *clap.Id) callconv(.c) bool {
+        if (thread_context.is_audio_thread) return false;
+        const plugin = plugin_call_context.current() orelse return false;
+        const self: *Host = @ptrCast(@alignCast(host.host_data));
+        const now_ns = nowNs(std.Io.Threaded.global_single_threaded.io());
+
+        for (&self.gui_timers) |*timer| {
+            if (!timer.active) {
+                const id: clap.Id = @enumFromInt(self.next_gui_timer_id);
+                self.next_gui_timer_id +%= 1;
+                if (self.next_gui_timer_id == @intFromEnum(clap.Id.invalid_id)) {
+                    self.next_gui_timer_id = 1;
+                }
+                timer.* = .{
+                    .plugin = plugin,
+                    .timer_id = id,
+                    .period_ms = @max(period_ms, 1),
+                    .next_fire_ns = now_ns + msToNs(@max(period_ms, 1)),
+                    .active = true,
+                };
+                timer_id.* = id;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn _timerUnregister(host: *const clap.Host, timer_id: clap.Id) callconv(.c) bool {
+        if (thread_context.is_audio_thread) return false;
+        const self: *Host = @ptrCast(@alignCast(host.host_data));
+        for (&self.gui_timers) |*timer| {
+            if (timer.active and timer.timer_id == timer_id) {
+                timer.active = false;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn _posixFdRegister(host: *const clap.Host, fd: c_int, flags: clap.ext.posix_fd_support.Flags) callconv(.c) bool {
+        if (thread_context.is_audio_thread) return false;
+        const plugin = plugin_call_context.current() orelse return false;
+        const self: *Host = @ptrCast(@alignCast(host.host_data));
+
+        for (&self.gui_fds) |*entry| {
+            if (entry.active and entry.fd == fd) return false;
+        }
+        for (&self.gui_fds) |*entry| {
+            if (!entry.active) {
+                entry.* = .{
+                    .plugin = plugin,
+                    .fd = fd,
+                    .flags = flags,
+                    .active = true,
+                };
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn _posixFdModify(host: *const clap.Host, fd: c_int, flags: clap.ext.posix_fd_support.Flags) callconv(.c) bool {
+        if (thread_context.is_audio_thread) return false;
+        const self: *Host = @ptrCast(@alignCast(host.host_data));
+        for (&self.gui_fds) |*entry| {
+            if (entry.active and entry.fd == fd) {
+                entry.flags = flags;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn _posixFdUnregister(host: *const clap.Host, fd: c_int) callconv(.c) bool {
+        if (thread_context.is_audio_thread) return false;
+        const self: *Host = @ptrCast(@alignCast(host.host_data));
+        for (&self.gui_fds) |*entry| {
+            if (entry.active and entry.fd == fd) {
+                entry.active = false;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    fn pumpPluginTimers(self: *Host, io: std.Io) void {
+        const now_ns = nowNs(io);
+        for (&self.gui_timers) |*timer| {
+            if (!timer.active) continue;
+            if (!self.pluginIsLoaded(timer.plugin)) {
+                timer.active = false;
+                continue;
+            }
+            if (now_ns < timer.next_fire_ns) continue;
+
+            const ext_raw = timer.plugin.getExtension(timer.plugin, clap.ext.timer_support.id) orelse {
+                timer.active = false;
+                continue;
+            };
+            const ext: *const clap.ext.timer_support.Plugin = @ptrCast(@alignCast(ext_raw));
+            {
+                const previous = plugin_call_context.enter(timer.plugin);
+                defer plugin_call_context.restore(previous);
+                ext.onTimer(timer.plugin, timer.timer_id);
+            }
+
+            const period_ns = msToNs(timer.period_ms);
+            timer.next_fire_ns = now_ns + period_ns;
+        }
+    }
+
+    fn pumpPluginFds(self: *Host) void {
+        if (@import("builtin").os.tag != .linux) return;
+
+        var poll_fds: [max_gui_fds]std.posix.pollfd = undefined;
+        var sources: [max_gui_fds]*GuiFd = undefined;
+        var count: usize = 0;
+        for (&self.gui_fds) |*entry| {
+            if (!entry.active) continue;
+            if (!self.pluginIsLoaded(entry.plugin)) {
+                entry.active = false;
+                continue;
+            }
+            poll_fds[count] = .{
+                .fd = entry.fd,
+                .events = posixEventsFromFlags(entry.flags),
+                .revents = 0,
+            };
+            sources[count] = entry;
+            count += 1;
+        }
+        if (count == 0) return;
+
+        const ready_count = std.posix.poll(poll_fds[0..count], 0) catch return;
+        if (ready_count == 0) return;
+
+        for (poll_fds[0..count], sources[0..count]) |poll_fd, entry| {
+            if (poll_fd.revents == 0) continue;
+            const flags = flagsFromPosixEvents(poll_fd.revents);
+            const ext_raw = entry.plugin.getExtension(entry.plugin, clap.ext.posix_fd_support.id) orelse {
+                entry.active = false;
+                continue;
+            };
+            const ext: *const clap.ext.posix_fd_support.Plugin = @ptrCast(@alignCast(ext_raw));
+            {
+                const previous = plugin_call_context.enter(entry.plugin);
+                defer plugin_call_context.restore(previous);
+                ext.onFd(entry.plugin, entry.fd, flags);
+            }
+        }
+    }
+
+    fn pluginIsLoaded(self: *Host, plugin: *const clap.Plugin) bool {
+        if (self.track_plugins_ptr) |track_plugins| {
+            for (track_plugins) |track| {
+                if (track.getPlugin() == plugin) return true;
+            }
+        }
+        if (self.track_fx_ptr) |track_fx| {
+            for (track_fx) |track_slots| {
+                for (track_slots) |slot| {
+                    if (slot.getPlugin() == plugin) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    fn nowNs(io: std.Io) u64 {
+        const now = std.Io.Clock.awake.now(io);
+        const ns = now.toNanoseconds();
+        return if (ns > 0) @intCast(ns) else 0;
+    }
+
+    fn msToNs(ms: u32) u64 {
+        return @as(u64, ms) * std.time.ns_per_ms;
+    }
+
+    fn posixEventsFromFlags(flags: clap.ext.posix_fd_support.Flags) @FieldType(std.posix.pollfd, "events") {
+        var events: @FieldType(std.posix.pollfd, "events") = 0;
+        if (flags.read) events |= std.posix.POLL.IN;
+        if (flags.write) events |= std.posix.POLL.OUT;
+        if (flags.@"error") events |= std.posix.POLL.ERR;
+        return events;
+    }
+
+    fn flagsFromPosixEvents(events: @FieldType(std.posix.pollfd, "revents")) clap.ext.posix_fd_support.Flags {
+        return .{
+            .read = (events & std.posix.POLL.IN) != 0,
+            .write = (events & std.posix.POLL.OUT) != 0,
+            .@"error" = (events & std.posix.POLL.ERR) != 0,
+        };
     }
 
     // --- Undo extension callbacks ---
