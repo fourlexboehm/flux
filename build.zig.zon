@@ -53,8 +53,8 @@
             .hash = "zgui-0.6.0-dev--L6sZE1JbgAmjZuNyKApKTEr3u9li_7J3pUsJgiQ28CX",
         },
         .zaudio = .{
-            .url = "git+https://github.com/fourlexboehm/zaudio#ecf80fe743eea90819626e735900436e06e4bc53",
-            .hash = "zaudio-0.11.0-dev-_M-91owyQQD3MVQa4F1xkPgwSFWQi4HhhNfDwKI0PBWX",
+            .url = "git+https://github.com/fourlexboehm/zaudio#bb93ad665b89e302d4515a36b44cb8e73eaf6766",
+            .hash = "zaudio-0.11.0-dev-_M-91kHvPwAlW8MCRI4XiTbTeihqB8Zspgiuw-6Gqgdz",
         },
         .libz_jobs = .{
             .url = "git+https://github.com/fourlexboehm/LibZ.Jobs#2f9c153d79db8533d59e18645ffad0f833d00d3d",

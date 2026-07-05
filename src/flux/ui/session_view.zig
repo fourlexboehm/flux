@@ -148,10 +148,10 @@ pub const UndoRequest = struct {
     new_volume: f32 = 0,
     // For track_delete
     track_data: TrackSnapshot = .{},
-    track_clips: [constants.max_scenes]ClipSnapshot = [_]ClipSnapshot{.{}} ** constants.max_scenes,
+    track_clips: [constants.max_scenes]ClipSnapshot = @splat(.{}),
     // For scene_delete
     scene_data: SceneSnapshot = .{},
-    scene_clips: [constants.max_tracks]ClipSnapshot = [_]ClipSnapshot{.{}} ** constants.max_tracks,
+    scene_clips: [constants.max_tracks]ClipSnapshot = @splat(.{}),
 };
 
 /// Single clip move for undo
@@ -169,8 +169,8 @@ pub const RecordingState = struct {
     start_beat: f32 = 0,
     queued_at_beat: f32 = 0,
     target_length_beats: f32 = constants.default_clip_bars * constants.beats_per_bar, // 4 bars
-    note_start_beats: [128]?f32 = [_]?f32{null} ** 128, // Track held notes
-    note_start_velocities: [128]?f32 = [_]?f32{null} ** 128,
+    note_start_beats: [128]?f32 = @splat(null), // Track held notes
+    note_start_velocities: [128]?f32 = @splat(null),
     is_new_clip: bool = false,
 
     pub fn isRecording(self: *const RecordingState) bool {
@@ -183,8 +183,8 @@ pub const RecordingState = struct {
         self.start_beat = 0;
         self.queued_at_beat = 0;
         self.target_length_beats = constants.default_clip_bars * constants.beats_per_bar;
-        self.note_start_beats = [_]?f32{null} ** 128;
-        self.note_start_velocities = [_]?f32{null} ** 128;
+        self.note_start_beats = @splat(null);
+        self.note_start_velocities = @splat(null);
         self.is_new_clip = false;
     }
 };
@@ -206,7 +206,7 @@ pub const SessionView = struct {
     mixer_target: MixerTarget = .track,
 
     // Selection - simple 2D bool array
-    clip_selected: [constants.max_tracks][constants.max_scenes]bool = [_][constants.max_scenes]bool{[_]bool{false} ** constants.max_scenes} ** constants.max_tracks,
+    clip_selected: [constants.max_tracks][constants.max_scenes]bool = @splat(@splat(false)),
     primary_track: usize = 0,
     primary_scene: usize = 0,
     drag_select: selection.DragSelectState = .{},
@@ -227,10 +227,10 @@ pub const SessionView = struct {
     drag_target_track: ?usize = null, // Where clips will move to (preview)
     drag_target_scene: ?usize = null,
     // Cell positions for accurate ghost rendering (updated during clip rendering)
-    cell_positions: [constants.max_tracks][constants.max_scenes][2]f32 = [_][constants.max_scenes][2]f32{[_][2]f32{.{ 0, 0 }} ** constants.max_scenes} ** constants.max_tracks,
+    cell_positions: [constants.max_tracks][constants.max_scenes][2]f32 = @splat(@splat(.{ 0, 0 })),
 
     // Playback state
-    queued_scene: [constants.max_tracks]?usize = [_]?usize{null} ** constants.max_tracks,
+    queued_scene: [constants.max_tracks]?usize = @splat(null),
     open_clip_request: ?OpenClipRequest = null,
     start_playback_request: bool = false,
     reset_playhead_request: bool = false,

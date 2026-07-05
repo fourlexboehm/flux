@@ -377,7 +377,7 @@ fn _onMainThread(clap_plugin: *const clap.Plugin) callconv(.c) void {
         defer plugin.job_mutex.unlock(mutex_io);
         if (plugin.host.getExtension(plugin.host, clap.ext.params.id)) |host_header| {
             std.log.debug("Notifying host that params changed", .{});
-            var params_host: *clap.ext.params.Host = @constCast(@ptrCast(@alignCast(host_header)));
+            var params_host: *clap.ext.params.Host = @ptrCast(@alignCast(@constCast(host_header)));
             params_host.rescan(plugin.host, .{
                 .text = true,
                 .values = true,

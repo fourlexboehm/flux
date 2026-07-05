@@ -31,7 +31,7 @@ pub fn startRecording(self: *session_view.SessionView, track: usize, scene: usiz
     self.recording.track = track;
     self.recording.scene = scene;
     self.recording.target_length_beats = self.clips[track][scene].length_beats;
-    self.recording.note_start_beats = [_]?f32{null} ** 128;
+    self.recording.note_start_beats = @splat(null);
     self.recording.start_beat = 0;
     self.recording.queued_at_beat = playhead_beat;
 

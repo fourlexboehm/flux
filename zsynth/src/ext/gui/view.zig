@@ -162,10 +162,10 @@ fn drawContent(plugin: *Plugin, options: DrawOptions) void {
             const osc2_detune = plugin.params.get(.Pitch2).Float;
             const oscillator_mix: f32 = @floatCast(plugin.params.get(.Mix).Float);
 
-            var xv: [resolution]f32 = [_]f32{0} ** resolution;
-            var osc1_yv: [resolution]f32 = [_]f32{0} ** resolution;
-            var osc2_yv: [resolution]f32 = [_]f32{0} ** resolution;
-            var sum_yv: [resolution]f32 = [_]f32{0} ** resolution;
+            var xv: [resolution]f32 = @splat(0);
+            var osc1_yv: [resolution]f32 = @splat(0);
+            var osc2_yv: [resolution]f32 = @splat(0);
+            var sum_yv: [resolution]f32 = @splat(0);
             const osc1_key = diag_voice.getTunedKey(osc1_detune, osc1_octave);
             const osc2_key = diag_voice.getTunedKey(osc2_detune, osc2_octave);
             var osc1 = polyblep.PolyBLEP.init(sample_rate, polyblepWaveform(osc1_wave_shape), waves.getFrequency(osc1_key), 0.0);
@@ -236,7 +236,7 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
         .FilterQ,
         => {
             var val: f32 = @floatCast(plugin.params.get(param_type).Float);
-            var param_text_buf: [256]u8 = [_]u8{0} ** 256;
+            var param_text_buf: [256]u8 = @splat(0);
             _ = Params._valueToText(&plugin.plugin, @enumFromInt(index), val, &param_text_buf, 256);
             if (zgui.sliderFloat(
                 value_text,
@@ -267,7 +267,7 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
         },
         .Sustain, .Mix => {
             var val: f32 = @floatCast(plugin.params.get(param_type).Float);
-            var param_text_buf: [256]u8 = [_]u8{0} ** 256;
+            var param_text_buf: [256]u8 = @splat(0);
             _ = Params._valueToText(&plugin.plugin, @enumFromInt(index), val, &param_text_buf, 256);
             if (std.mem.indexOf(u8, &param_text_buf, "%")) |percent_index| {
                 if (percent_index < 255) {
@@ -301,7 +301,7 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
         .Octave1, .Octave2 => {
             const val_float: f32 = @floatCast(plugin.params.get(param_type).Float);
             var val: i32 = @intFromFloat(val_float);
-            var param_text_buf: [256]u8 = [_]u8{0} ** 256;
+            var param_text_buf: [256]u8 = @splat(0);
             _ = Params._valueToText(&plugin.plugin, @enumFromInt(index), val_float, &param_text_buf, 256);
             if (zgui.sliderInt(
                 value_text,
@@ -418,7 +418,7 @@ fn renderMix(plugin: *Plugin, osc1: bool, options: DrawOptions) void {
         val = 1 - val;
     }
 
-    var param_text_buf: [256]u8 = [_]u8{0} ** 256;
+    var param_text_buf: [256]u8 = @splat(0);
     _ = Params._valueToText(&plugin.plugin, @enumFromInt(index), val, &param_text_buf, 256);
     if (std.mem.indexOf(u8, &param_text_buf, "%")) |percent_index| {
         if (percent_index < 255) {

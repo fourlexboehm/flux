@@ -58,7 +58,7 @@ pub const ControllerSmartParam = struct {
     param_id: u32 = 0,
     min_value: f64 = 0.0,
     max_value: f64 = 1.0,
-    label: [96]u8 = [_]u8{0} ** 96,
+    label: [96]u8 = @splat(0),
     label_len: usize = 0,
 };
 
@@ -70,13 +70,13 @@ pub const ControllerState = struct {
     profile: ControllerProfile = .axiom_49_g2,
     smart_page: usize = 0,
     smart_param_count: usize = 0,
-    smart_params: [max_controller_smart_params]ControllerSmartParam = [_]ControllerSmartParam{.{}} ** max_controller_smart_params,
+    smart_params: [max_controller_smart_params]ControllerSmartParam = @splat(.{}),
     smart_target_track: usize = 0,
     smart_target_kind: DeviceTargetKind = .instrument,
     smart_target_fx: usize = 0,
     smart_target_plugin: ?*const clap.Plugin = null,
-    cc_button_down: [128]bool = [_]bool{false} ** 128,
-    last_cc_values: [128]u8 = [_]u8{0} ** 128,
+    cc_button_down: [128]bool = @splat(false),
+    last_cc_values: [128]u8 = @splat(0),
 };
 
 pub const State = struct {
@@ -145,8 +145,8 @@ pub const State = struct {
     // Undo/redo history
     undo_history: undo.UndoHistory,
     preset_catalog: ?*const presets.PresetCatalog = null,
-    instrument_search_buf: [64:0]u8 = [_:0]u8{0} ** 64,
-    preset_search_buf: [128:0]u8 = [_:0]u8{0} ** 128,
+    instrument_search_buf: [64:0]u8 = @splat(0),
+    preset_search_buf: [128:0]u8 = @splat(0),
 
     // Preset load request (handled by main.zig)
     preset_load_request: ?PresetLoadRequest = null,
@@ -224,7 +224,7 @@ pub const State = struct {
             .piano_clips = piano_clips_data,
             .track_plugins = track_plugins_data,
             .track_fx = track_fx_data,
-            .track_fx_slot_count = [_]usize{1} ** max_tracks,
+            .track_fx_slot_count = @splat(1),
             .plugin_items = plugin_items,
             .plugin_fx_items = &[_:0]u8{},
             .plugin_fx_indices = &[_]i32{},
@@ -235,15 +235,13 @@ pub const State = struct {
             .preset_filter_items_z = &[_:0]u8{},
             .preset_filter_indices = &[_]i32{},
             .plugin_divider_index = null,
-            .track_plugin_ptrs = [_]?*const clap.Plugin{null} ** max_tracks,
-            .track_fx_plugin_ptrs = [_][max_fx_slots]?*const clap.Plugin{
-                [_]?*const clap.Plugin{null} ** max_fx_slots,
-            } ** max_tracks,
-            .live_key_states = [_][128]bool{[_]bool{false} ** 128} ** max_tracks,
-            .previous_key_states = [_][128]bool{[_]bool{false} ** 128} ** max_tracks,
-            .live_key_velocities = [_][128]f32{[_]f32{0.0} ** 128} ** max_tracks,
-            .midi_note_states = [_]bool{false} ** 128,
-            .midi_note_velocities = [_]f32{0.0} ** 128,
+            .track_plugin_ptrs = @splat(null),
+            .track_fx_plugin_ptrs = @splat(@splat(null)),
+            .live_key_states = @splat(@splat(false)),
+            .previous_key_states = @splat(@splat(false)),
+            .live_key_velocities = @splat(@splat(0.0)),
+            .midi_note_states = @splat(false),
+            .midi_note_velocities = @splat(0.0),
             .keyboard_octave = 0,
             .controller = .{},
             .controller_param_writes = [_]ControllerParamWrite{.{
@@ -251,7 +249,7 @@ pub const State = struct {
                 .target_fx_index = -1,
                 .param_id = 0,
                 .value = 0.0,
-            }} ** max_controller_param_writes,
+            }},
             .controller_param_write_count = 0,
             .load_project_request = false,
             .save_project_request = false,

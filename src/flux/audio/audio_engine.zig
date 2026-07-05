@@ -23,21 +23,17 @@ pub const SharedState = struct {
     process_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     suspend_processing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     snapshots: []audio_graph.StateSnapshot,
-    track_plugins: [max_tracks]?*const clap.Plugin = [_]?*const clap.Plugin{null} ** max_tracks,
+    track_plugins: [max_tracks]?*const clap.Plugin = @splat(null),
     track_fx_plugins: [max_tracks][ui_state.max_fx_slots]?*const clap.Plugin =
-        [_][ui_state.max_fx_slots]?*const clap.Plugin{[_]?*const clap.Plugin{null} ** ui_state.max_fx_slots} ** max_tracks,
+        @splat(@splat(null)),
     /// Tracks which plugins need startProcessing called (done from audio thread)
-    plugins_need_start: [max_tracks]std.atomic.Value(bool) = [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** max_tracks,
+    plugins_need_start: [max_tracks]std.atomic.Value(bool) = @splat(std.atomic.Value(bool).init(false)),
     /// Tracks which plugins have had startProcessing called (for stopProcessing on cleanup)
-    plugins_started: [max_tracks]std.atomic.Value(bool) = [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** max_tracks,
+    plugins_started: [max_tracks]std.atomic.Value(bool) = @splat(std.atomic.Value(bool).init(false)),
     plugins_need_start_fx: [max_tracks][ui_state.max_fx_slots]std.atomic.Value(bool) =
-        [_][ui_state.max_fx_slots]std.atomic.Value(bool){
-            [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** ui_state.max_fx_slots,
-        } ** max_tracks,
+        @splat(@splat(std.atomic.Value(bool).init(false))),
     plugins_started_fx: [max_tracks][ui_state.max_fx_slots]std.atomic.Value(bool) =
-        [_][ui_state.max_fx_slots]std.atomic.Value(bool){
-            [_]std.atomic.Value(bool){std.atomic.Value(bool).init(false)} ** ui_state.max_fx_slots,
-        } ** max_tracks,
+        @splat(@splat(std.atomic.Value(bool).init(false))),
 
     pub fn init(allocator: std.mem.Allocator) !SharedState {
         var snapshots = try allocator.alloc(audio_graph.StateSnapshot, 2);
@@ -205,7 +201,6 @@ pub const SharedState = struct {
     pub fn clearFxPluginStarted(self: *SharedState, track_index: usize, fx_index: usize) void {
         self.plugins_started_fx[track_index][fx_index].store(false, .release);
     }
-
 
     pub fn snapshot(self: *SharedState) *const audio_graph.StateSnapshot {
         const current = self.active_index.load(.acquire);

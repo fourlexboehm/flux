@@ -831,7 +831,6 @@ pub fn build(
     var total_presets: usize = 0;
     var total_providers: usize = 0;
 
-
     var seen_paths: std.StringHashMapUnmanaged(void) = .{};
     defer {
         var it = seen_paths.iterator();
@@ -845,13 +844,10 @@ pub fn build(
         if (entry.kind != .clap and entry.kind != .builtin) continue;
         const path = entry.path orelse continue;
         var resolved_path: ?[]const u8 = null;
-        const scan_path = if (entry.kind == .clap)
-            blk: {
-                resolved_path = resolveClapBinaryPath(allocator, io, path) catch break :blk path;
-                break :blk resolved_path.?;
-            }
-        else
-            path;
+        const scan_path = if (entry.kind == .clap) blk: {
+            resolved_path = resolveClapBinaryPath(allocator, io, path) catch break :blk path;
+            break :blk resolved_path.?;
+        } else path;
         defer if (resolved_path) |value| allocator.free(value);
 
         if (seen_paths.contains(scan_path)) continue;

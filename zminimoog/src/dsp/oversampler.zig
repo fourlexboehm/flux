@@ -75,7 +75,7 @@ pub fn GlobalOversampler(comptime T: type, comptime max_factor: comptime_int) ty
     const num_taps = 31;
 
     return struct {
-        filter_state: [num_taps]T = [_]T{0.0} ** num_taps,
+        filter_state: [num_taps]T = @splat(0.0),
 
         // Pre-computed Kaiser window coefficients (β=8, ~70dB stopband attenuation)
         const coeffs_2x = generateKaiserFIR(T, num_taps, 2, 8.0);
@@ -88,7 +88,7 @@ pub fn GlobalOversampler(comptime T: type, comptime max_factor: comptime_int) ty
         }
 
         pub fn reset(self: *Self) void {
-            self.filter_state = [_]T{0.0} ** num_taps;
+            self.filter_state = @splat(0.0);
         }
 
         /// Decimate from 2x oversampled rate

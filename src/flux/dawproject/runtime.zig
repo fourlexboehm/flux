@@ -482,10 +482,8 @@ fn applyDawprojectToState(
     // Apply tracks
     const project_track_count = @min(proj.tracks.len, track_count);
     state.session.track_count = project_track_count;
-    var instrument_device_ids: [track_count]?[]const u8 = [_]?[]const u8{null} ** track_count;
-    var fx_device_ids: [track_count][ui_state.max_fx_slots]?[]const u8 = [_][ui_state.max_fx_slots]?[]const u8{
-        [_]?[]const u8{null} ** ui_state.max_fx_slots,
-    } ** track_count;
+    var instrument_device_ids: [track_count]?[]const u8 = @splat(null);
+    var fx_device_ids: [track_count][ui_state.max_fx_slots]?[]const u8 = @splat(@splat(null));
 
     for (0..project_track_count) |t| {
         state.track_plugins[t].choice_index = 0;

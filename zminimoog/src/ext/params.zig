@@ -203,10 +203,10 @@ fn getParamInfo(param: Parameter) Info {
         .default_value = 0,
         .min_value = 0,
         .max_value = 1,
-        .name = [_]u8{0} ** 256,
+        .name = @splat(0),
         .flags = .{ .is_automatable = true },
         .id = @enumFromInt(@intFromEnum(param)),
-        .module = [_]u8{0} ** 1024,
+        .module = @splat(0),
     };
 
     switch (param) {

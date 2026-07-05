@@ -46,8 +46,8 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
     if (in_grid and (zgui.isMouseClicked(.right) or (builtin.os.tag == .macos and ctrl_click))) {
         if (hover_track != null and hover_scene != null) {
             if (hover_has_content) {
-                if (!ops.isSelected(self,hover_track.?, hover_scene.?)) {
-                    ops.selectOnly(self,hover_track.?, hover_scene.?);
+                if (!ops.isSelected(self, hover_track.?, hover_scene.?)) {
+                    ops.selectOnly(self, hover_track.?, hover_scene.?);
                 } else {
                     self.primary_track = hover_track.?;
                     self.primary_scene = hover_scene.?;
@@ -80,13 +80,13 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
         var track_label_buf: [48]u8 = undefined;
         const track_del_label = std.fmt.bufPrintZ(&track_label_buf, "Delete Track \"{s}\"", .{self.tracks[self.primary_track].getName()}) catch "Delete Track";
         if (zgui.menuItem(track_del_label, .{ .enabled = self.track_count > 1 })) {
-            _ = ops.deleteTrack(self,self.primary_track);
+            _ = ops.deleteTrack(self, self.primary_track);
             menu_action = true;
         }
         var scene_label_buf: [48]u8 = undefined;
         const scene_del_label = std.fmt.bufPrintZ(&scene_label_buf, "Delete Scene \"{s}\"", .{self.scenes[self.primary_scene].getName()}) catch "Delete Scene";
         if (zgui.menuItem(scene_del_label, .{ .enabled = self.scene_count > 1 })) {
-            _ = ops.deleteScene(self,self.primary_scene);
+            _ = ops.deleteScene(self, self.primary_scene);
             menu_action = true;
         }
         zgui.endPopup();
@@ -99,7 +99,7 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
             const delta_track = @as(i32, @intCast(self.drag_target_track.?)) - @as(i32, @intCast(self.drag_start_track));
             const delta_scene = @as(i32, @intCast(self.drag_target_scene.?)) - @as(i32, @intCast(self.drag_start_scene));
             if (delta_track != 0 or delta_scene != 0) {
-                ops.moveSelectedClips(self,delta_track, delta_scene);
+                ops.moveSelectedClips(self, delta_track, delta_scene);
             }
         }
         self.drag_select.active = false;
@@ -119,7 +119,7 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
             self.drag_select.pending = false;
             self.drag_select.active = false;
             // Select this clip
-            ops.handleClipClick(self,hover_track.?, hover_scene.?, shift_down);
+            ops.handleClipClick(self, hover_track.?, hover_scene.?, shift_down);
         } else {
             // Start drag select
             self.drag_select.begin(mouse, shift_down);
@@ -237,7 +237,7 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
             if (has_clip_in_scene) {
                 playback_impl.launchScene(self, scene_idx, playing);
             } else {
-                ops.stopAllInScene(self,scene_idx);
+                ops.stopAllInScene(self, scene_idx);
             }
         }
         zgui.popStyleColor(.{ .count = 3 });
@@ -332,22 +332,22 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
 
         // Arrow keys for navigation
         if (zgui.isKeyPressed(.left_arrow, true)) {
-            ops.moveSelection(self,-1, 0, shift_down);
+            ops.moveSelection(self, -1, 0, shift_down);
         }
         if (zgui.isKeyPressed(.right_arrow, true)) {
-            ops.moveSelection(self,1, 0, shift_down);
+            ops.moveSelection(self, 1, 0, shift_down);
         }
         if (zgui.isKeyPressed(.up_arrow, true)) {
-            ops.moveSelection(self,0, -1, shift_down);
+            ops.moveSelection(self, 0, -1, shift_down);
         }
         if (zgui.isKeyPressed(.down_arrow, true)) {
-            ops.moveSelection(self,0, 1, shift_down);
+            ops.moveSelection(self, 0, 1, shift_down);
         }
 
         // Enter to create clip at selection
         if (zgui.isKeyPressed(.enter, false)) {
             if (self.clips[self.primary_track][self.primary_scene].state == .empty) {
-                ops.createClip(self,self.primary_track, self.primary_scene);
+                ops.createClip(self, self.primary_track, self.primary_scene);
             }
         }
     }
@@ -420,7 +420,7 @@ fn drawClipSlot(self: *session_view.SessionView, track: usize, scene: usize, wid
     self.cell_positions[track][scene] = pos;
 
     const slot = &self.clips[track][scene];
-    const is_selected = ops.isSelected(self,track, scene);
+    const is_selected = ops.isSelected(self, track, scene);
 
     // Check if this clip is being overdubbed (playing + recording)
     const is_overdub_clip = slot.state == .playing and self.recording.track == track and self.recording.scene == scene;
@@ -447,8 +447,8 @@ fn drawClipSlot(self: *session_view.SessionView, track: usize, scene: usize, wid
         const clip_min = pos;
         const clip_max = [2]f32{ pos[0] + clip_w, pos[1] + height };
         if (self.drag_select.intersects(clip_min, clip_max)) {
-            if (!ops.isSelected(self,track, scene) and slot.state != .empty) {
-                ops.selectClip(self,track, scene);
+            if (!ops.isSelected(self, track, scene) and slot.state != .empty) {
+                ops.selectClip(self, track, scene);
             }
         }
     }
@@ -599,9 +599,9 @@ fn drawClipSlot(self: *session_view.SessionView, track: usize, scene: usize, wid
     // Handle double-click to create/open clip
     if (over_clip and zgui.isMouseDoubleClicked(.left)) {
         if (slot.state == .empty) {
-            ops.createClip(self,track, scene);
+            ops.createClip(self, track, scene);
         }
-        ops.selectOnly(self,track, scene);
+        ops.selectOnly(self, track, scene);
         self.open_clip_request = .{ .track = track, .scene = scene };
     }
 
@@ -650,19 +650,21 @@ fn drawClipSlot(self: *session_view.SessionView, track: usize, scene: usize, wid
             // Click on recording/queued/overdubbing clip -> stop recording
             self.armed_track = null;
             if (is_recording) {
-                recording_impl.stopRecording(self,.loop);
+                recording_impl.stopRecording(self, .loop);
             } else if (is_overdubbing) {
                 // Stop overdub - just clear recording state, clip keeps playing
                 self.recording.reset();
             } else {
-                recording_impl.cancelRecording(self,);
+                recording_impl.cancelRecording(
+                    self,
+                );
             }
         } else if (is_armed_track and (is_empty or slot.state == .stopped)) {
             // Click record button on armed track -> start recording
-            recording_impl.startRecording(self,track, scene, playing, playhead_beat);
+            recording_impl.startRecording(self, track, scene, playing, playhead_beat);
         } else {
             // Normal play/stop behavior
-                playback_impl.toggleClipPlayback(self, track, scene, playing);
+            playback_impl.toggleClipPlayback(self, track, scene, playing);
         }
     }
     zgui.popStyleColor(.{ .count = 3 });
@@ -809,13 +811,13 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
             if (is_armed) {
                 // Disarm - also stop any active recording
                 if (self.recording.isRecording()) {
-                    recording_impl.stopRecording(self,.stop);
+                    recording_impl.stopRecording(self, .stop);
                 }
                 self.armed_track = null;
             } else {
                 // Arm this track (disarm any other)
                 if (self.recording.isRecording()) {
-                    recording_impl.stopRecording(self,.stop);
+                    recording_impl.stopRecording(self, .stop);
                 }
                 self.armed_track = track;
             }

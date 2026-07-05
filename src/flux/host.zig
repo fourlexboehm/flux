@@ -49,9 +49,9 @@ pub const Host = struct {
     undo_change_in_progress: bool = false,
     undo_track_index: ?usize = null, // Track that started the change
     undo_pre_state: ?[]u8 = null, // State captured at begin_change
-    gui_timers: [max_gui_timers]GuiTimer = [_]GuiTimer{.{ .plugin = undefined, .timer_id = .invalid_id, .period_ms = 0, .next_fire_ns = 0 }} ** max_gui_timers,
+    gui_timers: [max_gui_timers]GuiTimer = @splat(.{ .plugin = undefined, .timer_id = .invalid_id, .period_ms = 0, .next_fire_ns = 0 }),
     next_gui_timer_id: u32 = 1,
-    gui_fds: [max_gui_fds]GuiFd = [_]GuiFd{.{ .plugin = undefined, .fd = -1, .flags = .{ ._ = 0 } }} ** max_gui_fds,
+    gui_fds: [max_gui_fds]GuiFd = @splat(.{ .plugin = undefined, .fd = -1, .flags = .{ ._ = 0 } }),
 
     const thread_pool_ext = clap.ext.thread_pool.Host{
         .requestExec = _requestExec,

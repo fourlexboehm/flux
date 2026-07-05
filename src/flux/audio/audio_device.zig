@@ -22,7 +22,7 @@ pub const AudioThreadQos = enum(u8) {
     unchanged = 0,
     user_interactive = 1,
     user_initiated = 2,
-    @"default" = 3,
+    default = 3,
     utility = 4,
     background = 5,
 };
@@ -43,7 +43,7 @@ fn applyAudioThreadQosHint() void {
         .unchanged => return,
         .user_interactive => c.qos_class_t.USER_INTERACTIVE,
         .user_initiated => c.qos_class_t.USER_INITIATED,
-        .@"default" => c.qos_class_t.DEFAULT,
+        .default => c.qos_class_t.DEFAULT,
         .utility => c.qos_class_t.UTILITY,
         .background => c.qos_class_t.BACKGROUND,
     };
