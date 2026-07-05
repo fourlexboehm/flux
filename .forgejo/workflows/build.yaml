@@ -13,15 +13,15 @@ jobs:
           apt-get update
           apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libx11-dev libgl1-mesa-dev
 
-      - uses: https://codeberg.org/mlugg/setup-zig@v2
-
-
-      - name: Download macOS SDK
-        run: |
-          set -euo pipefail
-          curl -fL "https://github.com/joseluisq/macosx-sdks/releases/download/26.1/MacOSX26.1.sdk.tar.xz" -o macos-sdk.tar.xz
-          tar -xf macos-sdk.tar.xz
-          echo "MACOS_SDK=$PWD/MacOSX26.1.sdk" >> "$GITHUB_ENV"
+      - name: Setup Zig
+	        run: |
+	          set -euo pipefail
+	          ZIG_VERSION=$(grep -oP '\.minimum_zig_version\s*=\s*"\K[^"]+' build.zig.zon)
+	          ZIG_DIR="zig-x86_64-linux-${ZIG_VERSION}"
+	          ZIG_URL="https://ziglang.org/builds/${ZIG_DIR}.tar.xz"
+	          curl -fL "${ZIG_URL}" -o zig.tar.xz
+	          tar -xf zig.tar.xz
+	          echo "$PWD/${ZIG_DIR}" >> "$GITHUB_PATH"
 
       - name: Run tests
         run: zig build test
@@ -33,6 +33,13 @@ jobs:
           cp zig-out/lib/*.clap artifacts/linux-x86_64/ 2>/dev/null || true
           cp zig-out/lib/*.so artifacts/linux-x86_64/ 2>/dev/null || true
           cp zig-out/bin/* artifacts/linux-x86_64/ 2>/dev/null || true
+
+      - name: Download macOS SDK
+        run: |
+          set -euo pipefail
+          curl -fL "https://github.com/joseluisq/macosx-sdks/releases/download/26.1/MacOSX26.1.sdk.tar.xz" -o macos-sdk.tar.xz
+          tar -xf macos-sdk.tar.xz
+          echo "MACOS_SDK=$PWD/MacOSX26.1.sdk" >> "$GITHUB_ENV"
 
       - name: Build for macOS aarch64
         run: |
