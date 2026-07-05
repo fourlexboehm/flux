@@ -1079,7 +1079,7 @@ fn drawAutomationOverlay(
             const y1 = valueToY(prev.value, min_value, max_value, grid_window_pos[1], grid_view_height);
             const x2 = grid_window_pos[0] + point.time * pixels_per_beat - state.scroll_x;
             const y2 = valueToY(point.value, min_value, max_value, grid_window_pos[1], grid_view_height);
-        draw_list.addLine(.{ .p1 = .{ x1, y1 }, .p2 = .{ x2, y2 }, .col = line_color, .thickness = 2.0 });
+            draw_list.addLine(.{ .p1 = .{ x1, y1 }, .p2 = .{ x2, y2 }, .col = line_color, .thickness = 2.0 });
         }
     }
 

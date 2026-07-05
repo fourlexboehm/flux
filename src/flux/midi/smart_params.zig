@@ -115,7 +115,7 @@ pub fn rebuildIfNeeded(state: *State) void {
 }
 
 fn buildLabel(info: *const clap.ext.params.Info) [96]u8 {
-    var out = [_]u8{0} ** 96;
+    var out: [96]u8 = @splat(0);
     const name = sliceToNull(info.name[0..]);
     const module = sliceToNull(info.module[0..]);
     var idx: usize = 0;

@@ -48,15 +48,15 @@ const EventQueue = struct {
 };
 
 pub const MidiInput = struct {
-    note_states: [128]bool = [_]bool{false} ** 128,
-    note_velocities: [128]f32 = [_]f32{0.0} ** 128,
+    note_states: [128]bool = @splat(false),
+    note_velocities: [128]f32 = @splat(0.0),
     event_queue: EventQueue = .{},
     impl: Impl = undefined,
     active: bool = false,
 
     pub fn init(self: *MidiInput, allocator: std.mem.Allocator) !void {
-        self.note_states = [_]bool{false} ** 128;
-        self.note_velocities = [_]f32{0.0} ** 128;
+        self.note_states = @splat(false);
+        self.note_velocities = @splat(0.0);
         self.impl = .{};
         errdefer self.impl.deinit();
         try self.impl.init(allocator);
@@ -105,11 +105,11 @@ const PortMidiInput = struct {
     const capture_sleep_ns: u64 = 1_000_000; // 1ms
     const rescan_interval_loops: u32 = 500;
 
-    streams: [max_streams]?*pm.Stream = [_]?*pm.Stream{null} ** max_streams,
+    streams: [max_streams]?*pm.Stream = @splat(null),
     stream_count: usize = 0,
     device_count: i32 = 0,
-    note_on_hold_polls: [128]u8 = [_]u8{0} ** 128,
-    note_off_pending: [128]bool = [_]bool{false} ** 128,
+    note_on_hold_polls: [128]u8 = @splat(0),
+    note_off_pending: [128]bool = @splat(false),
     event_queue: EventQueue = .{},
     reset_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     running: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -234,10 +234,10 @@ const PortMidiInput = struct {
         self.openAllInputs();
     }
     fn clearInputState(self: *PortMidiInput, notes: *[128]bool, velocities: *[128]f32) void {
-        notes.* = [_]bool{false} ** 128;
-        velocities.* = [_]f32{0.0} ** 128;
-        self.note_on_hold_polls = [_]u8{0} ** 128;
-        self.note_off_pending = [_]bool{false} ** 128;
+        notes.* = @splat(false);
+        velocities.* = @splat(0.0);
+        self.note_on_hold_polls = @splat(0);
+        self.note_off_pending = @splat(false);
     }
 
     fn applyMidiMessage(

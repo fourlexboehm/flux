@@ -1,8 +1,6 @@
 const std = @import("std");
 
-const c = @cImport({
-    @cInclude("emu2413/emu2413.h");
-});
+const c = @import("emu2413_c");
 
 pub const PatchParam = enum(u8) {
     mod_attack = 0,
@@ -95,7 +93,7 @@ pub const Engine = struct {
             .program = 0,
             .tone_bank = .ym2413,
             .parameters = defaultParameters(),
-            .channels = [_]ChannelInfo{.{}} ** channel_count,
+            .channels = @splat(.{}),
             .last_channel = 0,
             .wheel = 0.0,
             .preset_mode = false,
@@ -118,7 +116,7 @@ pub const Engine = struct {
         c.OPLL_reset(self.opll);
         c.OPLL_reset_patch(self.opll, @intFromEnum(self.tone_bank));
 
-        self.channels = [_]ChannelInfo{.{}} ** channel_count;
+        self.channels = @splat(.{});
         self.last_channel = 0;
         self.wheel = 0.0;
         self.applyProgram();
@@ -297,10 +295,10 @@ pub fn presetProgramNames(bank: ToneBank) []const []const u8 {
 }
 
 const multiplier_texts = [_][]const u8{
-    "1/2", "1", "2", "3",
-    "4", "5", "6", "7",
-    "8", "9", "10", "10",
-    "12", "12", "15", "15",
+    "1/2", "1",  "2",  "3",
+    "4",   "5",  "6",  "7",
+    "8",   "9",  "10", "10",
+    "12",  "12", "15", "15",
 };
 
 const feedback_texts = [_][]const u8{
@@ -308,21 +306,21 @@ const feedback_texts = [_][]const u8{
 };
 
 const attack_texts = [_][]const u8{
-    "0", "0.28", "0.50", "0.84",
-    "1.69", "3.30", "6.76", "13.52",
-    "27.03", "54.87", "108.13", "216.27",
+    "0",      "0.28",   "0.50",    "0.84",
+    "1.69",   "3.30",   "6.76",    "13.52",
+    "27.03",  "54.87",  "108.13",  "216.27",
     "432.54", "865.88", "1730.15", "inf",
 };
 
 const decay_texts = [_][]const u8{
-    "1.27", "2.55", "5.11", "10.22",
-    "20.44", "40.07", "81.74", "163.49",
-    "326.98", "653.95", "1307.91", "2615.82",
+    "1.27",    "2.55",     "5.11",     "10.22",
+    "20.44",   "40.07",    "81.74",    "163.49",
+    "326.98",  "653.95",   "1307.91",  "2615.82",
     "5231.64", "10463.30", "20926.60", "inf",
 };
 
 fn defaultParameters() [synth_parameter_count]f32 {
-    var values = [_]f32{0.0} ** synth_parameter_count;
+    var values: [synth_parameter_count]f32 = @splat(0.0);
     values[@intFromEnum(SynthParameter.sl0)] = 1.0;
     values[@intFromEnum(SynthParameter.sl1)] = 1.0;
     values[@intFromEnum(SynthParameter.mul0)] = 1.1 / 15.0;

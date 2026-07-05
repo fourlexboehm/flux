@@ -78,13 +78,9 @@ pub const StateSnapshot = struct {
 pub const ClipNotes = struct {
     length_beats: f32 = default_clip_bars * beats_per_bar,
     count: u16 = 0,
-    notes: [max_clip_notes]PianoNote = [_]PianoNote{
-        .{ .pitch = 0, .start = 0, .duration = 0 },
-    } ** max_clip_notes,
+    notes: [max_clip_notes]PianoNote = @splat(.{ .pitch = 0, .start = 0, .duration = 0 }),
     automation_lane_count: u8 = 0,
-    automation_lanes: [max_automation_lanes]AutomationLane = [_]AutomationLane{
-        .{},
-    } ** max_automation_lanes,
+    automation_lanes: [max_automation_lanes]AutomationLane = @splat(.{}),
 };
 
 const max_input_events = 256;
@@ -105,9 +101,7 @@ pub const AutomationLane = struct {
     target_fx_index: i8 = -1,
     param_id: clap.Id = clap.Id.invalid_id,
     point_count: u16 = 0,
-    points: [max_automation_points]AutomationPoint = [_]AutomationPoint{
-        .{ .time = 0, .value = 0 },
-    } ** max_automation_points,
+    points: [max_automation_points]AutomationPoint = @splat(.{ .time = 0, .value = 0 }),
 };
 
 const EventList = struct {
@@ -182,8 +176,8 @@ pub const NoteSource = struct {
     target_fx_index: i8 = -1,
     current_beat: f64 = 0.0,
     // Track which pitches are currently sounding (by MIDI pitch 0-127)
-    active_pitches: [128]bool = [_]bool{false} ** 128,
-    last_live_should: [128]bool = [_]bool{false} ** 128,
+    active_pitches: [128]bool = @splat(false),
+    last_live_should: [128]bool = @splat(false),
     live_cache_valid: bool = false,
     last_playing: bool = false,
     last_scene: ?usize = null,
@@ -288,7 +282,7 @@ pub const NoteSource = struct {
         live_velocities: *const [128]f32,
     ) void {
         // Determine which pitches should be active at this beat
-        var should_be_active: [128]bool = [_]bool{false} ** 128;
+        var should_be_active: [128]bool = @splat(false);
         const clip_len = clip.length_beats;
 
         for (clip.notes[0..clip.count]) |note| {
@@ -338,8 +332,7 @@ pub const NoteSource = struct {
         }
 
         const active_scene_i = snapshot.active_scene_by_track[self.track_index];
-        if (active_scene_i >= 0) {
-        }
+        if (active_scene_i >= 0) {}
 
         if (active_scene_i < 0) {
             if (self.emit_notes) {

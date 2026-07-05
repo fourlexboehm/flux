@@ -188,13 +188,13 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .default_value = param_defaults.Attack.Float,
                 .min_value = 0,
                 .max_value = 20000,
-                .name = [_]u8{0} ** 256,
+                .name = @splat(0),
                 .flags = .{
                     .is_stepped = true,
                     .is_automatable = true,
                 },
                 .id = @enumFromInt(@intFromEnum(Parameter.Attack)),
-                .module = [_]u8{0} ** 1024,
+                .module = @splat(0),
             };
             std.mem.copyForwards(u8, &info.name, "Attack");
             std.mem.copyForwards(u8, &info.module, "Envelope/Attack");
@@ -205,13 +205,13 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .default_value = param_defaults.Decay.Float,
                 .min_value = 0,
                 .max_value = 20000,
-                .name = [_]u8{0} ** 256,
+                .name = @splat(0),
                 .flags = .{
                     .is_stepped = true,
                     .is_automatable = true,
                 },
                 .id = @enumFromInt(@intFromEnum(Parameter.Decay)),
-                .module = [_]u8{0} ** 1024,
+                .module = @splat(0),
             };
             std.mem.copyForwards(u8, &info.name, "Decay");
             std.mem.copyForwards(u8, &info.module, "Envelope/Decay");
@@ -222,7 +222,7 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .default_value = param_defaults.Sustain.Float,
                 .min_value = 0.0,
                 .max_value = 1.0,
-                .name = [_]u8{0} ** 256,
+                .name = @splat(0),
                 .flags = .{
                     .is_automatable = true,
                 },
@@ -238,14 +238,14 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .default_value = param_defaults.Release.Float,
                 .min_value = 0,
                 .max_value = 20000,
-                .name = [_]u8{0} ** 256,
+                .name = @splat(0),
 
                 .flags = .{
                     .is_stepped = true,
                     .is_automatable = true,
                 },
                 .id = @enumFromInt(@intFromEnum(Parameter.Release)),
-                .module = [_]u8{0} ** 1024,
+                .module = @splat(0),
             };
             std.mem.copyForwards(u8, &info.name, "Release");
             std.mem.copyForwards(u8, &info.module, "Envelope/Release");
@@ -256,14 +256,14 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .default_value = param_defaults.WaveShape1.asFloat(),
                 .min_value = 0,
                 .max_value = std.meta.fields(Wave).len,
-                .name = [_]u8{0} ** 256,
+                .name = @splat(0),
                 .flags = .{
                     .is_stepped = true,
                     .is_automatable = true,
                     .is_enum = true,
                 },
                 .id = @enumFromInt(@intFromEnum(Parameter.WaveShape1)),
-                .module = [_]u8{0} ** 1024,
+                .module = @splat(0),
             };
             std.mem.copyForwards(u8, &info.name, "Wave Shape 1");
             std.mem.copyForwards(u8, &info.module, "Oscillator/WaveShape1");
@@ -274,14 +274,14 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .default_value = param_defaults.WaveShape2.asFloat(),
                 .min_value = 0,
                 .max_value = std.meta.fields(Wave).len,
-                .name = [_]u8{0} ** 256,
+                .name = @splat(0),
                 .flags = .{
                     .is_stepped = true,
                     .is_automatable = true,
                     .is_enum = true,
                 },
                 .id = @enumFromInt(@intFromEnum(Parameter.WaveShape2)),
-                .module = [_]u8{0} ** 1024,
+                .module = @splat(0),
             };
             std.mem.copyForwards(u8, &info.name, "Wave Shape 2");
             std.mem.copyForwards(u8, &info.module, "Oscillator/WaveShape2");
@@ -292,14 +292,14 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .default_value = param_defaults.Octave1.Float,
                 .min_value = -2,
                 .max_value = 3,
-                .name = [_]u8{0} ** 256,
+                .name = @splat(0),
 
                 .flags = .{
                     .is_stepped = true,
                     .is_automatable = true,
                 },
                 .id = @enumFromInt(@intFromEnum(Parameter.Octave1)),
-                .module = [_]u8{0} ** 1024,
+                .module = @splat(0),
             };
             std.mem.copyForwards(u8, &info.name, "Octave 1");
             std.mem.copyForwards(u8, &info.module, "Oscillator/Octave1");
@@ -310,14 +310,14 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .default_value = param_defaults.Octave2.Float,
                 .min_value = -2,
                 .max_value = 3,
-                .name = [_]u8{0} ** 256,
+                .name = @splat(0),
 
                 .flags = .{
                     .is_stepped = true,
                     .is_automatable = true,
                 },
                 .id = @enumFromInt(@intFromEnum(Parameter.Octave2)),
-                .module = [_]u8{0} ** 1024,
+                .module = @splat(0),
             };
             std.mem.copyForwards(u8, &info.name, "Octave 2");
             std.mem.copyForwards(u8, &info.module, "Oscillator/Octave2");
@@ -328,13 +328,13 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .default_value = param_defaults.Pitch1.Float,
                 .min_value = -7.0,
                 .max_value = 7.0,
-                .name = [_]u8{0} ** 256,
+                .name = @splat(0),
 
                 .flags = .{
                     .is_automatable = true,
                 },
                 .id = @enumFromInt(@intFromEnum(Parameter.Pitch1)),
-                .module = [_]u8{0} ** 1024,
+                .module = @splat(0),
             };
             std.mem.copyForwards(u8, &info.name, "Pitch 1");
             std.mem.copyForwards(u8, &info.module, "Oscillator/Pitch1");
@@ -345,13 +345,13 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .default_value = param_defaults.Pitch2.Float,
                 .min_value = -7.0,
                 .max_value = 7.0,
-                .name = [_]u8{0} ** 256,
+                .name = @splat(0),
 
                 .flags = .{
                     .is_automatable = true,
                 },
                 .id = @enumFromInt(@intFromEnum(Parameter.Pitch2)),
-                .module = [_]u8{0} ** 1024,
+                .module = @splat(0),
             };
             std.mem.copyForwards(u8, &info.name, "Pitch 2");
             std.mem.copyForwards(u8, &info.module, "Oscillator/Pitch2");
@@ -362,13 +362,13 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .default_value = param_defaults.Mix.Float,
                 .min_value = 0,
                 .max_value = 1,
-                .name = [_]u8{0} ** 256,
+                .name = @splat(0),
 
                 .flags = .{
                     .is_automatable = true,
                 },
                 .id = @enumFromInt(@intFromEnum(Parameter.Mix)),
-                .module = [_]u8{0} ** 1024,
+                .module = @splat(0),
             };
             std.mem.copyForwards(u8, &info.name, "Mix");
             std.mem.copyForwards(u8, &info.module, "Oscillator/Mix");
@@ -379,13 +379,13 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .default_value = param_defaults.FilterEnable.asFloat(),
                 .min_value = 0,
                 .max_value = 1,
-                .name = [_]u8{0} ** 256,
+                .name = @splat(0),
                 .flags = .{
                     .is_stepped = true,
                     .is_automatable = true,
                 },
                 .id = @enumFromInt(@intFromEnum(Parameter.FilterEnable)),
-                .module = [_]u8{0} ** 1024,
+                .module = @splat(0),
             };
             std.mem.copyForwards(u8, &info.name, "Enable Filter");
             std.mem.copyForwards(u8, &info.module, "Filter/Enable");
@@ -396,7 +396,7 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .default_value = param_defaults.FilterType.asFloat(),
                 .min_value = 0,
                 .max_value = std.meta.fields(FilterType).len,
-                .name = [_]u8{0} ** 256,
+                .name = @splat(0),
 
                 .flags = .{
                     .is_stepped = true,
@@ -404,7 +404,7 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                     .is_enum = true,
                 },
                 .id = @enumFromInt(@intFromEnum(Parameter.FilterType)),
-                .module = [_]u8{0} ** 1024,
+                .module = @splat(0),
             };
             std.mem.copyForwards(u8, &info.name, "Filter Type");
             std.mem.copyForwards(u8, &info.module, "Filter/Type");
@@ -415,13 +415,13 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .default_value = param_defaults.FilterFreq.Float,
                 .min_value = 20,
                 .max_value = 20000,
-                .name = [_]u8{0} ** 256,
+                .name = @splat(0),
                 .flags = .{
                     .is_stepped = true,
                     .is_automatable = true,
                 },
                 .id = @enumFromInt(@intFromEnum(Parameter.FilterFreq)),
-                .module = [_]u8{0} ** 1024,
+                .module = @splat(0),
             };
             std.mem.copyForwards(u8, &info.name, "Frequency Cutoff");
             std.mem.copyForwards(u8, &info.module, "Filter/Frequency");
@@ -432,13 +432,13 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .default_value = param_defaults.FilterQ.Float,
                 .min_value = 1,
                 .max_value = 100,
-                .name = [_]u8{0} ** 256,
+                .name = @splat(0),
                 .flags = .{
                     .is_stepped = true,
                     .is_automatable = true,
                 },
                 .id = @enumFromInt(@intFromEnum(Parameter.FilterQ)),
-                .module = [_]u8{0} ** 1024,
+                .module = @splat(0),
             };
             std.mem.copyForwards(u8, &info.name, "Filter Q Factor");
             std.mem.copyForwards(u8, &info.module, "Filter/Q");
@@ -449,13 +449,13 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .default_value = param_defaults.ScaleVoices.asFloat(),
                 .min_value = 0,
                 .max_value = 1,
-                .name = [_]u8{0} ** 256,
+                .name = @splat(0),
                 .flags = .{
                     .is_stepped = true,
                     .is_automatable = true,
                 },
                 .id = @enumFromInt(@intFromEnum(Parameter.ScaleVoices)),
-                .module = [_]u8{0} ** 1024,
+                .module = @splat(0),
             };
             std.mem.copyForwards(u8, &info.name, "ScaleVoices");
             std.mem.copyForwards(u8, &info.module, "Oscillator/ScaleVoices");
@@ -467,14 +467,14 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .default_value = param_defaults.DebugBool1.asFloat(),
                 .min_value = 0,
                 .max_value = 1,
-                .name = [_]u8{0} ** 256,
+                .name = @splat(0),
                 .flags = .{
                     .is_stepped = true,
                     .is_automatable = builtin.mode == .Debug,
                     .is_hidden = builtin.mode != .Debug,
                 },
                 .id = @enumFromInt(@intFromEnum(Parameter.DebugBool1)),
-                .module = [_]u8{0} ** 1024,
+                .module = @splat(0),
             };
             std.mem.copyForwards(u8, &info.name, "Use Thread Pool");
             std.mem.copyForwards(u8, &info.module, "Debug/Bool1");
@@ -485,14 +485,14 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .default_value = param_defaults.DebugBool2.asFloat(),
                 .min_value = 0,
                 .max_value = 1,
-                .name = [_]u8{0} ** 256,
+                .name = @splat(0),
                 .flags = .{
                     .is_stepped = true,
                     .is_automatable = builtin.mode == .Debug,
                     .is_hidden = builtin.mode != .Debug,
                 },
                 .id = @enumFromInt(@intFromEnum(Parameter.DebugBool2)),
-                .module = [_]u8{0} ** 1024,
+                .module = @splat(0),
             };
             std.mem.copyForwards(u8, &info.name, "Bool2");
             std.mem.copyForwards(u8, &info.module, "Debug/Bool2");

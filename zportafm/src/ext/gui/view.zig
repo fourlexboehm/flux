@@ -105,10 +105,10 @@ fn renderSlider(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) 
     if (!Params._getInfo(&plugin.plugin, index, &info)) return;
 
     var value: f32 = @floatCast(plugin.params.get(param).Float);
-    var text_buf: [128]u8 = [_]u8{0} ** 128;
+    var text_buf: [128]u8 = @splat(0);
     _ = Params._valueToText(&plugin.plugin, @enumFromInt(index), value, &text_buf, text_buf.len);
 
-    var label_buf: [256]u8 = [_]u8{0} ** 256;
+    var label_buf: [256]u8 = @splat(0);
     const name = std.mem.sliceTo(&info.name, 0);
     const label = std.fmt.bufPrintZ(&label_buf, "{s}", .{name}) catch return;
 
@@ -131,7 +131,7 @@ fn renderToggle(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) 
     if (!Params._getInfo(&plugin.plugin, index, &info)) return;
 
     var enabled = plugin.params.get(param).Float >= 0.5;
-    var label_buf: [256]u8 = [_]u8{0} ** 256;
+    var label_buf: [256]u8 = @splat(0);
     const name = std.mem.sliceTo(&info.name, 0);
     const label = std.fmt.bufPrintZ(&label_buf, "{s}", .{name}) catch return;
 
@@ -153,11 +153,11 @@ fn renderCombo(plugin: *Plugin, param: Params.Parameter, items: []const []const 
         current -= 1;
     }
 
-    var label_buf: [256]u8 = [_]u8{0} ** 256;
+    var label_buf: [256]u8 = @splat(0);
     const name = std.mem.sliceTo(&info.name, 0);
     const label = std.fmt.bufPrintZ(&label_buf, "{s}", .{name}) catch return;
 
-    var items_buf: [512]u8 = [_]u8{0} ** 512;
+    var items_buf: [512]u8 = @splat(0);
     var pos: usize = 0;
     for (items) |item| {
         if (pos + item.len + 1 >= items_buf.len) break;

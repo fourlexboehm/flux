@@ -11,8 +11,8 @@ pub fn updateKeyboardMidi(state: *State) void {
     if (zgui.io.getWantTextInput() and zgui.isAnyItemActive()) {
         // Clear all key states when text input is active to release any held notes
         for (0..max_tracks) |track_index| {
-            state.live_key_states[track_index] = [_]bool{false} ** 128;
-            state.live_key_velocities[track_index] = [_]f32{0.0} ** 128;
+            state.live_key_states[track_index] = @splat(false);
+            state.live_key_velocities[track_index] = @splat(0.0);
         }
         return;
     }
@@ -49,8 +49,8 @@ pub fn updateKeyboardMidi(state: *State) void {
 
     const octave_offset: i16 = @as(i16, state.keyboard_octave) * 12;
 
-    var pressed = [_]bool{false} ** 128;
-    var pressed_velocities = [_]f32{0.0} ** 128;
+    var pressed: [128]bool = @splat(false);
+    var pressed_velocities: [128]f32 = @splat(0.0);
     for (mappings) |mapping| {
         if (zgui.isKeyDown(mapping.key)) {
             const pitch: i16 = @as(i16, keyboard_base_pitch) + @as(i16, mapping.offset) + octave_offset;
@@ -75,8 +75,8 @@ pub fn updateKeyboardMidi(state: *State) void {
             state.live_key_states[track_index] = pressed;
             state.live_key_velocities[track_index] = pressed_velocities;
         } else {
-            state.live_key_states[track_index] = [_]bool{false} ** 128;
-            state.live_key_velocities[track_index] = [_]f32{0.0} ** 128;
+            state.live_key_states[track_index] = @splat(false);
+            state.live_key_velocities[track_index] = @splat(0.0);
         }
     }
 }

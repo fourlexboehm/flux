@@ -48,12 +48,10 @@ pub fn fromFluxProject(
     var tracks_list = std.ArrayList(Track).empty;
     var track_lanes = std.ArrayList(Lanes).empty;
     var track_ids = std.ArrayList([]const u8).empty; // Store track IDs for ClipSlot references
-    var instrument_device_ids: [track_count]?[]const u8 = [_]?[]const u8{null} ** track_count;
-    var track_volume_param_ids: [track_count]?[]const u8 = [_]?[]const u8{null} ** track_count;
-    var track_pan_param_ids: [track_count]?[]const u8 = [_]?[]const u8{null} ** track_count;
-    var fx_device_ids: [track_count][ui_state.max_fx_slots]?[]const u8 = [_][ui_state.max_fx_slots]?[]const u8{
-        [_]?[]const u8{null} ** ui_state.max_fx_slots,
-    } ** track_count;
+    var instrument_device_ids: [track_count]?[]const u8 = @splat(null);
+    var track_volume_param_ids: [track_count]?[]const u8 = @splat(null);
+    var track_pan_param_ids: [track_count]?[]const u8 = @splat(null);
+    var fx_device_ids: [track_count][ui_state.max_fx_slots]?[]const u8 = @splat(@splat(null));
 
     const master_channel_id = try ids.next();
 

@@ -81,7 +81,7 @@ pub fn Oversampler(comptime T: type, comptime factor: comptime_int) type {
     return struct {
         // Half-band filter coefficients (optimized for oversampling)
         // Using a simple but effective 7-tap half-band filter
-        filter_state: [7]T = [_]T{0.0} ** 7,
+        filter_state: [7]T = @splat(0.0),
         output_accumulator: T = 0.0,
 
         const Self = @This();
@@ -99,7 +99,7 @@ pub fn Oversampler(comptime T: type, comptime factor: comptime_int) type {
         }
 
         pub fn reset(self: *Self) void {
-            self.filter_state = [_]T{0.0} ** 7;
+            self.filter_state = @splat(0.0);
             self.output_accumulator = 0.0;
         }
 

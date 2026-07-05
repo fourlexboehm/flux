@@ -118,11 +118,11 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
     }
 
     var val: f32 = @floatCast(plugin.params.get(param).Float);
-    var label_buf: [256]u8 = [_]u8{0} ** 256;
+    var label_buf: [256]u8 = @splat(0);
     const name = std.mem.sliceTo(&info.name, 0);
     const label = std.fmt.bufPrintZ(&label_buf, "{s}", .{name}) catch return;
 
-    var text_buf: [256]u8 = [_]u8{0} ** 256;
+    var text_buf: [256]u8 = @splat(0);
     _ = Params._valueToText(&plugin.plugin, @enumFromInt(index), val, &text_buf, 256);
 
     if (zgui.sliderFloat(label, .{
@@ -148,7 +148,7 @@ fn renderCombo(plugin: *Plugin, param: Params.Parameter, items: []const []const 
     const val: f32 = @floatCast(plugin.params.get(param).Float);
     var current: i32 = @intFromFloat(@round(@max(0.0, @min(@as(f32, @floatFromInt(items.len - 1)), val))));
 
-    var label_buf: [256]u8 = [_]u8{0} ** 256;
+    var label_buf: [256]u8 = @splat(0);
     const name = std.mem.sliceTo(&info.name, 0);
     const label = std.fmt.bufPrintZ(&label_buf, "{s}", .{name}) catch return;
 
@@ -163,7 +163,7 @@ fn renderCombo(plugin: *Plugin, param: Params.Parameter, items: []const []const 
         .current_item = &current,
         .items_separated_by_zeros = blk: {
             // Build null-separated string
-            var buf: [512]u8 = [_]u8{0} ** 512;
+            var buf: [512]u8 = @splat(0);
             var pos: usize = 0;
             for (items) |item| {
                 if (pos + item.len + 1 >= buf.len) break;
@@ -184,7 +184,7 @@ fn renderToggle(plugin: *Plugin, param: Params.Parameter, label_text: []const u8
     const val: f32 = @floatCast(plugin.params.get(param).Float);
     var enabled: bool = val >= 0.5;
 
-    var label_buf: [256]u8 = [_]u8{0} ** 256;
+    var label_buf: [256]u8 = @splat(0);
     const label = std.fmt.bufPrintZ(&label_buf, "{s}", .{label_text}) catch return;
 
     if (zgui.checkbox(label, .{ .v = &enabled })) {

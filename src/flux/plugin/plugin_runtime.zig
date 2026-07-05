@@ -136,9 +136,9 @@ pub fn collectPlugins(
     track_plugins: *const [track_count]TrackPlugin,
     track_fx: *const [track_count][ui_state.max_fx_slots]TrackPlugin,
 ) PluginSnapshot {
-    var instruments: [track_count]?*const clap.Plugin = [_]?*const clap.Plugin{null} ** track_count;
+    var instruments: [track_count]?*const clap.Plugin = @splat(null);
     var fx: [track_count][ui_state.max_fx_slots]?*const clap.Plugin =
-        [_][ui_state.max_fx_slots]?*const clap.Plugin{[_]?*const clap.Plugin{null} ** ui_state.max_fx_slots} ** track_count;
+        @splat(@splat(null));
 
     for (0..track_count) |t| {
         // All plugins (builtin and external) are now in TrackPlugin
