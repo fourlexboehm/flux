@@ -117,7 +117,7 @@ pub const param_defaults = std.enums.EnumFieldStruct(Parameter, ParameterValue, 
     .OversampleFactor = .{ .Float = 2.0 }, // 0=1x, 1=2x, 2=4x (default 4x)
 };
 
-pub const param_count = std.meta.fields(Parameter).len;
+pub const param_count = std.meta.fieldNames(Parameter).len;
 
 values: ParameterArray = .init(param_defaults),
 mutex: std.Io.Mutex,
@@ -461,36 +461,36 @@ pub fn _valueToText(
 
     // Format with units based on parameter type
     const out = switch (param) {
-        .FilterCutoff => std.fmt.bufPrintZ(buffer[0..size], "{d:.0} Hz", .{value}),
-        .Attack, .Decay, .Release, .Glide => std.fmt.bufPrintZ(buffer[0..size], "{d:.3} s", .{value}),
-        .Osc2Detune, .Osc3Detune => std.fmt.bufPrintZ(buffer[0..size], "{d:.1} ct", .{value}),
-        .PitchBendRange => std.fmt.bufPrintZ(buffer[0..size], "{d:.0} st", .{value}),
+        .FilterCutoff => std.fmt.bufPrintSentinel(buffer[0..size], "{d:.0} Hz", .{value}, 0),
+        .Attack, .Decay, .Release, .Glide => std.fmt.bufPrintSentinel(buffer[0..size], "{d:.3} s", .{value}, 0),
+        .Osc2Detune, .Osc3Detune => std.fmt.bufPrintSentinel(buffer[0..size], "{d:.1} ct", .{value}, 0),
+        .PitchBendRange => std.fmt.bufPrintSentinel(buffer[0..size], "{d:.0} st", .{value}, 0),
         .Osc1Waveform, .Osc2Waveform, .Osc3Waveform => blk: {
             const idx: usize = @intFromFloat(@round(@max(0.0, @min(5.0, value))));
-            break :blk std.fmt.bufPrintZ(buffer[0..size], "{s}", .{waveform_names[idx]});
+            break :blk std.fmt.bufPrintSentinel(buffer[0..size], "{s}", .{waveform_names[idx]}, 0);
         },
         .Osc1Range, .Osc2Range, .Osc3Range => blk: {
             const idx: usize = @intFromFloat(@round(@max(0.0, @min(5.0, value))));
-            break :blk std.fmt.bufPrintZ(buffer[0..size], "{s}", .{range_names[idx]});
+            break :blk std.fmt.bufPrintSentinel(buffer[0..size], "{s}", .{range_names[idx]}, 0);
         },
         .NoiseType => blk: {
             const idx: usize = @intFromFloat(@round(@max(0.0, @min(1.0, value))));
-            break :blk std.fmt.bufPrintZ(buffer[0..size], "{s}", .{noise_names[idx]});
+            break :blk std.fmt.bufPrintSentinel(buffer[0..size], "{s}", .{noise_names[idx]}, 0);
         },
         .FilterKeyTracking => blk: {
             const idx: usize = @intFromFloat(@round(@max(0.0, @min(2.0, value))));
-            break :blk std.fmt.bufPrintZ(buffer[0..size], "{s}", .{tracking_names[idx]});
+            break :blk std.fmt.bufPrintSentinel(buffer[0..size], "{s}", .{tracking_names[idx]}, 0);
         },
         .Osc3KeyboardCtrl, .Osc3ToFilter, .Osc3ToOsc => blk: {
             const idx: usize = @intFromFloat(@round(@max(0.0, @min(1.0, value))));
-            break :blk std.fmt.bufPrintZ(buffer[0..size], "{s}", .{switch_names[idx]});
+            break :blk std.fmt.bufPrintSentinel(buffer[0..size], "{s}", .{switch_names[idx]}, 0);
         },
         .OversampleFactor => blk: {
             const idx: usize = @intFromFloat(@round(@max(0.0, @min(2.0, value))));
-            break :blk std.fmt.bufPrintZ(buffer[0..size], "{s}", .{oversample_names[idx]});
+            break :blk std.fmt.bufPrintSentinel(buffer[0..size], "{s}", .{oversample_names[idx]}, 0);
         },
-        .FilterEmphasis => std.fmt.bufPrintZ(buffer[0..size], "{d:.2}", .{value}),
-        else => std.fmt.bufPrintZ(buffer[0..size], "{d:.2}", .{value}),
+        .FilterEmphasis => std.fmt.bufPrintSentinel(buffer[0..size], "{d:.2}", .{value}, 0),
+        else => std.fmt.bufPrintSentinel(buffer[0..size], "{d:.2}", .{value}, 0),
     } catch return false;
     _ = out;
     return true;

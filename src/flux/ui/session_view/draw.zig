@@ -78,13 +78,13 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
         zgui.separator();
         // Delete track/scene options
         var track_label_buf: [48]u8 = undefined;
-        const track_del_label = std.fmt.bufPrintZ(&track_label_buf, "Delete Track \"{s}\"", .{self.tracks[self.primary_track].getName()}) catch "Delete Track";
+        const track_del_label = std.fmt.bufPrintSentinel(&track_label_buf, "Delete Track \"{s}\"", .{self.tracks[self.primary_track].getName()}, 0) catch "Delete Track";
         if (zgui.menuItem(track_del_label, .{ .enabled = self.track_count > 1 })) {
             _ = ops.deleteTrack(self, self.primary_track);
             menu_action = true;
         }
         var scene_label_buf: [48]u8 = undefined;
-        const scene_del_label = std.fmt.bufPrintZ(&scene_label_buf, "Delete Scene \"{s}\"", .{self.scenes[self.primary_scene].getName()}) catch "Delete Scene";
+        const scene_del_label = std.fmt.bufPrintSentinel(&scene_label_buf, "Delete Scene \"{s}\"", .{self.scenes[self.primary_scene].getName()}, 0) catch "Delete Scene";
         if (zgui.menuItem(scene_del_label, .{ .enabled = self.scene_count > 1 })) {
             _ = ops.deleteScene(self, self.primary_scene);
             menu_action = true;
@@ -181,7 +181,7 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
 
         // Make track header clickable
         var track_buf: [32]u8 = undefined;
-        const track_label = std.fmt.bufPrintZ(&track_buf, "{s}##track_hdr{d}", .{ self.tracks[t].getName(), t }) catch "Track";
+        const track_label = std.fmt.bufPrintSentinel(&track_buf, "{s}##track_hdr{d}", .{ self.tracks[t].getName(), t }, 0) catch "Track";
         const track_pad = 4.0 * ui_scale;
         zgui.setCursorPosX(zgui.getCursorPosX() + track_pad);
         if (zgui.selectable(track_label, .{ .selected = is_track_selected, .w = track_col_w - track_pad * 2.0 })) {
@@ -225,7 +225,7 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
         zgui.setCursorPosY(row_start_y + vertical_padding);
         const launch_pos = zgui.getCursorScreenPos();
         var launch_buf: [32]u8 = undefined;
-        const launch_id = std.fmt.bufPrintZ(&launch_buf, "##scene_launch{d}", .{scene_idx}) catch "##launch";
+        const launch_id = std.fmt.bufPrintSentinel(&launch_buf, "##scene_launch{d}", .{scene_idx}, 0) catch "##launch";
 
         // Check if any clip exists in this scene
         const has_clip_in_scene = ops.hasClipInScene(self, scene_idx);
@@ -276,7 +276,7 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
         const frame_padding = zgui.getStyle().frame_padding;
         const selectable_height = scene_text_size[1] + frame_padding[1] * 2.0;
         zgui.setCursorPosY(row_start_y + (row_height - selectable_height) / 2.0);
-        const scene_label = std.fmt.bufPrintZ(&scene_buf, "{s}##scene_hdr{d}", .{ scene_name, scene_idx }) catch "Scene";
+        const scene_label = std.fmt.bufPrintSentinel(&scene_buf, "{s}##scene_hdr{d}", .{ scene_name, scene_idx }, 0) catch "Scene";
         if (zgui.selectable(scene_label, .{ .selected = is_scene_selected, .w = scene_col_w - launch_size - 12.0 * ui_scale })) {
             self.primary_scene = scene_idx;
             ops.clearSelection(self);
@@ -562,7 +562,7 @@ fn drawClipSlot(self: *session_view.SessionView, track: usize, scene: usize, wid
     } else if (slot.state != .empty) {
         const bars = slot.length_beats / beats_per_bar;
         var buf: [16]u8 = undefined;
-        const label = std.fmt.bufPrintZ(&buf, "{d:.0} bars", .{bars}) catch "";
+        const label = std.fmt.bufPrintSentinel(&buf, "{d:.0} bars", .{bars}, 0) catch "";
         // Use dark text for all non-empty clips (better contrast on colored backgrounds)
         const text_color = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright);
         const label_size = zgui.calcTextSize(label, .{});
@@ -571,7 +571,7 @@ fn drawClipSlot(self: *session_view.SessionView, track: usize, scene: usize, wid
 
     // Invisible button for clip interaction
     var clip_buf: [32]u8 = undefined;
-    const clip_id = std.fmt.bufPrintZ(&clip_buf, "##clip_t{d}s{d}", .{ track, scene }) catch "##clip";
+    const clip_id = std.fmt.bufPrintSentinel(&clip_buf, "##clip_t{d}s{d}", .{ track, scene }, 0) catch "##clip";
 
     const over_clip = mouse[0] >= pos[0] and mouse[0] < pos[0] + clip_w and
         mouse[1] >= pos[1] and mouse[1] < pos[1] + height;
@@ -610,7 +610,7 @@ fn drawClipSlot(self: *session_view.SessionView, track: usize, scene: usize, wid
     // Play/Record button
     const play_pos = zgui.getCursorScreenPos();
     var play_buf: [32]u8 = undefined;
-    const play_id = std.fmt.bufPrintZ(&play_buf, "##play_t{d}s{d}", .{ track, scene }) catch "##play";
+    const play_id = std.fmt.bufPrintSentinel(&play_buf, "##play_t{d}s{d}", .{ track, scene }, 0) catch "##play";
 
     const is_playing_clip = slot.state == .playing;
     const is_queued = slot.state == .queued;
@@ -751,7 +751,7 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
 
     // Mute button
     var mute_buf: [32]u8 = undefined;
-    const mute_id = std.fmt.bufPrintZ(&mute_buf, "M##mute{d}", .{track}) catch "M";
+    const mute_id = std.fmt.bufPrintSentinel(&mute_buf, "M##mute{d}", .{track}, 0) catch "M";
 
     const mute_bg = if (self.tracks[track].mute) colors.Colors.current.clip_stopped else colors.Colors.current.bg_cell;
     const mute_text = if (self.tracks[track].mute) colors.Colors.current.text_bright else colors.Colors.current.text_dim;
@@ -775,7 +775,7 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
 
         // Solo button
         var solo_buf: [32]u8 = undefined;
-        const solo_id = std.fmt.bufPrintZ(&solo_buf, "S##solo{d}", .{track}) catch "S";
+        const solo_id = std.fmt.bufPrintSentinel(&solo_buf, "S##solo{d}", .{track}, 0) catch "S";
 
         const solo_bg = if (self.tracks[track].solo) colors.Colors.current.clip_queued else colors.Colors.current.bg_cell;
         const solo_text = if (self.tracks[track].solo) colors.Colors.current.text_bright else colors.Colors.current.text_dim;
@@ -796,7 +796,7 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
 
         // Record Arm button
         var arm_buf: [32]u8 = undefined;
-        const arm_id = std.fmt.bufPrintZ(&arm_buf, "R##arm{d}", .{track}) catch "R";
+        const arm_id = std.fmt.bufPrintSentinel(&arm_buf, "R##arm{d}", .{track}, 0) catch "R";
 
         const is_armed = self.armed_track != null and self.armed_track.? == track;
         const arm_bg = if (is_armed) colors.Colors.current.record_armed else colors.Colors.current.bg_cell;
@@ -836,7 +836,7 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
     const slider_screen_pos = zgui.getCursorScreenPos();
 
     var vol_buf: [32]u8 = undefined;
-    const vol_id = std.fmt.bufPrintZ(&vol_buf, "##vol{d}", .{track}) catch "##vol";
+    const vol_id = std.fmt.bufPrintSentinel(&vol_buf, "##vol{d}", .{track}, 0) catch "##vol";
 
     zgui.pushStyleColor4f(.{ .idx = .frame_bg, .c = colors.Colors.current.bg_cell });
     zgui.pushStyleColor4f(.{ .idx = .frame_bg_hovered, .c = colors.Colors.current.bg_cell_hover });
@@ -913,8 +913,8 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
         -60.0;
     var label_buf: [24]u8 = undefined;
     const label = if (is_master)
-        std.fmt.bufPrintZ(&label_buf, "Master {d:.0}dB", .{db}) catch "Master"
+        std.fmt.bufPrintSentinel(&label_buf, "Master {d:.0}dB", .{db}, 0) catch "Master"
     else
-        std.fmt.bufPrintZ(&label_buf, "{d:.0}dB", .{db}) catch "";
+        std.fmt.bufPrintSentinel(&label_buf, "{d:.0}dB", .{db}, 0) catch "";
     zgui.textColored(colors.Colors.current.text_dim, "{s}", .{label});
 }

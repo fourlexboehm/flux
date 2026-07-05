@@ -58,7 +58,7 @@ const SynthParameter = enum(u8) {
     fine_tune,
 };
 
-const synth_parameter_count = std.meta.fields(SynthParameter).len;
+const synth_parameter_count = std.meta.fieldNames(SynthParameter).len;
 const channel_count = 9;
 const master_clock: u32 = 3_579_545;
 const program_first_preset = 1;
@@ -436,7 +436,7 @@ fn patchParamToSynthParam(param: PatchParam) SynthParameter {
 }
 
 fn writeText(buffer: []u8, text: []const u8) bool {
-    _ = std.fmt.bufPrintZ(buffer, "{s}", .{text}) catch return false;
+    _ = std.fmt.bufPrintSentinel(buffer, "{s}", .{text}, 0) catch return false;
     return true;
 }
 
@@ -453,7 +453,7 @@ fn parameterText(param: SynthParameter, value: f32, buffer: []u8) bool {
         },
         .sl0, .sl1, .tl => {
             const level: i32 = @intFromFloat((1.0 - clamped) * 45.0);
-            _ = std.fmt.bufPrintZ(buffer, "{d}", .{level}) catch return false;
+            _ = std.fmt.bufPrintSentinel(buffer, "{d}", .{level}, 0) catch return false;
             return true;
         },
         .mul0, .mul1 => {
@@ -466,11 +466,11 @@ fn parameterText(param: SynthParameter, value: f32, buffer: []u8) bool {
         },
         .wheel_range => {
             const semitones: i32 = @intFromFloat(clamped * 12.0);
-            _ = std.fmt.bufPrintZ(buffer, "{d}", .{semitones}) catch return false;
+            _ = std.fmt.bufPrintSentinel(buffer, "{d}", .{semitones}, 0) catch return false;
             return true;
         },
         .fine_tune => {
-            _ = std.fmt.bufPrintZ(buffer, "{d:.2}", .{(clamped - 0.5) * 100.0}) catch return false;
+            _ = std.fmt.bufPrintSentinel(buffer, "{d:.2}", .{(clamped - 0.5) * 100.0}, 0) catch return false;
             return true;
         },
         else => return writeText(buffer, if (clamped < 0.5) "off" else "on"),

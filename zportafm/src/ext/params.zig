@@ -85,7 +85,7 @@ pub const param_defaults = std.enums.EnumFieldStruct(Parameter, ParameterValue, 
     .Bank = .{ .Float = 0.0 },
 };
 
-pub const param_count = std.meta.fields(Parameter).len;
+pub const param_count = std.meta.fieldNames(Parameter).len;
 
 values: ParameterArray = .init(param_defaults),
 mutex: std.Io.Mutex,
@@ -448,35 +448,35 @@ pub fn _valueToText(
 
     switch (param) {
         .VoiceMode => {
-            _ = std.fmt.bufPrintZ(out, "{s}", .{modeName(value)}) catch return false;
+            _ = std.fmt.bufPrintSentinel(out, "{s}", .{modeName(value)}, 0) catch return false;
             return true;
         },
         .Bank => {
-            _ = std.fmt.bufPrintZ(out, "{s}", .{bankName(value)}) catch return false;
+            _ = std.fmt.bufPrintSentinel(out, "{s}", .{bankName(value)}, 0) catch return false;
             return true;
         },
         .Instrument => {
-            _ = std.fmt.bufPrintZ(out, "{s}", .{instrumentName(currentBank(clap_plugin), value)}) catch return false;
+            _ = std.fmt.bufPrintSentinel(out, "{s}", .{instrumentName(currentBank(clap_plugin), value)}, 0) catch return false;
             return true;
         },
         .PitchWheelRange => {
-            _ = std.fmt.bufPrintZ(out, "{d:.0} st", .{value}) catch return false;
+            _ = std.fmt.bufPrintSentinel(out, "{d:.0} st", .{value}, 0) catch return false;
             return true;
         },
         .FineTune => {
-            _ = std.fmt.bufPrintZ(out, "{d:.1} ct", .{value}) catch return false;
+            _ = std.fmt.bufPrintSentinel(out, "{d:.1} ct", .{value}, 0) catch return false;
             return true;
         },
         .OutputLevel => {
-            _ = std.fmt.bufPrintZ(out, "{d:.0}%", .{value * 100.0}) catch return false;
+            _ = std.fmt.bufPrintSentinel(out, "{d:.0}%", .{value * 100.0}, 0) catch return false;
             return true;
         },
         .ModWave, .CarWave => {
-            _ = std.fmt.bufPrintZ(out, "{s}", .{waveName(value)}) catch return false;
+            _ = std.fmt.bufPrintSentinel(out, "{s}", .{waveName(value)}, 0) catch return false;
             return true;
         },
         .ModTremolo, .CarTremolo, .ModVibrato, .CarVibrato => {
-            _ = std.fmt.bufPrintZ(out, "{s}", .{toggleName(value)}) catch return false;
+            _ = std.fmt.bufPrintSentinel(out, "{s}", .{toggleName(value)}, 0) catch return false;
             return true;
         },
         else => {

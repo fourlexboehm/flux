@@ -99,7 +99,7 @@ pub fn rebuildInstrumentFilter(state: *State) void {
     if (state.instrument_filter_indices.len > 0) {
         state.allocator.free(state.instrument_filter_indices);
     }
-    state.instrument_filter_items_z = state.allocator.dupeZ(u8, buffer.items) catch &[_:0]u8{};
+    state.instrument_filter_items_z = state.allocator.dupeSentinel(u8, buffer.items, 0) catch &[_:0]u8{};
     state.instrument_filter_indices = indices.toOwnedSlice(state.allocator) catch &[_]i32{};
 }
 
@@ -141,7 +141,7 @@ pub fn rebuildPresetFilter(state: *State) void {
     if (state.preset_filter_indices.len > 0) {
         state.allocator.free(state.preset_filter_indices);
     }
-    state.preset_filter_items_z = state.allocator.dupeZ(u8, buffer.items) catch &[_:0]u8{};
+    state.preset_filter_items_z = state.allocator.dupeSentinel(u8, buffer.items, 0) catch &[_:0]u8{};
     state.preset_filter_indices = indices.toOwnedSlice(state.allocator) catch &[_]i32{};
     state.preset_combo_width = @max(260.0, max_width + 24.0);
 }

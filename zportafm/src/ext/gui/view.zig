@@ -110,7 +110,7 @@ fn renderSlider(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) 
 
     var label_buf: [256]u8 = @splat(0);
     const name = std.mem.sliceTo(&info.name, 0);
-    const label = std.fmt.bufPrintZ(&label_buf, "{s}", .{name}) catch return;
+    const label = std.fmt.bufPrintSentinel(&label_buf, "{s}", .{name}, 0) catch return;
 
     if (zgui.sliderFloat(label, .{
         .v = &value,
@@ -133,7 +133,7 @@ fn renderToggle(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) 
     var enabled = plugin.params.get(param).Float >= 0.5;
     var label_buf: [256]u8 = @splat(0);
     const name = std.mem.sliceTo(&info.name, 0);
-    const label = std.fmt.bufPrintZ(&label_buf, "{s}", .{name}) catch return;
+    const label = std.fmt.bufPrintSentinel(&label_buf, "{s}", .{name}, 0) catch return;
 
     if (zgui.checkbox(label, .{ .v = &enabled })) {
         plugin.params.set(param, .{ .Float = if (enabled) 1.0 else 0.0 }, .{ .should_notify_host = options.notify_host }) catch return;
@@ -155,7 +155,7 @@ fn renderCombo(plugin: *Plugin, param: Params.Parameter, items: []const []const 
 
     var label_buf: [256]u8 = @splat(0);
     const name = std.mem.sliceTo(&info.name, 0);
-    const label = std.fmt.bufPrintZ(&label_buf, "{s}", .{name}) catch return;
+    const label = std.fmt.bufPrintSentinel(&label_buf, "{s}", .{name}, 0) catch return;
 
     var items_buf: [512]u8 = @splat(0);
     var pos: usize = 0;

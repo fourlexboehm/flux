@@ -381,7 +381,7 @@ fn rebuildItemsZ(catalog: *PluginCatalog) !void {
     }
     try buffer.append(catalog.allocator, 0);
 
-    const items = try catalog.allocator.dupeZ(u8, buffer.items);
+    const items = try catalog.allocator.dupeSentinel(u8, buffer.items, 0);
     if (catalog.items_z.len > 0) {
         catalog.allocator.free(catalog.items_z);
     }
@@ -413,7 +413,7 @@ fn rebuildFxItemsZ(catalog: *PluginCatalog) !void {
     }
     try buffer.append(catalog.allocator, 0);
 
-    const items = try catalog.allocator.dupeZ(u8, buffer.items);
+    const items = try catalog.allocator.dupeSentinel(u8, buffer.items, 0);
     if (catalog.fx_items_z.len > 0) {
         catalog.allocator.free(catalog.fx_items_z);
     }
@@ -456,7 +456,7 @@ fn rebuildInstrumentItemsZ(catalog: *PluginCatalog) !void {
     }
     try buffer.append(catalog.allocator, 0);
 
-    const items = try catalog.allocator.dupeZ(u8, buffer.items);
+    const items = try catalog.allocator.dupeSentinel(u8, buffer.items, 0);
     if (catalog.instrument_items_z.len > 0) {
         catalog.allocator.free(catalog.instrument_items_z);
     }
@@ -604,7 +604,7 @@ fn discoverPluginEntries(
     defer lib.close();
 
     const entry = lib.lookup(*const clap.Entry, "clap_entry") orelse return;
-    const plugin_path_z = try allocator.dupeZ(u8, binary_path);
+    const plugin_path_z = try allocator.dupeSentinel(u8, binary_path, 0);
     defer allocator.free(plugin_path_z);
     if (!entry.init(plugin_path_z)) return;
     defer entry.deinit();

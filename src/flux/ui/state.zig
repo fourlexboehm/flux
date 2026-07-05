@@ -244,12 +244,12 @@ pub const State = struct {
             .midi_note_velocities = @splat(0.0),
             .keyboard_octave = 0,
             .controller = .{},
-            .controller_param_writes = [_]ControllerParamWrite{.{
+            .controller_param_writes = @splat(.{
                 .track_index = 0,
                 .target_fx_index = -1,
                 .param_id = 0,
                 .value = 0.0,
-            }},
+            }),
             .controller_param_write_count = 0,
             .load_project_request = false,
             .save_project_request = false,

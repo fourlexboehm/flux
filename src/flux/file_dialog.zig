@@ -64,7 +64,7 @@ fn openFileMacOS(
     const panel = OpenPanel.openPanel();
 
     // Set title
-    const title_z = allocator.dupeZ(u8, title) catch return FileDialogError.OutOfMemory;
+    const title_z = allocator.dupeSentinel(u8, title, 0) catch return FileDialogError.OutOfMemory;
     defer allocator.free(title_z);
     const title_str = objc.foundation.String.stringWithUTF8String(title_z.ptr);
     panel.setTitle(title_str);
@@ -105,13 +105,13 @@ fn saveFileMacOS(
     const panel = SavePanel.savePanel();
 
     // Set title
-    const title_z = allocator.dupeZ(u8, title) catch return FileDialogError.OutOfMemory;
+    const title_z = allocator.dupeSentinel(u8, title, 0) catch return FileDialogError.OutOfMemory;
     defer allocator.free(title_z);
     const title_str = objc.foundation.String.stringWithUTF8String(title_z.ptr);
     panel.setTitle(title_str);
 
     // Set default filename
-    const name_z = allocator.dupeZ(u8, default_name) catch return FileDialogError.OutOfMemory;
+    const name_z = allocator.dupeSentinel(u8, default_name, 0) catch return FileDialogError.OutOfMemory;
     defer allocator.free(name_z);
     const name_str = objc.foundation.String.stringWithUTF8String(name_z.ptr);
     panel.setNameFieldStringValue(name_str);
@@ -148,7 +148,7 @@ fn createExtensionArray(allocator: std.mem.Allocator, file_types: []const FileTy
 
     for (file_types) |ft| {
         for (ft.extensions) |ext| {
-            const ext_z = try allocator.dupeZ(u8, ext);
+            const ext_z = try allocator.dupeSentinel(u8, ext, 0);
             defer allocator.free(ext_z);
             const ext_str = objc.foundation.String.stringWithUTF8String(ext_z.ptr);
             mut_array.addObject(@ptrCast(ext_str));

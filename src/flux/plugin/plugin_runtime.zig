@@ -39,7 +39,7 @@ pub const PluginHandle = struct {
         plugin_id: ?[]const u8,
         max_frames: u32,
     ) !PluginHandle {
-        const plugin_path_z = try allocator.dupeZ(u8, plugin_path);
+        const plugin_path_z = try allocator.dupeSentinel(u8, plugin_path, 0);
         errdefer allocator.free(plugin_path_z);
 
         var lib = try std.DynLib.open(plugin_path);
@@ -53,7 +53,7 @@ pub const PluginHandle = struct {
         const factory: *const clap.PluginFactory = @ptrCast(@alignCast(factory_raw));
         const plugin = blk: {
             if (plugin_id) |id| {
-                const id_z = try allocator.dupeZ(u8, id);
+                const id_z = try allocator.dupeSentinel(u8, id, 0);
                 defer allocator.free(id_z);
                 break :blk factory.createPlugin(factory, host, id_z) orelse return error.PluginCreateFailed;
             }
