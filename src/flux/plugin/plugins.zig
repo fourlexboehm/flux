@@ -120,19 +120,19 @@ const PluginCache = struct {
     }
 };
 
-fn cacheDirPath(allocator: std.mem.Allocator) ![]const u8 {
+pub fn cacheDirPath(allocator: std.mem.Allocator) ![]const u8 {
     const home_c = std.c.getenv("HOME") orelse return error.MissingHome;
     const home = std.mem.span(home_c);
     return Dir.path.join(allocator, &[_][]const u8{ home, ".cache", "flux" });
 }
 
-fn cacheFilePath(allocator: std.mem.Allocator) ![]const u8 {
+pub fn cacheFilePath(allocator: std.mem.Allocator, filename: []const u8) ![]const u8 {
     const dir_path = try cacheDirPath(allocator);
     defer allocator.free(dir_path);
-    return Dir.path.join(allocator, &[_][]const u8{ dir_path, "cache.json" });
+    return Dir.path.join(allocator, &[_][]const u8{ dir_path, filename });
 }
 
-fn statMtimeNs(io: Io, path: []const u8) ?i64 {
+pub fn statMtimeNs(io: Io, path: []const u8) ?i64 {
     const stat = Dir.cwd().statFile(io, path, .{}) catch return null;
     return @intCast(stat.mtime.toNanoseconds());
 }
@@ -201,7 +201,7 @@ fn parseCachedPlugins(allocator: std.mem.Allocator, value: std.json.Value) ![]Ca
 fn loadPluginCache(allocator: std.mem.Allocator, io: Io) !PluginCache {
     var cache = PluginCache{ .allocator = allocator };
 
-    const cache_path = cacheFilePath(allocator) catch return cache;
+    const cache_path = cacheFilePath(allocator, "cache.json") catch return cache;
     defer allocator.free(cache_path);
 
     const file = Dir.cwd().openFile(io, cache_path, .{}) catch |err| switch (err) {
@@ -672,7 +672,7 @@ fn appendClapBundleEntry(
     discoverPluginEntries(allocator, io, entries, bundle_path, .clap, cache) catch {};
 }
 
-fn resolveClapBinaryPath(allocator: std.mem.Allocator, io: Io, plugin_path: []const u8) ![]const u8 {
+pub fn resolveClapBinaryPath(allocator: std.mem.Allocator, io: Io, plugin_path: []const u8) ![]const u8 {
     const stat = Dir.cwd().statFile(io, plugin_path, .{}) catch return error.PluginMissing;
     if (stat.kind == .file) {
         return allocator.dupe(u8, plugin_path);

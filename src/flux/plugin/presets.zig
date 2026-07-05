@@ -112,59 +112,6 @@ const PresetCache = struct {
     }
 };
 
-fn cacheDirPath(allocator: std.mem.Allocator) ![]const u8 {
-    const home_c = std.c.getenv("HOME") orelse return error.MissingHome;
-    const home = std.mem.span(home_c);
-    return Dir.path.join(allocator, &[_][]const u8{ home, ".cache", "flux" });
-}
-
-fn cacheFilePath(allocator: std.mem.Allocator) ![]const u8 {
-    const dir_path = try cacheDirPath(allocator);
-    defer allocator.free(dir_path);
-    return Dir.path.join(allocator, &[_][]const u8{ dir_path, "presets.json" });
-}
-
-fn statMtimeNs(io: Io, path: []const u8) ?i64 {
-    const stat = Dir.cwd().statFile(io, path, .{}) catch return null;
-    return @intCast(stat.mtime.toNanoseconds());
-}
-
-fn resolveClapBinaryPath(allocator: std.mem.Allocator, io: Io, plugin_path: []const u8) ![]const u8 {
-    const stat = Dir.cwd().statFile(io, plugin_path, .{}) catch return error.PluginMissing;
-    if (stat.kind == .file) {
-        return allocator.dupe(u8, plugin_path);
-    }
-    if (stat.kind != .directory) {
-        return error.PluginMissing;
-    }
-
-    const macos_dir_path = try Dir.path.join(allocator, &[_][]const u8{
-        plugin_path,
-        "Contents",
-        "MacOS",
-    });
-    defer allocator.free(macos_dir_path);
-
-    var dir = Dir.openDirAbsolute(io, macos_dir_path, .{ .iterate = true }) catch return error.PluginMissing;
-    defer dir.close(io);
-
-    const base_name = Dir.path.stem(plugin_path);
-    const preferred_path = try Dir.path.join(allocator, &[_][]const u8{ macos_dir_path, base_name });
-    if (Dir.cwd().statFile(io, preferred_path, .{})) |_| {
-        return preferred_path;
-    } else |_| {
-        allocator.free(preferred_path);
-    }
-
-    var it = dir.iterate();
-    while (try it.next(io)) |entry| {
-        if (entry.kind != .file) continue;
-        return try Dir.path.join(allocator, &[_][]const u8{ macos_dir_path, entry.name });
-    }
-
-    return error.PluginMissing;
-}
-
 fn parseLocationKind(value: std.json.Value) ?clap.preset_discovery.Location.Kind {
     const raw = switch (value) {
         .integer => |val| val,
@@ -249,7 +196,7 @@ fn parseCachedPresets(allocator: std.mem.Allocator, value: std.json.Value) ![]Ca
 fn loadPresetCache(allocator: std.mem.Allocator, io: Io) !PresetCache {
     var cache = PresetCache{ .allocator = allocator };
 
-    const cache_path = cacheFilePath(allocator) catch return cache;
+    const cache_path = plugins.cacheFilePath(allocator, "presets.json") catch return cache;
     defer allocator.free(cache_path);
 
     const file = Dir.cwd().openFile(io, cache_path, .{}) catch |err| switch (err) {
@@ -317,10 +264,10 @@ fn loadPresetCache(allocator: std.mem.Allocator, io: Io) !PresetCache {
 fn writePresetCache(cache: *PresetCache, io: Io) !void {
     if (!cache.dirty) return;
 
-    const cache_path = try cacheFilePath(cache.allocator);
+    const cache_path = try plugins.cacheFilePath(cache.allocator, "presets.json");
     defer cache.allocator.free(cache_path);
 
-    const cache_dir = try cacheDirPath(cache.allocator);
+    const cache_dir = try plugins.cacheDirPath(cache.allocator);
     defer cache.allocator.free(cache_dir);
     Dir.cwd().createDirPath(io, cache_dir) catch {};
 
@@ -383,7 +330,7 @@ fn writePresetCache(cache: *PresetCache, io: Io) !void {
 }
 
 fn ensurePresetCacheFile(cache: *PresetCache, io: Io) void {
-    const cache_path = cacheFilePath(cache.allocator) catch return;
+    const cache_path = plugins.cacheFilePath(cache.allocator, "presets.json") catch return;
     defer cache.allocator.free(cache_path);
 
     if (Dir.cwd().openFile(io, cache_path, .{})) |file| {
@@ -403,7 +350,7 @@ fn ensurePresetCacheFile(cache: *PresetCache, io: Io) void {
     const json = std.json.Stringify.valueAlloc(cache.allocator, json_value, .{ .whitespace = .indent_2 }) catch return;
     defer cache.allocator.free(json);
 
-    const cache_dir = cacheDirPath(cache.allocator) catch return;
+    const cache_dir = plugins.cacheDirPath(cache.allocator) catch return;
     defer cache.allocator.free(cache_dir);
     Dir.cwd().createDirPath(io, cache_dir) catch {};
 
@@ -845,7 +792,7 @@ pub fn build(
         const path = entry.path orelse continue;
         var resolved_path: ?[]const u8 = null;
         const scan_path = if (entry.kind == .clap) blk: {
-            resolved_path = resolveClapBinaryPath(allocator, io, path) catch break :blk path;
+            resolved_path = plugins.resolveClapBinaryPath(allocator, io, path) catch break :blk path;
             break :blk resolved_path.?;
         } else path;
         defer if (resolved_path) |value| allocator.free(value);
@@ -853,7 +800,7 @@ pub fn build(
         if (seen_paths.contains(scan_path)) continue;
         try seen_paths.put(allocator, try allocator.dupe(u8, scan_path), {});
 
-        const mtime_ns = statMtimeNs(io, scan_path) orelse continue;
+        const mtime_ns = plugins.statMtimeNs(io, scan_path) orelse continue;
         if (!rescan_all) {
             if (cache.get(scan_path, mtime_ns)) |cached_presets| {
                 try appendCachedPresets(allocator, catalog, &preset_catalog.entries, cached_presets);

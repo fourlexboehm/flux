@@ -868,15 +868,12 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
     } else if (self.volume_drag_track == track) {
         // Drag ended - emit undo request if changed
         if (self.tracks[track].volume != self.volume_drag_start) {
-            if (self.undo_request_count < self.undo_requests.len) {
-                self.undo_requests[self.undo_request_count] = .{
-                    .kind = .track_volume,
-                    .track = track,
-                    .old_volume = self.volume_drag_start,
-                    .new_volume = self.tracks[track].volume,
-                };
-                self.undo_request_count += 1;
-            }
+            self.emitUndoRequest(.{
+                .kind = .track_volume,
+                .track = track,
+                .old_volume = self.volume_drag_start,
+                .new_volume = self.tracks[track].volume,
+            });
         }
         self.volume_drag_track = null;
     }

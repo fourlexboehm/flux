@@ -119,16 +119,12 @@ pub fn createClip(self: *session_view.SessionView, track: usize, scene: usize) v
         .state = .stopped,
         .length_beats = length_beats,
     };
-    // Emit undo request
-    if (self.undo_request_count < self.undo_requests.len) {
-        self.undo_requests[self.undo_request_count] = .{
-            .kind = .clip_create,
-            .track = track,
-            .scene = scene,
-            .length_beats = length_beats,
-        };
-        self.undo_request_count += 1;
-    }
+    self.emitUndoRequest(.{
+        .kind = .clip_create,
+        .track = track,
+        .scene = scene,
+        .length_beats = length_beats,
+    });
 }
 
 /// Delete clip at position (reset to empty)
@@ -138,17 +134,13 @@ pub fn deleteClip(self: *session_view.SessionView, track: usize, scene: usize) v
     const old_clip = self.clips[track][scene];
     if (old_clip.state == .empty) return; // Don't record deleting empty slots
     self.clips[track][scene] = .{};
-    // Emit undo request
-    if (self.undo_request_count < self.undo_requests.len) {
-        self.undo_requests[self.undo_request_count] = .{
-            .kind = .clip_delete,
-            .track = track,
-            .scene = scene,
-            .length_beats = old_clip.length_beats,
-            .old_clip = old_clip,
-        };
-        self.undo_request_count += 1;
-    }
+    self.emitUndoRequest(.{
+        .kind = .clip_delete,
+        .track = track,
+        .scene = scene,
+        .length_beats = old_clip.length_beats,
+        .old_clip = old_clip,
+    });
 }
 
 /// Delete all selected clips
@@ -238,18 +230,15 @@ pub fn paste(self: *session_view.SessionView) void {
             self.piano_copy_count += 1;
         }
 
-        if (self.undo_request_count < self.undo_requests.len) {
-            self.undo_requests[self.undo_request_count] = .{
-                .kind = .clip_paste,
-                .track = track,
-                .scene = scene,
-                .src_track = entry.src_track,
-                .src_scene = entry.src_scene,
-                .length_beats = entry.slot.length_beats,
-                .old_clip = old_clip,
-            };
-            self.undo_request_count += 1;
-        }
+        self.emitUndoRequest(.{
+            .kind = .clip_paste,
+            .track = track,
+            .scene = scene,
+            .src_track = entry.src_track,
+            .src_scene = entry.src_scene,
+            .length_beats = entry.slot.length_beats,
+            .old_clip = old_clip,
+        });
     }
     self.pending_piano_copies = self.piano_copy_count > 0;
 }
@@ -263,14 +252,10 @@ pub fn addTrack(self: *session_view.SessionView) bool {
     const TrackType = @TypeOf(self.tracks[0]);
     self.tracks[self.track_count] = TrackType.init(name);
     self.track_count += 1;
-    // Emit undo request
-    if (self.undo_request_count < self.undo_requests.len) {
-        self.undo_requests[self.undo_request_count] = .{
-            .kind = .track_add,
-            .track = self.track_count - 1,
-        };
-        self.undo_request_count += 1;
-    }
+    self.emitUndoRequest(.{
+        .kind = .track_add,
+        .track = self.track_count - 1,
+    });
     return true;
 }
 
@@ -283,14 +268,10 @@ pub fn addScene(self: *session_view.SessionView) bool {
     const SceneType = @TypeOf(self.scenes[0]);
     self.scenes[self.scene_count] = SceneType.init(name);
     self.scene_count += 1;
-    // Emit undo request
-    if (self.undo_request_count < self.undo_requests.len) {
-        self.undo_requests[self.undo_request_count] = .{
-            .kind = .scene_add,
-            .scene = self.scene_count - 1,
-        };
-        self.undo_request_count += 1;
-    }
+    self.emitUndoRequest(.{
+        .kind = .scene_add,
+        .scene = self.scene_count - 1,
+    });
     return true;
 }
 
@@ -299,25 +280,22 @@ pub fn deleteScene(self: *session_view.SessionView, scene: usize) bool {
     if (self.scene_count <= 1) return false;
     if (scene >= self.scene_count) return false;
 
-    if (self.undo_request_count < self.undo_requests.len) {
-        var clip_snapshots: [max_tracks]@TypeOf(self.undo_requests[0].scene_clips[0]) = undefined;
-        for (0..self.track_count) |t| {
-            const slot = self.clips[t][scene];
-            clip_snapshots[t] = .{
-                .has_clip = slot.state != .empty,
-                .length_beats = slot.length_beats,
-            };
-        }
-        self.undo_requests[self.undo_request_count] = .{
-            .kind = .scene_delete,
-            .scene = scene,
-            .scene_data = .{
-                .name = self.scenes[scene].name,
-            },
-            .scene_clips = clip_snapshots,
+    var clip_snapshots: [max_tracks]@TypeOf(self.undo_requests[0].scene_clips[0]) = undefined;
+    for (0..self.track_count) |t| {
+        const slot = self.clips[t][scene];
+        clip_snapshots[t] = .{
+            .has_clip = slot.state != .empty,
+            .length_beats = slot.length_beats,
         };
-        self.undo_request_count += 1;
     }
+    self.emitUndoRequest(.{
+        .kind = .scene_delete,
+        .scene = scene,
+        .scene_data = .{
+            .name = self.scenes[scene].name,
+        },
+        .scene_clips = clip_snapshots,
+    });
 
     // Clear selection in this scene
     for (0..self.track_count) |t| {
@@ -356,28 +334,25 @@ pub fn deleteTrack(self: *session_view.SessionView, track: usize) bool {
     if (self.track_count <= 1) return false;
     if (track >= self.track_count) return false;
 
-    if (self.undo_request_count < self.undo_requests.len) {
-        var clip_snapshots: [max_scenes]@TypeOf(self.undo_requests[0].track_clips[0]) = undefined;
-        for (0..self.scene_count) |s| {
-            const slot = self.clips[track][s];
-            clip_snapshots[s] = .{
-                .has_clip = slot.state != .empty,
-                .length_beats = slot.length_beats,
-            };
-        }
-        self.undo_requests[self.undo_request_count] = .{
-            .kind = .track_delete,
-            .track = track,
-            .track_data = .{
-                .name = self.tracks[track].name,
-                .volume = self.tracks[track].volume,
-                .mute = self.tracks[track].mute,
-                .solo = self.tracks[track].solo,
-            },
-            .track_clips = clip_snapshots,
+    var clip_snapshots: [max_scenes]@TypeOf(self.undo_requests[0].track_clips[0]) = undefined;
+    for (0..self.scene_count) |s| {
+        const slot = self.clips[track][s];
+        clip_snapshots[s] = .{
+            .has_clip = slot.state != .empty,
+            .length_beats = slot.length_beats,
         };
-        self.undo_request_count += 1;
     }
+    self.emitUndoRequest(.{
+        .kind = .track_delete,
+        .track = track,
+        .track_data = .{
+            .name = self.tracks[track].name,
+            .volume = self.tracks[track].volume,
+            .mute = self.tracks[track].mute,
+            .solo = self.tracks[track].solo,
+        },
+        .track_clips = clip_snapshots,
+    });
 
     // Clear selection in this track
     for (0..self.scene_count) |s| {

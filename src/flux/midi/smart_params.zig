@@ -1,6 +1,7 @@
 const std = @import("std");
 const clap = @import("clap-bindings");
 
+const selection = @import("../ui/selection.zig");
 const state_mod = @import("../ui/state.zig");
 
 const State = state_mod.State;
@@ -116,8 +117,8 @@ pub fn rebuildIfNeeded(state: *State) void {
 
 fn buildLabel(info: *const clap.ext.params.Info) [96]u8 {
     var out: [96]u8 = @splat(0);
-    const name = sliceToNull(info.name[0..]);
-    const module = sliceToNull(info.module[0..]);
+    const name = selection.sliceToNull(info.name[0..]);
+    const module = selection.sliceToNull(info.module[0..]);
     var idx: usize = 0;
     appendLabel(&out, &idx, module);
     if (module.len > 0) appendByte(&out, &idx, '/');
@@ -176,11 +177,6 @@ fn containsAsciiIgnoreCase(haystack: []const u8, needle: []const u8) bool {
 fn toLowerAscii(ch: u8) u8 {
     if (ch >= 'A' and ch <= 'Z') return ch + 32;
     return ch;
-}
-
-fn sliceToNull(buf: []const u8) []const u8 {
-    const end = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
-    return buf[0..end];
 }
 
 fn appendLabel(dst: *[96]u8, idx: *usize, src: []const u8) void {

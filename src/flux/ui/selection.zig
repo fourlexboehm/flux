@@ -225,3 +225,8 @@ pub fn snapToStep(value: f32, step: f32) f32 {
 pub fn sortDescending(indices: []usize) void {
     std.mem.sort(usize, indices, {}, std.sort.desc(usize));
 }
+
+pub fn sliceToNull(buf: []const u8) []const u8 {
+    const end = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
+    return buf[0..end];
+}

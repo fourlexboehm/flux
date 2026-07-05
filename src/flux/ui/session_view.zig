@@ -260,4 +260,11 @@ pub const SessionView = struct {
     render_hover_track: ?usize = null,
     render_hover_scene: ?usize = null,
     render_hover_has_content: bool = false,
+
+    pub fn emitUndoRequest(self: *SessionView, req: UndoRequest) void {
+        if (self.undo_request_count < self.undo_requests.len) {
+            self.undo_requests[self.undo_request_count] = req;
+            self.undo_request_count += 1;
+        }
+    }
 };
