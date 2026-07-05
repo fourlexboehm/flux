@@ -44,11 +44,6 @@ fn envF32(name: [:0]const u8, default_value: f32) f32 {
     return std.fmt.parseFloat(f32, std.mem.span(v)) catch default_value;
 }
 
-inline fn nsSince(from: std.Io.Timestamp, to: std.Io.Timestamp) u64 {
-    const ns = from.durationTo(to).toNanoseconds();
-    return if (ns > 0) @intCast(ns) else 0;
-}
-
 pub fn configureRuntimeTuning(host: *host_mod.Host, cpu_count: usize) void {
     const is_arm = switch (builtin.cpu.arch) {
         .arm, .armeb, .thumb, .thumbeb, .aarch64, .aarch64_be => true,
@@ -257,7 +252,7 @@ pub fn runKernelBench(allocator: std.mem.Allocator, io: std.Io) !void {
         }
     }
     const end_u1 = std.Io.Clock.awake.now(io);
-    const ns_u1 = nsSince(start, end_u1);
+    const ns_u1 = time_utils.nsSince(start, end_u1);
     var checksum_u1: f64 = 0;
     for (0..tracks) |t| {
         checksum_u1 += out_l[t * frames];
@@ -283,7 +278,7 @@ pub fn runKernelBench(allocator: std.mem.Allocator, io: std.Io) !void {
         }
     }
     const end_u4 = std.Io.Clock.awake.now(io);
-    const ns_u4 = nsSince(start, end_u4);
+    const ns_u4 = time_utils.nsSince(start, end_u4);
     var checksum_u4: f64 = 0;
     for (0..tracks) |t| {
         checksum_u4 += out_l[t * frames];
@@ -309,7 +304,7 @@ pub fn runKernelBench(allocator: std.mem.Allocator, io: std.Io) !void {
         }
     }
     const end_u16 = std.Io.Clock.awake.now(io);
-    const ns_u16 = nsSince(start, end_u16);
+    const ns_u16 = time_utils.nsSince(start, end_u16);
     var checksum_u16: f64 = 0;
     for (0..tracks) |t| {
         checksum_u16 += out_l[t * frames];
@@ -360,7 +355,7 @@ pub fn runHeadlessBench(
     while (true) {
         host.pumpMainThreadCallbacks();
         const now = std.Io.Clock.awake.now(io);
-        const elapsed_ns = nsSince(start, now);
+        const elapsed_ns = time_utils.nsSince(start, now);
         if (elapsed_ns >= @as(u64, bench.duration_s) * std.time.ns_per_s) break;
 
         const elapsed_s: u32 = @intCast(elapsed_ns / std.time.ns_per_s);
@@ -405,7 +400,7 @@ pub fn runHeadlessBench(
             buffer_frames.* = desired_frames;
         }
 
-        const delta_ns = nsSince(last, now);
+        const delta_ns = time_utils.nsSince(last, now);
         last = now;
         if (desired_playing != state.playing and desired_playing) {
             state.playhead_beat = 0;

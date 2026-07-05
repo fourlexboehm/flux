@@ -16,6 +16,20 @@ const beats_per_bar = types.beats_per_bar;
 
 extern fn fluxZguiGetMouseWheelY() f32;
 
+const is_black_key = [_]bool{ false, true, false, true, false, false, true, false, true, false, true, false };
+
+fn mouseToBeat(mouse_x: f32, grid_x: f32, scroll_x: f32, pixels_per_beat: f32) f32 {
+    return (mouse_x - grid_x + scroll_x) / pixels_per_beat;
+}
+
+fn mouseToRow(mouse_y: f32, grid_y: f32, scroll_y: f32, row_height: f32) f32 {
+    return (mouse_y - grid_y + scroll_y) / row_height;
+}
+
+fn rowToPitch(row: f32) i32 {
+    return std.math.clamp(127 - @as(i32, @intFromFloat(row)), 0, 127);
+}
+
 fn lerpColor(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
     const clamped = std.math.clamp(t, 0.0, 1.0);
     return .{
@@ -127,8 +141,6 @@ pub fn drawSequencer(
     const last_row_f = @min(127, @ceil((state.scroll_y + grid_view_height) / row_height));
     const first_visible_row: usize = @intFromFloat(first_row_f);
     const last_visible_row: usize = @intFromFloat(@max(first_row_f, last_row_f));
-
-    const is_black_key = [_]bool{ false, true, false, true, false, false, true, false, true, false, true, false };
 
     // Clip to grid area
     draw_list.pushClipRect(.{
@@ -324,7 +336,7 @@ pub fn drawSequencer(
             }
 
             if (!popup_open and zgui.isMouseClicked(.left)) {
-                const grab_beat = (mouse[0] - grid_window_pos[0] + state.scroll_x) / pixels_per_beat;
+                const grab_beat = mouseToBeat(mouse[0], grid_window_pos[0], state.scroll_x, pixels_per_beat);
                 state.handleNoteClick(note_idx, selection.isShiftDown());
 
                 if (modifier_down and !over_handle) {
@@ -477,10 +489,8 @@ pub fn drawSequencer(
 
     // Right-click context menu
     if (!automation_mode and in_grid and zgui.isMouseClicked(.right) and state.drag.mode == .none) {
-        const click_beat = (mouse[0] - grid_window_pos[0] + state.scroll_x) / pixels_per_beat;
-        const click_row = (mouse[1] - grid_window_pos[1] + state.scroll_y) / row_height;
-        var click_pitch_i: i32 = 127 - @as(i32, @intFromFloat(click_row));
-        click_pitch_i = std.math.clamp(click_pitch_i, 0, 127);
+        const click_beat = mouseToBeat(mouse[0], grid_window_pos[0], state.scroll_x, pixels_per_beat);
+        const click_pitch_i = rowToPitch(mouseToRow(mouse[1], grid_window_pos[1], state.scroll_y, row_height));
 
         state.context_note_index = right_click_note_index;
         state.context_start = selection.snapToStep(click_beat, quantize_beats);
@@ -494,9 +504,8 @@ pub fn drawSequencer(
 
     // Double-click to create note
     if (!popup_active and !menu_action and !automation_mode and in_grid and zgui.isMouseDoubleClicked(.left) and state.drag.mode == .none and !left_click_note) {
-        const click_beat = (mouse[0] - grid_window_pos[0] + state.scroll_x) / pixels_per_beat;
-        const click_row = (mouse[1] - grid_window_pos[1] + state.scroll_y) / row_height;
-        const click_pitch_i: i32 = 127 - @as(i32, @intFromFloat(click_row));
+        const click_beat = mouseToBeat(mouse[0], grid_window_pos[0], state.scroll_x, pixels_per_beat);
+        const click_pitch_i = rowToPitch(mouseToRow(mouse[1], grid_window_pos[1], state.scroll_y, row_height));
 
         if (click_beat >= 0 and click_beat < clip.length_beats and click_pitch_i >= 0 and click_pitch_i < 128) {
             const click_pitch: u8 = @intCast(click_pitch_i);
@@ -1028,10 +1037,10 @@ fn drawAutomationOverlay(
             if (mouse_down) {
                 if (state.automation_drag_lane == lane_index and state.automation_drag_point < lane.points.items.len) {
                     const drag_time = selection.snapToStep(
-                        std.math.clamp((mouse[0] - grid_window_pos[0] + state.scroll_x) / pixels_per_beat, 0, clip.length_beats),
-                        quantize_beats,
-                    );
-                    const drag_value = valueFromY(mouse[1], min_value, max_value, grid_window_pos[1], grid_view_height);
+                    std.math.clamp(mouseToBeat(mouse[0], grid_window_pos[0], state.scroll_x, pixels_per_beat), 0, clip.length_beats),
+                    quantize_beats,
+                );
+                const drag_value = valueFromY(mouse[1], min_value, max_value, grid_window_pos[1], grid_view_height);
                     lane.points.items[state.automation_drag_point] = .{ .time = drag_time, .value = drag_value };
                     sortAutomationPoints(&lane.points);
                     state.automation_drag_point = findPointIndex(&lane.points, drag_time, drag_value);
@@ -1057,7 +1066,7 @@ fn drawAutomationOverlay(
         } else if (in_grid and zgui.isMouseClicked(.left)) {
             if (lane.points.items.len < 64) {
                 const new_time = selection.snapToStep(
-                    std.math.clamp((mouse[0] - grid_window_pos[0] + state.scroll_x) / pixels_per_beat, 0, clip.length_beats),
+                    std.math.clamp(mouseToBeat(mouse[0], grid_window_pos[0], state.scroll_x, pixels_per_beat), 0, clip.length_beats),
                     quantize_beats,
                 );
                 const new_value = valueFromY(mouse[1], min_value, max_value, grid_window_pos[1], grid_view_height);
@@ -1251,17 +1260,12 @@ fn getParamLabelById(
 }
 
 fn formatParamLabelZ(buf: []u8, info: *const clap.ext.params.Info) [:0]const u8 {
-    const name = sliceToNull(info.name[0..]);
-    const module = sliceToNull(info.module[0..]);
+    const name = selection.sliceToNull(info.name[0..]);
+    const module = selection.sliceToNull(info.module[0..]);
     if (module.len > 0) {
         return std.fmt.bufPrintSentinel(buf, "{s}/{s}", .{ module, name }, 0) catch "Param";
     }
     return std.fmt.bufPrintSentinel(buf, "{s}", .{name}, 0) catch "Param";
-}
-
-fn sliceToNull(buf: []const u8) []const u8 {
-    const end = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
-    return buf[0..end];
 }
 
 const EditCtx = struct {
@@ -1447,10 +1451,8 @@ fn pasteNotes(
     quantize_beats: f32,
     min_duration: f32,
 ) void {
-    const click_beat = (mouse[0] - grid_pos[0] + state.scroll_x) / pixels_per_beat;
-    const click_row = (mouse[1] - grid_pos[1] + state.scroll_y) / row_height;
-    var click_pitch_i: i32 = 127 - @as(i32, @intFromFloat(click_row));
-    click_pitch_i = std.math.clamp(click_pitch_i, 0, 127);
+    const click_beat = mouseToBeat(mouse[0], grid_pos[0], state.scroll_x, pixels_per_beat);
+    const click_pitch_i = rowToPitch(mouseToRow(mouse[1], grid_pos[1], state.scroll_y, row_height));
     const snapped_start = selection.snapToStep(click_beat, quantize_beats);
 
     const first_pitch: i32 = @intCast(state.clipboard.items[0].pitch);
@@ -1493,192 +1495,107 @@ fn handleArrowKeys(
 ) void {
     if (shift_down) {
         if (zgui.isKeyPressed(.left_arrow, true)) {
-            for (state.note_selection.keys()) |idx| {
-                if (idx < clip.notes.items.len) {
-                    const note = &clip.notes.items[idx];
-                    note.duration = @max(min_duration, note.duration - quantize_beats);
-                }
-            }
+            nudgeSelected(state, clip, track_index, "duration", quantize_beats, .left, min_duration);
         }
         if (zgui.isKeyPressed(.right_arrow, true)) {
-            for (state.note_selection.keys()) |idx| {
-                if (idx < clip.notes.items.len) {
-                    const note = &clip.notes.items[idx];
-                    note.duration = @min(clip.length_beats - note.start, note.duration + quantize_beats);
-                }
-            }
+            nudgeSelected(state, clip, track_index, "duration", quantize_beats, .right, undefined);
         }
         if (zgui.isKeyPressed(.up_arrow, true)) {
-            var preview_pitch: ?u8 = null;
-            var moved = false;
-            for (state.note_selection.keys()) |idx| {
-                if (idx < clip.notes.items.len) {
-                    const note = &clip.notes.items[idx];
-                    const old_pitch = note.pitch;
-                    const new_pitch_i = @min(127, @as(i32, old_pitch) + 12);
-                    if (new_pitch_i != old_pitch) {
-                        note.pitch = @intCast(new_pitch_i);
-                        if (preview_pitch == null) {
-                            preview_pitch = note.pitch;
-                        }
-                        moved = true;
-                        state.emitUndoRequest(.{
-                            .kind = .note_move,
-                            .track = track_index,
-                            .scene = scene_index,
-                            .note_index = idx,
-                            .old_start = note.start,
-                            .old_pitch = old_pitch,
-                            .new_start = note.start,
-                            .new_pitch = note.pitch,
-                        });
-                    }
-                }
-            }
-            if (moved and preview_pitch != null) {
-                state.preview_pitch = preview_pitch;
-                state.preview_track = track_index;
-            }
+            transposeSelectedNotesBy(state, clip, 12, track_index, scene_index);
         }
         if (zgui.isKeyPressed(.down_arrow, true)) {
-            var preview_pitch: ?u8 = null;
-            var moved = false;
-            for (state.note_selection.keys()) |idx| {
-                if (idx < clip.notes.items.len) {
-                    const note = &clip.notes.items[idx];
-                    const old_pitch = note.pitch;
-                    const new_pitch_i = @max(0, @as(i32, old_pitch) - 12);
-                    if (new_pitch_i != old_pitch) {
-                        note.pitch = @intCast(new_pitch_i);
-                        if (preview_pitch == null) {
-                            preview_pitch = note.pitch;
-                        }
-                        moved = true;
-                        state.emitUndoRequest(.{
-                            .kind = .note_move,
-                            .track = track_index,
-                            .scene = scene_index,
-                            .note_index = idx,
-                            .old_start = note.start,
-                            .old_pitch = old_pitch,
-                            .new_start = note.start,
-                            .new_pitch = note.pitch,
-                        });
-                    }
-                }
-            }
-            if (moved and preview_pitch != null) {
-                state.preview_pitch = preview_pitch;
-                state.preview_track = track_index;
-            }
+            transposeSelectedNotesBy(state, clip, -12, track_index, scene_index);
         }
     } else {
         if (zgui.isKeyPressed(.left_arrow, true)) {
-            var preview_pitch: ?u8 = null;
-            var moved = false;
-            for (state.note_selection.keys()) |idx| {
-                if (idx < clip.notes.items.len) {
-                    const note = &clip.notes.items[idx];
-                    const old_start = note.start;
-                    note.start = @max(0, note.start - quantize_beats);
-                    if (note.start != old_start) {
-                        if (preview_pitch == null) {
-                            preview_pitch = note.pitch;
-                        }
-                        moved = true;
-                    }
-                }
-            }
-            if (moved and preview_pitch != null) {
-                state.preview_pitch = preview_pitch;
-                state.preview_track = track_index;
-            }
+            nudgeSelected(state, clip, track_index, "start", quantize_beats, .left, 0);
         }
         if (zgui.isKeyPressed(.right_arrow, true)) {
-            var preview_pitch: ?u8 = null;
-            var moved = false;
-            for (state.note_selection.keys()) |idx| {
-                if (idx < clip.notes.items.len) {
-                    const note = &clip.notes.items[idx];
-                    const old_start = note.start;
-                    note.start = @min(clip.length_beats - note.duration, note.start + quantize_beats);
-                    if (note.start != old_start) {
-                        if (preview_pitch == null) {
-                            preview_pitch = note.pitch;
-                        }
-                        moved = true;
-                    }
-                }
-            }
-            if (moved and preview_pitch != null) {
-                state.preview_pitch = preview_pitch;
-                state.preview_track = track_index;
-            }
+            nudgeSelected(state, clip, track_index, "start", quantize_beats, .right, undefined);
         }
         if (zgui.isKeyPressed(.up_arrow, true)) {
-            var preview_pitch: ?u8 = null;
-            var moved = false;
-            for (state.note_selection.keys()) |idx| {
-                if (idx < clip.notes.items.len) {
-                    const note = &clip.notes.items[idx];
-                    const old_pitch = note.pitch;
-                    const new_pitch: u8 = @intCast(@min(127, @as(i32, note.pitch) + 1));
-                    if (new_pitch != old_pitch) {
-                        note.pitch = new_pitch;
-                        if (preview_pitch == null) {
-                            preview_pitch = note.pitch;
-                        }
-                        moved = true;
-                        state.emitUndoRequest(.{
-                            .kind = .note_move,
-                            .track = track_index,
-                            .scene = scene_index,
-                            .note_index = idx,
-                            .old_start = note.start,
-                            .old_pitch = old_pitch,
-                            .new_start = note.start,
-                            .new_pitch = note.pitch,
-                        });
-                    }
-                }
-            }
-            if (moved and preview_pitch != null) {
-                state.preview_pitch = preview_pitch;
-                state.preview_track = track_index;
-            }
+            transposeSelectedNotesBy(state, clip, 1, track_index, scene_index);
         }
         if (zgui.isKeyPressed(.down_arrow, true)) {
-            var preview_pitch: ?u8 = null;
-            var moved = false;
-            for (state.note_selection.keys()) |idx| {
-                if (idx < clip.notes.items.len) {
-                    const note = &clip.notes.items[idx];
-                    const old_pitch = note.pitch;
-                    const new_pitch: u8 = @intCast(@max(0, @as(i32, note.pitch) - 1));
-                    if (new_pitch != old_pitch) {
-                        note.pitch = new_pitch;
-                        if (preview_pitch == null) {
-                            preview_pitch = note.pitch;
-                        }
-                        moved = true;
-                        state.emitUndoRequest(.{
-                            .kind = .note_move,
-                            .track = track_index,
-                            .scene = scene_index,
-                            .note_index = idx,
-                            .old_start = note.start,
-                            .old_pitch = old_pitch,
-                            .new_start = note.start,
-                            .new_pitch = note.pitch,
-                        });
-                    }
-                }
-            }
-            if (moved and preview_pitch != null) {
-                state.preview_pitch = preview_pitch;
-                state.preview_track = track_index;
+            transposeSelectedNotesBy(state, clip, -1, track_index, scene_index);
+        }
+    }
+}
+
+const NudgeDirection = enum { left, right };
+
+fn nudgeSelected(
+    state: *PianoRollState,
+    clip: *PianoRollClip,
+    track_index: usize,
+    comptime field_name: []const u8,
+    quantize_beats: f32,
+    comptime direction: NudgeDirection,
+    min_bound: f32,
+) void {
+    var preview_pitch: ?u8 = null;
+    var moved = false;
+    for (state.note_selection.keys()) |idx| {
+        if (idx < clip.notes.items.len) {
+            const note = &clip.notes.items[idx];
+            const old_val = @field(note, field_name);
+            const new_val = switch (direction) {
+                .left => @max(min_bound, old_val - quantize_beats),
+                .right => blk: {
+                    const other: f32 = if (comptime std.mem.eql(u8, field_name, "start")) note.duration else note.start;
+                    break :blk @min(clip.length_beats - other, old_val + quantize_beats);
+                },
+            };
+            if (new_val != old_val) {
+                @field(note, field_name) = new_val;
+                if (preview_pitch == null) preview_pitch = note.pitch;
+                moved = true;
             }
         }
+    }
+    if (moved and preview_pitch != null) {
+        state.preview_pitch = preview_pitch;
+        state.preview_track = track_index;
+    }
+}
+
+fn transposeSelectedNotesBy(
+    state: *PianoRollState,
+    clip: *PianoRollClip,
+    semitones: i32,
+    track_index: usize,
+    scene_index: usize,
+) void {
+    var preview_pitch: ?u8 = null;
+    var moved = false;
+    for (state.note_selection.keys()) |idx| {
+        if (idx < clip.notes.items.len) {
+            const note = &clip.notes.items[idx];
+            const old_pitch = note.pitch;
+            const new_pitch_i = if (semitones > 0)
+                @min(127, @as(i32, old_pitch) + semitones)
+            else
+                @max(0, @as(i32, old_pitch) + semitones);
+            if (new_pitch_i != old_pitch) {
+                note.pitch = @intCast(new_pitch_i);
+                if (preview_pitch == null) preview_pitch = note.pitch;
+                moved = true;
+                state.emitUndoRequest(.{
+                    .kind = .note_move,
+                    .track = track_index,
+                    .scene = scene_index,
+                    .note_index = idx,
+                    .old_start = note.start,
+                    .old_pitch = old_pitch,
+                    .new_start = note.start,
+                    .new_pitch = note.pitch,
+                });
+            }
+        }
+    }
+    if (moved and preview_pitch != null) {
+        state.preview_pitch = preview_pitch;
+        state.preview_track = track_index;
     }
 }
 
@@ -1693,7 +1610,7 @@ fn handleDrag(
 ) void {
     switch (state.drag.mode) {
         .resize_clip => {
-            const current_beat = (mouse[0] - grid_pos[0] + state.scroll_x) / pixels_per_beat;
+            const current_beat = mouseToBeat(mouse[0], grid_pos[0], state.scroll_x, pixels_per_beat);
             var new_length = @floor(current_beat * 4) / 4;
             new_length = @max(beats_per_bar, new_length);
             new_length = @min(256, new_length);
@@ -1701,14 +1618,9 @@ fn handleDrag(
         },
         .move => {
             if (state.drag.note_index < clip.notes.items.len) {
-                const current_beat = (mouse[0] - grid_pos[0] + state.scroll_x) / pixels_per_beat;
-                const current_row = (mouse[1] - grid_pos[1] + state.scroll_y) / row_height;
-
-                var new_start = current_beat - state.drag.grab_offset_beats;
-                new_start = @floor(new_start * 4) / 4;
-
-                var new_pitch_i: i32 = 127 - @as(i32, @intFromFloat(current_row));
-                new_pitch_i = std.math.clamp(new_pitch_i, 0, 127);
+                const current_beat = mouseToBeat(mouse[0], grid_pos[0], state.scroll_x, pixels_per_beat);
+                const new_start = @floor((current_beat - state.drag.grab_offset_beats) * 4) / 4;
+                const new_pitch_i = rowToPitch(mouseToRow(mouse[1], grid_pos[1], state.scroll_y, row_height));
 
                 const delta_start = new_start - state.drag.original_start;
                 const delta_pitch = new_pitch_i - @as(i32, state.drag.original_pitch);
@@ -1738,7 +1650,7 @@ fn handleDrag(
         .resize_right, .create => {
             if (state.drag.note_index < clip.notes.items.len) {
                 const note = &clip.notes.items[state.drag.note_index];
-                const current_beat = (mouse[0] - grid_pos[0] + state.scroll_x) / pixels_per_beat;
+                const current_beat = mouseToBeat(mouse[0], grid_pos[0], state.scroll_x, pixels_per_beat);
 
                 var new_end = current_beat;
                 new_end = @max(note.start + min_duration, new_end);
@@ -1880,8 +1792,6 @@ fn drawPianoKeys(
     const font_size = zgui.getFontSize();
     const max_label_size = row_height - 2.0 * ui_scale;
     const label_font_size = @min(font_size, @max(0.0, max_label_size));
-
-    const is_black_key = [_]bool{ false, true, false, true, false, false, true, false, true, false, true, false };
 
     draw_list.addRectFilled(.{
         .pmin = .{ x, y },

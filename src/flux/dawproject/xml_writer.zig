@@ -50,13 +50,13 @@ pub const XmlWriter = struct {
         return self.buffer.toOwnedSlice(self.allocator);
     }
 
-    fn writeIndent(self: *Self) !void {
+    pub fn writeIndent(self: *Self) !void {
         for (0..self.indent_level) |_| {
             try self.buffer.appendSlice(self.allocator, "  ");
         }
     }
 
-    fn writeEscaped(self: *Self, s: []const u8) !void {
+    pub fn writeEscaped(self: *Self, s: []const u8) !void {
         for (s) |c| {
             switch (c) {
                 '<' => try self.buffer.appendSlice(self.allocator, "&lt;"),
@@ -69,7 +69,7 @@ pub const XmlWriter = struct {
         }
     }
 
-    fn writeAttr(self: *Self, name: []const u8, value: []const u8) !void {
+    pub fn writeAttr(self: *Self, name: []const u8, value: []const u8) !void {
         try self.buffer.appendSlice(self.allocator, " ");
         try self.buffer.appendSlice(self.allocator, name);
         try self.buffer.appendSlice(self.allocator, "=\"");
@@ -77,19 +77,19 @@ pub const XmlWriter = struct {
         try self.buffer.appendSlice(self.allocator, "\"");
     }
 
-    fn writeAttrFloat(self: *Self, name: []const u8, value: f64) !void {
+    pub fn writeAttrFloat(self: *Self, name: []const u8, value: f64) !void {
         var buf: [64]u8 = undefined;
         const s = std.fmt.bufPrint(&buf, "{d:.6}", .{value}) catch return;
         try self.writeAttr(name, s);
     }
 
-    fn writeAttrInt(self: *Self, name: []const u8, value: anytype) !void {
+    pub fn writeAttrInt(self: *Self, name: []const u8, value: anytype) !void {
         var buf: [32]u8 = undefined;
         const s = std.fmt.bufPrint(&buf, "{d}", .{value}) catch return;
         try self.writeAttr(name, s);
     }
 
-    fn writeAttrBool(self: *Self, name: []const u8, value: bool) !void {
+    pub fn writeAttrBool(self: *Self, name: []const u8, value: bool) !void {
         try self.writeAttr(name, if (value) "true" else "false");
     }
 

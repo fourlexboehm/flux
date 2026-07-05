@@ -39,16 +39,55 @@ const colors = @import("ui/colors.zig");
 
 const track_count = session_constants.max_tracks;
 
-inline fn nsSince(from: std.Io.Timestamp, to: std.Io.Timestamp) u64 {
-    const ns = from.durationTo(to).toNanoseconds();
-    return if (ns > 0) @intCast(ns) else 0;
-}
-
 pub const std_options: std.Options = .{
     .enable_segfault_handler = options.enable_segfault_handler,
 };
 
 const TrackPlugin = plugin_runtime.TrackPlugin;
+
+const TickResult = struct {
+    now: std.Io.Timestamp,
+    wants_keyboard: bool,
+};
+
+fn tickFrame(
+    io: std.Io,
+    state: *ui_state.State,
+    midi: *midi_input.MidiInput,
+    engine: *audio_engine.AudioEngine,
+    catalog: *const plugins.PluginCatalog,
+    track_plugins: *[track_count]TrackPlugin,
+    track_fx: *[track_count][ui_state.max_fx_slots]TrackPlugin,
+    last_time: *std.Io.Timestamp,
+    dsp_last_update: *std.Io.Timestamp,
+    midi_events: []midi_input.MidiEvent,
+) TickResult {
+    const now = std.Io.Clock.awake.now(io);
+    const delta_ns = time_utils.nsSince(last_time.*, now);
+    last_time.* = now;
+    if (delta_ns > 0) {
+        const dt = @as(f64, @floatFromInt(delta_ns)) / std.time.ns_per_s;
+        ui_recording.tick(state, dt);
+    }
+    device_state.updateDeviceState(state, catalog, track_plugins, track_fx);
+    midi.poll();
+    state.midi_note_states = midi.note_states;
+    state.midi_note_velocities = midi.note_velocities;
+    const midi_event_count = midi.drainEvents(midi_events);
+    controller_mapping.applyMidiEvents(state, midi_events[0..midi_event_count]);
+    if (time_utils.nsSince(dsp_last_update.*, now) >= 250 * std.time.ns_per_ms) {
+        state.dsp_load_pct = engine.dsp_load_pct.load(.acquire);
+        dsp_last_update.* = now;
+    }
+    const wants_keyboard = zgui.io.getWantCaptureKeyboard();
+    const item_active = zgui.isAnyItemActive();
+    if ((!wants_keyboard or !item_active) and zgui.isKeyPressed(.space, false)) {
+        zgui.setNextFrameWantCaptureKeyboard(true);
+        state.playing = !state.playing;
+        state.playhead_beat = 0;
+    }
+    return .{ .now = now, .wants_keyboard = wants_keyboard };
+}
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -203,31 +242,7 @@ pub fn main(init: std.process.Init) !void {
                 const frame_start = std.Io.Clock.awake.now(io);
                 host.pumpMainThreadCallbacks();
 
-                const now = std.Io.Clock.awake.now(io);
-                const delta_ns = nsSince(last_time, now);
-                last_time = now;
-                if (delta_ns > 0) {
-                    const dt = @as(f64, @floatFromInt(delta_ns)) / std.time.ns_per_s;
-                    ui_recording.tick(&state, dt);
-                }
-                device_state.updateDeviceState(&state, &catalog, &track_plugins, &track_fx);
-                midi.poll();
-                state.midi_note_states = midi.note_states;
-                state.midi_note_velocities = midi.note_velocities;
-                const midi_event_count = midi.drainEvents(midi_events[0..]);
-                controller_mapping.applyMidiEvents(&state, midi_events[0..midi_event_count]);
-                if (nsSince(dsp_last_update, now) >= 250 * std.time.ns_per_ms) {
-                    state.dsp_load_pct = engine.dsp_load_pct.load(.acquire);
-                    dsp_last_update = now;
-                }
-                const wants_keyboard = zgui.io.getWantCaptureKeyboard();
-                const item_active = zgui.isAnyItemActive();
-                if ((!wants_keyboard or !item_active) and zgui.isKeyPressed(.space, false)) {
-                    // Avoid macOS "bonk" when handling space outside ImGui widgets.
-                    zgui.setNextFrameWantCaptureKeyboard(true);
-                    state.playing = !state.playing;
-                    state.playhead_beat = 0;
-                }
+                const tick = tickFrame(io, &state, &midi, &engine, &catalog, &track_plugins, &track_fx, &last_time, &dsp_last_update, midi_events[0..]);
 
                 while (app.app.nextEventMatchingMask_untilDate_inMode_dequeue(
                     objc.app_kit.EventMaskAny,
@@ -239,7 +254,7 @@ pub fn main(init: std.process.Init) !void {
                 }
                 const window_focused = objc.objc.msgSend(app.window, "isKeyWindow", bool, .{});
                 if (window_focused and !window_was_focused) {
-                    last_interaction_time = now;
+                    last_interaction_time = tick.now;
                 }
                 window_was_focused = window_focused;
 
@@ -346,12 +361,12 @@ pub fn main(init: std.process.Init) !void {
                     }
                     break :blk false;
                 };
-                const interactive = zgui.isAnyItemActive() or zgui.isAnyItemHovered() or zgui.io.getWantCaptureMouse() or wants_keyboard;
+                const interactive = zgui.isAnyItemActive() or zgui.isAnyItemHovered() or zgui.io.getWantCaptureMouse() or tick.wants_keyboard;
                 const active = state.playing or interactive or any_plugin_gui_open;
                 if (active) {
-                    last_interaction_time = now;
+                    last_interaction_time = tick.now;
                 }
-                const idle_ns = nsSince(last_interaction_time, now);
+                const idle_ns = time_utils.nsSince(last_interaction_time, tick.now);
                 const target_fps: u32 = if (active)
                     60
                 else if (idle_ns >= std.time.ns_per_s)
@@ -360,7 +375,7 @@ pub fn main(init: std.process.Init) !void {
                     20;
                 const target_frame_ns: u64 = std.time.ns_per_s / @as(u64, target_fps);
                 const frame_end = std.Io.Clock.awake.now(io);
-                const frame_elapsed_ns = nsSince(frame_start, frame_end);
+                const frame_elapsed_ns = time_utils.nsSince(frame_start, frame_end);
                 if (frame_elapsed_ns < target_frame_ns) {
                     time_utils.sleepNs(io, target_frame_ns - frame_elapsed_ns);
                 }
@@ -415,30 +430,7 @@ pub fn main(init: std.process.Init) !void {
                 host.pumpMainThreadCallbacks();
                 host.pumpPluginGuiEvents(io);
 
-                const now = std.Io.Clock.awake.now(io);
-                const delta_ns = nsSince(last_time, now);
-                last_time = now;
-                if (delta_ns > 0) {
-                    const dt = @as(f64, @floatFromInt(delta_ns)) / std.time.ns_per_s;
-                    ui_recording.tick(&state, dt);
-                }
-                device_state.updateDeviceState(&state, &catalog, &track_plugins, &track_fx);
-                midi.poll();
-                state.midi_note_states = midi.note_states;
-                state.midi_note_velocities = midi.note_velocities;
-                const midi_event_count = midi.drainEvents(midi_events[0..]);
-                controller_mapping.applyMidiEvents(&state, midi_events[0..midi_event_count]);
-                if (nsSince(dsp_last_update, now) >= 250 * std.time.ns_per_ms) {
-                    state.dsp_load_pct = engine.dsp_load_pct.load(.acquire);
-                    dsp_last_update = now;
-                }
-                const wants_keyboard = zgui.io.getWantCaptureKeyboard();
-                const item_active = zgui.isAnyItemActive();
-                if ((!wants_keyboard or !item_active) and zgui.isKeyPressed(.space, false)) {
-                    zgui.setNextFrameWantCaptureKeyboard(true);
-                    state.playing = !state.playing;
-                    state.playhead_beat = 0;
-                }
+                const tick = tickFrame(io, &state, &midi, &engine, &catalog, &track_plugins, &track_fx, &last_time, &dsp_last_update, midi_events[0..]);
 
                 zglfw.pollEvents();
                 if (window.getKey(.escape) == .press) {
@@ -447,7 +439,7 @@ pub fn main(init: std.process.Init) !void {
                 }
                 const window_focused = window.getAttribute(.focused);
                 if (window_focused and !window_was_focused) {
-                    last_interaction_time = now;
+                    last_interaction_time = tick.now;
                 }
                 window_was_focused = window_focused;
 
@@ -529,12 +521,12 @@ pub fn main(init: std.process.Init) !void {
                     }
                     break :blk false;
                 };
-                const interactive = zgui.isAnyItemActive() or zgui.isAnyItemHovered() or zgui.io.getWantCaptureMouse() or wants_keyboard;
+                const interactive = zgui.isAnyItemActive() or zgui.isAnyItemHovered() or zgui.io.getWantCaptureMouse() or tick.wants_keyboard;
                 const active = state.playing or interactive or any_plugin_gui_open;
                 if (active) {
-                    last_interaction_time = now;
+                    last_interaction_time = tick.now;
                 }
-                const idle_ns = nsSince(last_interaction_time, now);
+                const idle_ns = time_utils.nsSince(last_interaction_time, tick.now);
                 const target_fps: u32 = if (active)
                     60
                 else if (idle_ns >= std.time.ns_per_s)
@@ -543,7 +535,7 @@ pub fn main(init: std.process.Init) !void {
                     20;
                 const target_frame_ns: u64 = std.time.ns_per_s / @as(u64, target_fps);
                 const frame_end = std.Io.Clock.awake.now(io);
-                const frame_elapsed_ns = nsSince(frame_start, frame_end);
+                const frame_elapsed_ns = time_utils.nsSince(frame_start, frame_end);
                 if (frame_elapsed_ns < target_frame_ns) {
                     time_utils.sleepNs(io, target_frame_ns - frame_elapsed_ns);
                 }

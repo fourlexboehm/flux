@@ -66,87 +66,20 @@ pub fn fromFluxProject(
         const choice_index = state.track_plugins[t].choice_index;
         if (catalog.entryForIndex(choice_index)) |entry| {
             if (entry.kind == .clap) {
-                const device_id = try ids.next();
-                instrument_device_ids[t] = device_id;
-                const enabled_id = try ids.next();
-
-                // Get plugin ID and state path from track_plugin_info if available
                 const info = if (t < track_plugin_info.len) track_plugin_info[t] else TrackPluginInfo{};
-                // Prefer plugin ID from loaded plugin, fall back to catalog entry
-                const clap_plugin_id = info.plugin_id orelse entry.id orelse "";
-                var params = std.ArrayList(RealParameter).empty;
-                if (info.params.len > 0) {
-                    for (info.params) |param| {
-                        const param_id = try std.fmt.allocPrint(allocator, "{s}_p{d}", .{ device_id, param.id });
-                        try params.append(allocator, .{
-                            .id = param_id,
-                            .name = try allocator.dupe(u8, param.name),
-                            .value = param.value,
-                            .min = param.min,
-                            .max = param.max,
-                            .unit = .linear,
-                        });
-                    }
-                }
-
-                try devices.append(allocator, .{
-                    .id = device_id,
-                    .name = try allocator.dupe(u8, entry.name),
-                    .device_id = try allocator.dupe(u8, clap_plugin_id),
-                    .device_name = try allocator.dupe(u8, entry.name),
-                    .device_role = .instrument,
-                    .parameters = try params.toOwnedSlice(allocator),
-                    .enabled = .{
-                        .id = enabled_id,
-                        .name = "On/Off",
-                        .value = true,
-                    },
-                    .state = if (info.state_path) |sp| .{
-                        .path = try allocator.dupe(u8, sp),
-                    } else null,
-                });
+                const device = try buildClapPlugin(allocator, entry, info, .instrument, &ids);
+                instrument_device_ids[t] = device.id;
+                try devices.append(allocator, device);
             }
         }
         for (0..ui_state.max_fx_slots) |fx_index| {
             const fx_choice = state.track_fx[t][fx_index].choice_index;
             if (catalog.entryForIndex(fx_choice)) |entry| {
                 if (entry.kind != .clap) continue;
-                const device_id = try ids.next();
-                fx_device_ids[t][fx_index] = device_id;
-                const enabled_id = try ids.next();
                 const info = if (t < track_fx_plugin_info.len) track_fx_plugin_info[t][fx_index] else TrackPluginInfo{};
-                const clap_plugin_id = info.plugin_id orelse entry.id orelse "";
-                var params = std.ArrayList(RealParameter).empty;
-                if (info.params.len > 0) {
-                    for (info.params) |param| {
-                        const param_id = try std.fmt.allocPrint(allocator, "{s}_p{d}", .{ device_id, param.id });
-                        try params.append(allocator, .{
-                            .id = param_id,
-                            .name = try allocator.dupe(u8, param.name),
-                            .value = param.value,
-                            .min = param.min,
-                            .max = param.max,
-                            .unit = .linear,
-                        });
-                    }
-                }
-
-                try devices.append(allocator, .{
-                    .id = device_id,
-                    .name = try allocator.dupe(u8, entry.name),
-                    .device_id = try allocator.dupe(u8, clap_plugin_id),
-                    .device_name = try allocator.dupe(u8, entry.name),
-                    .device_role = .audioFX,
-                    .parameters = try params.toOwnedSlice(allocator),
-                    .enabled = .{
-                        .id = enabled_id,
-                        .name = "On/Off",
-                        .value = true,
-                    },
-                    .state = if (info.state_path) |sp| .{
-                        .path = try allocator.dupe(u8, sp),
-                    } else null,
-                });
+                const device = try buildClapPlugin(allocator, entry, info, .audioFX, &ids);
+                fx_device_ids[t][fx_index] = device.id;
+                try devices.append(allocator, device);
             }
         }
 
@@ -209,44 +142,11 @@ pub fn fromFluxProject(
         const fx_choice = state.track_fx[master_track_index][fx_index].choice_index;
         if (catalog.entryForIndex(fx_choice)) |entry| {
             if (entry.kind != .clap) continue;
-            const device_id = try ids.next();
-            const enabled_id = try ids.next();
             const info = if (master_track_index < track_fx_plugin_info.len)
                 track_fx_plugin_info[master_track_index][fx_index]
             else
                 TrackPluginInfo{};
-            const clap_plugin_id = info.plugin_id orelse entry.id orelse "";
-            var params = std.ArrayList(RealParameter).empty;
-            if (info.params.len > 0) {
-                for (info.params) |param| {
-                    const param_id = try std.fmt.allocPrint(allocator, "{s}_p{d}", .{ device_id, param.id });
-                    try params.append(allocator, .{
-                        .id = param_id,
-                        .name = try allocator.dupe(u8, param.name),
-                        .value = param.value,
-                        .min = param.min,
-                        .max = param.max,
-                        .unit = .linear,
-                    });
-                }
-            }
-
-            try master_devices.append(allocator, .{
-                .id = device_id,
-                .name = try allocator.dupe(u8, entry.name),
-                .device_id = try allocator.dupe(u8, clap_plugin_id),
-                .device_name = try allocator.dupe(u8, entry.name),
-                .device_role = .audioFX,
-                .parameters = try params.toOwnedSlice(allocator),
-                .enabled = .{
-                    .id = enabled_id,
-                    .name = "On/Off",
-                    .value = true,
-                },
-                .state = if (info.state_path) |sp| .{
-                    .path = try allocator.dupe(u8, sp),
-                } else null,
-            });
+            try master_devices.append(allocator, try buildClapPlugin(allocator, entry, info, .audioFX, &ids));
         }
     }
 
@@ -468,5 +368,49 @@ pub fn fromFluxProject(
             },
         },
         .scenes = try scenes.toOwnedSlice(allocator),
+    };
+}
+
+fn buildClapPlugin(
+    allocator: std.mem.Allocator,
+    entry: plugins.PluginEntry,
+    info: TrackPluginInfo,
+    device_role: types.DeviceRole,
+    ids: *IdGenerator,
+) !ClapPlugin {
+    const device_id = try ids.next();
+    const enabled_id = try ids.next();
+    const clap_plugin_id = info.plugin_id orelse entry.id orelse "";
+
+    var params = std.ArrayList(RealParameter).empty;
+    if (info.params.len > 0) {
+        for (info.params) |param| {
+            const param_id = try std.fmt.allocPrint(allocator, "{s}_p{d}", .{ device_id, param.id });
+            try params.append(allocator, .{
+                .id = param_id,
+                .name = try allocator.dupe(u8, param.name),
+                .value = param.value,
+                .min = param.min,
+                .max = param.max,
+                .unit = .linear,
+            });
+        }
+    }
+
+    return .{
+        .id = device_id,
+        .name = try allocator.dupe(u8, entry.name),
+        .device_id = try allocator.dupe(u8, clap_plugin_id),
+        .device_name = try allocator.dupe(u8, entry.name),
+        .device_role = device_role,
+        .parameters = try params.toOwnedSlice(allocator),
+        .enabled = .{
+            .id = enabled_id,
+            .name = "On/Off",
+            .value = true,
+        },
+        .state = if (info.state_path) |sp| .{
+            .path = try allocator.dupe(u8, sp),
+        } else null,
     };
 }

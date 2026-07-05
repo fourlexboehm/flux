@@ -7,6 +7,7 @@ const audio_engine = @import("audio_engine.zig");
 const plugin_runtime = @import("../plugin/plugin_runtime.zig");
 const session_constants = @import("../ui/session_view/constants.zig");
 const thread_context = @import("../thread_context.zig");
+const time_utils = @import("../time_utils.zig");
 const ui_state = @import("../ui/state.zig");
 const clock_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 
@@ -59,11 +60,6 @@ pub fn setWorkerSleepBounds(min_sleep_ns: u64, max_sleep_ns: u64) void {
     worker_max_sleep_ns.store(max_ns, .release);
 }
 
-inline fn nsSince(from: std.Io.Timestamp, to: std.Io.Timestamp) u64 {
-    const ns = from.durationTo(to).toNanoseconds();
-    return if (ns > 0) @intCast(ns) else 0;
-}
-
 pub fn dataCallback(
     device: *zaudio.Device,
     output: ?*anyopaque,
@@ -87,7 +83,7 @@ pub fn dataCallback(
     // Adaptive sleep tuning based on callback budget usage
     {
         const end = std.Io.Clock.awake.now(clock_io);
-        const elapsed_us = nsSince(start, end) / 1000;
+        const elapsed_us = time_utils.nsSince(start, end) / 1000;
         const budget_us = @as(u64, frame_count) * 1_000_000 / audio_constants.sample_rate;
         const budget_ns = budget_us * 1000;
         const usage_pct = elapsed_us * 100 / budget_us;

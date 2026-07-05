@@ -5,6 +5,7 @@ const clap = @import("clap-bindings");
 const colors = @import("colors.zig");
 const filters = @import("filters.zig");
 const embedded_views = @import("embedded_views.zig");
+const selection = @import("selection.zig");
 const controller_mapping = @import("../midi/controller_mapping.zig");
 const session_view = @import("session_view.zig");
 const session_constants = @import("session_view/constants.zig");
@@ -267,14 +268,9 @@ fn drawClapDevice(state: *State, ui_scale: f32) void {
         .instrument => &state.track_plugins[track_idx],
         .fx => &state.track_fx[track_idx][state.device_target_fx],
     };
-    const style = zgui.getStyle();
     const open_label = "Open Window";
     const close_label = "Close Window";
-    const max_label_w = @max(
-        zgui.calcTextSize(open_label, .{})[0],
-        zgui.calcTextSize(close_label, .{})[0],
-    );
-    const button_w = max_label_w + style.frame_padding[0] * 2.0 + 6.0 * ui_scale;
+    const button_w = calcToggleButtonWidth(open_label, close_label, ui_scale);
     const button_label = if (target.gui_open) close_label else open_label;
     var button_buf: [64]u8 = undefined;
     const button_text = std.fmt.bufPrintSentinel(&button_buf, "{s}##device_open", .{button_label}, 0) catch "##device_open";
@@ -358,8 +354,8 @@ fn drawClapParamDump(plugin: *const clap.Plugin) void {
         var info: clap.ext.params.Info = undefined;
         if (!params.getInfo(plugin, @intCast(i), &info)) continue;
 
-        const name = sliceToNull(info.name[0..]);
-        const module = sliceToNull(info.module[0..]);
+        const name = selection.sliceToNull(info.name[0..]);
+        const module = selection.sliceToNull(info.module[0..]);
 
         zgui.tableNextRow(.{});
         _ = zgui.tableNextColumn();
@@ -380,11 +376,6 @@ fn drawClapParamDump(plugin: *const clap.Plugin) void {
         _ = zgui.tableNextColumn();
         zgui.text("{d:.4} .. {d:.4}", .{ info.min_value, info.max_value });
     }
-}
-
-fn sliceToNull(buf: []const u8) []const u8 {
-    const end = std.mem.indexOfScalar(u8, buf, 0) orelse buf.len;
-    return buf[0..end];
 }
 
 fn calcToggleButtonWidth(open_label: []const u8, close_label: []const u8, ui_scale: f32) f32 {

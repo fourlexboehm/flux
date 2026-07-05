@@ -332,7 +332,7 @@ pub const State = struct {
     /// Perform undo operation
     pub fn performUndo(self: *State) bool {
         const cmd = self.undo_history.popForUndo() orelse return false;
-        self.executeUndo(cmd);
+        self.executeCommand(cmd, .undo);
         self.undo_history.confirmUndo();
         return true;
     }
@@ -340,177 +340,52 @@ pub const State = struct {
     /// Perform redo operation
     pub fn performRedo(self: *State) bool {
         const cmd = self.undo_history.popForRedo() orelse return false;
-        self.executeRedo(cmd);
+        self.executeCommand(cmd, .redo);
         self.undo_history.confirmRedo();
         return true;
     }
 
-    /// Execute the undo action for a command
-    fn executeUndo(self: *State, cmd: *const undo.Command) void {
-        switch (cmd.*) {
-            .clip_create => |c| {
-                // Undo create = delete
-                self.session.clips[c.track][c.scene] = .{};
-                self.piano_clips[c.track][c.scene].clear();
-            },
-            .clip_delete => |c| {
-                // Undo delete = restore
-                self.session.clips[c.track][c.scene] = .{
-                    .state = .stopped,
-                    .length_beats = c.length_beats,
-                };
-                self.piano_clips[c.track][c.scene].notes.clearRetainingCapacity();
-                for (c.notes) |note| {
-                    self.piano_clips[c.track][c.scene].addNote(note.pitch, note.start, note.duration) catch {};
-                }
-            },
-            .clip_paste => |c| {
-                if (c.old_clip.has_clip) {
-                    self.session.clips[c.track][c.scene] = .{
-                        .state = .stopped,
-                        .length_beats = c.old_clip.length_beats,
-                    };
-                    const clip = &self.piano_clips[c.track][c.scene];
-                    clip.notes.clearRetainingCapacity();
-                    for (c.old_notes) |note| {
-                        clip.addNote(note.pitch, note.start, note.duration) catch {};
-                    }
-                } else {
-                    self.session.clips[c.track][c.scene] = .{};
-                    self.piano_clips[c.track][c.scene].clear();
-                }
-            },
-            .note_add => |c| {
-                // Undo add = remove
-                const clip = &self.piano_clips[c.track][c.scene];
-                if (c.note_index < clip.notes.items.len) {
-                    _ = clip.notes.orderedRemove(c.note_index);
-                }
-            },
-            .note_remove => |c| {
-                // Undo remove = add back
-                const clip = &self.piano_clips[c.track][c.scene];
-                clip.notes.insert(clip.allocator, c.note_index, c.note) catch {
-                    clip.addNote(c.note.pitch, c.note.start, c.note.duration) catch {};
-                };
-            },
-            .note_move => |c| {
-                // Undo move = restore old position
-                const clip = &self.piano_clips[c.track][c.scene];
-                if (c.note_index < clip.notes.items.len) {
-                    clip.notes.items[c.note_index].start = c.old_start;
-                    clip.notes.items[c.note_index].pitch = c.old_pitch;
-                }
-            },
-            .note_resize => |c| {
-                // Undo resize = restore old duration
-                const clip = &self.piano_clips[c.track][c.scene];
-                if (c.note_index < clip.notes.items.len) {
-                    clip.notes.items[c.note_index].duration = c.old_duration;
-                }
-            },
-            .note_batch => |c| {
-                // Undo batch = remove added notes
-                const clip = &self.piano_clips[c.track][c.scene];
-                const remove_count = @min(c.notes.len, clip.notes.items.len);
-                clip.notes.shrinkRetainingCapacity(clip.notes.items.len - remove_count);
-            },
-            .track_add => {
-                // Undo add = remove last track
-                if (self.session.track_count > 1) {
-                    self.session.track_count -= 1;
-                }
-            },
-            .track_rename => |c| {
-                // Undo rename = restore old name
-                self.session.tracks[c.track_index].name = c.old_name;
-            },
-            .track_volume => |c| {
-                self.session.tracks[c.track_index].volume = c.old_volume;
-            },
-            .track_mute => |c| {
-                self.session.tracks[c.track_index].mute = c.old_mute;
-            },
-            .track_solo => |c| {
-                self.session.tracks[c.track_index].solo = c.old_solo;
-            },
-            .scene_add => {
-                // Undo add = remove last scene
-                if (self.session.scene_count > 1) {
-                    self.session.scene_count -= 1;
-                }
-            },
-            .scene_rename => |c| {
-                // Undo rename = restore old name
-                self.session.scenes[c.scene_index].name = c.old_name;
-            },
-            .bpm_change => |c| {
-                self.bpm = c.old_bpm;
-            },
-            .quantize_change => |c| {
-                self.quantize_index = c.old_index;
-                self.quantize_last = c.old_index;
-            },
-            .clip_move => |c| {
-                // Undo move = move back from dst to src (in reverse order)
-                var i = c.moves.len;
-                while (i > 0) {
-                    i -= 1;
-                    const m = c.moves[i];
-                    // Move clip back
-                    self.session.clips[m.src_track][m.src_scene] = self.session.clips[m.dst_track][m.dst_scene];
-                    self.session.clips[m.dst_track][m.dst_scene] = .{};
-                    // Move piano notes back
-                    const temp_notes = self.piano_clips[m.dst_track][m.dst_scene];
-                    self.piano_clips[m.src_track][m.src_scene] = temp_notes;
-                    self.piano_clips[m.dst_track][m.dst_scene] = piano_roll_types.PianoRollClip.init(self.allocator);
-                }
-            },
-            .clip_resize => |c| {
-                // Undo resize = restore old length
-                self.session.clips[c.track][c.scene].length_beats = c.old_length;
-                self.piano_clips[c.track][c.scene].length_beats = c.old_length;
-            },
-            .plugin_state => |c| {
-                // Undo plugin change = restore old state
-                self.plugin_state_restore_request = .{
-                    .track_index = c.track_index,
-                    .state_data = c.old_state,
-                };
-            },
-            .track_delete => |c| {
-                self.insertTrackInState(&c);
-            },
-            .scene_delete => |c| {
-                self.insertSceneInState(&c);
-            },
-        }
-    }
+    const UndoDirection = enum { undo, redo };
 
-    /// Execute the redo action for a command
-    fn executeRedo(self: *State, cmd: *const undo.Command) void {
+    fn executeCommand(self: *State, cmd: *const undo.Command, comptime direction: UndoDirection) void {
         switch (cmd.*) {
             .clip_create => |c| {
-                // Redo create
-                self.session.clips[c.track][c.scene] = .{
-                    .state = .stopped,
-                    .length_beats = c.length_beats,
-                };
-            },
-            .clip_delete => |c| {
-                // Redo delete
-                self.session.clips[c.track][c.scene] = .{};
-                self.piano_clips[c.track][c.scene].clear();
-            },
-            .clip_paste => |c| {
-                if (c.new_clip.has_clip) {
+                if (direction == .undo) {
+                    self.session.clips[c.track][c.scene] = .{};
+                    self.piano_clips[c.track][c.scene].clear();
+                } else {
                     self.session.clips[c.track][c.scene] = .{
                         .state = .stopped,
-                        .length_beats = c.new_clip.length_beats,
+                        .length_beats = c.length_beats,
+                    };
+                }
+            },
+            .clip_delete => |c| {
+                if (direction == .undo) {
+                    self.session.clips[c.track][c.scene] = .{
+                        .state = .stopped,
+                        .length_beats = c.length_beats,
+                    };
+                    self.piano_clips[c.track][c.scene].notes.clearRetainingCapacity();
+                    for (c.notes) |note| {
+                        self.piano_clips[c.track][c.scene].addNote(note.pitch, note.start, note.duration) catch {};
+                    }
+                } else {
+                    self.session.clips[c.track][c.scene] = .{};
+                    self.piano_clips[c.track][c.scene].clear();
+                }
+            },
+            .clip_paste => |c| {
+                const slot = if (direction == .undo) c.old_clip else c.new_clip;
+                const notes = if (direction == .undo) c.old_notes else c.new_notes;
+                if (slot.has_clip) {
+                    self.session.clips[c.track][c.scene] = .{
+                        .state = .stopped,
+                        .length_beats = slot.length_beats,
                     };
                     const clip = &self.piano_clips[c.track][c.scene];
                     clip.notes.clearRetainingCapacity();
-                    for (c.new_notes) |note| {
+                    for (notes) |note| {
                         clip.addNote(note.pitch, note.start, note.duration) catch {};
                     }
                 } else {
@@ -519,108 +394,148 @@ pub const State = struct {
                 }
             },
             .note_add => |c| {
-                // Redo add
-                const clip = &self.piano_clips[c.track][c.scene];
-                clip.addNote(c.note.pitch, c.note.start, c.note.duration) catch {};
+                if (direction == .undo) {
+                    const clip = &self.piano_clips[c.track][c.scene];
+                    if (c.note_index < clip.notes.items.len) {
+                        _ = clip.notes.orderedRemove(c.note_index);
+                    }
+                } else {
+                    const clip = &self.piano_clips[c.track][c.scene];
+                    clip.addNote(c.note.pitch, c.note.start, c.note.duration) catch {};
+                }
             },
             .note_remove => |c| {
-                // Redo remove
-                const clip = &self.piano_clips[c.track][c.scene];
-                if (c.note_index < clip.notes.items.len) {
-                    _ = clip.notes.orderedRemove(c.note_index);
+                if (direction == .undo) {
+                    const clip = &self.piano_clips[c.track][c.scene];
+                    clip.notes.insert(clip.allocator, c.note_index, c.note) catch {
+                        clip.addNote(c.note.pitch, c.note.start, c.note.duration) catch {};
+                    };
+                } else {
+                    const clip = &self.piano_clips[c.track][c.scene];
+                    if (c.note_index < clip.notes.items.len) {
+                        _ = clip.notes.orderedRemove(c.note_index);
+                    }
                 }
             },
             .note_move => |c| {
-                // Redo move = apply new position
                 const clip = &self.piano_clips[c.track][c.scene];
                 if (c.note_index < clip.notes.items.len) {
-                    clip.notes.items[c.note_index].start = c.new_start;
-                    clip.notes.items[c.note_index].pitch = c.new_pitch;
+                    clip.notes.items[c.note_index].start = if (direction == .undo) c.old_start else c.new_start;
+                    clip.notes.items[c.note_index].pitch = if (direction == .undo) c.old_pitch else c.new_pitch;
                 }
             },
             .note_resize => |c| {
-                // Redo resize = apply new duration
                 const clip = &self.piano_clips[c.track][c.scene];
                 if (c.note_index < clip.notes.items.len) {
-                    clip.notes.items[c.note_index].duration = c.new_duration;
+                    clip.notes.items[c.note_index].duration = if (direction == .undo) c.old_duration else c.new_duration;
                 }
             },
             .note_batch => |c| {
-                // Redo batch = add notes again
-                const clip = &self.piano_clips[c.track][c.scene];
-                for (c.notes) |note| {
-                    clip.addNote(note.pitch, note.start, note.duration) catch {};
+                if (direction == .undo) {
+                    const clip = &self.piano_clips[c.track][c.scene];
+                    const remove_count = @min(c.notes.len, clip.notes.items.len);
+                    clip.notes.shrinkRetainingCapacity(clip.notes.items.len - remove_count);
+                } else {
+                    const clip = &self.piano_clips[c.track][c.scene];
+                    for (c.notes) |note| {
+                        clip.addNote(note.pitch, note.start, note.duration) catch {};
+                    }
                 }
             },
             .track_add => |c| {
-                // Redo add track
-                if (self.session.track_count < max_tracks) {
-                    self.session.tracks[self.session.track_count] = .{};
-                    self.session.tracks[self.session.track_count].name = c.name;
-                    self.session.track_count += 1;
+                if (direction == .undo) {
+                    if (self.session.track_count > 1) {
+                        self.session.track_count -= 1;
+                    }
+                } else {
+                    if (self.session.track_count < max_tracks) {
+                        self.session.tracks[self.session.track_count] = .{};
+                        self.session.tracks[self.session.track_count].name = c.name;
+                        self.session.track_count += 1;
+                    }
                 }
             },
             .track_rename => |c| {
-                // Redo rename = apply new name
-                self.session.tracks[c.track_index].name = c.new_name;
+                self.session.tracks[c.track_index].name = if (direction == .undo) c.old_name else c.new_name;
             },
             .track_volume => |c| {
-                self.session.tracks[c.track_index].volume = c.new_volume;
+                self.session.tracks[c.track_index].volume = if (direction == .undo) c.old_volume else c.new_volume;
             },
             .track_mute => |c| {
-                self.session.tracks[c.track_index].mute = c.new_mute;
+                self.session.tracks[c.track_index].mute = if (direction == .undo) c.old_mute else c.new_mute;
             },
             .track_solo => |c| {
-                self.session.tracks[c.track_index].solo = c.new_solo;
+                self.session.tracks[c.track_index].solo = if (direction == .undo) c.old_solo else c.new_solo;
             },
             .scene_add => |c| {
-                // Redo add scene
-                if (self.session.scene_count < max_scenes) {
-                    self.session.scenes[self.session.scene_count] = .{};
-                    self.session.scenes[self.session.scene_count].name = c.name;
-                    self.session.scene_count += 1;
+                if (direction == .undo) {
+                    if (self.session.scene_count > 1) {
+                        self.session.scene_count -= 1;
+                    }
+                } else {
+                    if (self.session.scene_count < max_scenes) {
+                        self.session.scenes[self.session.scene_count] = .{};
+                        self.session.scenes[self.session.scene_count].name = c.name;
+                        self.session.scene_count += 1;
+                    }
                 }
             },
             .scene_rename => |c| {
-                // Redo rename = apply new name
-                self.session.scenes[c.scene_index].name = c.new_name;
+                self.session.scenes[c.scene_index].name = if (direction == .undo) c.old_name else c.new_name;
             },
             .bpm_change => |c| {
-                self.bpm = c.new_bpm;
+                self.bpm = if (direction == .undo) c.old_bpm else c.new_bpm;
             },
             .quantize_change => |c| {
-                self.quantize_index = c.new_index;
-                self.quantize_last = c.new_index;
+                self.quantize_index = if (direction == .undo) c.old_index else c.new_index;
+                self.quantize_last = if (direction == .undo) c.old_index else c.new_index;
             },
             .clip_move => |c| {
-                // Redo move = move from src to dst (in forward order)
-                for (c.moves) |m| {
-                    // Move clip
-                    self.session.clips[m.dst_track][m.dst_scene] = self.session.clips[m.src_track][m.src_scene];
-                    self.session.clips[m.src_track][m.src_scene] = .{};
-                    // Move piano notes
-                    const temp_notes = self.piano_clips[m.src_track][m.src_scene];
-                    self.piano_clips[m.dst_track][m.dst_scene] = temp_notes;
-                    self.piano_clips[m.src_track][m.src_scene] = piano_roll_types.PianoRollClip.init(self.allocator);
+                if (direction == .undo) {
+                    var i = c.moves.len;
+                    while (i > 0) {
+                        i -= 1;
+                        const m = c.moves[i];
+                        self.session.clips[m.src_track][m.src_scene] = self.session.clips[m.dst_track][m.dst_scene];
+                        self.session.clips[m.dst_track][m.dst_scene] = .{};
+                        const temp_notes = self.piano_clips[m.dst_track][m.dst_scene];
+                        self.piano_clips[m.src_track][m.src_scene] = temp_notes;
+                        self.piano_clips[m.dst_track][m.dst_scene] = piano_roll_types.PianoRollClip.init(self.allocator);
+                    }
+                } else {
+                    for (c.moves) |m| {
+                        self.session.clips[m.dst_track][m.dst_scene] = self.session.clips[m.src_track][m.src_scene];
+                        self.session.clips[m.src_track][m.src_scene] = .{};
+                        const temp_notes = self.piano_clips[m.src_track][m.src_scene];
+                        self.piano_clips[m.dst_track][m.dst_scene] = temp_notes;
+                        self.piano_clips[m.src_track][m.src_scene] = piano_roll_types.PianoRollClip.init(self.allocator);
+                    }
                 }
             },
             .clip_resize => |c| {
-                // Redo resize = apply new length
-                self.session.clips[c.track][c.scene].length_beats = c.new_length;
-                self.piano_clips[c.track][c.scene].length_beats = c.new_length;
+                const length = if (direction == .undo) c.old_length else c.new_length;
+                self.session.clips[c.track][c.scene].length_beats = length;
+                self.piano_clips[c.track][c.scene].length_beats = length;
             },
             .plugin_state => |c| {
-                // Redo plugin change = restore new state
                 self.plugin_state_restore_request = .{
                     .track_index = c.track_index,
-                    .state_data = c.new_state,
+                    .state_data = if (direction == .undo) c.old_state else c.new_state,
                 };
             },
             .track_delete => |c| {
-                self.deleteTrackInState(c.track_index);
+                if (direction == .undo) {
+                    self.insertTrackInState(&c);
+                } else {
+                    self.deleteTrackInState(c.track_index);
+                }
             },
             .scene_delete => |c| {
-                self.deleteSceneInState(c.scene_index);
+                if (direction == .undo) {
+                    self.insertSceneInState(&c);
+                } else {
+                    self.deleteSceneInState(c.scene_index);
+                }
             },
         }
     }
