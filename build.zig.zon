@@ -16,7 +16,7 @@
     // This field is optional.
     // This is currently advisory only; Zig does not yet do anything
     // with this value.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0-dev.1245+efd6f190f",
 
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
@@ -45,12 +45,12 @@
             .hash = "zglfw-0.10.0-dev-zgVDNIy4IQDJNRy4jrP1As-SZxfJpuWhU1iJ-wBab_VD",
         },
         .ztracy = .{
-            .url = "git+https://github.com/zig-gamedev/ztracy#d95d2a193b9f97944a17026c9a42b5d0f9a88c94",
-            .hash = "ztracy-0.14.0-dev-zHJSqzUHGQAmhJybhlwtl1QKevUBw4M5YKZqPfWx2y99",
+            .url = "git+https://github.com/kcbanner/ztracy#d1c58ee00b95e399b0763c707930d43e67259d60",
+            .hash = "ztracy-0.14.0-dev-zHJSq68FGQBXGHJZt5hf7EST4ViHclC65tZ1I7knrQef",
         },
         .zgui = .{
-            .url = "git+https://github.com/zig-gamedev/zgui#bfbebed372723d1f585f86fc0a550232b3427f4d",
-            .hash = "zgui-0.6.0-dev--L6sZJhIbgAjWdK5h6xuVUrsOcD-RdqEOEPf03Zgi4mF",
+            .url = "git+https://github.com/kcbanner/zgui#e237656e4afa511106fdc947e214f17516ac24a7",
+            .hash = "zgui-0.6.0-dev--L6sZE1JbgAmjZuNyKApKTEr3u9li_7J3pUsJgiQ28CX",
         },
         .zaudio = .{
             .url = "git+https://github.com/fourlexboehm/zaudio#ecf80fe743eea90819626e735900436e06e4bc53",
@@ -62,8 +62,8 @@
         },
         // DAWproject support
         .@"zig-xml" = .{
-            .url = "git+https://github.com/carlmontanari/zig-xml#b97f2ab4868ae3cac9902b33a40d3f31d2df739d",
-            .hash = "xml-0.2.0-ZTbP3yI6AgB9Rpd2hQrueO63ib0Bm6mQiL_WB1t7JAmP",
+            .url = "git+https://github.com/carlmontanari/zig-xml#f0fb74f6807e487a08d50b827f3f843dd1e2931a",
+            .hash = "xml-0.2.0-ZTbP3xE7AgCKvJHkWZQRdjLYhniAPYsW4rmEtbopzbOj",
         },
         .@"portmidi-zig" = .{
             .url = "git+https://github.com/fourlexboehm/portmidi-zig#b5882ae0a918dce7d6ccb26abd56217a055382cb",
