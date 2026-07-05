@@ -1,7 +1,7 @@
 const builtin = @import("builtin");
 const std = @import("std");
 const pm = @import("portmidi");
-const sleep_io: std.Io = std.Io.Threaded.global_single_threaded.ioBasic();
+const sleep_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 
 pub const MidiEvent = struct {
     status: u8,

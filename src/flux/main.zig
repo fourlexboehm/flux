@@ -229,7 +229,7 @@ pub fn main(init: std.process.Init) !void {
                     state.playhead_beat = 0;
                 }
 
-                while (app.app.nextEventMatchingMask(
+                while (app.app.nextEventMatchingMask_untilDate_inMode_dequeue(
                     objc.app_kit.EventMaskAny,
                     objc.app_kit.Date.distantPast(),
                     objc.app_kit.NSDefaultRunLoopMode,
@@ -327,7 +327,8 @@ pub fn main(init: std.process.Init) !void {
                 engine.updatePlugins(frame_plugins.instruments, frame_plugins.fx);
                 zgui.backend.draw(command_buffer, command_encoder);
                 command_encoder.as(objc.metal.CommandEncoder).endEncoding();
-                command_buffer.presentDrawable(drawable.as(objc.metal.Drawable));
+                // The current mach-objc package does not model CAMetalDrawable's MTLDrawable conformance.
+                objc.objc.msgSend(command_buffer, "presentDrawable:", void, .{drawable});
                 command_buffer.commit();
                 command_buffer.waitUntilCompleted();
 

@@ -204,14 +204,14 @@ pub const DragSelectState = struct {
 
 /// Helper to check if modifier key (Cmd/Ctrl) is pressed
 pub fn isModifierDown() bool {
-    return zgui.io.getKeySuper() or zgui.io.getKeyCtrl() or
+    return zgui.isKeyDown(.mod_super) or zgui.isKeyDown(.mod_ctrl) or
         zgui.isKeyDown(.left_super) or zgui.isKeyDown(.right_super) or
         zgui.isKeyDown(.left_ctrl) or zgui.isKeyDown(.right_ctrl);
 }
 
 /// Helper to check if shift is pressed
 pub fn isShiftDown() bool {
-    return zgui.io.getKeyShift() or
+    return zgui.isKeyDown(.mod_shift) or
         zgui.isKeyDown(.left_shift) or zgui.isKeyDown(.right_shift);
 }
 

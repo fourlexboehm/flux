@@ -62,6 +62,11 @@ pub fn build(b: *std.Build) void {
     const zopengl = b.dependency("zopengl", .{});
     const zaudio = b.dependency("zaudio", .{});
     const objc = b.dependency("mach-objc", .{});
+    const objc_no_helpers = b.createModule(.{
+        .root_source_file = objc.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const libz_jobs = b.dependency("libz_jobs", .{});
     const zig_xml = b.dependency("zig-xml", .{});
     const portmidi_zig = b.dependency("portmidi-zig", .{});
@@ -120,6 +125,7 @@ pub fn build(b: *std.Build) void {
         .root_module = flux_module,
         .use_llvm = use_llvm,
     });
+    flux.bundle_ubsan_rt = true;
 
     // Allow options to be passed in to source files
     var options = Step.Options.create(b);
@@ -153,7 +159,12 @@ pub fn build(b: *std.Build) void {
     shared.addImport("zopengl", zopengl.module("root"));
     const target_os = target.result.os.tag;
     if (target_os == .macos) {
-        shared.addImport("objc", objc.module("mach-objc"));
+        objc_no_helpers.linkSystemLibrary("objc", .{});
+        objc_no_helpers.linkFramework("AppKit", .{});
+        objc_no_helpers.linkFramework("CoreVideo", .{});
+        objc_no_helpers.linkFramework("QuartzCore", .{});
+
+        shared.addImport("objc", objc_no_helpers);
     }
 
     const build_targets = [_]*Step.Compile{ lib, exe };
@@ -180,11 +191,12 @@ pub fn build(b: *std.Build) void {
         pkg.root_module.addImport("static_data", static_data_module);
 
         if (target_os == .macos) {
-            pkg.root_module.addImport("objc", objc.module("mach-objc"));
+            pkg.root_module.addImport("objc", objc_no_helpers);
             pkg.root_module.linkFramework("AppKit", .{});
             pkg.root_module.linkFramework("Cocoa", .{});
             pkg.root_module.linkFramework("CoreGraphics", .{});
             pkg.root_module.linkFramework("Foundation", .{});
+            pkg.root_module.linkFramework("GameController", .{});
             pkg.root_module.linkFramework("Metal", .{});
             pkg.root_module.linkFramework("QuartzCore", .{});
         }
@@ -211,7 +223,7 @@ pub fn build(b: *std.Build) void {
     zsynth_core.addImport("options", options_core_module);
     zsynth_core.addImport("static_data", static_data_module);
     if (target_os == .macos) {
-        zsynth_core.addImport("objc", objc.module("mach-objc"));
+        zsynth_core.addImport("objc", objc_no_helpers);
     }
 
     zminimoog_core.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
@@ -224,7 +236,7 @@ pub fn build(b: *std.Build) void {
     zminimoog_core.addImport("options", options_core_module);
     zminimoog_core.addImport("static_data", static_data_module);
     if (target_os == .macos) {
-        zminimoog_core.addImport("objc", objc.module("mach-objc"));
+        zminimoog_core.addImport("objc", objc_no_helpers);
     }
 
     zportafm_core.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
@@ -277,6 +289,7 @@ pub fn build(b: *std.Build) void {
     flux.root_module.addIncludePath(portmidi_zig.path("pm_linux"));
     flux.root_module.addIncludePath(portmidi_zig.path("porttime"));
     flux.root_module.addIncludePath(b.path("zportafm/native"));
+    flux.root_module.addIncludePath(zgui.path("libs/imgui"));
     flux.root_module.link_libc = true;
     flux.root_module.addCSourceFiles(.{
         .root = b.path(""),
@@ -285,13 +298,21 @@ pub fn build(b: *std.Build) void {
         },
         .flags = &.{"-std=c11"},
     });
+    flux.root_module.addCSourceFiles(.{
+        .root = b.path(""),
+        .files = &.{
+            "src/flux/zgui_bridge.cpp",
+        },
+        .flags = &.{"-std=c++17"},
+    });
     if (target_os == .macos) {
-        flux.root_module.addImport("objc", objc.module("mach-objc"));
+        flux.root_module.addImport("objc", objc_no_helpers);
         flux.root_module.linkFramework("AppKit", .{});
         flux.root_module.linkFramework("Cocoa", .{});
         flux.root_module.linkFramework("CoreGraphics", .{});
         flux.root_module.linkFramework("CoreMIDI", .{});
         flux.root_module.linkFramework("Foundation", .{});
+        flux.root_module.linkFramework("GameController", .{});
         flux.root_module.linkFramework("Metal", .{});
         flux.root_module.linkFramework("QuartzCore", .{});
         flux.root_module.linkFramework("CoreFoundation", .{});

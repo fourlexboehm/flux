@@ -14,6 +14,8 @@ const AutomationTargetKind = types.AutomationTargetKind;
 const quantizeIndexToBeats = types.quantizeIndexToBeats;
 const beats_per_bar = types.beats_per_bar;
 
+extern fn fluxZguiGetMouseWheelY() f32;
+
 fn lerpColor(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
     const clamped = std.math.clamp(t, 0.0, 1.0);
     return .{
@@ -458,7 +460,7 @@ pub fn drawSequencer(
         zgui.setMouseCursor(.resize_ns);
     }
 
-    const wheel_y = zgui.io.getMouseWheel();
+    const wheel_y = fluxZguiGetMouseWheelY();
     const ui_hovered = zgui.isAnyItemHovered() or zgui.isAnyItemActive();
     if ((keys_hovered or in_grid) and wheel_y != 0 and !ui_hovered) {
         const scroll_step = row_height * 3.0;
