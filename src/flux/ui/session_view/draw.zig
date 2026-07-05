@@ -42,7 +42,7 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
     self.render_hover_has_content = false;
 
     // Right-click context menu (handle before left-click selection)
-    const ctrl_click = zgui.isMouseClicked(.left) and zgui.io.getKeyCtrl();
+    const ctrl_click = zgui.isMouseClicked(.left) and (zgui.isKeyDown(.mod_ctrl) or zgui.isKeyDown(.left_ctrl) or zgui.isKeyDown(.right_ctrl));
     if (in_grid and (zgui.isMouseClicked(.right) or (builtin.os.tag == .macos and ctrl_click))) {
         if (hover_track != null and hover_scene != null) {
             if (hover_has_content) {
