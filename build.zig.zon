@@ -25,15 +25,15 @@
     // internet connectivity.
     .dependencies = .{
         .regex = .{
-            .url = "git+https://github.com/tiehuis/zig-regex",
+            .url = "git+https://github.com/tiehuis/zig-regex#49c5694c8b3ee4ae4a7131035a44a69841ef4740",
             .hash = "regex-0.1.3-axC357jaAQBRENglwG9NTcuej8pYz1IZmfwER_AXMlHZ",
         },
         .@"clap-bindings" = .{
-            .url = "git+https://codeberg.org/fellowtraveler/clap-zig-bindings",
+            .url = "git+https://codeberg.org/fellowtraveler/clap-zig-bindings#8e9d97d3e85256c35dddd6823000171f27faa97c",
             .hash = "clap_bindings-1.0.3-9TIcDWVLAQCvN3AaarfWupPtWYgUW6JfBVKy3AYswPSj",
         },
         .zopengl = .{
-            .url = "git+https://github.com/zig-gamedev/zopengl",
+            .url = "git+https://github.com/zig-gamedev/zopengl#29908b1ba2d91baf91e348f6cd192630488d77b6",
             .hash = "zopengl-0.6.0-dev-5-tnz32mDgB82moljuLD0fmbj1mU3NSCXjzttpmoV2iP",
         },
         .@"mach-objc" = .{
@@ -41,11 +41,11 @@
             .hash = "mach_objc-0.0.0-pF1e0p4LDgBoJKtFRfDSWyVFtfyDcy_7YUBiuY74JkMT",
         },
         .zglfw = .{
-            .url = "git+https://github.com/zig-gamedev/zglfw",
+            .url = "git+https://github.com/zig-gamedev/zglfw#51003c105d23db378bb59ce415a387b22f1b0892",
             .hash = "zglfw-0.10.0-dev-zgVDNIy4IQDJNRy4jrP1As-SZxfJpuWhU1iJ-wBab_VD",
         },
         .ztracy = .{
-            .url = "git+https://github.com/zig-gamedev/ztracy",
+            .url = "git+https://github.com/zig-gamedev/ztracy#d95d2a193b9f97944a17026c9a42b5d0f9a88c94",
             .hash = "ztracy-0.14.0-dev-zHJSqzUHGQAmhJybhlwtl1QKevUBw4M5YKZqPfWx2y99",
         },
         .zgui = .{
@@ -57,20 +57,20 @@
             .hash = "zaudio-0.11.0-dev-_M-91owyQQD3MVQa4F1xkPgwSFWQi4HhhNfDwKI0PBWX",
         },
         .libz_jobs = .{
-            .url = "git+https://github.com/fourlexboehm/LibZ.Jobs",
+            .url = "git+https://github.com/fourlexboehm/LibZ.Jobs#2f9c153d79db8533d59e18645ffad0f833d00d3d",
             .hash = "libz_jobs-0.0.0-WDIbgYiWAAAhj2_EdZf5ZlPyp9DrUrVCOztHNBEJcfU5",
         },
         // DAWproject support
         .@"zig-xml" = .{
-            .url = "git+https://github.com/carlmontanari/zig-xml",
+            .url = "git+https://github.com/carlmontanari/zig-xml#b97f2ab4868ae3cac9902b33a40d3f31d2df739d",
             .hash = "xml-0.2.0-ZTbP3yI6AgB9Rpd2hQrueO63ib0Bm6mQiL_WB1t7JAmP",
         },
         .@"portmidi-zig" = .{
-            .url = "git+https://github.com/fourlexboehm/portmidi-zig",
+            .url = "git+https://github.com/fourlexboehm/portmidi-zig#b5882ae0a918dce7d6ccb26abd56217a055382cb",
             .hash = "portmidi-0.0.0-u03vWNB_BAB16avZdEXkJWCw_u1ku5h739UHyjXMNyqh",
         },
         .wdf = .{
-            .url = "git+https://codeberg.org/fellowtraveler/wdf.git",
+            .url = "git+https://codeberg.org/fellowtraveler/wdf.git#43ec558c2eadc2da1fd6cc3dad9aa8e2702d99a8",
             .hash = "wdf-0.0.0-oWaQ7H-ZAACaaJKtEMptazGJV-fWRVbrI-29gxQmhMMn",
         },
     },
