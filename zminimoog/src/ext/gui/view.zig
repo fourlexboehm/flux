@@ -120,7 +120,7 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
     var val: f32 = @floatCast(plugin.params.get(param).Float);
     var label_buf: [256]u8 = @splat(0);
     const name = std.mem.sliceTo(&info.name, 0);
-    const label = std.fmt.bufPrintZ(&label_buf, "{s}", .{name}) catch return;
+    const label = std.fmt.bufPrintSentinel(&label_buf, "{s}", .{name}, 0) catch return;
 
     var text_buf: [256]u8 = @splat(0);
     _ = Params._valueToText(&plugin.plugin, @enumFromInt(index), val, &text_buf, 256);
@@ -150,7 +150,7 @@ fn renderCombo(plugin: *Plugin, param: Params.Parameter, items: []const []const 
 
     var label_buf: [256]u8 = @splat(0);
     const name = std.mem.sliceTo(&info.name, 0);
-    const label = std.fmt.bufPrintZ(&label_buf, "{s}", .{name}) catch return;
+    const label = std.fmt.bufPrintSentinel(&label_buf, "{s}", .{name}, 0) catch return;
 
     // Build items array for combo
     var item_ptrs: [16][*:0]const u8 = undefined;
@@ -185,7 +185,7 @@ fn renderToggle(plugin: *Plugin, param: Params.Parameter, label_text: []const u8
     var enabled: bool = val >= 0.5;
 
     var label_buf: [256]u8 = @splat(0);
-    const label = std.fmt.bufPrintZ(&label_buf, "{s}", .{label_text}) catch return;
+    const label = std.fmt.bufPrintSentinel(&label_buf, "{s}", .{label_text}, 0) catch return;
 
     if (zgui.checkbox(label, .{ .v = &enabled })) {
         plugin.params.set(param, .{ .Float = if (enabled) 1.0 else 0.0 }, .{ .should_notify_host = options.notify_host }) catch return;

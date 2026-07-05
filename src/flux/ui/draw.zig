@@ -377,9 +377,9 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
     zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
     var track_buf: [64]u8 = undefined;
     const track_info = if (state.session.mixer_target == .master)
-        std.fmt.bufPrintZ(&track_buf, "  Master", .{}) catch "  Master"
+        std.fmt.bufPrintSentinel(&track_buf, "  Master", .{}, 0) catch "  Master"
     else
-        std.fmt.bufPrintZ(&track_buf, "  Track {d} / Scene {d}", .{ state.selectedTrack() + 1, state.selectedScene() + 1 }) catch "";
+        std.fmt.bufPrintSentinel(&track_buf, "  Track {d} / Scene {d}", .{ state.selectedTrack() + 1, state.selectedScene() + 1 }, 0) catch "";
     zgui.textUnformatted(track_info);
     zgui.popStyleColor(.{ .count = 1 });
 

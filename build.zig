@@ -71,6 +71,20 @@ pub fn build(b: *std.Build) void {
     const zig_xml = b.dependency("zig-xml", .{});
     const portmidi_zig = b.dependency("portmidi-zig", .{});
     const wdf = b.dependency("wdf", .{});
+    const portmidi_c = b.addTranslateC(.{
+        .root_source_file = portmidi_zig.path("pm_common/portmidi.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    portmidi_c.addIncludePath(portmidi_zig.path("pm_common"));
+    const emu2413_c = b.addTranslateC(.{
+        .root_source_file = b.path("zportafm/native/emu2413/emu2413.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    emu2413_c.addIncludePath(b.path("zportafm/native"));
 
     const ztracy = b.dependency("ztracy", .{
         .enable_ztracy = (builtin.mode == .Debug or profiling == true) and !disable_profiling,
@@ -245,13 +259,13 @@ pub fn build(b: *std.Build) void {
     zportafm_core.addImport("shared", shared);
     zportafm_core.addImport("options", options_core_module);
     zportafm_core.addImport("static_data", static_data_module);
+    zportafm_core.addImport("emu2413_c", emu2413_c.createModule());
     zportafm_core.addIncludePath(b.path("zportafm/native"));
 
     // Specific steps for different targets
     // Library
-    const rename_dll_step = CreateClapPluginStep.create(b, lib);
-    rename_dll_step.step.dependOn(&b.addInstallArtifact(lib, .{}).step);
-    b.getInstallStep().dependOn(&rename_dll_step.step);
+    const clap_plugin_step = createClapPluginStep(b, lib, target_os, optimize);
+    b.getInstallStep().dependOn(clap_plugin_step);
 
     // Also create executable for testing
     if (optimize == .Debug) {
@@ -282,6 +296,7 @@ pub fn build(b: *std.Build) void {
     flux.root_module.addImport("libz_jobs", libz_jobs.module("libz_jobs"));
     flux.root_module.addImport("xml", zig_xml.module("xml"));
     const portmidi_module = portmidi_zig.module("portmidi");
+    portmidi_module.addImport("c", portmidi_c.createModule());
     portmidi_module.addIncludePath(portmidi_zig.path("pm_common"));
     flux.root_module.addImport("portmidi", portmidi_module);
     flux.root_module.addIncludePath(portmidi_zig.path("pm_common"));
@@ -365,14 +380,13 @@ pub fn build(b: *std.Build) void {
     const bundle_flux_app_step = b.step("bundle-flux-app", "Build Flux.app bundle (macOS)");
     const run_flux_app_step = b.step("run-flux-app", "Build and run Flux.app (macOS)");
     if (target_os == .macos) {
-        const create_flux_app_step = CreateFluxAppBundleStep.create(b);
-        create_flux_app_step.step.dependOn(b.getInstallStep());
-        bundle_flux_app_step.dependOn(&create_flux_app_step.step);
+        const create_flux_app_step = createFluxAppBundleStep(b, flux);
+        create_flux_app_step.dependOn(b.getInstallStep());
+        bundle_flux_app_step.dependOn(create_flux_app_step);
 
         const open_flux_app = b.addSystemCommand(&.{ "open", "zig-out/Flux.app" });
-        open_flux_app.step.dependOn(&create_flux_app_step.step);
+        open_flux_app.step.dependOn(create_flux_app_step);
         run_flux_app_step.dependOn(&open_flux_app.step);
-
     }
 
     // Unit tests for zminimoog DSP - filter module
@@ -410,101 +424,72 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_dsp_tests.step);
 }
 
-pub const CreateClapPluginStep = struct {
-    pub const base_id = .top_level;
+fn createClapPluginStep(
+    b: *std.Build,
+    lib: *Step.Compile,
+    target_os: std.Target.Os.Tag,
+    optimize: std.builtin.OptimizeMode,
+) *Step {
+    switch (target_os) {
+        .macos => {
+            const clap_bundle = b.addWriteFiles();
+            const plugin_bin = clap_bundle.addCopyFile(
+                lib.getEmittedBin(),
+                "ZSynth.clap/Contents/MacOS/ZSynth",
+            );
+            _ = clap_bundle.addCopyFile(
+                b.path("zsynth/macos/Info.plist"),
+                "ZSynth.clap/Contents/info.plist",
+            );
+            _ = clap_bundle.addCopyFile(
+                b.path("zsynth/macos/PkgInfo"),
+                "ZSynth.clap/Contents/PkgInfo",
+            );
 
-    const Self = @This();
-
-    step: Step,
-    build: *std.Build,
-    artifact: *Step.Compile,
-
-    pub fn create(b: *std.Build, artifact: *Step.Compile) *Self {
-        const self = b.allocator.create(Self) catch unreachable;
-        const name = "create clap plugin";
-        self.* = Self{
-            .step = Step.init(Step.StepOptions{ .id = .top_level, .name = name, .owner = b, .makeFn = make }),
-            .build = b,
-            .artifact = artifact,
-        };
-        return self;
-    }
-
-    fn make(step: *Step, _: Step.MakeOptions) !void {
-        const self: *Self = @fieldParentPtr("step", step);
-        const allocator = self.build.allocator;
-        if (self.build.build_root.path) |path| {
-            const io = self.build.graph.io;
-            var dir = try std.Io.Dir.openDirAbsolute(io, path, .{});
-            defer dir.close(io);
-            switch (builtin.os.tag) {
-                .macos => {
-                    _ = try dir.updateFile(io, "zig-out/lib/libzsynth.dylib", dir, "zig-out/lib/ZSynth.clap/Contents/MacOS/ZSynth", .{});
-                    _ = try dir.updateFile(io, "zsynth/macos/Info.plist", dir, "zig-out/lib/ZSynth.clap/Contents/info.plist", .{});
-                    _ = try dir.updateFile(io, "zsynth/macos/PkgInfo", dir, "zig-out/lib/ZSynth.clap/Contents/PkgInfo", .{});
-                    if (builtin.mode == .Debug) {
-                        // Also generate dynamic symbols for Tracy
-                        var child = try std.process.spawn(io, .{
-                            .argv = &.{ "dsymutil", "zig-out/lib/ZSynth.clap/Contents/MacOS/ZSynth" },
-                            .stdin = .ignore,
-                            .stdout = .ignore,
-                            .stderr = .ignore,
-                        });
-                        _ = try child.wait(io);
-                    }
-                    // Copy the CLAP plugin to the library folder
-                    try copyDirRecursiveToHome(allocator, io, &self.build.graph.environ_map, "zig-out/lib/ZSynth.clap/", "Library/Audio/Plug-Ins/CLAP/ZSynth.clap");
-                },
-                .linux => {
-                    _ = try dir.updateFile(io, "zig-out/lib/libzsynth.so", dir, "zig-out/lib/zsynth.clap", .{});
-                },
-                .windows => {
-                    _ = try dir.updateFile(io, "zig-out\\lib\\libzsynth.dll", dir, "zig-out\\lib\\zsynth.clap", .{});
-                },
-                else => {},
+            var bundle_ready: *Step = &clap_bundle.step;
+            if (optimize == .Debug) {
+                const dsym = b.addSystemCommand(&.{"dsymutil"});
+                dsym.addFileArg(plugin_bin);
+                dsym.step.dependOn(&clap_bundle.step);
+                bundle_ready = &dsym.step;
             }
-        }
-    }
-};
 
-pub const CreateFluxAppBundleStep = struct {
-    pub const base_id = .top_level;
-
-    const Self = @This();
-
-    step: Step,
-    build: *std.Build,
-
-    pub fn create(b: *std.Build) *Self {
-        const self = b.allocator.create(Self) catch unreachable;
-        const name = "create flux app bundle";
-        self.* = Self{
-            .step = Step.init(Step.StepOptions{ .id = .top_level, .name = name, .owner = b, .makeFn = make }),
-            .build = b,
-        };
-        return self;
-    }
-
-    fn make(step: *Step, _: Step.MakeOptions) !void {
-        const self: *Self = @fieldParentPtr("step", step);
-        if (self.build.build_root.path) |path| {
-            const io = self.build.graph.io;
-            var dir = try std.Io.Dir.openDirAbsolute(io, path, .{});
-            defer dir.close(io);
-
-            try dir.createDirPath(io, "zig-out/Flux.app/Contents/MacOS");
-            _ = try dir.updateFile(io, "zig-out/bin/flux", dir, "zig-out/Flux.app/Contents/MacOS/flux", .{});
-            try dir.writeFile(io, .{
-                .sub_path = "zig-out/Flux.app/Contents/Info.plist",
-                .data = flux_info_plist,
+            const install_bundle = b.addInstallDirectory(.{
+                .source_dir = clap_bundle.getDirectory(),
+                .install_dir = .lib,
+                .install_subdir = "",
             });
-            try dir.writeFile(io, .{
-                .sub_path = "zig-out/Flux.app/Contents/PkgInfo",
-                .data = "APPL????\n",
-            });
-        }
+            install_bundle.step.dependOn(bundle_ready);
+            return &install_bundle.step;
+        },
+        .linux, .windows => {
+            const install_clap = b.addInstallFileWithDir(
+                lib.getEmittedBin(),
+                .lib,
+                "zsynth.clap",
+            );
+            return &install_clap.step;
+        },
+        else => return &b.addInstallArtifact(lib, .{}).step,
     }
-};
+}
+
+fn createFluxAppBundleStep(b: *std.Build, flux: *Step.Compile) *Step {
+    const app_bundle = b.addWriteFiles();
+    _ = app_bundle.addCopyFile(
+        flux.getEmittedBin(),
+        "Flux.app/Contents/MacOS/flux",
+    );
+    _ = app_bundle.add("Flux.app/Contents/Info.plist", flux_info_plist);
+    _ = app_bundle.add("Flux.app/Contents/PkgInfo", "APPL????\n");
+
+    const install_app = b.addInstallDirectory(.{
+        .source_dir = app_bundle.getDirectory(),
+        .install_dir = .prefix,
+        .install_subdir = "",
+    });
+    return &install_app.step;
+}
 
 const flux_info_plist =
     \\<?xml version="1.0" encoding="UTF-8"?>
@@ -531,22 +516,3 @@ const flux_info_plist =
     \\</plist>
     \\
 ;
-
-fn copyDirRecursiveToHome(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    environ_map: *const std.process.Environ.Map,
-    source_dir: []const u8,
-    dest_path_from_home: []const u8,
-) !void {
-    const home = environ_map.get("HOME") orelse return error.HomeNotFound;
-    const dest_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ home, dest_path_from_home });
-    defer allocator.free(dest_path);
-    var cp = try std.process.spawn(io, .{
-        .argv = &.{ "cp", "-R", source_dir, dest_path },
-        .stdin = .ignore,
-        .stdout = .ignore,
-        .stderr = .ignore,
-    });
-    _ = try cp.wait(io);
-}

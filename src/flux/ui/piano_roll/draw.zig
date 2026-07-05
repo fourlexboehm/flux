@@ -743,7 +743,7 @@ fn drawAutomationHeader(
     const preview = if (state.automation_lane_index) |idx|
         automationLaneLabel(&preview_buf, &clip.automation.lanes.items[idx], instrument_plugin, fx_plugins)
     else
-        (std.fmt.bufPrintZ(&preview_buf, "None", .{}) catch "None");
+        (std.fmt.bufPrintSentinel(&preview_buf, "None", .{}, 0) catch "None");
 
     if (zgui.beginCombo("##automation_lane", .{ .preview_value = preview })) {
         for (clip.automation.lanes.items, 0..) |*lane, idx| {
@@ -807,11 +807,11 @@ fn drawAutomationHeader(
                 var fx_label_buf: [64]u8 = undefined;
                 const current_fx = @min(state.automation_add_fx_index, fx_plugins.len - 1);
                 state.automation_add_fx_index = current_fx;
-                const fx_preview = std.fmt.bufPrintZ(&fx_label_buf, "FX {d}", .{current_fx + 1}) catch "FX";
+                const fx_preview = std.fmt.bufPrintSentinel(&fx_label_buf, "FX {d}", .{current_fx + 1}, 0) catch "FX";
                 if (zgui.beginCombo("FX Slot", .{ .preview_value = fx_preview })) {
                     for (0..fx_plugins.len) |fx_index| {
                         var slot_buf: [32]u8 = undefined;
-                        const slot_label = std.fmt.bufPrintZ(&slot_buf, "FX {d}", .{fx_index + 1}) catch "FX";
+                        const slot_label = std.fmt.bufPrintSentinel(&slot_buf, "FX {d}", .{fx_index + 1}, 0) catch "FX";
                         const selected = fx_index == state.automation_add_fx_index;
                         if (zgui.selectable(slot_label, .{ .selected = selected })) {
                             state.automation_add_fx_index = fx_index;
@@ -964,10 +964,10 @@ fn drawParamCombo(
     const preview_label = if (selected_param.*) |pid|
         getParamLabelById(&preview_buf, plugin.?, params, pid)
     else
-        (std.fmt.bufPrintZ(&preview_buf, "Select parameter", .{}) catch "Select parameter");
+        (std.fmt.bufPrintSentinel(&preview_buf, "Select parameter", .{}, 0) catch "Select parameter");
 
     var label_buf: [64]u8 = undefined;
-    const label_z: [:0]const u8 = std.fmt.bufPrintZ(&label_buf, "{s}", .{label}) catch "Parameter";
+    const label_z: [:0]const u8 = std.fmt.bufPrintSentinel(&label_buf, "{s}", .{label}, 0) catch "Parameter";
     if (zgui.beginCombo(label_z, .{ .preview_value = preview_label })) {
         for (0..count) |i| {
             var info: clap.ext.params.Info = undefined;
@@ -1191,13 +1191,13 @@ fn automationLaneLabel(
     if (lane.target_kind == .track) {
         if (lane.param_id) |param_id| {
             if (std.mem.eql(u8, param_id, "volume")) {
-                return std.fmt.bufPrintZ(buf, "Track Volume", .{}) catch "Track Volume";
+                return std.fmt.bufPrintSentinel(buf, "Track Volume", .{}, 0) catch "Track Volume";
             }
             if (std.mem.eql(u8, param_id, "pan")) {
-                return std.fmt.bufPrintZ(buf, "Track Pan", .{}) catch "Track Pan";
+                return std.fmt.bufPrintSentinel(buf, "Track Pan", .{}, 0) catch "Track Pan";
             }
         }
-        return std.fmt.bufPrintZ(buf, "Track Automation", .{}) catch "Track Automation";
+        return std.fmt.bufPrintSentinel(buf, "Track Automation", .{}, 0) catch "Track Automation";
     }
 
     var target_buf: [64]u8 = undefined;
@@ -1218,7 +1218,7 @@ fn automationLaneLabel(
         break :blk getParamLabelById(&label_buf, plugin, params, pid);
     } else "Param";
 
-    return std.fmt.bufPrintZ(buf, "{s}: {s}", .{ target_label, param_label }) catch "Automation";
+    return std.fmt.bufPrintSentinel(buf, "{s}: {s}", .{ target_label, param_label }, 0) catch "Automation";
 }
 
 fn findParamInfo(plugin: *const clap.Plugin, param_id: u32, out: *clap.ext.params.Info) bool {
@@ -1247,16 +1247,16 @@ fn getParamLabelById(
         if (@intFromEnum(info.id) != param_id) continue;
         return formatParamLabelZ(buf, &info);
     }
-    return std.fmt.bufPrintZ(buf, "Param {d}", .{param_id}) catch "Param";
+    return std.fmt.bufPrintSentinel(buf, "Param {d}", .{param_id}, 0) catch "Param";
 }
 
 fn formatParamLabelZ(buf: []u8, info: *const clap.ext.params.Info) [:0]const u8 {
     const name = sliceToNull(info.name[0..]);
     const module = sliceToNull(info.module[0..]);
     if (module.len > 0) {
-        return std.fmt.bufPrintZ(buf, "{s}/{s}", .{ module, name }) catch "Param";
+        return std.fmt.bufPrintSentinel(buf, "{s}/{s}", .{ module, name }, 0) catch "Param";
     }
-    return std.fmt.bufPrintZ(buf, "{s}", .{name}) catch "Param";
+    return std.fmt.bufPrintSentinel(buf, "{s}", .{name}, 0) catch "Param";
 }
 
 fn sliceToNull(buf: []const u8) []const u8 {
@@ -1844,7 +1844,7 @@ fn drawRuler(
         if (is_bar and label_font_size >= 6.0) {
             const bar_num = @divFloor(beat_int, beats_per_bar) + 1;
             var buf: [8]u8 = undefined;
-            const label = std.fmt.bufPrintZ(&buf, "{d}", .{bar_num}) catch "";
+            const label = std.fmt.bufPrintSentinel(&buf, "{d}", .{bar_num}, 0) catch "";
             draw_list.addTextExtended(
                 .{ bx + 4, label_y },
                 zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright),
@@ -1942,7 +1942,7 @@ fn drawPianoKeys(
 
         if (note_in_octave == 0 and label_font_size >= 6.0) {
             var buf: [8]u8 = undefined;
-            const label = std.fmt.bufPrintZ(&buf, "C{d}", .{oct}) catch "";
+            const label = std.fmt.bufPrintSentinel(&buf, "C{d}", .{oct}, 0) catch "";
             const text_y = ky + (row_height - label_font_size) / 2.0;
             draw_list.addTextExtended(
                 .{ x + 6, text_y },

@@ -437,8 +437,8 @@ fn appendCachedPresets(
         const plugin_id_copy = try allocator.dupe(u8, preset.plugin_id);
         const plugin_name_copy = try allocator.dupe(u8, plugin_name);
         const provider_id_copy = try allocator.dupe(u8, preset.provider_id);
-        const location_z = try allocator.dupeZ(u8, preset.location);
-        const load_key_z = if (preset.load_key) |key| try allocator.dupeZ(u8, key) else null;
+        const location_z = try allocator.dupeSentinel(u8, preset.location, 0);
+        const load_key_z = if (preset.load_key) |key| try allocator.dupeSentinel(u8, key, 0) else null;
         try entries.append(allocator, .{
             .name = name_copy,
             .plugin_id = plugin_id_copy,
@@ -481,9 +481,9 @@ const PresetIndexer = struct {
         const self: *PresetIndexer = @ptrCast(@alignCast(indexer.indexer_data));
         const loc_ptr = location.location;
         const loc_z = if (loc_ptr) |ptr|
-            self.allocator.dupeZ(u8, std.mem.span(ptr)) catch return false
+            self.allocator.dupeSentinel(u8, std.mem.span(ptr), 0) catch return false
         else
-            self.allocator.dupeZ(u8, "") catch return false;
+            self.allocator.dupeSentinel(u8, "", 0) catch return false;
         self.locations.append(self.allocator, .{
             .kind = location.kind,
             .location_z = loc_z,
@@ -574,8 +574,8 @@ const PresetMetadataCollector = struct {
             const plugin_id_copy = self.allocator.dupe(u8, pid) catch continue;
             const plugin_name_copy = self.allocator.dupe(u8, info.?.name) catch continue;
             const provider_id_copy = self.allocator.dupe(u8, self.provider_id) catch continue;
-            const location_copy = self.allocator.dupeZ(u8, self.location_z[0..]) catch continue;
-            const load_key_copy = if (self.current_load_key) |key| self.allocator.dupeZ(u8, key) catch null else null;
+            const location_copy = self.allocator.dupeSentinel(u8, self.location_z[0..], 0) catch continue;
+            const load_key_copy = if (self.current_load_key) |key| self.allocator.dupeSentinel(u8, key, 0) catch null else null;
             self.entries.append(self.allocator, .{
                 .name = name_copy,
                 .plugin_id = plugin_id_copy,
@@ -644,7 +644,7 @@ fn scanPresetsForBinary(
         }
         break :blk binary_path;
     };
-    const plugin_path_z = try allocator.dupeZ(u8, bundle_path);
+    const plugin_path_z = try allocator.dupeSentinel(u8, bundle_path, 0);
     defer allocator.free(plugin_path_z);
     if (!entry.init(plugin_path_z)) return &[_]CachedPreset{};
     defer entry.deinit();
@@ -799,7 +799,7 @@ fn scanPresetDir(
         }
 
         if (!fileExtensionMatches(entry.name, filetypes)) continue;
-        const entry_path_z = allocator.dupeZ(u8, entry_path) catch continue;
+        const entry_path_z = allocator.dupeSentinel(u8, entry_path, 0) catch continue;
         defer allocator.free(entry_path_z);
 
         const base = std.fs.path.basename(entry_path);

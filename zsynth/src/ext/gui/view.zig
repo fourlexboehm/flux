@@ -362,12 +362,11 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
             }
         },
         .WaveShape1, .WaveShape2 => {
-            inline for (std.meta.fields(Wave), 0..) |field, i| {
+            inline for (std.meta.fieldNames(Wave), std.meta.tags(Wave).*, 0..) |field_name, wave, i| {
                 if (i > 0) {
                     zgui.sameLine(.{});
                 }
-                const wave: Wave = @enumFromInt(field.value);
-                if (zgui.radioButton(field.name, .{
+                if (zgui.radioButton(field_name, .{
                     .active = plugin.params.get(param_type).Wave == wave,
                 })) {
                     // Instant change
@@ -383,12 +382,11 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
             }
         },
         .FilterType => {
-            inline for (std.meta.fields(Filter), 0..) |field, i| {
+            inline for (std.meta.fieldNames(Filter), std.meta.tags(Filter).*, 0..) |field_name, filter, i| {
                 if (i > 0) {
                     zgui.sameLine(.{});
                 }
-                const filter: Filter = @enumFromInt(field.value);
-                if (zgui.radioButton(field.name, .{
+                if (zgui.radioButton(field_name, .{
                     .active = plugin.params.get(param_type).Filter == filter,
                 })) {
                     // Instant change

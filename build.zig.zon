@@ -25,8 +25,8 @@
     // internet connectivity.
     .dependencies = .{
         .regex = .{
-            .url = "git+https://github.com/tiehuis/zig-regex#49c5694c8b3ee4ae4a7131035a44a69841ef4740",
-            .hash = "regex-0.1.3-axC357jaAQBRENglwG9NTcuej8pYz1IZmfwER_AXMlHZ",
+            .url = "git+https://github.com/fourlexboehm/zig-regex#0a39aa549f040b75a59542fa988b9c41846f71d0",
+            .hash = "regex-0.1.3-axC358TaAQDYOrWk1dSMjMXXqJMPlxmyrrGjF3_j-TgU",
         },
         .@"clap-bindings" = .{
             .url = "git+https://codeberg.org/fellowtraveler/clap-zig-bindings#8e9d97d3e85256c35dddd6823000171f27faa97c",
@@ -37,28 +37,28 @@
             .hash = "zopengl-0.6.0-dev-5-tnz32mDgB82moljuLD0fmbj1mU3NSCXjzttpmoV2iP",
         },
         .@"mach-objc" = .{
-            .url = "https://pkg.hexops.org/pkg/hexops/mach-objc/2d38fb258d8c15f382c8789ee9b5d52db17e94e3.tar.gz",
-            .hash = "mach_objc-0.0.0-pF1e0p4LDgBoJKtFRfDSWyVFtfyDcy_7YUBiuY74JkMT",
+            .url = "git+https://github.com/fourlexboehm/mach-objc#fe0535585a19af03d5421c5b6bd3b58b82b2b066",
+            .hash = "mach_objc-0.0.0-gWfVRUVdDQCHelt-Wz87THFOYbhDXCn7jtkYeUfvRXFL",
         },
         .zglfw = .{
-            .url = "git+https://github.com/zig-gamedev/zglfw#51003c105d23db378bb59ce415a387b22f1b0892",
-            .hash = "zglfw-0.10.0-dev-zgVDNIy4IQDJNRy4jrP1As-SZxfJpuWhU1iJ-wBab_VD",
+            .url = "git+https://github.com/fourlexboehm/zglfw#ff491fd4af4c2a47f0f74c806d095ef21fc7cc72",
+            .hash = "zglfw-0.10.0-dev-zgVDNOq5IQAk4c5z2ECJ3W9K9bHs4_RzmJGbPmKTx6qY",
         },
         .ztracy = .{
             .url = "git+https://github.com/kcbanner/ztracy#d1c58ee00b95e399b0763c707930d43e67259d60",
             .hash = "ztracy-0.14.0-dev-zHJSq68FGQBXGHJZt5hf7EST4ViHclC65tZ1I7knrQef",
         },
         .zgui = .{
-            .url = "git+https://github.com/kcbanner/zgui#e237656e4afa511106fdc947e214f17516ac24a7",
-            .hash = "zgui-0.6.0-dev--L6sZE1JbgAmjZuNyKApKTEr3u9li_7J3pUsJgiQ28CX",
+            .url = "git+https://github.com/fourlexboehm/zgui#0e9a546087c9a35f1b93c85fb22d8470baf2e48b",
+            .hash = "zgui-0.6.0-dev--L6sZGpJbgDKrCzIs5OM1lwXPd02CPu6DfLCUg82Jd74",
         },
         .zaudio = .{
-            .url = "git+https://github.com/fourlexboehm/zaudio#bb93ad665b89e302d4515a36b44cb8e73eaf6766",
-            .hash = "zaudio-0.11.0-dev-_M-91kHvPwAlW8MCRI4XiTbTeihqB8Zspgiuw-6Gqgdz",
+            .url = "git+https://github.com/fourlexboehm/zaudio#9e2cd14081e5bceeb7b363418b527e5dfefb14a8",
+            .hash = "zaudio-0.11.0-dev-_M-91gzwPwAKjc6163XpAFnkOVKKw5qHjmnDVB7QVjsq",
         },
         .libz_jobs = .{
-            .url = "git+https://github.com/fourlexboehm/LibZ.Jobs#2f9c153d79db8533d59e18645ffad0f833d00d3d",
-            .hash = "libz_jobs-0.0.0-WDIbgYiWAAAhj2_EdZf5ZlPyp9DrUrVCOztHNBEJcfU5",
+            .url = "git+https://github.com/fourlexboehm/LibZ.Jobs#356f87250a9d44a7212943b9ab7ff75efb5c2a85",
+            .hash = "libz_jobs-0.0.0-WDIbgX6WAAAO6bCGNHz1VcXWbrdp2djCIbtmbe0xs0Xq",
         },
         // DAWproject support
         .@"zig-xml" = .{
@@ -66,12 +66,12 @@
             .hash = "xml-0.2.0-ZTbP3xE7AgCKvJHkWZQRdjLYhniAPYsW4rmEtbopzbOj",
         },
         .@"portmidi-zig" = .{
-            .url = "git+https://github.com/fourlexboehm/portmidi-zig#b5882ae0a918dce7d6ccb26abd56217a055382cb",
-            .hash = "portmidi-0.0.0-u03vWNB_BAB16avZdEXkJWCw_u1ku5h739UHyjXMNyqh",
+            .url = "git+https://github.com/fourlexboehm/portmidi-zig#30786177bf45301da33f756f340ed431af7a7cd7",
+            .hash = "portmidi-0.0.0-u03vWA2BBAD4QKL4K0jGDo1tI-2-sK-RT5KonKaPFHEV",
         },
         .wdf = .{
-            .url = "git+https://codeberg.org/fellowtraveler/wdf.git#43ec558c2eadc2da1fd6cc3dad9aa8e2702d99a8",
-            .hash = "wdf-0.0.0-oWaQ7H-ZAACaaJKtEMptazGJV-fWRVbrI-29gxQmhMMn",
+            .url = "git+https://codeberg.org/fellowtraveler/wdf.git#a43cca2ff95051057c8b19e825b7ce2faf04d63f",
+            .hash = "wdf-0.0.0-oWaQ7EWZAAD9cP6tUtTD1ZJA3JaSpRm5PBOPN-Rh1bJZ",
         },
     },
 

@@ -14,7 +14,7 @@ inline fn sampleRateSupported(sample_rate: f64) bool {
 }
 
 pub const sample_count = 256;
-const waveshape_count = std.meta.fields(Wave).len;
+const waveshape_count = std.meta.fieldNames(Wave).len;
 
 const half_steps_per_table = 2.0;
 const key_count = 128;
@@ -31,9 +31,7 @@ pub inline fn generateWaveTable() WaveTable {
     var table: WaveTable = undefined;
     const sample_rate = 48000;
 
-    inline for (std.meta.fields(Wave)) |field| {
-        const waveshape_type: Wave = @enumFromInt(field.value);
-        const waveshape_index: usize = @intCast(field.value);
+    inline for (std.meta.tags(Wave).*, 0..) |waveshape_type, waveshape_index| {
         if (!@inComptime()) {
             std.log.debug("Generating data for wave type: {}", .{waveshape_type});
         }

@@ -69,7 +69,7 @@ pub fn drawDevicePanel(state: *State, ui_scale: f32) void {
         const inst_button_w = calcToggleButtonWidth(inst_open_label, inst_close_label, ui_scale);
         const inst_button_label = if (track_plugin.gui_open) inst_close_label else inst_open_label;
         var inst_button_buf: [64]u8 = undefined;
-        const inst_button_text = std.fmt.bufPrintZ(&inst_button_buf, "{s}##instrument_open", .{inst_button_label}) catch "##instrument_open";
+        const inst_button_text = std.fmt.bufPrintSentinel(&inst_button_buf, "{s}##instrument_open", .{inst_button_label}, 0) catch "##instrument_open";
         zgui.beginDisabled(.{ .disabled = !instrument_ready });
         if (zgui.button(inst_button_text, .{ .w = inst_button_w, .h = 0 })) {
             const opening = !track_plugin.gui_open;
@@ -152,11 +152,11 @@ pub fn drawDevicePanel(state: *State, ui_scale: f32) void {
     for (0..fx_slot_count) |fx_index| {
         var fx_slot = &state.track_fx[track_idx][fx_index];
         var fx_label_buf: [16]u8 = undefined;
-        const fx_label = std.fmt.bufPrintZ(&fx_label_buf, "FX {d}", .{fx_index + 1}) catch "FX";
+        const fx_label = std.fmt.bufPrintSentinel(&fx_label_buf, "FX {d}", .{fx_index + 1}, 0) catch "FX";
         zgui.textUnformatted(fx_label);
         zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
         var label_buf: [32]u8 = undefined;
-        const label = std.fmt.bufPrintZ(&label_buf, "##fx{d}", .{fx_index}) catch "##fx";
+        const label = std.fmt.bufPrintSentinel(&label_buf, "##fx{d}", .{fx_index}, 0) catch "##fx";
         zgui.setNextItemWidth(200.0 * ui_scale);
         var fx_list_index: i32 = filters.findPluginListIndex(state.plugin_fx_indices, fx_slot.choice_index);
         if (zgui.combo(label, .{
@@ -183,7 +183,7 @@ pub fn drawDevicePanel(state: *State, ui_scale: f32) void {
         const button_w = calcToggleButtonWidth(open_label, close_label, ui_scale);
         const button_label = if (fx_slot.gui_open) close_label else open_label;
         var button_buf: [64]u8 = undefined;
-        const button_text = std.fmt.bufPrintZ(&button_buf, "{s}##fx_open_{d}", .{ button_label, fx_index }) catch "##fx_open";
+        const button_text = std.fmt.bufPrintSentinel(&button_buf, "{s}##fx_open_{d}", .{ button_label, fx_index }, 0) catch "##fx_open";
         const fx_ready = state.track_fx_plugin_ptrs[track_idx][fx_index] != null;
         zgui.beginDisabled(.{ .disabled = !fx_ready });
         if (zgui.button(button_text, .{ .w = button_w, .h = 0 })) {
@@ -277,7 +277,7 @@ fn drawClapDevice(state: *State, ui_scale: f32) void {
     const button_w = max_label_w + style.frame_padding[0] * 2.0 + 6.0 * ui_scale;
     const button_label = if (target.gui_open) close_label else open_label;
     var button_buf: [64]u8 = undefined;
-    const button_text = std.fmt.bufPrintZ(&button_buf, "{s}##device_open", .{button_label}) catch "##device_open";
+    const button_text = std.fmt.bufPrintSentinel(&button_buf, "{s}##device_open", .{button_label}, 0) catch "##device_open";
     zgui.beginDisabled(.{ .disabled = !plugin_ready });
     if (zgui.button(button_text, .{ .w = button_w, .h = 0 })) {
         const opening = !target.gui_open;
@@ -365,7 +365,7 @@ fn drawClapParamDump(plugin: *const clap.Plugin) void {
         _ = zgui.tableNextColumn();
         if (module.len > 0) {
             var label_buf: [256]u8 = undefined;
-            const label = std.fmt.bufPrintZ(&label_buf, "{s}/{s}", .{ module, name }) catch "";
+            const label = std.fmt.bufPrintSentinel(&label_buf, "{s}/{s}", .{ module, name }, 0) catch "";
             zgui.textUnformatted(label);
         } else {
             zgui.textUnformatted(name);
@@ -413,7 +413,7 @@ fn drawControllerSummary(state: *State, ui_scale: f32) void {
     for (0..state_mod.controller_smart_slots) |slot_index| {
         var row_buf: [160]u8 = undefined;
         const label = controller_mapping.smartParamLabel(state, slot_index);
-        const row = std.fmt.bufPrintZ(&row_buf, "K{d}: {s}", .{ slot_index + 1, label }) catch "K";
+        const row = std.fmt.bufPrintSentinel(&row_buf, "K{d}: {s}", .{ slot_index + 1, label }, 0) catch "K";
         zgui.textUnformatted(row);
     }
 }

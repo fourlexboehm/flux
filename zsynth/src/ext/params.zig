@@ -97,7 +97,7 @@ pub const param_defaults = std.enums.EnumFieldStruct(Parameter, ParameterValue, 
     .DebugBool2 = .{ .Bool = false },
 };
 
-pub const param_count = std.meta.fields(Parameter).len;
+pub const param_count = std.meta.fieldNames(Parameter).len;
 
 values: ParameterArray = .init(param_defaults),
 mutex: std.Io.Mutex,
@@ -255,7 +255,7 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .cookie = null,
                 .default_value = param_defaults.WaveShape1.asFloat(),
                 .min_value = 0,
-                .max_value = std.meta.fields(Wave).len,
+                .max_value = @floatFromInt(std.meta.fieldNames(Wave).len),
                 .name = @splat(0),
                 .flags = .{
                     .is_stepped = true,
@@ -273,7 +273,7 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .cookie = null,
                 .default_value = param_defaults.WaveShape2.asFloat(),
                 .min_value = 0,
-                .max_value = std.meta.fields(Wave).len,
+                .max_value = @floatFromInt(std.meta.fieldNames(Wave).len),
                 .name = @splat(0),
                 .flags = .{
                     .is_stepped = true,
@@ -395,7 +395,7 @@ pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callco
                 .cookie = null,
                 .default_value = param_defaults.FilterType.asFloat(),
                 .min_value = 0,
-                .max_value = std.meta.fields(FilterType).len,
+                .max_value = @floatFromInt(std.meta.fieldNames(FilterType).len),
                 .name = @splat(0),
 
                 .flags = .{

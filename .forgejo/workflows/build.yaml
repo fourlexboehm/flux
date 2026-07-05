@@ -23,12 +23,9 @@ jobs:
           tar -xf zig.tar.xz
           echo "$PWD/${ZIG_DIR}" >> "$GITHUB_PATH"
 
-      - name: Run tests
-        run: zig build test
-
-      - name: Build for Linux x86_64
+      - name: Test and build Linux x86_64
         run: |
-          zig build -Doptimize=ReleaseFast
+          zig build test install -Doptimize=ReleaseFast -Ddisable_profiling=true --summary all
           mkdir -p artifacts/linux-x86_64
           cp zig-out/lib/*.clap artifacts/linux-x86_64/ 2>/dev/null || true
           cp zig-out/lib/*.so artifacts/linux-x86_64/ 2>/dev/null || true
@@ -43,7 +40,7 @@ jobs:
 
       - name: Build for macOS aarch64
         run: |
-          zig build -Dtarget=aarch64-macos -Doptimize=ReleaseFast -Dgui-backend=osx_metal --sysroot "$MACOS_SDK"
+          zig build -Dtarget=aarch64-macos -Doptimize=ReleaseFast -Ddisable_profiling=true -Dgui-backend=osx_metal --sysroot "$MACOS_SDK" --summary all
           mkdir -p artifacts/macos-aarch64
           cp -r zig-out/lib/*.clap artifacts/macos-aarch64/ 2>/dev/null || true
           cp zig-out/lib/*.dylib artifacts/macos-aarch64/ 2>/dev/null || true
