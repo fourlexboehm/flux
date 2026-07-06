@@ -395,7 +395,7 @@ pub fn main(init: std.process.Init) !void {
             zglfw.windowHint(.client_api, .opengl_api);
             zglfw.windowHint(.doublebuffer, true);
 
-            const window = try zglfw.Window.create(1280, 720, "flux", null);
+            const window = try zglfw.Window.create(1280, 720, "flux", null, null);
             defer window.destroy();
             window.setSizeLimits(320, 240, -1, -1);
 
