@@ -307,8 +307,7 @@ pub const AudioEngine = struct {
             self.graph.process(snapshot, &self.shared, self.jobs, chunk, self.steady_time);
             self.steady_time += chunk;
 
-            const master_id = self.graph.master_node orelse break;
-            const outputs = self.graph.getAudioOutput(master_id);
+            const outputs = self.graph.getMasterOutput() orelse break;
             interleaveStereo(out_ptr, frame_offset, outputs.left, outputs.right, chunk);
             frame_offset += chunk;
             frames_left -= chunk;
@@ -365,74 +364,30 @@ fn buildGraph(
 ) !audio_graph.Graph {
     var graph = audio_graph.Graph.init(allocator);
 
-    var note_nodes: [max_tracks]audio_graph.NodeId = undefined;
     var synth_nodes: [max_tracks]audio_graph.NodeId = undefined;
     var gain_nodes: [max_tracks]audio_graph.NodeId = undefined;
     const count = @min(track_count_in, max_tracks);
 
     for (0..count) |track_index| {
-        var note_node = audio_graph.Node{
-            .id = 0,
-            .kind = .note_source,
-            .data = .{ .note_source = audio_graph.NoteSource.init(track_index, true, -1) },
-        };
-        note_node.addOutput(.events);
-        note_nodes[track_index] = try graph.addNode(note_node);
-
-        var synth_node = audio_graph.Node{
-            .id = 0,
-            .kind = .synth,
-            .data = .{ .synth = audio_graph.SynthNode.init(track_index) },
-        };
-        synth_node.addInput(.events);
-        synth_node.addOutput(.audio);
-        synth_nodes[track_index] = try graph.addNode(synth_node);
+        const note_id = try graph.addNoteSource(track_index, true, -1);
+        synth_nodes[track_index] = try graph.addSynth(track_index);
 
         var prev_node = synth_nodes[track_index];
         for (0..ui_state.max_fx_slots) |fx_index| {
-            var fx_note_node = audio_graph.Node{
-                .id = 0,
-                .kind = .note_source,
-                .data = .{ .note_source = audio_graph.NoteSource.init(track_index, false, @intCast(fx_index)) },
-            };
-            fx_note_node.addOutput(.events);
-            const fx_note_id = try graph.addNode(fx_note_node);
-
-            var fx_node = audio_graph.Node{
-                .id = 0,
-                .kind = .fx,
-                .data = .{ .fx = audio_graph.FxNode.init(track_index, fx_index) },
-            };
-            fx_node.addInput(.audio);
-            fx_node.addInput(.events);
-            fx_node.addOutput(.audio);
-            const fx_id = try graph.addNode(fx_node);
+            const fx_note_id = try graph.addNoteSource(track_index, false, @intCast(fx_index));
+            const fx_id = try graph.addFx(track_index, fx_index);
             try graph.connect(fx_note_id, 0, fx_id, 0, .events);
             try graph.connect(prev_node, 0, fx_id, 0, .audio);
             prev_node = fx_id;
         }
 
-        var gain_node = audio_graph.Node{
-            .id = 0,
-            .kind = .gain,
-            .data = .{ .gain = .{ .track_index = track_index } },
-        };
-        gain_node.addInput(.audio);
-        gain_node.addOutput(.audio);
-        gain_nodes[track_index] = try graph.addNode(gain_node);
+        gain_nodes[track_index] = try graph.addGain(track_index);
 
-        try graph.connect(note_nodes[track_index], 0, synth_nodes[track_index], 0, .events);
+        try graph.connect(note_id, 0, synth_nodes[track_index], 0, .events);
         try graph.connect(prev_node, 0, gain_nodes[track_index], 0, .audio);
     }
 
-    var mixer_node = audio_graph.Node{
-        .id = 0,
-        .kind = .mixer,
-        .data = .{ .mixer = .{} },
-    };
-    mixer_node.addInput(.audio);
-    mixer_node.addOutput(.audio);
-    const mixer_id = try graph.addNode(mixer_node);
+    const mixer_id = try graph.addMixer();
 
     for (0..count) |track_index| {
         try graph.connect(gain_nodes[track_index], 0, mixer_id, 0, .audio);
@@ -440,29 +395,13 @@ fn buildGraph(
 
     var prev_master_node = mixer_id;
     for (0..ui_state.max_fx_slots) |fx_index| {
-        var master_fx_node = audio_graph.Node{
-            .id = 0,
-            .kind = .fx,
-            .data = .{ .fx = audio_graph.FxNode.init(master_track_index, fx_index) },
-        };
-        master_fx_node.addInput(.audio);
-        master_fx_node.addInput(.events);
-        master_fx_node.addOutput(.audio);
-        const master_fx_id = try graph.addNode(master_fx_node);
+        const master_fx_id = try graph.addFx(master_track_index, fx_index);
         try graph.connect(prev_master_node, 0, master_fx_id, 0, .audio);
         prev_master_node = master_fx_id;
     }
 
-    var master_node = audio_graph.Node{
-        .id = 0,
-        .kind = .master,
-        .data = .{ .master = .{} },
-    };
-    master_node.addInput(.audio);
-    master_node.addOutput(.audio);
-    const master_id = try graph.addNode(master_node);
+    const master_id = try graph.addMaster();
     try graph.connect(prev_master_node, 0, master_id, 0, .audio);
-    graph.master_node = master_id;
 
     try graph.prepare(sample_rate, max_frames);
     return graph;
