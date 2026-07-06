@@ -177,6 +177,8 @@ fn _activate(
     std.log.debug("Activate", .{});
     const plugin = fromClapPlugin(clap_plugin);
     plugin.sample_rate = sample_rate;
+    plugin.voices.prepare() catch return false;
+    plugin.params.prepare() catch return false;
     const sample_rate_32: f32 = @floatCast(sample_rate);
     const filter_type = plugin.params.get(.FilterType).Filter;
     const q: f32 = @floatCast(plugin.params.get(.FilterQ).Float);
@@ -254,11 +256,6 @@ fn _process(clap_plugin: *const clap.Plugin, clap_process: *const clap.Process) 
     if (voice_count == 0 and event_count == 0) {
         return clap.Process.Status.sleep;
     }
-    // Debug: why not sleeping?
-    if (voice_count == 0 and event_count > 0) {
-        std.debug.print("zsynth: not sleeping - {d} events pending\n", .{event_count});
-    }
-
     var event_index: u32 = 0;
     var current_frame: u32 = 0;
     while (current_frame < frame_count) {
@@ -321,7 +318,6 @@ fn _process(clap_plugin: *const clap.Plugin, clap_process: *const clap.Process) 
                 .velocity = 1,
             };
             if (!clap_process.out_events.tryPush(clap_process.out_events, &note.header)) {
-                std.log.debug("Unable to add note end events to outboard event queue!", .{});
                 return clap.Process.Status.@"error";
             }
 

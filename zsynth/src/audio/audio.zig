@@ -74,7 +74,7 @@ pub fn processNoteChanges(plugin: *Plugin, event: *const clap.events.Header) voi
             new_voice.osc1 = polyblep.PolyBLEP.init(plugin.sample_rate.?, polyblepWaveform(osc1_wave_shape), waves.getFrequency(osc1_key), 0.0);
             new_voice.osc2 = polyblep.PolyBLEP.init(plugin.sample_rate.?, polyblepWaveform(osc2_wave_shape), waves.getFrequency(osc2_key), 0.0);
 
-            plugin.voices.addVoice(new_voice) catch unreachable;
+            _ = plugin.voices.addVoice(new_voice);
         },
         .note_off => {
             const note_event: *align(1) const clap.events.Note = @ptrCast(event);
@@ -130,9 +130,6 @@ pub fn renderAudio(plugin: *Plugin, start: u32, end: u32, output_left: [*]f32, o
             const thread_pool: *const clap.ext.thread_pool.Host = @ptrCast(@alignCast(ext_raw));
             // This calls processVoice under the hood
             did_render_audio = thread_pool.requestExec(plugin.host, @intCast(plugin.voices.getVoiceCount()));
-            if (!did_render_audio) {
-                std.log.debug("Unable to dispatch voices to thread pool! Num voices: {d}", .{plugin.voices.getVoiceCount()});
-            }
         }
     }
 

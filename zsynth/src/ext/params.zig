@@ -98,6 +98,7 @@ pub const param_defaults = std.enums.EnumFieldStruct(Parameter, ParameterValue, 
 };
 
 pub const param_count = std.meta.fieldNames(Parameter).len;
+const max_queued_param_events = 128;
 
 values: ParameterArray = .init(param_defaults),
 mutex: std.Io.Mutex,
@@ -116,6 +117,10 @@ pub fn deinit(self: *Params) void {
     self.events.deinit(self.allocator);
 }
 
+pub fn prepare(self: *Params) !void {
+    try self.events.ensureTotalCapacity(self.allocator, max_queued_param_events);
+}
+
 /// Thread-safe getter for parameter values
 pub fn get(self: *Params, param: Parameter) ParameterValue {
     self.mutex.lockUncancelable(mutex_io);
@@ -132,10 +137,6 @@ pub fn set(self: *Params, param: Parameter, val: ParameterValue, flags: ParamSet
     self.mutex.lockUncancelable(mutex_io);
     defer self.mutex.unlock(mutex_io);
     self.values.set(param, val);
-    // Debug: verify value was actually set
-    const readback = self.values.get(param);
-    std.log.debug("Params.set: {} = {} (readback: {}) [params@{x}]", .{ param, val, readback, @intFromPtr(self) });
-
     if (flags.should_notify_host) {
         // Add to the event queue to notify the DAW on the audio thread
         const param_index: usize = @intFromEnum(param);
@@ -156,7 +157,9 @@ pub fn set(self: *Params, param: Parameter, val: ParameterValue, flags: ParamSet
             .cookie = null,
         };
 
-        try self.events.append(self.allocator, event);
+        if (self.events.items.len < self.events.capacity) {
+            self.events.appendAssumeCapacity(event);
+        }
     }
 }
 
@@ -758,14 +761,11 @@ pub fn _flush(
         }
         while (plugin.params.events.pop()) |event_value| {
             var event = event_value;
-            if (!output_events.tryPush(output_events, &event.header)) {
-                std.debug.panic("Unable to notify DAW of parameter event changes!", .{});
-            }
+            _ = output_events.tryPush(output_events, &event.header);
         }
     }
 
     if (params_did_change) {
-        std.log.debug("Parameters changed, updating voices and filter and notifying host", .{});
         plugin.applyParamChanges(true);
     }
 }

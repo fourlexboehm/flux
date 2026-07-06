@@ -118,6 +118,7 @@ pub const param_defaults = std.enums.EnumFieldStruct(Parameter, ParameterValue, 
 };
 
 pub const param_count = std.meta.fieldNames(Parameter).len;
+const max_queued_param_events = 128;
 
 values: ParameterArray = .init(param_defaults),
 mutex: std.Io.Mutex,
@@ -134,6 +135,10 @@ pub fn init(allocator: std.mem.Allocator) Params {
 
 pub fn deinit(self: *Params) void {
     self.events.deinit(self.allocator);
+}
+
+pub fn prepare(self: *Params) !void {
+    try self.events.ensureTotalCapacity(self.allocator, max_queued_param_events);
 }
 
 pub fn get(self: *Params, param: Parameter) ParameterValue {
@@ -170,7 +175,9 @@ pub fn set(self: *Params, param: Parameter, val: ParameterValue, flags: ParamSet
             .cookie = null,
         };
 
-        try self.events.append(self.allocator, event);
+        if (self.events.items.len < self.events.capacity) {
+            self.events.appendAssumeCapacity(event);
+        }
     }
 }
 
@@ -558,9 +565,7 @@ pub fn _flush(
         }
         while (plugin.params.events.pop()) |event_value| {
             var event = event_value;
-            if (!output_events.tryPush(output_events, &event.header)) {
-                std.debug.panic("Unable to notify DAW of parameter event changes!", .{});
-            }
+            _ = output_events.tryPush(output_events, &event.header);
         }
     }
 
