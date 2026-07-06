@@ -239,6 +239,8 @@ fn _destroy(clap_plugin: *const clap.Plugin) callconv(.c) void {
 fn _activate(clap_plugin: *const clap.Plugin, sample_rate: f64, _: u32, _: u32) callconv(.c) bool {
     const plugin = fromClapPlugin(clap_plugin);
     plugin.sample_rate = sample_rate;
+    plugin.voices.prepare() catch return false;
+    plugin.params.prepare() catch return false;
     return true;
 }
 

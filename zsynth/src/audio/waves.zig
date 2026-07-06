@@ -253,7 +253,7 @@ pub inline fn generateTriangle(sample_rate: f64, frequency: f64, phase: f64) f64
 pub const NaiveWaveFunction = *const fn (phase: f64) callconv(.@"inline") f64;
 pub const WaveFunction = *const fn (sample_rate: f64, frequency: f64, phase: f64) callconv(.@"inline") f64;
 
-fn testWaveFunctions(ideal_wave: NaiveWaveFunction, generated_wave: WaveFunction) !void {
+fn testWaveFunctions(comptime ideal_wave: NaiveWaveFunction, comptime generated_wave: WaveFunction) !void {
     const epsilon: f64 = 0.1; // Within 10% accuracy from the real thing
     const sample_rate: f64 = 48000;
 

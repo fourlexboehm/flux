@@ -5,6 +5,8 @@ const clap = @import("clap-bindings");
 const ADSR = @import("adsr.zig");
 const polyblep = @import("polyblep.zig");
 
+pub const max_voices = 32;
+
 pub const Expression = clap.events.NoteExpression.Id;
 pub const ExpressionValues = std.EnumArray(Expression, f64);
 const expression_values_default: std.enums.EnumFieldStruct(Expression, f64, null) = .{
@@ -39,6 +41,10 @@ pub fn init(allocator: std.mem.Allocator) Voices {
 
 pub fn deinit(self: *Voices) void {
     self.voices.deinit(self.allocator);
+}
+
+pub fn prepare(self: *Voices) !void {
+    try self.voices.ensureTotalCapacity(self.allocator, max_voices);
 }
 
 pub const Voice = struct {
@@ -91,8 +97,12 @@ pub fn getVoiceCapacity(self: *const Voices) usize {
     return self.voices.capacity;
 }
 
-pub fn addVoice(self: *Voices, voice: Voice) !void {
-    try self.voices.append(self.allocator, voice);
+pub fn addVoice(self: *Voices, voice: Voice) bool {
+    if (self.voices.items.len >= self.voices.capacity) {
+        return false;
+    }
+    self.voices.appendAssumeCapacity(voice);
+    return true;
 }
 
 pub fn getVoices(self: *Voices) []Voice {

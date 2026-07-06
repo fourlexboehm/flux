@@ -33,7 +33,7 @@ pub fn processNoteChanges(plugin: *Plugin, event: *const clap.events.Header) voi
             new_voice.synth.noteOn(midi_note, velocity);
 
             plugin.applyParamsToVoice(&new_voice);
-            plugin.voices.addVoice(new_voice) catch unreachable;
+            _ = plugin.voices.addVoice(new_voice);
         },
         .note_off => {
             const note_event: *align(1) const clap.events.Note = @ptrCast(event);

@@ -419,9 +419,48 @@ pub fn build(b: *std.Build) void {
 
     const run_dsp_tests = b.addRunArtifact(dsp_tests);
 
+    const zsynth_smoke_test_module = b.createModule(.{
+        .root_source_file = b.path("zsynth/src/plugin_smoke_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    zsynth_smoke_test_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
+    zsynth_smoke_test_module.addImport("regex", regex.module("regex"));
+    zsynth_smoke_test_module.addImport("zgui", zgui.module("root"));
+    zsynth_smoke_test_module.addImport("zglfw", zglfw.module("root"));
+    zsynth_smoke_test_module.addImport("zopengl", zopengl.module("root"));
+    zsynth_smoke_test_module.addImport("tracy", ztracy.module("root"));
+    zsynth_smoke_test_module.addImport("shared", shared);
+    zsynth_smoke_test_module.addImport("options", options_core_module);
+    zsynth_smoke_test_module.addImport("static_data", static_data_module);
+    if (target_os == .macos) {
+        zsynth_smoke_test_module.addImport("objc", objc_no_helpers);
+    }
+
+    const zsynth_smoke_tests = b.addTest(.{
+        .root_module = zsynth_smoke_test_module,
+        .filters = &.{"zsynth produces audio after note on"},
+        .use_llvm = use_llvm,
+    });
+    zsynth_smoke_tests.root_module.linkLibrary(zgui.artifact("imgui"));
+    zsynth_smoke_tests.root_module.linkLibrary(zglfw.artifact("glfw"));
+    zsynth_smoke_tests.root_module.linkLibrary(zopengl.artifact("zopengl"));
+    zsynth_smoke_tests.root_module.linkLibrary(ztracy.artifact("tracy"));
+    if (target_os == .macos) {
+        zsynth_smoke_tests.root_module.linkFramework("AppKit", .{});
+        zsynth_smoke_tests.root_module.linkFramework("Cocoa", .{});
+        zsynth_smoke_tests.root_module.linkFramework("CoreGraphics", .{});
+        zsynth_smoke_tests.root_module.linkFramework("Foundation", .{});
+        zsynth_smoke_tests.root_module.linkFramework("GameController", .{});
+        zsynth_smoke_tests.root_module.linkFramework("Metal", .{});
+        zsynth_smoke_tests.root_module.linkFramework("QuartzCore", .{});
+    }
+    const run_zsynth_smoke_tests = b.addRunArtifact(zsynth_smoke_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_filter_tests.step);
     test_step.dependOn(&run_dsp_tests.step);
+    test_step.dependOn(&run_zsynth_smoke_tests.step);
 }
 
 fn createClapPluginStep(

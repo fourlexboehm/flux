@@ -4,6 +4,8 @@ const std = @import("std");
 const clap = @import("clap-bindings");
 const dsp = @import("../dsp/dsp.zig");
 
+pub const max_voices = 32;
+
 /// Re-export OversampleFactor for use by params
 pub const OversampleFactor = dsp.OversampleFactor;
 
@@ -108,6 +110,10 @@ pub fn deinit(self: *Voices) void {
     self.voices.deinit(self.allocator);
 }
 
+pub fn prepare(self: *Voices) !void {
+    try self.voices.ensureTotalCapacity(self.allocator, max_voices);
+}
+
 pub fn getVoiceCount(self: *const Voices) usize {
     return self.voices.items.len;
 }
@@ -121,8 +127,12 @@ pub fn getVoiceByKey(voices: []Voice, key: clap.events.Key) ?*Voice {
     return null;
 }
 
-pub fn addVoice(self: *Voices, voice: Voice) !void {
-    try self.voices.append(self.allocator, voice);
+pub fn addVoice(self: *Voices, voice: Voice) bool {
+    if (self.voices.items.len >= self.voices.capacity) {
+        return false;
+    }
+    self.voices.appendAssumeCapacity(voice);
+    return true;
 }
 
 /// Set oversample factor for all voices
