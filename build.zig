@@ -23,13 +23,15 @@ pub fn build(b: *std.Build) void {
 
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const target_os = target.result.os.tag;
 
     const GuiBackend = enum { osx_metal, win32_dx12, glfw_opengl3 };
-    const gui_backend = b.option(GuiBackend, "gui-backend", "GUI backend (default: auto-detect from target)") orelse switch (builtin.os.tag) {
+    const default_gui_backend: GuiBackend = switch (target_os) {
         .macos => .osx_metal,
         .windows => .win32_dx12,
         else => .glfw_opengl3,
     };
+    const gui_backend = b.option(GuiBackend, "gui-backend", "GUI backend (default: auto-detect from target)") orelse default_gui_backend;
 
     const use_wayland = b.option(
         bool,
@@ -41,36 +43,43 @@ pub fn build(b: *std.Build) void {
         "x11",
         "Use X11/XWayland on Linux for plugin windows (default: true with GLFW)",
     ) orelse (gui_backend == .glfw_opengl3);
-    const use_llvm = b.option(bool, "use-llvm", "Use LLVM backend") orelse true;
+    const use_llvm = b.option(bool, "use-llvm", "Use LLVM backend (slower builds, required for some optimizations)") orelse (target_os == .macos);
+    const no_lib = b.option(bool, "no-lib", "Skip building the CLAP plugin library") orelse false;
+    const incremental = b.option(bool, "incremental", "Enable incremental linking (faster rebuilds, but always re-links even when nothing changed)") orelse false;
     const enable_segfault_handler = b.option(
         bool,
         "enable_segfault_handler",
         "Enable std segfault handler for debug backtraces",
     ) orelse (optimize == .Debug);
-    const clap_bindings = b.dependency("clap-bindings", .{});
-    const regex = b.dependency("regex", .{});
+    const dep_target = .{
+        .target = target,
+    };
+    const clap_bindings = b.dependency("clap-bindings", dep_target);
+    const regex = b.dependency("regex", dep_target);
     const zgui = b.dependency("zgui", .{
+        .target = target,
         .shared = false,
         .with_implot = true,
         .backend = gui_backend,
     });
     const zglfw = b.dependency("zglfw", .{
+        .target = target,
         .shared = false,
         .x11 = use_x11,
         .wayland = use_wayland,
     });
-    const zopengl = b.dependency("zopengl", .{});
-    const zaudio = b.dependency("zaudio", .{});
-    const objc = b.dependency("mach-objc", .{});
+    const zopengl = b.dependency("zopengl", dep_target);
+    const zaudio = b.dependency("zaudio", dep_target);
+    const objc = b.dependency("mach-objc", dep_target);
     const objc_no_helpers = b.createModule(.{
         .root_source_file = objc.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
-    const libz_jobs = b.dependency("libz_jobs", .{});
-    const zig_xml = b.dependency("zig-xml", .{});
-    const portmidi_zig = b.dependency("portmidi-zig", .{});
-    const wdf = b.dependency("wdf", .{});
+    const libz_jobs = b.dependency("libz_jobs", dep_target);
+    const zig_xml = b.dependency("zig-xml", dep_target);
+    const portmidi_zig = b.dependency("portmidi-zig", dep_target);
+    const wdf = b.dependency("wdf", dep_target);
     const portmidi_c = b.addTranslateC(.{
         .root_source_file = portmidi_zig.path("pm_common/portmidi.h"),
         .target = target,
@@ -87,6 +96,7 @@ pub fn build(b: *std.Build) void {
     emu2413_c.addIncludePath(b.path("zportafm/native"));
 
     const ztracy = b.dependency("ztracy", .{
+        .target = target,
         .enable_ztracy = (builtin.mode == .Debug or profiling == true) and !disable_profiling,
         .callstack = 20,
         .on_demand = true,
@@ -122,32 +132,38 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const lib = b.addLibrary(.{
-        .name = "zsynth",
-        .root_module = lib_module,
-        .linkage = .dynamic,
-        .use_llvm = use_llvm,
-    });
+    const lib = if (!no_lib) blk: {
+        const l = b.addLibrary(.{
+            .name = "zsynth",
+            .root_module = lib_module,
+            .linkage = .dynamic,
+            .use_llvm = use_llvm,
+        });
+        l.incremental = incremental;
+        break :blk l;
+    } else null;
 
     const exe = b.addExecutable(.{
         .name = "zsynth",
         .root_module = exe_module,
         .use_llvm = use_llvm,
     });
+    exe.incremental = incremental;
     const flux = b.addExecutable(.{
         .name = "flux",
         .root_module = flux_module,
         .use_llvm = use_llvm,
     });
     flux.bundle_ubsan_rt = true;
+    flux.incremental = incremental;
 
     // Allow options to be passed in to source files
-    var options = Step.Options.create(b);
+    const options = b.addOptions();
     options.addOption(bool, "wait_for_debugger", wait_for_debugger);
     options.addOption(bool, "enable_gui", true);
     options.addOption(bool, "enable_segfault_handler", enable_segfault_handler);
     options.addOption(bool, "use_x11", use_x11);
-    const options_core = Step.Options.create(b);
+    const options_core = b.addOptions();
     options_core.addOption(bool, "wait_for_debugger", wait_for_debugger);
     options_core.addOption(bool, "enable_gui", false);
     options_core.addOption(bool, "enable_segfault_handler", enable_segfault_handler);
@@ -155,7 +171,7 @@ pub fn build(b: *std.Build) void {
 
     // Font data is shared between all modules via a common options module
     const font_data = @embedFile("assets/Roboto-Medium.ttf");
-    const static_data = Step.Options.create(b);
+    const static_data = b.addOptions();
     static_data.addOption([]const u8, "font", font_data);
     const static_data_module = static_data.createModule();
 
@@ -171,7 +187,6 @@ pub fn build(b: *std.Build) void {
     shared.addImport("zgui", zgui.module("root"));
     shared.addImport("zglfw", zglfw.module("root"));
     shared.addImport("zopengl", zopengl.module("root"));
-    const target_os = target.result.os.tag;
     if (target_os == .macos) {
         objc_no_helpers.linkSystemLibrary("objc", .{});
         objc_no_helpers.linkFramework("AppKit", .{});
@@ -181,7 +196,7 @@ pub fn build(b: *std.Build) void {
         shared.addImport("objc", objc_no_helpers);
     }
 
-    const build_targets = [_]*Step.Compile{ lib, exe };
+    const build_targets: []const *Step.Compile = if (no_lib) &.{exe} else &.{ lib.?, exe };
     for (build_targets) |pkg| {
         // Libraries
         pkg.root_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
@@ -264,8 +279,10 @@ pub fn build(b: *std.Build) void {
 
     // Specific steps for different targets
     // Library
-    const clap_plugin_step = createClapPluginStep(b, lib, target_os, optimize);
-    b.getInstallStep().dependOn(clap_plugin_step);
+    if (!no_lib) {
+        const clap_plugin_step = createClapPluginStep(b, lib.?, target_os, optimize);
+        b.getInstallStep().dependOn(clap_plugin_step);
+    }
 
     // Also create executable for testing
     if (optimize == .Debug) {
