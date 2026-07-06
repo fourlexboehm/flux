@@ -482,6 +482,7 @@ pub const Host = struct {
             .read = (events & std.posix.POLL.IN) != 0,
             .write = (events & std.posix.POLL.OUT) != 0,
             .@"error" = (events & std.posix.POLL.ERR) != 0,
+            ._ = 0,
         };
     }
 
