@@ -19,6 +19,11 @@ const max_tracks = session_constants.max_tracks;
 
 const quantize_items: [:0]const u8 = "1/4\x001/2\x001\x002\x004\x00";
 const buffer_items = "64\x00128\x00256\x00512\x001024\x00\x00";
+const time_signature_items = "2/4\x003/4\x004/4\x005/4\x006/8\x007/8\x009/8\x0012/8\x00\x00";
+const time_signatures = [_][2]u8{
+    .{ 2, 4 }, .{ 3, 4 }, .{ 4, 4 }, .{ 5, 4 },
+    .{ 6, 8 }, .{ 7, 8 }, .{ 9, 8 }, .{ 12, 8 },
+};
 
 pub fn draw(state: *State, ui_scale: f32) void {
     state.piano_state.preview_pitch = null;
@@ -178,6 +183,47 @@ fn drawTransport(state: *State, ui_scale: f32) void {
 
     zgui.sameLine(.{ .spacing = spacing });
 
+    const metro_pos = zgui.getCursorScreenPos();
+    if (zgui.button("##metronome", .{ .w = btn_size, .h = btn_size })) {
+        state.metronome_enabled = !state.metronome_enabled;
+    }
+    const signature_pulse = state.playhead_beat * @as(f32, @floatFromInt(state.time_signature_denominator)) / 4.0;
+    const active_dot: usize = if (state.playing) @intFromFloat(@mod(@floor(signature_pulse), 2.0)) else 0;
+    const dot_radius = 4.0 * ui_scale;
+    const dot_gap = 12.0 * ui_scale;
+    const dot_y = metro_pos[1] + btn_size / 2.0;
+    for (0..2) |dot| {
+        const dot_color = if (state.metronome_enabled and dot == active_dot)
+            Colors.current.accent
+        else
+            Colors.current.text_dim;
+        draw_list.addCircleFilled(.{
+            .p = .{ metro_pos[0] + btn_size / 2.0 + (@as(f32, @floatFromInt(dot)) - 0.5) * dot_gap, dot_y },
+            .r = dot_radius,
+            .col = zgui.colorConvertFloat4ToU32(dot_color),
+        });
+    }
+    zgui.sameLine(.{ .spacing = spacing });
+
+    var time_signature_index: i32 = 2;
+    for (time_signatures, 0..) |signature, index| {
+        if (signature[0] == state.time_signature_numerator and signature[1] == state.time_signature_denominator) {
+            time_signature_index = @intCast(index);
+            break;
+        }
+    }
+    zgui.setNextItemWidth(90.0 * ui_scale);
+    if (zgui.combo("##transport_time_signature", .{
+        .current_item = &time_signature_index,
+        .items_separated_by_zeros = time_signature_items,
+    })) {
+        const signature = time_signatures[@intCast(time_signature_index)];
+        state.time_signature_numerator = signature[0];
+        state.time_signature_denominator = signature[1];
+    }
+
+    zgui.sameLine(.{ .spacing = spacing });
+
     zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
     zgui.textUnformatted("BPM");
     zgui.popStyleColor(.{ .count = 1 });
@@ -315,7 +361,7 @@ fn drawTransport(state: *State, ui_scale: f32) void {
 fn drawClipGrid(state: *State, ui_scale: f32) void {
     // Draw session view
     const is_focused = state.focused_pane == .session;
-    session_draw.draw(&state.session, ui_scale, state.playing, is_focused, state.playhead_beat);
+    session_draw.draw(&state.session, ui_scale, state.playing, is_focused, state.playhead_beat, state.beatsPerBar());
     // Lock selection to the active recording clip to avoid cross-clip input confusion.
     if (state.session.recording.isRecording()) {
         if (state.session.recording.track) |track| {
@@ -337,6 +383,7 @@ fn drawClipGrid(state: *State, ui_scale: f32) void {
     if (state.session.clear_piano_clip_request) |req| {
         state.session.clear_piano_clip_request = null;
         state.piano_clips[req.track][req.scene].clear();
+        state.piano_clips[req.track][req.scene].length_beats = state.session.clips[req.track][req.scene].length_beats;
     }
     if (state.session.start_playback_request) {
         state.session.start_playback_request = false;
@@ -409,6 +456,7 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
                     state.playhead_beat,
                     state.playing,
                     state.quantize_index,
+                    state.beatsPerBar(),
                     ui_scale,
                     is_focused,
                     state.selectedTrack(),

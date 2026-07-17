@@ -12,7 +12,6 @@ const AutomationPoint = types.AutomationPoint;
 const AutomationLane = types.AutomationLane;
 const AutomationTargetKind = types.AutomationTargetKind;
 const quantizeIndexToBeats = types.quantizeIndexToBeats;
-const beats_per_bar = types.beats_per_bar;
 
 extern fn fluxZguiGetMouseWheelY() f32;
 
@@ -58,6 +57,7 @@ pub fn drawSequencer(
     playhead_beat: f32,
     playing: bool,
     quantize_index: i32,
+    beats_per_bar_in: f32,
     ui_scale: f32,
     is_focused: bool,
     track_index: usize,
@@ -88,7 +88,7 @@ pub fn drawSequencer(
 
     zgui.sameLine(.{ .spacing = 20.0 * ui_scale });
     zgui.pushStyleColor4f(.{ .idx = .text, .c = colors.Colors.current.text_dim });
-    zgui.text("{d:.0} bars", .{clip.length_beats / beats_per_bar});
+    zgui.text("{d:.2} bars", .{clip.length_beats / beats_per_bar_in});
     zgui.popStyleColor(.{ .count = 1 });
 
     if (state.note_selection.primary) |note_idx| {
@@ -189,7 +189,8 @@ pub fn drawSequencer(
     while (sub_beat <= @min(last_visible_beat + 1, max_beats)) : (sub_beat += 0.25) {
         const x = grid_window_pos[0] + sub_beat * pixels_per_beat - state.scroll_x;
         const beat_16th = @as(i32, @intFromFloat(sub_beat * 4));
-        const is_bar = @mod(beat_16th, 16) == 0;
+        const bar_16ths: i32 = @intFromFloat(beats_per_bar_in * 4.0);
+        const is_bar = @mod(beat_16th, bar_16ths) == 0;
         const is_beat = @mod(beat_16th, 4) == 0;
         const is_8th = @mod(beat_16th, 2) == 0;
 
@@ -617,7 +618,7 @@ pub fn drawSequencer(
             }
             state.drag.mode = .none;
         } else {
-            handleDrag(state, clip, mouse, grid_window_pos, pixels_per_beat, row_height, min_note_duration);
+            handleDrag(state, clip, mouse, grid_window_pos, pixels_per_beat, row_height, min_note_duration, beats_per_bar_in);
             if ((state.drag.mode == .move or state.drag.mode == .create) and state.drag.note_index < clip.notes.items.len) {
                 state.preview_pitch = clip.notes.items[state.drag.note_index].pitch;
                 state.preview_track = track_index;
@@ -637,7 +638,7 @@ pub fn drawSequencer(
     }
 
     // Draw ruler
-    drawRuler(draw_list, grid_area_x, base_pos[1], grid_view_width, ruler_height, state.scroll_x, pixels_per_beat, max_beats, ui_scale);
+    drawRuler(draw_list, grid_area_x, base_pos[1], grid_view_width, ruler_height, state.scroll_x, pixels_per_beat, max_beats, ui_scale, beats_per_bar_in);
 
     // Draw piano keys
     drawPianoKeys(
@@ -1037,10 +1038,10 @@ fn drawAutomationOverlay(
             if (mouse_down) {
                 if (state.automation_drag_lane == lane_index and state.automation_drag_point < lane.points.items.len) {
                     const drag_time = selection.snapToStep(
-                    std.math.clamp(mouseToBeat(mouse[0], grid_window_pos[0], state.scroll_x, pixels_per_beat), 0, clip.length_beats),
-                    quantize_beats,
-                );
-                const drag_value = valueFromY(mouse[1], min_value, max_value, grid_window_pos[1], grid_view_height);
+                        std.math.clamp(mouseToBeat(mouse[0], grid_window_pos[0], state.scroll_x, pixels_per_beat), 0, clip.length_beats),
+                        quantize_beats,
+                    );
+                    const drag_value = valueFromY(mouse[1], min_value, max_value, grid_window_pos[1], grid_view_height);
                     lane.points.items[state.automation_drag_point] = .{ .time = drag_time, .value = drag_value };
                     sortAutomationPoints(&lane.points);
                     state.automation_drag_point = findPointIndex(&lane.points, drag_time, drag_value);
@@ -1607,12 +1608,13 @@ fn handleDrag(
     pixels_per_beat: f32,
     row_height: f32,
     min_duration: f32,
+    beats_per_bar_in: f32,
 ) void {
     switch (state.drag.mode) {
         .resize_clip => {
             const current_beat = mouseToBeat(mouse[0], grid_pos[0], state.scroll_x, pixels_per_beat);
             var new_length = @floor(current_beat * 4) / 4;
-            new_length = @max(beats_per_bar, new_length);
+            new_length = @max(beats_per_bar_in, new_length);
             new_length = @min(256, new_length);
             clip.length_beats = new_length;
         },
@@ -1729,6 +1731,7 @@ fn drawRuler(
     pixels_per_beat: f32,
     max_beats: f32,
     ui_scale: f32,
+    beats_per_bar_in: f32,
 ) void {
     const font_size = zgui.getFontSize();
     const max_label_size = height - 4.0 * ui_scale;
@@ -1750,11 +1753,11 @@ fn drawRuler(
     var beat: f32 = @floor(scroll_x / pixels_per_beat);
     while (beat <= @min(last_beat + 1, max_beats)) : (beat += 1) {
         const bx = x + beat * pixels_per_beat - scroll_x;
-        const beat_int = @as(i32, @intFromFloat(beat));
-        const is_bar = @mod(beat_int, beats_per_bar) == 0;
+        const bar_index = @round(beat / beats_per_bar_in);
+        const is_bar = @abs(beat - bar_index * beats_per_bar_in) < 0.001;
 
         if (is_bar and label_font_size >= 6.0) {
-            const bar_num = @divFloor(beat_int, beats_per_bar) + 1;
+            const bar_num: i32 = @intFromFloat(bar_index + 1);
             var buf: [8]u8 = undefined;
             const label = std.fmt.bufPrintSentinel(&buf, "{d}", .{bar_num}, 0) catch "";
             draw_list.addTextExtended(

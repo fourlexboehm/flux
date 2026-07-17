@@ -4,7 +4,6 @@ const session_recording = @import("session_view/recording.zig");
 const piano_roll_types = @import("piano_roll/types.zig");
 const State = @import("state.zig").State;
 
-const beats_per_bar = session_constants.beats_per_bar;
 const default_clip_bars = session_constants.default_clip_bars;
 
 pub fn tick(state: *State, dt: f64) void {
@@ -12,6 +11,7 @@ pub fn tick(state: *State, dt: f64) void {
     if (state.session.reset_playhead_request) {
         state.session.reset_playhead_request = false;
         state.playhead_beat = 0;
+        seedHeldNotesAtRecordingStart(state);
     }
 
     // Handle recording finalization request (when manually stopping recording)
@@ -65,9 +65,15 @@ pub fn tick(state: *State, dt: f64) void {
 
         // Start queued recording at quantize boundary (not waiting for loop)
         if (session_recording.hasQueuedRecording(&state.session)) {
-            // Calculate the beat position at the quantize boundary
-            const quantize_boundary = curr_quantize * quantize_beats;
-            session_recording.processRecordingQuantize(&state.session, quantize_boundary);
+            var recording_start = curr_quantize * quantize_beats;
+            // Scene activation aligns the clip to beat zero. Apply that reset now so
+            // recording.start_beat and the playhead cannot disagree for one frame.
+            if (state.session.reset_playhead_request) {
+                state.session.reset_playhead_request = false;
+                state.playhead_beat = 0;
+                recording_start = 0;
+            }
+            startQueuedRecording(state, recording_start);
         }
     }
 
@@ -78,7 +84,7 @@ pub fn tick(state: *State, dt: f64) void {
                 const queued_at = state.session.recording.queued_at_beat;
                 const next_boundary = (@floor(queued_at / quantize_beats) + 1) * quantize_beats;
                 if (state.session.clips[track][scene].state == .record_queued and state.playhead_beat >= next_boundary) {
-                    session_recording.processRecordingQuantize(&state.session, next_boundary);
+                    startQueuedRecording(state, next_boundary);
                 }
             }
         }
@@ -101,7 +107,7 @@ pub fn tick(state: *State, dt: f64) void {
         if (state.session.recording.track) |track| {
             if (state.session.recording.scene) |scene| {
                 if (state.session.recording.is_new_clip and state.session.clips[track][scene].state == .recording) {
-                    const extend_beats = default_clip_bars * beats_per_bar;
+                    const extend_beats = default_clip_bars * state.beatsPerBar();
                     while (state.playhead_beat >= loop_length) {
                         loop_length += extend_beats;
                     }
@@ -130,7 +136,7 @@ pub fn tick(state: *State, dt: f64) void {
     if (will_loop) {
         // At clip loop boundary, start queued recording BEFORE wrapping
         if (session_recording.hasQueuedRecording(&state.session)) {
-            session_recording.processRecordingQuantize(&state.session, 0);
+            startQueuedRecording(state, 0);
         }
 
         state.playhead_beat = @mod(state.playhead_beat, loop_length);
@@ -156,6 +162,25 @@ pub fn tick(state: *State, dt: f64) void {
                     }
                 }
             }
+        }
+    }
+}
+
+fn startQueuedRecording(state: *State, start_beat: f32) void {
+    session_recording.processRecordingQuantize(&state.session, start_beat);
+    seedHeldNotesAtRecordingStart(state);
+}
+
+fn seedHeldNotesAtRecordingStart(state: *State) void {
+    const rec = &state.session.recording;
+    const track = rec.track orelse return;
+    const scene = rec.scene orelse return;
+    if (state.session.clips[track][scene].state != .recording) return;
+
+    for (0..128) |pitch| {
+        if (state.live_key_states[track][pitch] and state.previous_key_states[track][pitch] and rec.note_start_beats[pitch] == null) {
+            rec.note_start_beats[pitch] = 0;
+            rec.note_start_velocities[pitch] = state.live_key_velocities[track][pitch];
         }
     }
 }

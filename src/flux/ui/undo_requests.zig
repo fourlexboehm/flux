@@ -10,6 +10,7 @@ pub fn processUndoRequests(state: *State) void {
     for (state.session.undo_requests[0..state.session.undo_request_count]) |req| {
         switch (req.kind) {
             .clip_create => {
+                state.piano_clips[req.track][req.scene].length_beats = req.length_beats;
                 state.undo_history.push(.{
                     .clip_create = .{
                         .track = req.track,

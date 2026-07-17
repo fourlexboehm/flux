@@ -473,6 +473,14 @@ fn applyDawprojectToState(
         if (transport.tempo) |tempo| {
             state.bpm = @floatCast(tempo.value);
         }
+        if (transport.time_signature) |signature| {
+            if (signature.numerator > 0 and signature.numerator <= 32 and
+                (signature.denominator == 2 or signature.denominator == 4 or signature.denominator == 8 or signature.denominator == 16))
+            {
+                state.time_signature_numerator = @intCast(signature.numerator);
+                state.time_signature_denominator = @intCast(signature.denominator);
+            }
+        }
     }
 
     // Reset session

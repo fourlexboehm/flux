@@ -61,7 +61,10 @@ pub const Connection = struct {
 
 pub const StateSnapshot = struct {
     playing: bool,
+    metronome_enabled: bool,
     bpm: f32,
+    time_signature_numerator: u8,
+    time_signature_denominator: u8,
     playhead_beat: f32,
     track_count: usize,
     scene_count: usize,
@@ -968,7 +971,9 @@ fn makeTransport(ctx: anytype) clap.events.Transport {
     const tempo = @as(f64, ctx.snapshot.bpm);
     const beats = @as(f64, ctx.snapshot.playhead_beat);
     const seconds = if (tempo > 0.0) beats * 60.0 / tempo else 0.0;
-    const bar_len = 4.0;
+    const numerator = ctx.snapshot.time_signature_numerator;
+    const denominator = ctx.snapshot.time_signature_denominator;
+    const bar_len = @as(f64, @floatFromInt(numerator)) * 4.0 / @as(f64, @floatFromInt(denominator));
     const bar_index = @floor(beats / bar_len);
 
     return .{
@@ -999,7 +1004,7 @@ fn makeTransport(ctx: anytype) clap.events.Transport {
         .loop_end_seconds = clap.SecTime.fromSecs(0),
         .bar_start = clap.BeatTime.fromBeats(bar_index * bar_len),
         .bar_number = @as(i32, @intFromFloat(bar_index)) + 1,
-        .time_signature_numerator = 4,
-        .time_signature_denominator = 4,
+        .time_signature_numerator = numerator,
+        .time_signature_denominator = denominator,
     };
 }
