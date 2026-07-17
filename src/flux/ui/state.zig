@@ -82,7 +82,10 @@ pub const ControllerState = struct {
 pub const State = struct {
     allocator: std.mem.Allocator,
     playing: bool,
+    metronome_enabled: bool,
     bpm: f32,
+    time_signature_numerator: u8,
+    time_signature_denominator: u8,
     quantize_index: i32,
     buffer_frames: u32,
     buffer_frames_requested: bool,
@@ -203,7 +206,10 @@ pub const State = struct {
         return .{
             .allocator = allocator,
             .playing = false,
+            .metronome_enabled = false,
             .bpm = 120.0,
+            .time_signature_numerator = 4,
+            .time_signature_denominator = 4,
             .quantize_index = 2,
             .buffer_frames = default_buffer_frames,
             .buffer_frames_requested = false,
@@ -299,6 +305,11 @@ pub const State = struct {
 
     pub fn currentClipLabel(self: *const State) []const u8 {
         return self.session.scenes[self.selectedScene()].getName();
+    }
+
+    pub fn beatsPerBar(self: *const State) f32 {
+        return @as(f32, @floatFromInt(self.time_signature_numerator)) * 4.0 /
+            @as(f32, @floatFromInt(self.time_signature_denominator));
     }
 
     pub fn clearControllerParamWrites(self: *State) void {

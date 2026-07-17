@@ -6,13 +6,10 @@ const colors = @import("../colors.zig");
 const selection = @import("../selection.zig");
 const edit_actions = @import("../edit_actions.zig");
 const ops = @import("ops.zig");
-const constants = @import("constants.zig");
 const playback_impl = @import("playback.zig");
 const recording_impl = @import("recording.zig");
 
-const beats_per_bar = constants.beats_per_bar;
-
-pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_focused: bool, playhead_beat: f32) void {
+pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_focused: bool, playhead_beat: f32, beats_per_bar_in: f32) void {
     const row_height = 52.0 * ui_scale;
     const header_height = 32.0 * ui_scale;
     const scene_col_w = 130.0 * ui_scale; // Wider for button + name
@@ -293,7 +290,7 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
             _ = zgui.tableNextColumn();
             const track_pad = 4.0 * ui_scale;
             zgui.setCursorPosX(zgui.getCursorPosX() + track_pad);
-            drawClipSlot(self, track_idx, scene_idx, track_col_w - track_pad * 2.0, row_height - 6.0 * ui_scale, ui_scale, playing, playhead_beat);
+            drawClipSlot(self, track_idx, scene_idx, track_col_w - track_pad * 2.0, row_height - 6.0 * ui_scale, ui_scale, playing, playhead_beat, beats_per_bar_in);
         }
 
         // Empty cell for add track column
@@ -347,7 +344,7 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
         // Enter to create clip at selection
         if (zgui.isKeyPressed(.enter, false)) {
             if (self.clips[self.primary_track][self.primary_scene].state == .empty) {
-                ops.createClip(self, self.primary_track, self.primary_scene);
+                ops.createClip(self, self.primary_track, self.primary_scene, beats_per_bar_in);
             }
         }
     }
@@ -411,7 +408,7 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
     zgui.popStyleColor(.{ .count = 1 });
 }
 
-fn drawClipSlot(self: *session_view.SessionView, track: usize, scene: usize, width: f32, height: f32, ui_scale: f32, playing: bool, playhead_beat: f32) void {
+fn drawClipSlot(self: *session_view.SessionView, track: usize, scene: usize, width: f32, height: f32, ui_scale: f32, playing: bool, playhead_beat: f32, beats_per_bar_in: f32) void {
     const draw_list = zgui.getWindowDrawList();
     const pos = zgui.getCursorScreenPos();
     const mouse = zgui.getMousePos();
@@ -560,7 +557,7 @@ fn drawClipSlot(self: *session_view.SessionView, track: usize, scene: usize, wid
         const armed_size = zgui.calcTextSize(armed_label, .{});
         draw_list.addText(.{ pos[0] + 8.0 * ui_scale, pos[1] + (height - armed_size[1]) / 2.0 }, text_color, armed_label, .{});
     } else if (slot.state != .empty) {
-        const bars = slot.length_beats / beats_per_bar;
+        const bars = slot.length_beats / beats_per_bar_in;
         var buf: [16]u8 = undefined;
         const label = std.fmt.bufPrintSentinel(&buf, "{d:.0} bars", .{bars}, 0) catch "";
         // Use dark text for all non-empty clips (better contrast on colored backgrounds)
@@ -599,7 +596,7 @@ fn drawClipSlot(self: *session_view.SessionView, track: usize, scene: usize, wid
     // Handle double-click to create/open clip
     if (over_clip and zgui.isMouseDoubleClicked(.left)) {
         if (slot.state == .empty) {
-            ops.createClip(self, track, scene);
+            ops.createClip(self, track, scene, beats_per_bar_in);
         }
         ops.selectOnly(self, track, scene);
         self.open_clip_request = .{ .track = track, .scene = scene };
@@ -661,7 +658,7 @@ fn drawClipSlot(self: *session_view.SessionView, track: usize, scene: usize, wid
             }
         } else if (is_armed_track and (is_empty or slot.state == .stopped)) {
             // Click record button on armed track -> start recording
-            recording_impl.startRecording(self, track, scene, playing, playhead_beat);
+            recording_impl.startRecording(self, track, scene, playing, playhead_beat, beats_per_bar_in);
         } else {
             // Normal play/stop behavior
             playback_impl.toggleClipPlayback(self, track, scene, playing);

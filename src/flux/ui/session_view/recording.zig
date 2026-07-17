@@ -2,11 +2,10 @@ const session_view = @import("../session_view.zig");
 const ops = @import("ops.zig");
 const constants = @import("constants.zig");
 
-const beats_per_bar = constants.beats_per_bar;
 const default_clip_bars = constants.default_clip_bars;
 
 /// Start recording on a clip slot
-pub fn startRecording(self: *session_view.SessionView, track: usize, scene: usize, playing: bool, playhead_beat: f32) void {
+pub fn startRecording(self: *session_view.SessionView, track: usize, scene: usize, playing: bool, playhead_beat: f32, beats_per_bar_in: f32) void {
     // If already recording somewhere else, stop it first
     if (self.recording.isRecording()) {
         stopRecording(self, .stop);
@@ -16,7 +15,7 @@ pub fn startRecording(self: *session_view.SessionView, track: usize, scene: usiz
     if (self.clips[track][scene].state == .empty) {
         self.clips[track][scene] = .{
             .state = if (playing) .record_queued else .recording,
-            .length_beats = default_clip_bars * beats_per_bar,
+            .length_beats = default_clip_bars * beats_per_bar_in,
         };
         // Request to clear any old notes in the piano clip (new recording, not overdub)
         self.clear_piano_clip_request = .{ .track = track, .scene = scene };

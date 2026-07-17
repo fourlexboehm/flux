@@ -4,7 +4,6 @@ const constants = @import("constants.zig");
 
 const max_tracks = constants.max_tracks;
 const max_scenes = constants.max_scenes;
-const beats_per_bar = constants.beats_per_bar;
 const default_clip_bars = constants.default_clip_bars;
 
 pub fn init(allocator: std.mem.Allocator) session_view.SessionView {
@@ -112,9 +111,9 @@ pub fn handleClipClick(self: *session_view.SessionView, track: usize, scene: usi
 }
 
 /// Create a new clip at the given position
-pub fn createClip(self: *session_view.SessionView, track: usize, scene: usize) void {
+pub fn createClip(self: *session_view.SessionView, track: usize, scene: usize, beats_per_bar_in: f32) void {
     if (track >= self.track_count or scene >= self.scene_count) return;
-    const length_beats = default_clip_bars * beats_per_bar;
+    const length_beats = default_clip_bars * beats_per_bar_in;
     self.clips[track][scene] = .{
         .state = .stopped,
         .length_beats = length_beats,

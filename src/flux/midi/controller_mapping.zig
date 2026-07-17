@@ -139,7 +139,7 @@ fn handleRecordButton(state: *State) void {
     const track = state.session.armed_track orelse state.selectedTrack();
     state.session.armed_track = track;
     const scene = state.selectedScene();
-    session_recording.startRecording(&state.session, track, scene, state.playing, state.playhead_beat);
+    session_recording.startRecording(&state.session, track, scene, state.playing, state.playhead_beat, state.beatsPerBar());
 }
 
 fn matchIndex(list: []const u8, value: u8) ?usize {

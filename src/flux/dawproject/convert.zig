@@ -353,8 +353,8 @@ pub fn fromFluxProject(
             },
             .time_signature = .{
                 .id = timesig_id,
-                .numerator = 4,
-                .denominator = 4,
+                .numerator = state.time_signature_numerator,
+                .denominator = state.time_signature_denominator,
             },
         },
         .tracks = try tracks_list.toOwnedSlice(allocator),
