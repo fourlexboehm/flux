@@ -64,23 +64,40 @@ pub fn fromFluxProject(
         // Build devices if present
         var devices = std.ArrayList(ClapPlugin).empty;
         const choice_index = state.track_plugins[t].choice_index;
+        var has_instrument = false;
         if (catalog.entryForIndex(choice_index)) |entry| {
-            if (entry.kind == .clap) {
+            if (entry.kind == .clap or entry.kind == .builtin) {
                 const info = if (t < track_plugin_info.len) track_plugin_info[t] else TrackPluginInfo{};
                 const device = try buildClapPlugin(allocator, entry, info, .instrument, &ids);
                 instrument_device_ids[t] = device.id;
                 try devices.append(allocator, device);
+                has_instrument = true;
             }
         }
+        if (!has_instrument) if (state.missing_track_plugins[t]) |missing| {
+            const info = if (t < track_plugin_info.len) track_plugin_info[t] else TrackPluginInfo{};
+            const device = try buildMissingPlugin(allocator, &missing, info, &ids);
+            instrument_device_ids[t] = device.id;
+            try devices.append(allocator, device);
+        };
         for (0..ui_state.max_fx_slots) |fx_index| {
             const fx_choice = state.track_fx[t][fx_index].choice_index;
+            var has_fx = false;
             if (catalog.entryForIndex(fx_choice)) |entry| {
-                if (entry.kind != .clap) continue;
+                if (entry.kind == .clap) {
+                    const info = if (t < track_fx_plugin_info.len) track_fx_plugin_info[t][fx_index] else TrackPluginInfo{};
+                    const device = try buildClapPlugin(allocator, entry, info, .audioFX, &ids);
+                    fx_device_ids[t][fx_index] = device.id;
+                    try devices.append(allocator, device);
+                    has_fx = true;
+                }
+            }
+            if (!has_fx) if (state.missing_track_fx[t][fx_index]) |missing| {
                 const info = if (t < track_fx_plugin_info.len) track_fx_plugin_info[t][fx_index] else TrackPluginInfo{};
-                const device = try buildClapPlugin(allocator, entry, info, .audioFX, &ids);
+                const device = try buildMissingPlugin(allocator, &missing, info, &ids);
                 fx_device_ids[t][fx_index] = device.id;
                 try devices.append(allocator, device);
-            }
+            };
         }
 
         const vol_id = try ids.next();
@@ -140,14 +157,24 @@ pub fn fromFluxProject(
     var master_devices = std.ArrayList(ClapPlugin).empty;
     for (0..ui_state.max_fx_slots) |fx_index| {
         const fx_choice = state.track_fx[master_track_index][fx_index].choice_index;
+        var has_fx = false;
         if (catalog.entryForIndex(fx_choice)) |entry| {
-            if (entry.kind != .clap) continue;
+            if (entry.kind == .clap) {
+                const info = if (master_track_index < track_fx_plugin_info.len)
+                    track_fx_plugin_info[master_track_index][fx_index]
+                else
+                    TrackPluginInfo{};
+                try master_devices.append(allocator, try buildClapPlugin(allocator, entry, info, .audioFX, &ids));
+                has_fx = true;
+            }
+        }
+        if (!has_fx) if (state.missing_track_fx[master_track_index][fx_index]) |missing| {
             const info = if (master_track_index < track_fx_plugin_info.len)
                 track_fx_plugin_info[master_track_index][fx_index]
             else
                 TrackPluginInfo{};
-            try master_devices.append(allocator, try buildClapPlugin(allocator, entry, info, .audioFX, &ids));
-        }
+            try master_devices.append(allocator, try buildMissingPlugin(allocator, &missing, info, &ids));
+        };
     }
 
     const master_track_id = try ids.next();
@@ -411,6 +438,50 @@ fn buildClapPlugin(
         },
         .state = if (info.state_path) |sp| .{
             .path = try allocator.dupe(u8, sp),
+        } else null,
+    };
+}
+
+fn buildMissingPlugin(
+    allocator: std.mem.Allocator,
+    missing: *const ui_state.MissingPlugin,
+    info: TrackPluginInfo,
+    ids: *IdGenerator,
+) !ClapPlugin {
+    const device_id = try ids.next();
+    const enabled_id = try ids.next();
+    var params = std.ArrayList(RealParameter).empty;
+    for (info.params) |param| {
+        try params.append(allocator, .{
+            .id = try std.fmt.allocPrint(allocator, "{s}_p{d}", .{ device_id, param.id }),
+            .name = try allocator.dupe(u8, param.name),
+            .value = param.value,
+            .min = param.min,
+            .max = param.max,
+            .unit = .linear,
+        });
+    }
+
+    return .{
+        .id = device_id,
+        .name = try allocator.dupe(u8, missing.device_name),
+        .device_id = try allocator.dupe(u8, missing.device_id),
+        .device_name = try allocator.dupe(u8, missing.device_name),
+        .device_role = switch (missing.role) {
+            .instrument => .instrument,
+            .note_fx => .noteFX,
+            .audio_fx => .audioFX,
+            .analyzer => .analyzer,
+        },
+        .loaded = missing.loaded,
+        .parameters = try params.toOwnedSlice(allocator),
+        .enabled = .{
+            .id = enabled_id,
+            .name = "On/Off",
+            .value = true,
+        },
+        .state = if (info.state_path) |path| .{
+            .path = try allocator.dupe(u8, path),
         } else null,
     };
 }

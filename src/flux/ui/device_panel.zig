@@ -55,6 +55,7 @@ pub fn drawDevicePanel(state: *State, ui_scale: f32) void {
         })) {
             // Selection changed - convert back to catalog index
             if (filters.catalogIndexFromList(state.instrument_filter_indices, instrument_list_index)) |new_choice| {
+                state.clearMissingTrackPlugin(track_idx);
                 track_plugin.choice_index = new_choice;
                 track_plugin.gui_open = false;
                 track_plugin.preset_choice_index = null;
@@ -86,6 +87,13 @@ pub fn drawDevicePanel(state: *State, ui_scale: f32) void {
             state.device_target_fx = 0;
         }
         zgui.endDisabled();
+        if (state.missing_track_plugins[track_idx]) |missing| {
+            zgui.text("Missing instrument: {s}", .{missing.device_name});
+            zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
+            if (zgui.button("Remove Placeholder##instrument", .{})) {
+                state.clearMissingTrackPlugin(track_idx);
+            }
+        }
 
         zgui.spacing();
         zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
@@ -117,6 +125,7 @@ pub fn drawDevicePanel(state: *State, ui_scale: f32) void {
                         const entry = catalog.entries.items[preset_index];
                         track_plugin.preset_choice_index = preset_index;
                         if (entry.catalog_index >= 0 and entry.catalog_index != track_plugin.choice_index) {
+                            state.clearMissingTrackPlugin(track_idx);
                             track_plugin.choice_index = entry.catalog_index;
                             track_plugin.gui_open = false;
                             state.device_target_kind = .instrument;
@@ -165,6 +174,7 @@ pub fn drawDevicePanel(state: *State, ui_scale: f32) void {
             .items_separated_by_zeros = state.plugin_fx_items,
         })) {
             if (filters.catalogIndexFromList(state.plugin_fx_indices, fx_list_index)) |new_choice| {
+                state.clearMissingTrackFx(track_idx, fx_index);
                 fx_slot.choice_index = new_choice;
                 fx_slot.gui_open = false;
                 state.device_target_kind = .fx;
@@ -208,6 +218,15 @@ pub fn drawDevicePanel(state: *State, ui_scale: f32) void {
             state.device_target_fx = fx_index;
         }
         zgui.endDisabled();
+        if (state.missing_track_fx[track_idx][fx_index]) |missing| {
+            zgui.text("Missing effect: {s}", .{missing.device_name});
+            zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
+            var remove_buf: [48]u8 = undefined;
+            const remove_label = std.fmt.bufPrintSentinel(&remove_buf, "Remove Placeholder##fx_missing_{d}", .{fx_index}, 0) catch "Remove Placeholder";
+            if (zgui.button(remove_label, .{})) {
+                state.clearMissingTrackFx(track_idx, fx_index);
+            }
+        }
         if (is_selected) {
             // Keep selection sticky when clicking elsewhere in the row.
             state.device_target_kind = .fx;

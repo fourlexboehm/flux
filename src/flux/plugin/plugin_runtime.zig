@@ -194,6 +194,9 @@ pub fn syncTrackPlugins(
     const selected_track = state.selectedTrack();
     for (track_plugins, 0..) |*track, t| {
         const choice = state.track_plugins[t].choice_index;
+        if (choice != 0 and state.missing_track_plugins[t] != null) {
+            state.clearMissingTrackPlugin(t);
+        }
         // Only show GUI for the selected track (if that track has gui_open enabled)
         const wants_gui = state.track_plugins[t].gui_open and (t == selected_track);
 
@@ -312,6 +315,9 @@ pub fn syncFxPlugins(
     for (track_fx, 0..) |*track_slots, t| {
         for (track_slots, 0..) |*slot, fx_index| {
             const choice = state.track_fx[t][fx_index].choice_index;
+            if (choice != 0 and state.missing_track_fx[t][fx_index] != null) {
+                state.clearMissingTrackFx(t, fx_index);
+            }
             const entry = catalog.entryForIndex(choice);
             const kind = if (entry) |item| item.kind else .none;
             const wants_gui = state.track_fx[t][fx_index].gui_open and ((t == selected_track) or (master_selected and t == master_track_index));

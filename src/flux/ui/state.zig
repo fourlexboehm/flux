@@ -47,6 +47,39 @@ pub const TrackPluginUI = struct {
     preset_choice_index: ?usize = null,
 };
 
+pub const MissingPluginRole = enum {
+    instrument,
+    note_fx,
+    audio_fx,
+    analyzer,
+};
+
+pub const MissingPluginParameter = struct {
+    id: u32,
+    name: []u8,
+    value: f64,
+    min: f64,
+    max: f64,
+};
+
+pub const MissingPlugin = struct {
+    device_id: []u8,
+    device_name: []u8,
+    role: MissingPluginRole,
+    loaded: bool,
+    parameters: []MissingPluginParameter,
+    state_data: ?[]u8,
+
+    pub fn deinit(self: *MissingPlugin, allocator: std.mem.Allocator) void {
+        allocator.free(self.device_id);
+        allocator.free(self.device_name);
+        for (self.parameters) |param| allocator.free(param.name);
+        allocator.free(self.parameters);
+        if (self.state_data) |data| allocator.free(data);
+        self.* = undefined;
+    }
+};
+
 pub const ControllerParamWrite = struct {
     track_index: u8,
     target_fx_index: i8, // -1 for instrument
@@ -129,6 +162,8 @@ pub const State = struct {
     plugin_divider_index: ?i32,
     track_plugin_ptrs: [max_tracks]?*const clap.Plugin,
     track_fx_plugin_ptrs: [max_tracks][max_fx_slots]?*const clap.Plugin,
+    missing_track_plugins: [max_tracks]?MissingPlugin,
+    missing_track_fx: [max_tracks][max_fx_slots]?MissingPlugin,
     live_key_states: [max_tracks][128]bool,
     previous_key_states: [max_tracks][128]bool,
     live_key_velocities: [max_tracks][128]f32,
@@ -243,6 +278,8 @@ pub const State = struct {
             .plugin_divider_index = null,
             .track_plugin_ptrs = @splat(null),
             .track_fx_plugin_ptrs = @splat(@splat(null)),
+            .missing_track_plugins = @splat(null),
+            .missing_track_fx = @splat(@splat(null)),
             .live_key_states = @splat(@splat(false)),
             .previous_key_states = @splat(@splat(false)),
             .live_key_velocities = @splat(@splat(0.0)),
@@ -281,6 +318,7 @@ pub const State = struct {
         if (self.preset_filter_indices.len > 0) {
             self.allocator.free(self.preset_filter_indices);
         }
+        self.clearMissingPlugins();
         self.undo_history.deinit();
         for (&self.piano_clips) |*track_clips| {
             for (track_clips) |*clip| {
@@ -338,6 +376,29 @@ pub const State = struct {
             self.allocator.free(old_path);
         }
         self.project_path = try self.allocator.dupe(u8, path);
+    }
+
+    pub fn clearMissingTrackPlugin(self: *State, track_index: usize) void {
+        if (self.missing_track_plugins[track_index]) |*plugin| {
+            plugin.deinit(self.allocator);
+            self.missing_track_plugins[track_index] = null;
+        }
+    }
+
+    pub fn clearMissingTrackFx(self: *State, track_index: usize, fx_index: usize) void {
+        if (self.missing_track_fx[track_index][fx_index]) |*plugin| {
+            plugin.deinit(self.allocator);
+            self.missing_track_fx[track_index][fx_index] = null;
+        }
+    }
+
+    pub fn clearMissingPlugins(self: *State) void {
+        for (0..max_tracks) |track_index| {
+            self.clearMissingTrackPlugin(track_index);
+            for (0..max_fx_slots) |fx_index| {
+                self.clearMissingTrackFx(track_index, fx_index);
+            }
+        }
     }
 
     /// Perform undo operation
