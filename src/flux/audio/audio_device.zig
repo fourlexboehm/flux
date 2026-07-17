@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const zaudio = @import("zaudio");
 
 const audio_constants = @import("audio_constants.zig");
@@ -16,42 +15,6 @@ const TrackPlugin = plugin_runtime.TrackPlugin;
 
 var worker_min_sleep_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(10_000);
 var worker_max_sleep_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(2_000_000);
-var audio_thread_qos_class: std.atomic.Value(u8) = std.atomic.Value(u8).init(0);
-threadlocal var audio_thread_qos_applied: bool = false;
-
-pub const AudioThreadQos = enum(u8) {
-    unchanged = 0,
-    user_interactive = 1,
-    user_initiated = 2,
-    default = 3,
-    utility = 4,
-    background = 5,
-};
-
-pub fn setAudioThreadQos(qos: AudioThreadQos) void {
-    audio_thread_qos_class.store(@intFromEnum(qos), .release);
-}
-
-fn applyAudioThreadQosHint() void {
-    if (builtin.os.tag != .macos) return;
-    if (audio_thread_qos_applied) return;
-
-    const qos_raw = audio_thread_qos_class.load(.acquire);
-    if (qos_raw == @intFromEnum(AudioThreadQos.unchanged)) return;
-
-    const c = std.c;
-    const qos_class: c.qos_class_t = switch (@as(AudioThreadQos, @enumFromInt(qos_raw))) {
-        .unchanged => return,
-        .user_interactive => c.qos_class_t.USER_INTERACTIVE,
-        .user_initiated => c.qos_class_t.USER_INITIATED,
-        .default => c.qos_class_t.DEFAULT,
-        .utility => c.qos_class_t.UTILITY,
-        .background => c.qos_class_t.BACKGROUND,
-    };
-
-    _ = c.pthread_set_qos_class_self_np(qos_class, 0);
-    audio_thread_qos_applied = true;
-}
 
 pub fn setWorkerSleepBounds(min_sleep_ns: u64, max_sleep_ns: u64) void {
     const min_ns = @max(min_sleep_ns, 1_000);
@@ -66,50 +29,46 @@ pub fn dataCallback(
     _: ?*const anyopaque,
     frame_count: u32,
 ) callconv(.c) void {
-    applyAudioThreadQosHint();
-
-    const start = std.Io.Clock.awake.now(clock_io);
     thread_context.is_audio_thread = true;
     defer thread_context.is_audio_thread = false;
 
     const user_data = zaudio.Device.getUserData(device) orelse return;
     const engine: *audio_engine.AudioEngine = @ptrCast(@alignCast(user_data));
-    const max_frames = engine.max_frames;
-    if (frame_count > max_frames) {
-        std.log.warn("Audio callback frame_count={} (requested {})", .{ frame_count, max_frames });
-    }
+    const measure_dsp_load = engine.dsp_meter_count == 0;
+    engine.dsp_meter_count = (engine.dsp_meter_count + 1) % audio_engine.dsp_meter_interval;
+    const start = if (measure_dsp_load) std.Io.Clock.awake.now(clock_io) else undefined;
+
     engine.render(device, output, frame_count);
 
-    // Adaptive sleep tuning based on callback budget usage
-    {
-        const end = std.Io.Clock.awake.now(clock_io);
-        const elapsed_us = time_utils.nsSince(start, end) / 1000;
-        const budget_us = @as(u64, frame_count) * 1_000_000 / audio_constants.sample_rate;
-        const budget_ns = budget_us * 1000;
-        const usage_pct = elapsed_us * 100 / budget_us;
-        const usage_pct_clamped: u32 = @intCast(@min(usage_pct, 999));
-        engine.dsp_load_pct.store(usage_pct_clamped, .release);
+    if (!measure_dsp_load) return;
 
-        if (engine.jobs) |jobs| {
-            const current_sleep = jobs.dynamic_sleep_ns.load(.monotonic);
-            const is_playing = engine.shared.snapshot().playing;
-            const configured_min = worker_min_sleep_ns.load(.acquire);
-            const configured_max = worker_max_sleep_ns.load(.acquire);
-            const max_sleep = @min(configured_max, budget_ns / 2);
-            const min_sleep = @max(configured_min, @max(@as(u64, 1_000), budget_ns / 200));
-            const mid_sleep = @min(max_sleep, @max(min_sleep, budget_ns / 10));
-            const mid_threshold: u64 = if (is_playing) 5 else 20;
-            const next: u64 = if (usage_pct >= 40)
-                min_sleep
-            else if (usage_pct >= mid_threshold)
-                mid_sleep
-            else if (usage_pct < 5 and current_sleep < max_sleep)
-                @min(current_sleep * 2, max_sleep)
-            else
-                current_sleep;
-            const sleep_ns: u64 = @max(min_sleep, @min(next, max_sleep));
-            jobs.setSleepNs(sleep_ns);
-        }
+    const end = std.Io.Clock.awake.now(clock_io);
+    const elapsed_us = time_utils.nsSince(start, end) / 1000;
+    const budget_us = @as(u64, frame_count) * 1_000_000 / audio_constants.sample_rate;
+    const budget_ns = budget_us * 1000;
+    const usage_pct = elapsed_us * 100 / budget_us;
+    const usage_pct_clamped: u32 = @intCast(@min(usage_pct, 999));
+    engine.dsp_load_pct.store(usage_pct_clamped, .release);
+
+    if (engine.jobs) |jobs| {
+        const current_sleep = jobs.dynamic_sleep_ns.load(.monotonic);
+        const is_playing = engine.shared.snapshot().playing;
+        const configured_min = worker_min_sleep_ns.load(.acquire);
+        const configured_max = worker_max_sleep_ns.load(.acquire);
+        const max_sleep = @min(configured_max, budget_ns / 2);
+        const min_sleep = @max(configured_min, @max(@as(u64, 1_000), budget_ns / 200));
+        const mid_sleep = @min(max_sleep, @max(min_sleep, budget_ns / 10));
+        const mid_threshold: u64 = if (is_playing) 5 else 20;
+        const next: u64 = if (usage_pct >= 40)
+            min_sleep
+        else if (usage_pct >= mid_threshold)
+            mid_sleep
+        else if (usage_pct < 5 and current_sleep < max_sleep)
+            @min(current_sleep * 2, max_sleep)
+        else
+            current_sleep;
+        const sleep_ns: u64 = @max(min_sleep, @min(next, max_sleep));
+        jobs.setSleepNs(sleep_ns);
     }
 }
 

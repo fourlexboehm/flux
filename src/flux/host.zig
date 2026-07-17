@@ -226,7 +226,7 @@ pub const Host = struct {
             }
 
             job_queue.schedule(root);
-            job_queue.wait(root);
+            job_queue.waitRealtime(root);
             return true;
         }
         return false;

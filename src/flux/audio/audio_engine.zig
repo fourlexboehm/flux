@@ -16,6 +16,7 @@ const master_track_index = session_view.master_track_index;
 const Channels = 2;
 const interleave_lanes = 4;
 const F32xN = @Vector(interleave_lanes, f32);
+pub const dsp_meter_interval: u8 = 16;
 
 pub const SharedState = struct {
     processing: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
@@ -56,7 +57,10 @@ pub const SharedState = struct {
         const next: u32 = 1 - current;
         var back = &self.snapshots[next];
         back.playing = state.playing;
+        back.metronome_enabled = state.metronome_enabled;
         back.bpm = state.bpm;
+        back.time_signature_numerator = state.time_signature_numerator;
+        back.time_signature_denominator = state.time_signature_denominator;
         back.playhead_beat = state.playhead_beat;
         back.track_count = state.session.track_count;
         back.scene_count = state.session.scene_count;
@@ -240,7 +244,14 @@ pub const AudioEngine = struct {
     track_count: usize,
     rebuilding: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     dsp_load_pct: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    dsp_meter_count: u8 = 0,
     jobs: ?*audio_graph.JobQueue = null,
+    metronome_beat_phase: f64 = 0,
+    metronome_click_phase: f32 = 0,
+    metronome_click_phase_step: f32 = 0,
+    metronome_click_frames: u32 = 0,
+    metronome_beat: u8 = 0,
+    metronome_was_playing: bool = false,
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -309,11 +320,58 @@ pub const AudioEngine = struct {
 
             const outputs = self.graph.getMasterOutput() orelse break;
             interleaveStereo(out_ptr, frame_offset, outputs.left, outputs.right, chunk);
+            self.mixMetronome(out_ptr, frame_offset, chunk, snapshot);
             frame_offset += chunk;
             frames_left -= chunk;
         }
 
         _ = device;
+    }
+
+    fn mixMetronome(self: *AudioEngine, out_ptr: [*]align(1) f32, frame_offset: usize, frame_count: u32, snapshot: *const audio_graph.StateSnapshot) void {
+        if (!snapshot.playing) {
+            self.metronome_beat_phase = 0;
+            self.metronome_click_frames = 0;
+            self.metronome_beat = 0;
+            self.metronome_was_playing = false;
+            return;
+        }
+
+        if (!self.metronome_was_playing) {
+            self.metronome_beat_phase = 0;
+            self.metronome_click_phase = 0;
+            self.metronome_click_phase_step = 2.0 * std.math.pi * 2400.0 / self.sample_rate;
+            self.metronome_click_frames = if (snapshot.metronome_enabled) @intFromFloat(self.sample_rate * 0.025) else 0;
+            self.metronome_beat = 0;
+            self.metronome_was_playing = true;
+        }
+
+        const pulse_step = @as(f64, snapshot.bpm) / (60.0 * @as(f64, self.sample_rate)) *
+            @as(f64, @floatFromInt(snapshot.time_signature_denominator)) / 4.0;
+        const click_length = self.sample_rate * 0.025;
+        for (0..frame_count) |i| {
+            if (snapshot.metronome_enabled and self.metronome_click_frames > 0) {
+                const envelope = @as(f32, @floatFromInt(self.metronome_click_frames)) / click_length;
+                const click = @sin(self.metronome_click_phase) * envelope * 0.18;
+                const idx = (frame_offset + i) * Channels;
+                out_ptr[idx] += click;
+                out_ptr[idx + 1] += click;
+                self.metronome_click_phase += self.metronome_click_phase_step;
+                self.metronome_click_frames -= 1;
+            }
+
+            self.metronome_beat_phase += pulse_step;
+            if (self.metronome_beat_phase >= 1.0) {
+                self.metronome_beat_phase -= 1.0;
+                self.metronome_beat = (self.metronome_beat + 1) % snapshot.time_signature_numerator;
+                if (snapshot.metronome_enabled) {
+                    self.metronome_click_phase = 0;
+                    const frequency: f32 = if (self.metronome_beat == 0) 2400.0 else 1600.0;
+                    self.metronome_click_phase_step = 2.0 * std.math.pi * frequency / self.sample_rate;
+                    self.metronome_click_frames = @intFromFloat(click_length);
+                }
+            }
+        }
     }
 
     inline fn interleaveStereo(out_ptr: [*]align(1) f32, frame_offset: usize, left: []const f32, right: []const f32, chunk: u32) void {
@@ -409,6 +467,8 @@ fn buildGraph(
 fn initSnapshot(snapshot: *audio_graph.StateSnapshot) void {
     const bytes: [*]u8 = @ptrCast(snapshot);
     @memset(bytes[0..@sizeOf(audio_graph.StateSnapshot)], 0);
+    snapshot.time_signature_numerator = 4;
+    snapshot.time_signature_denominator = 4;
     snapshot.track_count = max_tracks;
     snapshot.scene_count = max_scenes;
     for (0..max_tracks) |t| {

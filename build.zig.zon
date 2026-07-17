@@ -57,8 +57,8 @@
             .hash = "zaudio-0.11.0-dev-_M-91gzwPwAKjc6163XpAFnkOVKKw5qHjmnDVB7QVjsq",
         },
         .libz_jobs = .{
-            .url = "git+https://github.com/fourlexboehm/LibZ.Jobs#356f87250a9d44a7212943b9ab7ff75efb5c2a85",
-            .hash = "libz_jobs-0.0.0-WDIbgX6WAAAO6bCGNHz1VcXWbrdp2djCIbtmbe0xs0Xq",
+            .url = "git+https://github.com/fourlexboehm/LibZ.Jobs#8e7252e7b69fe7bdbff52085d1cf3d85f768112a",
+            .hash = "libz_jobs-0.0.0-WDIbgWyWAAAH_fLfxQ647PWdmVPrE2TMWF88Ki2wDBZr",
         },
         // DAWproject support
         .@"zig-xml" = .{

@@ -76,7 +76,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    const libz_jobs = b.dependency("libz_jobs", dep_target);
+    const libz_jobs = b.dependency("libz_jobs", .{
+        .target = target,
+        .optimize = optimize,
+    });
     const zig_xml = b.dependency("zig-xml", dep_target);
     const portmidi_zig = b.dependency("portmidi-zig", dep_target);
     const wdf = b.dependency("wdf", dep_target);
@@ -474,10 +477,23 @@ pub fn build(b: *std.Build) void {
     }
     const run_zsynth_smoke_tests = b.addRunArtifact(zsynth_smoke_tests);
 
+    const dawproject_test_module = b.createModule(.{
+        .root_source_file = b.path("src/flux/dawproject/tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    dawproject_test_module.addImport("xml", zig_xml.module("xml"));
+    const dawproject_tests = b.addTest(.{
+        .root_module = dawproject_test_module,
+        .use_llvm = use_llvm,
+    });
+    const run_dawproject_tests = b.addRunArtifact(dawproject_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_filter_tests.step);
     test_step.dependOn(&run_dsp_tests.step);
     test_step.dependOn(&run_zsynth_smoke_tests.step);
+    test_step.dependOn(&run_dawproject_tests.step);
 }
 
 fn createClapPluginStep(

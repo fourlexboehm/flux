@@ -214,7 +214,13 @@ fn saveProjectToPath(
 
     // Collect plugin states and plugin info
     var plugin_states: std.ArrayList(dawproject_io_types.PluginStateFile) = .empty;
-    defer plugin_states.deinit(allocator);
+    defer {
+        for (plugin_states.items) |plugin_state| {
+            allocator.free(plugin_state.path);
+            allocator.free(plugin_state.data);
+        }
+        plugin_states.deinit(allocator);
+    }
 
     var track_plugin_info: [track_count]dawproject_io_types.TrackPluginInfo = undefined;
     for (&track_plugin_info) |*info| {
@@ -228,25 +234,54 @@ fn saveProjectToPath(
     }
 
     for (track_plugins, 0..) |track, t| {
-        if (track.handle) |handle| {
-            // Get the plugin ID from the loaded plugin's descriptor
-            track_plugin_info[t].plugin_id = std.mem.span(handle.plugin.descriptor.id);
-            track_plugin_info[t].params = collectPluginParams(param_alloc, handle.plugin);
+        if (track.getPlugin()) |plugin| {
+            track_plugin_info[t].plugin_id = std.mem.span(plugin.descriptor.id);
+            track_plugin_info[t].params = collectPluginParams(param_alloc, plugin);
 
-            if (capturePluginStateForDawproject(allocator, handle.plugin, t, null)) |ps| {
+            if (capturePluginStateForDawproject(allocator, plugin, t, null)) |ps| {
                 track_plugin_info[t].state_path = ps.path;
-                plugin_states.append(allocator, ps) catch continue;
+                plugin_states.append(allocator, ps) catch |err| {
+                    allocator.free(ps.path);
+                    allocator.free(ps.data);
+                    return err;
+                };
+            }
+        } else if (state.missing_track_plugins[t]) |missing| {
+            track_plugin_info[t].plugin_id = missing.device_id;
+            track_plugin_info[t].params = missingPluginParams(param_alloc, &missing);
+            if (copyMissingPluginState(allocator, &missing, t, null)) |plugin_state| {
+                track_plugin_info[t].state_path = plugin_state.path;
+                plugin_states.append(allocator, plugin_state) catch |err| {
+                    allocator.free(plugin_state.path);
+                    allocator.free(plugin_state.data);
+                    return err;
+                };
             }
         }
     }
     for (track_fx, 0..) |track_slots, t| {
         for (track_slots, 0..) |slot, fx_index| {
-            if (slot.handle) |handle| {
-                track_fx_plugin_info[t][fx_index].plugin_id = std.mem.span(handle.plugin.descriptor.id);
-                track_fx_plugin_info[t][fx_index].params = collectPluginParams(param_alloc, handle.plugin);
-                if (capturePluginStateForDawproject(allocator, handle.plugin, t, fx_index)) |ps| {
+            if (slot.getPlugin()) |plugin| {
+                track_fx_plugin_info[t][fx_index].plugin_id = std.mem.span(plugin.descriptor.id);
+                track_fx_plugin_info[t][fx_index].params = collectPluginParams(param_alloc, plugin);
+                if (capturePluginStateForDawproject(allocator, plugin, t, fx_index)) |ps| {
                     track_fx_plugin_info[t][fx_index].state_path = ps.path;
-                    plugin_states.append(allocator, ps) catch continue;
+                    plugin_states.append(allocator, ps) catch |err| {
+                        allocator.free(ps.path);
+                        allocator.free(ps.data);
+                        return err;
+                    };
+                }
+            } else if (state.missing_track_fx[t][fx_index]) |missing| {
+                track_fx_plugin_info[t][fx_index].plugin_id = missing.device_id;
+                track_fx_plugin_info[t][fx_index].params = missingPluginParams(param_alloc, &missing);
+                if (copyMissingPluginState(allocator, &missing, t, fx_index)) |plugin_state| {
+                    track_fx_plugin_info[t][fx_index].state_path = plugin_state.path;
+                    plugin_states.append(allocator, plugin_state) catch |err| {
+                        allocator.free(plugin_state.path);
+                        allocator.free(plugin_state.data);
+                        return err;
+                    };
                 }
             }
         }
@@ -299,6 +334,47 @@ fn collectPluginParams(
     }
 
     return list.toOwnedSlice(allocator) catch &.{};
+}
+
+fn missingPluginParams(
+    allocator: std.mem.Allocator,
+    missing: *const ui_state.MissingPlugin,
+) []const dawproject_io_types.PluginParamInfo {
+    const params = allocator.alloc(dawproject_io_types.PluginParamInfo, missing.parameters.len) catch return &.{};
+    for (missing.parameters, params) |source, *dest| {
+        dest.* = .{
+            .id = source.id,
+            .name = source.name,
+            .min = source.min,
+            .max = source.max,
+            .default_value = source.value,
+            .value = source.value,
+        };
+    }
+    return params;
+}
+
+fn copyMissingPluginState(
+    allocator: std.mem.Allocator,
+    missing: *const ui_state.MissingPlugin,
+    track_index: usize,
+    fx_index: ?usize,
+) ?dawproject_io_types.PluginStateFile {
+    const data = missing.state_data orelse return null;
+    var path_buf: [64]u8 = undefined;
+    const path = if (fx_index) |fx_slot|
+        std.fmt.bufPrint(&path_buf, "plugins/track{d}-fx{d}.clap-preset", .{ track_index, fx_slot }) catch return null
+    else
+        std.fmt.bufPrint(&path_buf, "plugins/track{d}.clap-preset", .{track_index}) catch return null;
+    const path_copy = allocator.dupe(u8, path) catch return null;
+    const data_copy = allocator.dupe(u8, data) catch {
+        allocator.free(path_copy);
+        return null;
+    };
+    return .{
+        .path = path_copy,
+        .data = data_copy,
+    };
 }
 
 fn handleLoadProject(
@@ -486,6 +562,7 @@ fn applyDawprojectToState(
     // Reset session
     session_ops.deinit(&state.session);
     state.session = session_ops.init(state.allocator);
+    state.clearMissingPlugins();
 
     // Apply tracks
     const project_track_count = @min(proj.tracks.len, track_count);
@@ -497,6 +574,7 @@ fn applyDawprojectToState(
         state.track_plugins[t].choice_index = 0;
         state.track_plugins[t].gui_open = false;
         state.track_plugins[t].last_valid_choice = 0;
+        state.track_fx_slot_count[t] = 1;
         for (0..ui_state.max_fx_slots) |fx_index| {
             state.track_fx[t][fx_index].choice_index = 0;
             state.track_fx[t][fx_index].gui_open = false;
@@ -529,16 +607,28 @@ fn applyDawprojectToState(
                 for (channel.devices) |device| {
                     const choice = findPluginInCatalog(catalog, device.device_id);
                     if (device.device_role == .instrument or device.device_role == .noteFX) {
-                        state.track_plugins[t].choice_index = choice;
-                        state.track_plugins[t].last_valid_choice = choice;
+                        const resolved_choice = choice orelse 0;
+                        state.track_plugins[t].choice_index = resolved_choice;
+                        state.track_plugins[t].last_valid_choice = resolved_choice;
+                        if (choice == null) {
+                            state.missing_track_plugins[t] = try copyMissingPlugin(allocator, loaded, &device);
+                        }
                         instrument_device_ids[t] = device.id;
-                    } else if (device.device_role == .audioFX and fx_slot < ui_state.max_fx_slots) {
-                        state.track_fx[t][fx_slot].choice_index = choice;
-                        state.track_fx[t][fx_slot].last_valid_choice = choice;
+                    } else if ((device.device_role == .audioFX or device.device_role == .analyzer) and fx_slot < ui_state.max_fx_slots) {
+                        const resolved_choice = choice orelse 0;
+                        state.track_fx[t][fx_slot].choice_index = resolved_choice;
+                        state.track_fx[t][fx_slot].last_valid_choice = resolved_choice;
+                        if (choice == null) {
+                            state.missing_track_fx[t][fx_slot] = try copyMissingPlugin(allocator, loaded, &device);
+                        }
                         fx_device_ids[t][fx_slot] = device.id;
                         fx_slot += 1;
                     }
                 }
+                state.track_fx_slot_count[t] = if (fx_slot < ui_state.max_fx_slots)
+                    fx_slot + 1
+                else
+                    ui_state.max_fx_slots;
             }
         }
     }
@@ -555,9 +645,13 @@ fn applyDawprojectToState(
                 var fx_slot: usize = 0;
                 for (channel.devices) |device| {
                     const choice = findPluginInCatalog(catalog, device.device_id);
-                    if (device.device_role == .audioFX and fx_slot < ui_state.max_fx_slots) {
-                        state.track_fx[master_track_index][fx_slot].choice_index = choice;
-                        state.track_fx[master_track_index][fx_slot].last_valid_choice = choice;
+                    if ((device.device_role == .audioFX or device.device_role == .analyzer) and fx_slot < ui_state.max_fx_slots) {
+                        const resolved_choice = choice orelse 0;
+                        state.track_fx[master_track_index][fx_slot].choice_index = resolved_choice;
+                        state.track_fx[master_track_index][fx_slot].last_valid_choice = resolved_choice;
+                        if (choice == null) {
+                            state.missing_track_fx[master_track_index][fx_slot] = try copyMissingPlugin(allocator, loaded, &device);
+                        }
                         fx_slot += 1;
                     }
                 }
@@ -614,25 +708,47 @@ fn applyDawprojectToState(
         if (track.channel) |channel| {
             var fx_slot: usize = 0;
             for (channel.devices) |device| {
-                if (device.state == null) continue;
-                const state_ref = device.state.?;
-                const state_data = loaded.plugin_states.get(state_ref.path) orelse continue;
                 if (device.device_role == .instrument or device.device_role == .noteFX) {
-                    if (track_plugins[t].handle) |handle| {
-                        loadPluginStateFromData(handle.plugin, state_data);
+                    if (device.state) |state_ref| {
+                        if (loaded.plugin_states.get(state_ref.path)) |state_data| {
+                            if (track_plugins[t].getPlugin()) |plugin| {
+                                loadPluginStateFromData(plugin, state_data);
+                            }
+                        }
                     }
-                } else if (device.device_role == .audioFX and fx_slot < ui_state.max_fx_slots) {
-                    if (track_fx[t][fx_slot].handle) |handle| {
-                        loadPluginStateFromData(handle.plugin, state_data);
+                } else if ((device.device_role == .audioFX or device.device_role == .analyzer) and fx_slot < ui_state.max_fx_slots) {
+                    if (device.state) |state_ref| {
+                        if (loaded.plugin_states.get(state_ref.path)) |state_data| {
+                            if (track_fx[t][fx_slot].getPlugin()) |plugin| {
+                                loadPluginStateFromData(plugin, state_data);
+                            }
+                        }
                     }
                     fx_slot += 1;
                 }
             }
         }
     }
+    if (proj.master_track) |master_track| {
+        if (master_track.channel) |channel| {
+            var fx_slot: usize = 0;
+            for (channel.devices) |device| {
+                if (device.device_role != .audioFX and device.device_role != .analyzer) continue;
+                if (fx_slot >= ui_state.max_fx_slots) break;
+                if (device.state) |state_ref| {
+                    if (loaded.plugin_states.get(state_ref.path)) |state_data| {
+                        if (track_fx[master_track_index][fx_slot].getPlugin()) |plugin| {
+                            loadPluginStateFromData(plugin, state_data);
+                        }
+                    }
+                }
+                fx_slot += 1;
+            }
+        }
+    }
 }
 
-fn findPluginInCatalog(catalog: *const plugins.PluginCatalog, device_id: []const u8) i32 {
+fn findPluginInCatalog(catalog: *const plugins.PluginCatalog, device_id: []const u8) ?i32 {
     for (catalog.entries.items, 0..) |entry, idx| {
         if (entry.id) |id| {
             if (std.mem.eql(u8, id, device_id)) {
@@ -640,7 +756,58 @@ fn findPluginInCatalog(catalog: *const plugins.PluginCatalog, device_id: []const
             }
         }
     }
-    return 0; // Default to "None"
+    return null;
+}
+
+fn copyMissingPlugin(
+    allocator: std.mem.Allocator,
+    loaded: *const dawproject_io.LoadedProject,
+    device: *const dawproject_types.ClapPlugin,
+) !ui_state.MissingPlugin {
+    var params = std.ArrayList(ui_state.MissingPluginParameter).empty;
+    errdefer {
+        for (params.items) |param| allocator.free(param.name);
+        params.deinit(allocator);
+    }
+    for (device.parameters) |param| {
+        const marker = std.mem.indexOf(u8, param.id, "_p") orelse continue;
+        const raw_id = param.id[marker + 2 ..];
+        const id = std.fmt.parseInt(u32, raw_id, 10) catch continue;
+        try params.append(allocator, .{
+            .id = id,
+            .name = try allocator.dupe(u8, param.name),
+            .value = param.value,
+            .min = param.min orelse param.value,
+            .max = param.max orelse param.value,
+        });
+    }
+
+    const device_id = try allocator.dupe(u8, device.device_id);
+    errdefer allocator.free(device_id);
+    const device_name = try allocator.dupe(u8, device.device_name);
+    errdefer allocator.free(device_name);
+    const state_data = if (device.state) |state_ref|
+        if (loaded.plugin_states.get(state_ref.path)) |data|
+            try allocator.dupe(u8, data)
+        else
+            null
+    else
+        null;
+    errdefer if (state_data) |data| allocator.free(data);
+
+    return .{
+        .device_id = device_id,
+        .device_name = device_name,
+        .role = switch (device.device_role) {
+            .instrument => .instrument,
+            .noteFX => .note_fx,
+            .audioFX => .audio_fx,
+            .analyzer => .analyzer,
+        },
+        .loaded = device.loaded,
+        .parameters = try params.toOwnedSlice(allocator),
+        .state_data = state_data,
+    };
 }
 
 fn applyLanes(

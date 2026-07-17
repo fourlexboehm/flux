@@ -445,7 +445,7 @@ pub const Graph = struct {
             }
 
             jq.schedule(root);
-            jq.wait(root);
+            jq.waitRealtime(root);
         } else {
             for (active_synths[0..active_count]) |synth_id| {
                 processSynthDirect(ctx, synth_id);

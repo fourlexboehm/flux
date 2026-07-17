@@ -18,13 +18,11 @@ const fromFluxProject = convert.fromFluxProject;
 const toXml = xml_writer.toXml;
 
 pub const LoadedProject = struct {
-    allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
     project: Project,
     plugin_states: std.StringHashMap([]const u8),
 
     pub fn deinit(self: *LoadedProject) void {
-        self.plugin_states.deinit();
         self.arena.deinit();
     }
 };
@@ -184,7 +182,6 @@ fn loadFromFile(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File) !Lo
     const parsed_project = try parse.parseProjectXml(arena.allocator(), project_xml);
 
     return .{
-        .allocator = allocator,
         .arena = arena,
         .project = parsed_project,
         .plugin_states = plugin_states,
