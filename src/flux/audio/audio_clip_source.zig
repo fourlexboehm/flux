@@ -3,8 +3,8 @@
 
 const std = @import("std");
 const sample_store = @import("sample_store.zig");
-const session_constants = @import("../ui/session_view/constants.zig");
-const audio_clip_types = @import("../ui/audio_clip/types.zig");
+const session_constants = @import("../session/constants.zig");
+const audio_clip_types = @import("../session/audio_clip.zig");
 
 pub const SampleId = sample_store.SampleId;
 pub const invalid_sample_id = sample_store.invalid_sample_id;

@@ -1,7 +1,7 @@
-const session_constants = @import("session_view/constants.zig");
-const session_playback = @import("session_view/playback.zig");
-const session_recording = @import("session_view/recording.zig");
-const piano_roll_types = @import("piano_roll/types.zig");
+const session_constants = @import("../session/constants.zig");
+const session_playback = @import("../session/playback.zig");
+const session_recording = @import("../session/recording.zig");
+const piano_roll_types = @import("../session/notes.zig");
 const State = @import("state.zig").State;
 
 const default_clip_bars = session_constants.default_clip_bars;

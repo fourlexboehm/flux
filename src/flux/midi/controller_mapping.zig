@@ -1,10 +1,10 @@
 const std = @import("std");
 
-const midi_input = @import("../midi_input.zig");
+const midi_input = @import("input.zig");
 const smart_params = @import("smart_params.zig");
 const ui_state = @import("../ui/state.zig");
-const session_playback = @import("../ui/session_view/playback.zig");
-const session_recording = @import("../ui/session_view/recording.zig");
+const session_playback = @import("../session/playback.zig");
+const session_recording = @import("../session/recording.zig");
 
 const State = ui_state.State;
 

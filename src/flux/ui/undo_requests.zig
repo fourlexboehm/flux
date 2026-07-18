@@ -1,7 +1,7 @@
 const undo = @import("../undo/root.zig");
-const session_constants = @import("session_view/constants.zig");
-const piano_roll_types = @import("piano_roll/types.zig");
-const audio_clip_types = @import("audio_clip/types.zig");
+const session_constants = @import("../session/constants.zig");
+const piano_roll_types = @import("../session/notes.zig");
+const audio_clip_types = @import("../session/audio_clip.zig");
 const State = @import("state.zig").State;
 
 const AudioClip = audio_clip_types.AudioClip;

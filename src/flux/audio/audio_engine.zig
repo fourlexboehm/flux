@@ -3,8 +3,8 @@ const zaudio = @import("zaudio");
 const clap = @import("clap-bindings");
 
 const ui_state = @import("../ui/state.zig");
-const session_constants = @import("../ui/session_view/constants.zig");
-const session_view = @import("../ui/session_view.zig");
+const session_constants = @import("../session/constants.zig");
+const session_view = @import("../session/types.zig");
 const audio_graph = @import("audio_graph.zig");
 const clip_bake = @import("clip_bake.zig");
 const audio_constants = @import("audio_constants.zig");

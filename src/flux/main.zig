@@ -8,34 +8,34 @@ const zopengl = @import("zopengl");
 const shared_mod = @import("shared");
 const objc = if (builtin.os.tag == .macos) @import("objc") else struct {};
 
-const app_window = @import("app_window.zig");
+const app_window = @import("app/window.zig");
 const audio_constants = @import("audio/audio_constants.zig");
 const audio_device = @import("audio/audio_device.zig");
 const audio_engine = @import("audio/audio_engine.zig");
 const audio_graph = @import("audio/audio_graph.zig");
-const bench = @import("bench.zig");
-const dawproject_runtime = @import("dawproject/runtime.zig");
-const device_state = @import("device_state.zig");
-const host_mod = @import("host.zig");
+const bench = @import("app/bench.zig");
+const dawproject_runtime = @import("project/runtime.zig");
+const device_state = @import("app/device_state.zig");
+const host_mod = @import("app/host.zig");
 const linux_x11 = if (builtin.os.tag == .linux) @import("plugin/linux_x11.zig") else struct {
     pub fn initThreads() void {}
 };
 const controller_mapping = @import("midi/controller_mapping.zig");
-const midi_input = @import("midi_input.zig");
+const midi_input = @import("midi/input.zig");
 const options = @import("options");
 const static_data = @import("static_data");
 const plugin_runtime = @import("plugin/plugin_runtime.zig");
 const plugins = @import("plugin/plugins.zig");
 const presets = @import("plugin/presets.zig");
-const session_constants = @import("ui/session_view/constants.zig");
-const theme = @import("theme.zig");
-const time_utils = @import("time_utils.zig");
+const session_constants = @import("session/constants.zig");
+const theme = @import("app/theme.zig");
+const time_utils = @import("util/time_utils.zig");
 const ui_draw = @import("ui/draw.zig");
-const ui_filters = @import("ui/filters.zig");
-const ui_keyboard = @import("ui/keyboard_midi.zig");
+const ui_filters = @import("ui/panels/filters.zig");
+const ui_keyboard = @import("ui/input/keyboard_midi.zig");
 const ui_recording = @import("ui/recording.zig");
 const ui_state = @import("ui/state.zig");
-const colors = @import("ui/colors.zig");
+const colors = @import("ui/theme/colors.zig");
 
 const track_count = session_constants.max_tracks;
 
