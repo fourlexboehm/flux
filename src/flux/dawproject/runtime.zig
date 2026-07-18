@@ -16,6 +16,8 @@ const ui_state = @import("../ui/state.zig");
 const dawproject_io = @import("io.zig");
 const dawproject_types = @import("types.zig");
 const dawproject_io_types = @import("io_types.zig");
+const flatten = @import("flatten.zig");
+const audio_clip_types = @import("../ui/audio_clip/types.zig");
 
 const track_count = session_constants.max_tracks;
 const scene_count = session_constants.max_scenes;
@@ -672,12 +674,14 @@ fn applyDawprojectToState(
         state.session.scenes[s].setName(proj.scenes[s].name);
     }
 
-    // Clear piano clips
+    // Clear piano + audio clips
+    state.undo_history.clear();
     for (&state.piano_clips) |*track_clips| {
         for (track_clips) |*clip| {
             clip.clear();
         }
     }
+    state.clearAllAudioClips();
 
     // Apply session clips from scenes when available, otherwise fall back to arrangement lanes.
     var applied_scene_clips = false;
@@ -691,10 +695,10 @@ fn applyDawprojectToState(
     }
 
     if (applied_scene_clips) {
-        try applyScenes(state, proj.scenes, proj.tracks, proj.master_track, &instrument_device_ids, &fx_device_ids);
+        try applyScenes(state, loaded, proj.scenes, proj.tracks, proj.master_track, &instrument_device_ids, &fx_device_ids);
     } else if (proj.arrangement) |arr| {
         if (arr.lanes) |root_lanes| {
-            try applyLanes(state, &root_lanes, proj.tracks, &instrument_device_ids, &fx_device_ids);
+            try applyLanes(state, loaded, &root_lanes, proj.tracks, &instrument_device_ids, &fx_device_ids);
         }
     }
 
@@ -812,6 +816,7 @@ fn copyMissingPlugin(
 
 fn applyLanes(
     state: *ui_state.State,
+    loaded: *const dawproject_io.LoadedProject,
     lanes: *const dawproject_types.Lanes,
     tracks: []const dawproject_types.Track,
     instrument_device_ids: *const [track_count]?[]const u8,
@@ -832,6 +837,10 @@ fn applyLanes(
     if (lanes.clips) |clips| {
         if (track_idx) |t| {
             if (t < track_count) {
+                // Ensure scene count covers arrangement clips mapped to scenes
+                if (clips.clips.len > state.session.scene_count) {
+                    state.session.scene_count = @min(clips.clips.len, scene_count);
+                }
                 for (clips.clips, 0..) |clip, s| {
                     if (s >= scene_count) break;
 
@@ -841,34 +850,7 @@ fn applyLanes(
                         .length_beats = @floatCast(clip.duration),
                     };
 
-                    // Add notes
-                    var piano = &state.piano_clips[t][s];
-                    piano.length_beats = @floatCast(clip.duration);
-                    piano.notes.clearRetainingCapacity();
-                    if (clip.notes) |notes| {
-                        for (notes.notes) |note| {
-                            piano.addNoteWithVelocity(
-                                @intCast(note.key),
-                                @floatCast(note.time),
-                                @floatCast(note.duration),
-                                @floatCast(note.vel),
-                                @floatCast(note.rel),
-                            ) catch continue;
-                        }
-                    }
-                    const track = tracks[t];
-                    const channel = track.channel;
-                    const vol_id = if (channel) |ch| if (ch.volume) |vol| vol.id else null else null;
-                    const pan_id = if (channel) |ch| if (ch.pan) |pan| pan.id else null else null;
-                    try applyAutomationToClip(
-                        state.allocator,
-                        piano,
-                        clip.points,
-                        instrument_device_ids[t],
-                        &fx_device_ids[t],
-                        vol_id,
-                        pan_id,
-                    );
+                    try applyClipContent(state, loaded, t, s, &clip, tracks, instrument_device_ids, fx_device_ids);
                 }
             }
         }
@@ -876,12 +858,13 @@ fn applyLanes(
 
     // Recurse into child lanes
     for (lanes.children) |child| {
-        try applyLanes(state, &child, tracks, instrument_device_ids, fx_device_ids);
+        try applyLanes(state, loaded, &child, tracks, instrument_device_ids, fx_device_ids);
     }
 }
 
 fn applyScenes(
     state: *ui_state.State,
+    loaded: *const dawproject_io.LoadedProject,
     scenes: []const dawproject_types.Scene,
     tracks: []const dawproject_types.Track,
     master_track: ?dawproject_types.Track,
@@ -912,37 +895,163 @@ fn applyScenes(
                         .length_beats = @floatCast(clip.duration),
                     };
 
-                    var piano = &state.piano_clips[t][s];
-                    piano.length_beats = @floatCast(clip.duration);
-                    piano.notes.clearRetainingCapacity();
-                    if (clip.notes) |notes| {
-                        for (notes.notes) |note| {
-                            piano.addNoteWithVelocity(
-                                @intCast(note.key),
-                                @floatCast(note.time),
-                                @floatCast(note.duration),
-                                @floatCast(note.vel),
-                                @floatCast(note.rel),
-                            ) catch continue;
-                        }
-                    }
-                    const track = tracks[t];
-                    const channel = track.channel;
-                    const vol_id = if (channel) |ch| if (ch.volume) |vol| vol.id else null else null;
-                    const pan_id = if (channel) |ch| if (ch.pan) |pan| pan.id else null else null;
-                    try applyAutomationToClip(
-                        state.allocator,
-                        piano,
-                        clip.points,
-                        instrument_device_ids[t],
-                        &fx_device_ids[t],
-                        vol_id,
-                        pan_id,
-                    );
+                    try applyClipContent(state, loaded, t, s, &clip, tracks, instrument_device_ids, fx_device_ids);
                 }
             }
         }
     }
+}
+
+fn applyClipContent(
+    state: *ui_state.State,
+    loaded: *const dawproject_io.LoadedProject,
+    track_idx: usize,
+    scene_idx: usize,
+    clip: *const dawproject_types.Clip,
+    tracks: []const dawproject_types.Track,
+    instrument_device_ids: *const [track_count]?[]const u8,
+    fx_device_ids: *const [track_count][ui_state.max_fx_slots]?[]const u8,
+) !void {
+    // Try audio first (flatten nested Bitwig-style clips).
+    // Arena frees any synthetic identity/shifted warp buffers from flatten.
+    var applied_audio = false;
+    {
+        var flat_arena = std.heap.ArenaAllocator.init(state.allocator);
+        defer flat_arena.deinit();
+        if (try flatten.flattenClipAudio(flat_arena.allocator(), clip)) |flat| {
+            try applyFlattenedAudio(state, loaded, track_idx, scene_idx, flat);
+            applied_audio = state.audio_clips[track_idx][scene_idx].hasAudio();
+        }
+    }
+
+    var piano = &state.piano_clips[track_idx][scene_idx];
+    piano.length_beats = @floatCast(clip.duration);
+    piano.notes.clearRetainingCapacity();
+
+    // One content type per slot: skip notes when audio was applied
+    if (!applied_audio) {
+        if (clip.notes) |notes| {
+            for (notes.notes) |note| {
+                if (note.key < 0 or note.key > 127) continue;
+                piano.addNoteWithVelocity(
+                    @intCast(note.key),
+                    @floatCast(note.time),
+                    @floatCast(note.duration),
+                    @floatCast(note.vel),
+                    @floatCast(note.rel),
+                ) catch continue;
+            }
+        }
+        if (clip.lanes) |lanes| {
+            if (lanes.notes) |notes| {
+                for (notes.notes) |note| {
+                    if (note.key < 0 or note.key > 127) continue;
+                    piano.addNoteWithVelocity(
+                        @intCast(note.key),
+                        @floatCast(note.time),
+                        @floatCast(note.duration),
+                        @floatCast(note.vel),
+                        @floatCast(note.rel),
+                    ) catch continue;
+                }
+            }
+        }
+    }
+
+    if (track_idx < tracks.len) {
+        piano.automation.clear(state.allocator);
+        const track = tracks[track_idx];
+        const channel = track.channel;
+        const vol_id = if (channel) |ch| if (ch.volume) |vol| vol.id else null else null;
+        const pan_id = if (channel) |ch| if (ch.pan) |pan| pan.id else null else null;
+        try applyAutomationToClip(
+            state.allocator,
+            piano,
+            clip.points,
+            instrument_device_ids[track_idx],
+            &fx_device_ids[track_idx],
+            vol_id,
+            pan_id,
+        );
+        if (clip.lanes) |lanes| {
+            try applyAutomationToClip(
+                state.allocator,
+                piano,
+                lanes.points,
+                instrument_device_ids[track_idx],
+                &fx_device_ids[track_idx],
+                vol_id,
+                pan_id,
+            );
+        }
+    }
+}
+
+fn applyFlattenedAudio(
+    state: *ui_state.State,
+    loaded: *const dawproject_io.LoadedProject,
+    track_idx: usize,
+    scene_idx: usize,
+    flat: flatten.FlattenedAudio,
+) !void {
+    const path = flat.audio.file.path;
+    if (path.len == 0) return;
+
+    const bytes = loaded.media_files.get(path) orelse {
+        std.log.warn("Audio media missing from package: {s}", .{path});
+        return;
+    };
+
+    const sample_id = state.sample_store.loadFromMemory(path, bytes) catch |err| {
+        std.log.warn("Failed to decode audio {s}: {}", .{ path, err });
+        return;
+    };
+    var sample_owned = true;
+    defer if (sample_owned) state.sample_store.release(sample_id);
+
+    // Hybrid exclusive slot: sample owns this cell (drop MIDI notes)
+    state.claimSlotForAudio(track_idx, scene_idx);
+
+    var audio = &state.audio_clips[track_idx][scene_idx];
+    audio.clear(&state.sample_store);
+    audio.length_beats = @floatCast(flat.duration);
+    audio.play_start_beats = @floatCast(timeToBeats(flat.play_start, flat.content_time_unit, state.bpm));
+    audio.loop_start_beats = @floatCast(timeToBeats(flat.loop_start orelse 0, flat.content_time_unit, state.bpm));
+    audio.loop_end_beats = if (flat.loop_end) |end|
+        @floatCast(timeToBeats(end, flat.content_time_unit, state.bpm))
+    else
+        audio.length_beats;
+    const fade_unit = flat.fade_time_unit orelse .beats;
+    audio.fade_in_beats = @floatCast(timeToBeats(flat.fade_in_time orelse 0, fade_unit, state.bpm));
+    audio.fade_out_beats = @floatCast(timeToBeats(flat.fade_out_time orelse 0, fade_unit, state.bpm));
+    if (flat.name) |n| audio.name.set(n);
+    try audio.setAlgorithm(flat.algorithm);
+
+    var markers = try state.allocator.alloc(audio_clip_types.WarpMarker, flat.warps.len);
+    defer state.allocator.free(markers);
+    for (flat.warps, 0..) |wp, i| {
+        markers[i] = .{
+            .beat = @floatCast(timeToBeats(wp.time, flat.warp_time_unit, state.bpm)),
+            .content_seconds = @floatCast(timeToSeconds(wp.content_time, flat.warp_content_time_unit, state.bpm)),
+        };
+    }
+    try audio.setWarps(markers);
+    audio.setSample(&state.sample_store, sample_id);
+    sample_owned = false;
+}
+
+fn timeToBeats(value: f64, unit: dawproject_types.TimeUnit, bpm: f32) f64 {
+    return switch (unit) {
+        .beats => value,
+        .seconds => value * @as(f64, bpm) / 60.0,
+    };
+}
+
+fn timeToSeconds(value: f64, unit: dawproject_types.TimeUnit, bpm: f32) f64 {
+    return switch (unit) {
+        .seconds => value,
+        .beats => value * 60.0 / @as(f64, bpm),
+    };
 }
 
 fn applyAutomationToClip(
@@ -954,7 +1063,6 @@ fn applyAutomationToClip(
     track_volume_param_id: ?[]const u8,
     track_pan_param_id: ?[]const u8,
 ) !void {
-    piano.automation.clear(allocator);
     for (points_list) |points| {
         var new_lane = piano_roll_types.AutomationLane{
             .target_kind = .parameter,

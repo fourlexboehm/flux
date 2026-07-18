@@ -8,13 +8,26 @@ const edit_actions = @import("../edit_actions.zig");
 const ops = @import("ops.zig");
 const playback_impl = @import("playback.zig");
 const recording_impl = @import("recording.zig");
+const tokens = @import("../tokens.zig");
+const widgets = @import("../widgets.zig");
+const draw_clip_slot = @import("draw_clip_slot.zig");
 
-pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_focused: bool, playhead_beat: f32, beats_per_bar_in: f32) void {
-    const row_height = 52.0 * ui_scale;
-    const header_height = 32.0 * ui_scale;
-    const scene_col_w = 130.0 * ui_scale; // Wider for button + name
-    const track_col_w = 160.0 * ui_scale;
-    const add_btn_size = 32.0 * ui_scale;
+pub const ClipAudioCtx = draw_clip_slot.ClipAudioCtx;
+
+pub fn draw(
+    self: *session_view.SessionView,
+    ui_scale: f32,
+    playing: bool,
+    is_focused: bool,
+    playhead_beat: f32,
+    beats_per_bar_in: f32,
+    audio_ctx: ?ClipAudioCtx,
+) void {
+    const row_height = tokens.sessionRowH(ui_scale);
+    const header_height = tokens.sessionHeaderH(ui_scale);
+    const scene_col_w = tokens.sceneColW(ui_scale);
+    const track_col_w = tokens.trackColW(ui_scale);
+    const add_btn_size = tokens.controlH(.md, ui_scale);
 
     const grid_pos = zgui.getCursorScreenPos();
     const mouse = zgui.getMousePos();
@@ -174,19 +187,26 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
         _ = zgui.tableNextColumn();
         const is_track_selected = self.primary_track == t;
         const text_color = if (is_track_selected) colors.Colors.current.text_bright else colors.Colors.current.text_dim;
+        // Track color stripe under header text
+        {
+            const hdr_pos = zgui.getCursorScreenPos();
+            zgui.getWindowDrawList().addRectFilled(.{
+                .pmin = .{ hdr_pos[0], hdr_pos[1] + header_height - tokens.s(2, ui_scale) },
+                .pmax = .{ hdr_pos[0] + track_col_w - tokens.s(4, ui_scale), hdr_pos[1] + header_height },
+                .col = zgui.colorConvertFloat4ToU32(colors.Colors.trackColor(t)),
+            });
+        }
         zgui.pushStyleColor4f(.{ .idx = .text, .c = text_color });
 
-        // Make track header clickable
         var track_buf: [32]u8 = undefined;
         const track_label = std.fmt.bufPrintSentinel(&track_buf, "{s}##track_hdr{d}", .{ self.tracks[t].getName(), t }, 0) catch "Track";
-        const track_pad = 4.0 * ui_scale;
+        const track_pad = tokens.s(4, ui_scale);
         zgui.setCursorPosX(zgui.getCursorPosX() + track_pad);
         if (zgui.selectable(track_label, .{ .selected = is_track_selected, .w = track_col_w - track_pad * 2.0 })) {
             self.primary_track = t;
             ops.clearSelection(self);
             self.mixer_target = .track;
         }
-        // Right-click on track header opens context menu
         if (zgui.isItemClicked(.right)) {
             self.primary_track = t;
             self.mixer_target = .track;
@@ -290,7 +310,7 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
             _ = zgui.tableNextColumn();
             const track_pad = 4.0 * ui_scale;
             zgui.setCursorPosX(zgui.getCursorPosX() + track_pad);
-            drawClipSlot(self, track_idx, scene_idx, track_col_w - track_pad * 2.0, row_height - 6.0 * ui_scale, ui_scale, playing, playhead_beat, beats_per_bar_in);
+            draw_clip_slot.drawClipSlot(self, track_idx, scene_idx, track_col_w - track_pad * 2.0, row_height - 6.0 * ui_scale, ui_scale, playing, playhead_beat, beats_per_bar_in, audio_ctx);
         }
 
         // Empty cell for add track column
@@ -408,333 +428,16 @@ pub fn draw(self: *session_view.SessionView, ui_scale: f32, playing: bool, is_fo
     zgui.popStyleColor(.{ .count = 1 });
 }
 
-fn drawClipSlot(self: *session_view.SessionView, track: usize, scene: usize, width: f32, height: f32, ui_scale: f32, playing: bool, playhead_beat: f32, beats_per_bar_in: f32) void {
-    const draw_list = zgui.getWindowDrawList();
-    const pos = zgui.getCursorScreenPos();
-    const mouse = zgui.getMousePos();
-
-    // Store cell position for ghost rendering
-    self.cell_positions[track][scene] = pos;
-
-    const slot = &self.clips[track][scene];
-    const is_selected = ops.isSelected(self, track, scene);
-
-    // Check if this clip is being overdubbed (playing + recording)
-    const is_overdub_clip = slot.state == .playing and self.recording.track == track and self.recording.scene == scene;
-
-    // Clip colors based on state
-    const clip_color = if (is_overdub_clip)
-        colors.Colors.current.clip_recording // Use recording color for overdub
-    else switch (slot.state) {
-        .empty => colors.Colors.current.clip_empty,
-        .stopped => colors.Colors.current.clip_stopped,
-        .queued => colors.Colors.current.clip_queued,
-        .playing => colors.Colors.current.clip_playing,
-        .recording => colors.Colors.current.clip_recording,
-        .record_queued => colors.Colors.current.clip_queued,
-    };
-
-    // Play button dimensions
-    const play_btn_w = 24.0 * ui_scale;
-    const clip_w = width - play_btn_w - 4.0 * ui_scale;
-    const rounding = 3.0 * ui_scale;
-
-    // Check drag select intersection
-    if (self.drag_select.active) {
-        const clip_min = pos;
-        const clip_max = [2]f32{ pos[0] + clip_w, pos[1] + height };
-        if (self.drag_select.intersects(clip_min, clip_max)) {
-            if (!ops.isSelected(self, track, scene) and slot.state != .empty) {
-                ops.selectClip(self, track, scene);
-            }
-        }
-    }
-
-    // Background
-    var bg_color = clip_color;
-    if (is_selected) {
-        bg_color = .{
-            @min(1.0, clip_color[0] + 0.12),
-            @min(1.0, clip_color[1] + 0.12),
-            @min(1.0, clip_color[2] + 0.12),
-            1.0,
-        };
-    }
-
-    draw_list.addRectFilled(.{
-        .pmin = pos,
-        .pmax = .{ pos[0] + clip_w, pos[1] + height },
-        .col = zgui.colorConvertFloat4ToU32(bg_color),
-        .rounding = rounding,
-        .flags = zgui.DrawFlags.round_corners_all,
-    });
-
-    // Selection border
-    if (is_selected) {
-        draw_list.addRect(.{
-            .pmin = pos,
-            .pmax = .{ pos[0] + clip_w, pos[1] + height },
-            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.selected),
-            .rounding = rounding,
-            .flags = zgui.DrawFlags.round_corners_all,
-            .thickness = 2.0,
-        });
-
-        // Draw ghost outline at drag target position (if dragging)
-        if (self.drag_moving and self.drag_target_track != null and self.drag_target_scene != null) {
-            const target_t = self.drag_target_track.?;
-            const target_s = self.drag_target_scene.?;
-            if (target_t != track or target_s != scene) {
-                // Calculate where this clip would end up relative to the drag target
-                const rel_track = @as(i32, @intCast(track)) - @as(i32, @intCast(self.drag_start_track));
-                const rel_scene = @as(i32, @intCast(scene)) - @as(i32, @intCast(self.drag_start_scene));
-                const final_track = @as(i32, @intCast(target_t)) + rel_track;
-                const final_scene = @as(i32, @intCast(target_s)) + rel_scene;
-
-                // Only draw if target is in bounds
-                if (final_track >= 0 and final_track < @as(i32, @intCast(self.track_count)) and
-                    final_scene >= 0 and final_scene < @as(i32, @intCast(self.scene_count)))
-                {
-                    const ghost_pos = self.cell_positions[@intCast(final_track)][@intCast(final_scene)];
-                    const ghost_min = ghost_pos;
-                    const ghost_max = [2]f32{ ghost_min[0] + clip_w, ghost_min[1] + height };
-
-                    // Draw on foreground so it appears on top
-                    const fg_draw_list = zgui.getForegroundDrawList();
-                    fg_draw_list.addRectFilled(.{
-                        .pmin = ghost_min,
-                        .pmax = ghost_max,
-                        .col = zgui.colorConvertFloat4ToU32(.{ colors.Colors.current.selected[0], colors.Colors.current.selected[1], colors.Colors.current.selected[2], 0.4 }),
-                        .rounding = rounding,
-                        .flags = zgui.DrawFlags.round_corners_all,
-                    });
-                    fg_draw_list.addRect(.{
-                        .pmin = ghost_min,
-                        .pmax = ghost_max,
-                        .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.selected),
-                        .rounding = rounding,
-                        .flags = zgui.DrawFlags.round_corners_all,
-                        .thickness = 2.0,
-                    });
-                }
-            }
-        }
-    }
-
-    // Check if we're overdubbing this clip
-    const clip_is_overdubbing = slot.state == .playing and self.recording.track == track and self.recording.scene == scene;
-
-    // Clip content indicator (bars) or recording progress
-    if (slot.state == .recording) {
-        // Show "REC" label for recording clips
-        const text_color = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright);
-        const rec_label = "REC";
-        const rec_size = zgui.calcTextSize(rec_label, .{});
-        draw_list.addText(.{ pos[0] + 8.0 * ui_scale, pos[1] + (height - rec_size[1]) / 2.0 }, text_color, rec_label, .{});
-
-        // Draw progress bar at bottom of clip
-        if (self.recording.track == track and self.recording.scene == scene) {
-            const progress_height = 4.0 * ui_scale;
-            const elapsed = playhead_beat - self.recording.start_beat;
-            const progress = @min(1.0, @max(0.0, elapsed / self.recording.target_length_beats));
-            const progress_width = clip_w * progress;
-            draw_list.addRectFilled(.{
-                .pmin = .{ pos[0], pos[1] + height - progress_height },
-                .pmax = .{ pos[0] + progress_width, pos[1] + height },
-                .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.clip_recording),
-            });
-        }
-    } else if (clip_is_overdubbing) {
-        // Show "OVERDUB" label when playing and recording
-        const text_color = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright);
-        const overdub_label = "OVERDUB";
-        const overdub_size = zgui.calcTextSize(overdub_label, .{});
-        draw_list.addText(.{ pos[0] + 4.0 * ui_scale, pos[1] + (height - overdub_size[1]) / 2.0 }, text_color, overdub_label, .{});
-    } else if (slot.state == .record_queued) {
-        // Show "ARMED" label for queued recording
-        const text_color = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright);
-        const armed_label = "ARMED";
-        const armed_size = zgui.calcTextSize(armed_label, .{});
-        draw_list.addText(.{ pos[0] + 8.0 * ui_scale, pos[1] + (height - armed_size[1]) / 2.0 }, text_color, armed_label, .{});
-    } else if (slot.state != .empty) {
-        const bars = slot.length_beats / beats_per_bar_in;
-        var buf: [16]u8 = undefined;
-        const label = std.fmt.bufPrintSentinel(&buf, "{d:.0} bars", .{bars}, 0) catch "";
-        // Use dark text for all non-empty clips (better contrast on colored backgrounds)
-        const text_color = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright);
-        const label_size = zgui.calcTextSize(label, .{});
-        draw_list.addText(.{ pos[0] + 8.0 * ui_scale, pos[1] + (height - label_size[1]) / 2.0 }, text_color, "{s}", .{label});
-    }
-
-    // Invisible button for clip interaction
-    var clip_buf: [32]u8 = undefined;
-    const clip_id = std.fmt.bufPrintSentinel(&clip_buf, "##clip_t{d}s{d}", .{ track, scene }, 0) catch "##clip";
-
-    const over_clip = mouse[0] >= pos[0] and mouse[0] < pos[0] + clip_w and
-        mouse[1] >= pos[1] and mouse[1] < pos[1] + height;
-
-    // Check if mouse is over the entire cell (clip + play button)
-    const over_cell = mouse[0] >= pos[0] and mouse[0] < pos[0] + width and
-        mouse[1] >= pos[1] and mouse[1] < pos[1] + height;
-
-    // Update render-time hover tracking for accurate hit detection next frame
-    if (over_cell) {
-        self.render_hover_track = track;
-        self.render_hover_scene = scene;
-        self.render_hover_has_content = slot.state != .empty;
-    }
-
-    // Show move cursor when hovering over a clip with content (but not recording clips)
-    const is_recording_state = slot.state == .recording or slot.state == .record_queued;
-    if (over_clip and slot.state != .empty and !is_recording_state and !self.drag_moving) {
-        zgui.setMouseCursor(.resize_all);
-    }
-
-    // Invisible button for double-click detection
-    _ = zgui.invisibleButton(clip_id, .{ .w = clip_w, .h = height });
-
-    // Handle double-click to create/open clip
-    if (over_clip and zgui.isMouseDoubleClicked(.left)) {
-        if (slot.state == .empty) {
-            ops.createClip(self, track, scene, beats_per_bar_in);
-        }
-        ops.selectOnly(self, track, scene);
-        self.open_clip_request = .{ .track = track, .scene = scene };
-    }
-
-    zgui.sameLine(.{ .spacing = 4.0 * ui_scale });
-
-    // Play/Record button
-    const play_pos = zgui.getCursorScreenPos();
-    var play_buf: [32]u8 = undefined;
-    const play_id = std.fmt.bufPrintSentinel(&play_buf, "##play_t{d}s{d}", .{ track, scene }, 0) catch "##play";
-
-    const is_playing_clip = slot.state == .playing;
-    const is_queued = slot.state == .queued;
-    const is_recording = slot.state == .recording;
-    const is_record_queued = slot.state == .record_queued;
-    const is_empty = slot.state == .empty;
-    const is_armed_track = self.armed_track != null and self.armed_track.? == track;
-    // Check if we're overdubbing (playing + recording on this clip)
-    const is_overdubbing = is_playing_clip and self.recording.track == track and self.recording.scene == scene;
-
-    // Determine button background color
-    // For armed track: show record button style for empty slots or stopped clips
-    // For recording/record_queued/overdubbing: show recording color
-    // Otherwise: normal play button style
-    const play_bg = if (is_recording or is_record_queued or is_overdubbing)
-        colors.Colors.current.record_armed
-    else if (is_playing_clip)
-        colors.Colors.current.clip_playing
-    else if (is_queued)
-        colors.Colors.current.clip_queued
-    else if (is_armed_track and (is_empty or slot.state == .stopped))
-        colors.Colors.current.record_armed
-    else
-        colors.Colors.current.bg_cell;
-
-    const hover_bg = if (is_recording or is_record_queued or is_overdubbing or (is_armed_track and (is_empty or slot.state == .stopped)))
-        colors.Colors.current.record_armed_hover
-    else
-        [4]f32{ play_bg[0] + 0.08, play_bg[1] + 0.08, play_bg[2] + 0.08, 1.0 };
-
-    zgui.pushStyleColor4f(.{ .idx = .button, .c = play_bg });
-    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = hover_bg });
-    zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.current.accent_dim });
-    if (zgui.button(play_id, .{ .w = play_btn_w, .h = height })) {
-        // Handle button click based on state
-        if (is_recording or is_record_queued or is_overdubbing) {
-            // Click on recording/queued/overdubbing clip -> stop recording
-            self.armed_track = null;
-            if (is_recording) {
-                recording_impl.stopRecording(self, .loop);
-            } else if (is_overdubbing) {
-                // Stop overdub - just clear recording state, clip keeps playing
-                self.recording.reset();
-            } else {
-                recording_impl.cancelRecording(
-                    self,
-                );
-            }
-        } else if (is_armed_track and (is_empty or slot.state == .stopped)) {
-            // Click record button on armed track -> start recording
-            recording_impl.startRecording(self, track, scene, playing, playhead_beat, beats_per_bar_in);
-        } else {
-            // Normal play/stop behavior
-            playback_impl.toggleClipPlayback(self, track, scene, playing);
-        }
-    }
-    zgui.popStyleColor(.{ .count = 3 });
-
-    // Draw play/stop/record icon
-    const icon_size = 10.0 * ui_scale;
-    const cx = play_pos[0] + play_btn_w / 2.0;
-    const cy = play_pos[1] + height / 2.0;
-
-    if (is_recording or is_record_queued or is_overdubbing) {
-        // Filled record circle during recording/queued/overdubbing
-        draw_list.addCircleFilled(.{
-            .p = .{ cx, cy },
-            .r = icon_size / 2.0,
-            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright),
-        });
-    } else if (is_playing_clip) {
-        // Stop square (for playing clip)
-        draw_list.addRectFilled(.{
-            .pmin = .{ cx - icon_size / 2.0, cy - icon_size / 2.0 },
-            .pmax = .{ cx + icon_size / 2.0, cy + icon_size / 2.0 },
-            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright),
-        });
-    } else if (is_queued) {
-        // Queued indicator
-        draw_list.addTriangleFilled(.{
-            .p1 = .{ cx - icon_size / 2.0, cy - icon_size / 2.0 },
-            .p2 = .{ cx - icon_size / 2.0, cy + icon_size / 2.0 },
-            .p3 = .{ cx + icon_size / 2.0 + 1.0, cy },
-            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.clip_queued),
-        });
-        draw_list.addTriangle(.{
-            .p1 = .{ cx - icon_size / 2.0, cy - icon_size / 2.0 },
-            .p2 = .{ cx - icon_size / 2.0, cy + icon_size / 2.0 },
-            .p3 = .{ cx + icon_size / 2.0 + 1.0, cy },
-            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.clip_queued),
-            .thickness = 2.0,
-        });
-    } else if (is_armed_track and (is_empty or slot.state == .stopped)) {
-        // Record circle for armed track (empty or stopped clips)
-        draw_list.addCircleFilled(.{
-            .p = .{ cx, cy },
-            .r = icon_size / 2.0,
-            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright),
-        });
-    } else if (is_empty) {
-        // Stop square for empty slot on non-armed track
-        draw_list.addRectFilled(.{
-            .pmin = .{ cx - icon_size / 2.0, cy - icon_size / 2.0 },
-            .pmax = .{ cx + icon_size / 2.0, cy + icon_size / 2.0 },
-            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_dim),
-        });
-    } else {
-        // Play triangle (for stopped clip with content)
-        draw_list.addTriangleFilled(.{
-            .p1 = .{ cx - icon_size / 2.0, cy - icon_size / 2.0 },
-            .p2 = .{ cx - icon_size / 2.0, cy + icon_size / 2.0 },
-            .p3 = .{ cx + icon_size / 2.0 + 1.0, cy },
-            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_dim),
-        });
-    }
-}
-
 fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, height: f32, ui_scale: f32) void {
-    const padding = 4.0 * ui_scale;
-    const spacing = 4.0 * ui_scale;
+    const padding = tokens.s(4, ui_scale);
+    const spacing = tokens.s(3, ui_scale);
     const usable_width = width - padding * 2;
     const is_master = self.tracks[track].is_master;
-    const btn_height = 36.0 * ui_scale;
-    const btn_width = if (is_master) usable_width else (usable_width - spacing * 2) / 3.0; // 3 buttons: M, S, R
-    const slider_width = 28.0 * ui_scale;
-    const label_height = 24.0 * ui_scale;
-    const slider_height = height - btn_height - spacing * 2 - label_height - 4.0 * ui_scale;
+    const btn_height = tokens.controlH(.lg, ui_scale);
+    const btn_width = if (is_master) usable_width else (usable_width - spacing * 2) / 3.0;
+    const slider_width = tokens.s(26, ui_scale);
+    const label_height = tokens.s(20, ui_scale);
+    const slider_height = height - btn_height - spacing * 2 - label_height - tokens.s(4, ui_scale);
     const frame_padding = zgui.getStyle().frame_padding;
     const text_height = zgui.getFontSize();
     const centered_pad_y = @max(0.0, (btn_height - text_height) / 2.0);
@@ -742,77 +445,77 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
     const base_x = zgui.getCursorPosX();
     const base_y = zgui.getCursorPosY();
 
-    // Row 1: M, S, R buttons side by side (fill track width)
+    // Track color accent under mixer
+    {
+        const strip = colors.Colors.trackColor(track);
+        const dl = zgui.getWindowDrawList();
+        const sp = zgui.getCursorScreenPos();
+        dl.addRectFilled(.{
+            .pmin = .{ sp[0], sp[1] },
+            .pmax = .{ sp[0] + width, sp[1] + tokens.s(2, ui_scale) },
+            .col = zgui.colorConvertFloat4ToU32(strip),
+        });
+    }
+
     zgui.setCursorPosX(base_x + padding);
     zgui.pushStyleVar2f(.{ .idx = .frame_padding, .v = .{ frame_padding[0], centered_pad_y } });
 
-    // Mute button
+    // Mute
     var mute_buf: [32]u8 = undefined;
     const mute_id = std.fmt.bufPrintSentinel(&mute_buf, "M##mute{d}", .{track}, 0) catch "M";
-
-    const mute_bg = if (self.tracks[track].mute) colors.Colors.current.clip_stopped else colors.Colors.current.bg_cell;
-    const mute_text = if (self.tracks[track].mute) colors.Colors.current.text_bright else colors.Colors.current.text_dim;
-
+    const mute_on = self.tracks[track].mute;
+    const mute_bg = if (mute_on) colors.Colors.current.mute_on else colors.Colors.current.bg_cell;
+    const mute_text = if (mute_on) colors.Colors.textOn(mute_bg) else colors.Colors.current.text_dim;
     zgui.pushStyleColor4f(.{ .idx = .button, .c = mute_bg });
-    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ mute_bg[0] + 0.1, mute_bg[1] + 0.1, mute_bg[2] + 0.1, 1.0 } });
+    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = if (mute_on) colors.Colors.current.mute_on_hover else colors.Colors.current.bg_cell_hover });
     zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.current.accent_dim });
     zgui.pushStyleColor4f(.{ .idx = .text, .c = mute_text });
-
     if (zgui.button(mute_id, .{ .w = btn_width, .h = btn_height })) {
         self.tracks[track].mute = !self.tracks[track].mute;
-        if (!is_master) {
-            self.primary_track = track;
-        }
+        if (!is_master) self.primary_track = track;
         self.mixer_target = if (is_master) .master else .track;
     }
+    widgets.itemTooltip("Mute");
     zgui.popStyleColor(.{ .count = 4 });
 
     if (!is_master) {
         zgui.sameLine(.{ .spacing = spacing });
 
-        // Solo button
         var solo_buf: [32]u8 = undefined;
         const solo_id = std.fmt.bufPrintSentinel(&solo_buf, "S##solo{d}", .{track}, 0) catch "S";
-
-        const solo_bg = if (self.tracks[track].solo) colors.Colors.current.clip_queued else colors.Colors.current.bg_cell;
-        const solo_text = if (self.tracks[track].solo) colors.Colors.current.text_bright else colors.Colors.current.text_dim;
-
+        const solo_on = self.tracks[track].solo;
+        const solo_bg = if (solo_on) colors.Colors.current.solo_on else colors.Colors.current.bg_cell;
+        const solo_text = if (solo_on) colors.Colors.textOn(solo_bg) else colors.Colors.current.text_dim;
         zgui.pushStyleColor4f(.{ .idx = .button, .c = solo_bg });
-        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = .{ solo_bg[0] + 0.1, solo_bg[1] + 0.1, solo_bg[2] + 0.1, 1.0 } });
+        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = if (solo_on) colors.Colors.current.solo_on_hover else colors.Colors.current.bg_cell_hover });
         zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.current.accent_dim });
         zgui.pushStyleColor4f(.{ .idx = .text, .c = solo_text });
-
         if (zgui.button(solo_id, .{ .w = btn_width, .h = btn_height })) {
             self.tracks[track].solo = !self.tracks[track].solo;
             self.primary_track = track;
             self.mixer_target = .track;
         }
+        widgets.itemTooltip("Solo");
         zgui.popStyleColor(.{ .count = 4 });
 
         zgui.sameLine(.{ .spacing = spacing });
 
-        // Record Arm button
         var arm_buf: [32]u8 = undefined;
         const arm_id = std.fmt.bufPrintSentinel(&arm_buf, "R##arm{d}", .{track}, 0) catch "R";
-
         const is_armed = self.armed_track != null and self.armed_track.? == track;
-        const arm_bg = if (is_armed) colors.Colors.current.record_armed else colors.Colors.current.bg_cell;
-        const arm_text = if (is_armed) colors.Colors.current.text_bright else colors.Colors.current.text_dim;
-
+        const arm_bg = if (is_armed) colors.Colors.current.arm_on else colors.Colors.current.bg_cell;
+        const arm_text = if (is_armed) colors.Colors.textOn(arm_bg) else colors.Colors.current.text_dim;
         zgui.pushStyleColor4f(.{ .idx = .button, .c = arm_bg });
-        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = if (is_armed) colors.Colors.current.record_armed_hover else .{ arm_bg[0] + 0.1, arm_bg[1] + 0.1, arm_bg[2] + 0.1, 1.0 } });
+        zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = if (is_armed) colors.Colors.current.arm_on_hover else colors.Colors.current.bg_cell_hover });
         zgui.pushStyleColor4f(.{ .idx = .button_active, .c = colors.Colors.current.accent_dim });
         zgui.pushStyleColor4f(.{ .idx = .text, .c = arm_text });
-
         if (zgui.button(arm_id, .{ .w = btn_width, .h = btn_height })) {
             if (is_armed) {
-                // Disarm - also stop any active recording
                 if (self.recording.isRecording()) {
                     recording_impl.stopRecording(self, .stop);
                 }
                 self.armed_track = null;
             } else {
-                // Arm this track (disarm any other)
                 if (self.recording.isRecording()) {
                     recording_impl.stopRecording(self, .stop);
                 }
@@ -821,6 +524,7 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
             self.primary_track = track;
             self.mixer_target = .track;
         }
+        widgets.itemTooltip("Record arm");
         zgui.popStyleColor(.{ .count = 4 });
     }
     zgui.popStyleVar(.{ .count = 1 });

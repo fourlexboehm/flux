@@ -18,6 +18,9 @@ const Notes = types.Notes;
 const AutomationPoint = types.AutomationPoint;
 const AutomationTarget = types.AutomationTarget;
 const Points = types.Points;
+const WarpPoint = types.WarpPoint;
+const Audio = types.Audio;
+const Warps = types.Warps;
 const Clip = types.Clip;
 const Clips = types.Clips;
 const Lanes = types.Lanes;
@@ -28,10 +31,47 @@ const Transport = types.Transport;
 const Application = types.Application;
 const Project = types.Project;
 
+const ClipParent = enum { arrangement, clip_slot, nested };
+
+const ClipFrame = struct {
+    clip: Clip,
+    points_list: std.ArrayList(Points),
+    nested_list: std.ArrayList(Clip),
+    nested_id: []const u8 = "",
+    warp_points: std.ArrayList(WarpPoint),
+    warps: ?Warps = null,
+    audio: ?Audio = null,
+    parent: ClipParent,
+    return_state: ParseState,
+};
+
+const ParseState = enum {
+    root,
+    structure,
+    track,
+    channel,
+    devices,
+    device,
+    arrangement,
+    root_lanes,
+    track_lanes,
+    clips,
+    clip,
+    notes,
+    points,
+    clip_lanes,
+    warps,
+    audio,
+    nested_clips,
+    scenes,
+    scene,
+    scene_lanes,
+    clip_slot,
+};
+
 pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Project {
     const xml = @import("xml");
 
-    // Use streaming XML parser
     var static_reader: xml.Reader.Static = .init(allocator, xml_data, .{});
     defer static_reader.deinit();
     const reader = &static_reader.interface;
@@ -45,53 +85,36 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
     var time_sig_den: u8 = 4;
 
     var tracks_list = std.ArrayList(Track).empty;
-    var master_track: ?Track = null; // Separate master track
+    var master_track: ?Track = null;
     var scenes_list = std.ArrayList(Scene).empty;
-    var lanes_list = std.ArrayList(Lanes).empty; // Child track lanes
+    var lanes_list = std.ArrayList(Lanes).empty;
 
-    // Track parsing state
     var current_track: ?Track = null;
     var current_channel: ?Channel = null;
     var current_devices = std.ArrayList(ClapPlugin).empty;
     var current_device: ?ClapPlugin = null;
-    var root_lanes: ?Lanes = null; // Root lanes (container)
-    var current_lanes: ?Lanes = null; // Current track lane
+    var root_lanes: ?Lanes = null;
+    var current_lanes: ?Lanes = null;
     var current_clips: ?Clips = null;
     var clips_list = std.ArrayList(Clip).empty;
-    var current_clip: ?Clip = null;
     var current_notes: ?Notes = null;
     var notes_list = std.ArrayList(Note).empty;
     var current_points: ?Points = null;
-    var clip_points_list = std.ArrayList(Points).empty;
     var points_point_list = std.ArrayList(AutomationPoint).empty;
     var points_target: AutomationTarget = .{};
     var current_scene: ?Scene = null;
     var current_clip_slot: ?ClipSlot = null;
     var clip_slots_list = std.ArrayList(ClipSlot).empty;
-    const ClipContext = enum { arrangement, clip_slot };
-    var clip_context: ?ClipContext = null;
+    var clip_stack = std.ArrayList(ClipFrame).empty;
+    defer {
+        for (clip_stack.items) |*frame| {
+            frame.points_list.deinit(allocator);
+            frame.nested_list.deinit(allocator);
+            frame.warp_points.deinit(allocator);
+        }
+        clip_stack.deinit(allocator);
+    }
 
-    // Parse state stack
-    const ParseState = enum {
-        root,
-        structure,
-        track,
-        channel,
-        devices,
-        device,
-        arrangement,
-        root_lanes,
-        track_lanes,
-        clips,
-        clip,
-        notes,
-        points,
-        clip_lanes,
-        scenes,
-        scene,
-        scene_lanes,
-        clip_slot,
-    };
     var state: ParseState = .root;
     var clip_child_state: ParseState = .clip;
 
@@ -157,7 +180,6 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
                         .loaded = parseBool(getAttr(reader, "loaded")),
                     };
                 } else if (std.mem.eql(u8, elem_name, "State") and state == .device) {
-                    // Plugin state file reference
                     if (current_device) |*dev| {
                         if (getAttr(reader, "path")) |path| {
                             dev.state = .{
@@ -167,7 +189,6 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
                         }
                     }
                 } else if (std.mem.eql(u8, elem_name, "RealParameter") and (state == .channel or state == .device)) {
-                    // Parse volume, pan parameters
                     const param_name = getAttr(reader, "name") orelse "";
                     const param_id = getAttr(reader, "id") orelse "";
                     const param_value = parseFloatAttr(getAttr(reader, "value")) orelse 0.0;
@@ -237,14 +258,12 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
                 } else if (std.mem.eql(u8, elem_name, "Arrangement")) {
                     state = .arrangement;
                 } else if (std.mem.eql(u8, elem_name, "Lanes") and state == .arrangement) {
-                    // Root Lanes (container)
                     state = .root_lanes;
                     root_lanes = .{
                         .id = try allocator.dupe(u8, getAttr(reader, "id") orelse ""),
                         .track = null,
                     };
                 } else if (std.mem.eql(u8, elem_name, "Lanes") and state == .root_lanes) {
-                    // Track Lanes (child of root)
                     state = .track_lanes;
                     current_lanes = .{
                         .id = try allocator.dupe(u8, getAttr(reader, "id") orelse ""),
@@ -254,26 +273,80 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
                     state = .clips;
                     current_clips = .{
                         .id = try allocator.dupe(u8, getAttr(reader, "id") orelse ""),
-                        .clips = &.{}, // Will be filled in on element_end
+                        .clips = &.{},
                     };
-                } else if (std.mem.eql(u8, elem_name, "Clip") and (state == .clips or state == .clip_slot)) {
-                    clip_context = if (state == .clips) .arrangement else .clip_slot;
+                } else if (std.mem.eql(u8, elem_name, "Clip") and (state == .clips or state == .clip_slot or state == .nested_clips)) {
+                    const parent: ClipParent = switch (state) {
+                        .clips => .arrangement,
+                        .clip_slot => .clip_slot,
+                        .nested_clips => .nested,
+                        else => .arrangement,
+                    };
+                    const return_state = state;
+                    try clip_stack.append(allocator, .{
+                        .clip = try parseClipAttrs(allocator, reader),
+                        .points_list = .empty,
+                        .nested_list = .empty,
+                        .warp_points = .empty,
+                        .parent = parent,
+                        .return_state = return_state,
+                    });
                     state = .clip;
-                    clip_points_list = std.ArrayList(Points).empty;
-                    current_clip = .{
-                        .time = parseFloatAttr(getAttr(reader, "time")) orelse 0.0,
-                        .duration = parseFloatAttr(getAttr(reader, "duration")) orelse 4.0,
-                        .play_start = parseFloatAttr(getAttr(reader, "playStart")) orelse 0.0,
-                        .name = if (getAttr(reader, "name")) |n| try allocator.dupe(u8, n) else null,
-                    };
+                } else if (std.mem.eql(u8, elem_name, "Clips") and state == .clip) {
+                    if (clip_stack.items.len > 0) {
+                        const top = &clip_stack.items[clip_stack.items.len - 1];
+                        top.nested_id = try allocator.dupe(u8, getAttr(reader, "id") orelse "");
+                        top.nested_list = .empty;
+                    }
+                    state = .nested_clips;
                 } else if (std.mem.eql(u8, elem_name, "Lanes") and state == .clip) {
                     state = .clip_lanes;
+                } else if (std.mem.eql(u8, elem_name, "Warps") and state == .clip) {
+                    if (clip_stack.items.len > 0) {
+                        const top = &clip_stack.items[clip_stack.items.len - 1];
+                        top.warps = .{
+                            .id = try allocator.dupe(u8, getAttr(reader, "id") orelse ""),
+                            .time_unit = parseTimeUnit(getAttr(reader, "timeUnit")),
+                            .content_time_unit = parseTimeUnit(getAttr(reader, "contentTimeUnit")) orelse .seconds,
+                            .audio = null,
+                            .warps = &.{},
+                        };
+                        top.warp_points = .empty;
+                    }
+                    state = .warps;
+                } else if (std.mem.eql(u8, elem_name, "Audio") and (state == .clip or state == .warps)) {
+                    // Working copy lives on frame.audio until </Audio>; then attach to clip or warps.
+                    clip_child_state = state;
+                    if (clip_stack.items.len > 0) {
+                        clip_stack.items[clip_stack.items.len - 1].audio = try parseAudioAttrs(allocator, reader);
+                    }
+                    state = .audio;
+                } else if (std.mem.eql(u8, elem_name, "File") and state == .audio) {
+                    if (clip_stack.items.len > 0) {
+                        const top = &clip_stack.items[clip_stack.items.len - 1];
+                        if (top.audio) |*audio| {
+                            if (getAttr(reader, "path")) |path| {
+                                audio.file = .{
+                                    .path = try allocator.dupe(u8, path),
+                                    .external = parseBool(getAttr(reader, "external")),
+                                };
+                            }
+                        }
+                    }
+                } else if (std.mem.eql(u8, elem_name, "Warp") and state == .warps) {
+                    if (clip_stack.items.len > 0) {
+                        const top = &clip_stack.items[clip_stack.items.len - 1];
+                        try top.warp_points.append(allocator, .{
+                            .time = parseFloatAttr(getAttr(reader, "time")) orelse 0.0,
+                            .content_time = parseFloatAttr(getAttr(reader, "contentTime")) orelse 0.0,
+                        });
+                    }
                 } else if (std.mem.eql(u8, elem_name, "Notes") and (state == .clip or state == .clip_lanes)) {
                     clip_child_state = state;
                     state = .notes;
                     current_notes = .{
                         .id = try allocator.dupe(u8, getAttr(reader, "id") orelse ""),
-                        .notes = &.{}, // Will be filled in on element_end
+                        .notes = &.{},
                     };
                 } else if (std.mem.eql(u8, elem_name, "Note") and state == .notes) {
                     try notes_list.append(allocator, .{
@@ -292,7 +365,7 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
                         .id = try allocator.dupe(u8, getAttr(reader, "id") orelse ""),
                         .target = .{},
                         .unit = if (getAttr(reader, "unit")) |unit| parseUnit(unit) else null,
-                        .points = &.{}, // Will be filled in on element_end
+                        .points = &.{},
                     };
                 } else if (std.mem.eql(u8, elem_name, "Target") and state == .points) {
                     points_target = .{
@@ -309,7 +382,7 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
                         .value = value,
                     });
                 } else if ((std.mem.eql(u8, elem_name, "EnumPoint") or std.mem.eql(u8, elem_name, "IntegerPoint")) and state == .points) {
-                    const value = @as(f64, @floatFromInt(parseIntAttr(getAttr(reader, "value")) orelse 0));
+                    const value: f64 = @floatFromInt(parseIntAttr(getAttr(reader, "value")) orelse 0);
                     try points_point_list.append(allocator, .{
                         .time = parseFloatAttr(getAttr(reader, "time")) orelse 0.0,
                         .value = value,
@@ -330,7 +403,6 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
                 } else if (std.mem.eql(u8, elem_name, "Track") and state == .track) {
                     state = .structure;
                     if (current_track) |track| {
-                        // Check if this is the master track (channel role = master)
                         const is_master = if (track.channel) |ch| ch.role == .master else false;
                         if (is_master) {
                             master_track = track;
@@ -380,10 +452,8 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
                 } else if (std.mem.eql(u8, elem_name, "Arrangement")) {
                     state = .root;
                 } else if (std.mem.eql(u8, elem_name, "Lanes") and state == .root_lanes) {
-                    // End of root Lanes - don't add to list, it's the container
                     state = .arrangement;
                 } else if (std.mem.eql(u8, elem_name, "Lanes") and state == .track_lanes) {
-                    // End of track Lanes - add to list
                     if (current_lanes) |lanes| {
                         try lanes_list.append(allocator, lanes);
                     }
@@ -400,27 +470,71 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
                     current_clips = null;
                     clips_list = std.ArrayList(Clip).empty;
                     state = .track_lanes;
+                } else if (std.mem.eql(u8, elem_name, "Clips") and state == .nested_clips) {
+                    if (clip_stack.items.len > 0) {
+                        const top = &clip_stack.items[clip_stack.items.len - 1];
+                        top.clip.nested_clips = .{
+                            .id = top.nested_id,
+                            .clips = try top.nested_list.toOwnedSlice(allocator),
+                        };
+                        top.nested_list = .empty;
+                    }
+                    state = .clip;
                 } else if (std.mem.eql(u8, elem_name, "Clip") and state == .clip) {
-                    if (current_clip) |clip| {
-                        var clip_copy = clip;
-                        clip_copy.points = try clip_points_list.toOwnedSlice(allocator);
-                        if (clip_context == .arrangement) {
-                            try clips_list.append(allocator, clip_copy);
-                        } else if (clip_context == .clip_slot) {
-                            if (current_clip_slot) |*slot| {
-                                slot.clip = clip_copy;
-                            }
+                    if (clip_stack.items.len == 0) {
+                        state = .clips;
+                    } else {
+                        var frame = clip_stack.pop().?;
+                        const finished = try finalizeClipFrame(allocator, &frame);
+
+                        switch (frame.parent) {
+                            .arrangement => try clips_list.append(allocator, finished),
+                            .clip_slot => {
+                                if (current_clip_slot) |*slot| {
+                                    slot.clip = finished;
+                                }
+                            },
+                            .nested => {
+                                if (clip_stack.items.len > 0) {
+                                    try clip_stack.items[clip_stack.items.len - 1].nested_list.append(allocator, finished);
+                                }
+                            },
+                        }
+                        state = frame.return_state;
+                    }
+                } else if (std.mem.eql(u8, elem_name, "Warps") and state == .warps) {
+                    if (clip_stack.items.len > 0) {
+                        const top = &clip_stack.items[clip_stack.items.len - 1];
+                        if (top.warps) |*w| {
+                            if (top.audio) |a| w.audio = a;
+                            w.warps = try top.warp_points.toOwnedSlice(allocator);
+                            top.warp_points = .empty;
+                            top.clip.warps = w.*;
+                            top.warps = null;
+                            top.audio = null;
                         }
                     }
-                    current_clip = null;
-                    state = if (clip_context == .clip_slot) .clip_slot else .clips;
-                    clip_context = null;
+                    state = .clip;
+                } else if (std.mem.eql(u8, elem_name, "Audio") and state == .audio) {
+                    if (clip_stack.items.len > 0) {
+                        const top = &clip_stack.items[clip_stack.items.len - 1];
+                        if (clip_child_state == .clip) {
+                            top.clip.audio = top.audio;
+                            top.audio = null;
+                        } else if (clip_child_state == .warps) {
+                            if (top.warps) |*w| {
+                                w.audio = top.audio;
+                            }
+                            // keep top.audio until </Warps> so File path is not lost if File came first
+                        }
+                    }
+                    state = clip_child_state;
                 } else if (std.mem.eql(u8, elem_name, "Notes") and state == .notes) {
                     if (current_notes) |notes| {
-                        if (current_clip) |*clip| {
+                        if (clip_stack.items.len > 0) {
                             var notes_copy = notes;
                             notes_copy.notes = try notes_list.toOwnedSlice(allocator);
-                            clip.notes = notes_copy;
+                            clip_stack.items[clip_stack.items.len - 1].clip.notes = notes_copy;
                         }
                     }
                     current_notes = null;
@@ -428,10 +542,12 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
                     state = clip_child_state;
                 } else if (std.mem.eql(u8, elem_name, "Points") and state == .points) {
                     if (current_points) |points| {
-                        var points_copy = points;
-                        points_copy.target = points_target;
-                        points_copy.points = try points_point_list.toOwnedSlice(allocator);
-                        try clip_points_list.append(allocator, points_copy);
+                        if (clip_stack.items.len > 0) {
+                            var points_copy = points;
+                            points_copy.target = points_target;
+                            points_copy.points = try points_point_list.toOwnedSlice(allocator);
+                            try clip_stack.items[clip_stack.items.len - 1].points_list.append(allocator, points_copy);
+                        }
                     }
                     current_points = null;
                     points_point_list = std.ArrayList(AutomationPoint).empty;
@@ -445,7 +561,6 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
         }
     }
 
-    // Set transport with parsed values
     proj.transport = .{
         .tempo = .{
             .id = "tempo",
@@ -460,12 +575,10 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
         },
     };
 
-    // Set parsed tracks, master track, and scenes
     proj.tracks = try tracks_list.toOwnedSlice(allocator);
     proj.master_track = master_track;
     proj.scenes = try scenes_list.toOwnedSlice(allocator);
 
-    // Set arrangement with lanes
     if (lanes_list.items.len > 0 or root_lanes != null) {
         var root = root_lanes orelse Lanes{ .id = "root_lanes" };
         root.children = try lanes_list.toOwnedSlice(allocator);
@@ -478,7 +591,70 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
     return proj;
 }
 
-// Helper to get attribute value
+fn parseClipAttrs(allocator: std.mem.Allocator, reader: anytype) !Clip {
+    return .{
+        .time = parseFloatAttr(getAttr(reader, "time")) orelse 0.0,
+        .duration = parseFloatAttr(getAttr(reader, "duration")) orelse 4.0,
+        .play_start = parseFloatAttr(getAttr(reader, "playStart")) orelse 0.0,
+        .play_stop = parseFloatAttr(getAttr(reader, "playStop")),
+        .loop_start = parseFloatAttr(getAttr(reader, "loopStart")),
+        .loop_end = parseFloatAttr(getAttr(reader, "loopEnd")),
+        .content_time_unit = parseTimeUnit(getAttr(reader, "contentTimeUnit")),
+        .fade_time_unit = parseTimeUnit(getAttr(reader, "fadeTimeUnit")),
+        .fade_in_time = parseFloatAttr(getAttr(reader, "fadeInTime")),
+        .fade_out_time = parseFloatAttr(getAttr(reader, "fadeOutTime")),
+        .enable = if (getAttr(reader, "enable")) |e| parseBool(e) else true,
+        .name = if (getAttr(reader, "name")) |n| try allocator.dupe(u8, n) else null,
+    };
+}
+
+fn parseAudioAttrs(allocator: std.mem.Allocator, reader: anytype) !Audio {
+    return .{
+        .id = try allocator.dupe(u8, getAttr(reader, "id") orelse ""),
+        .file = .{ .path = "" },
+        .duration = parseFloatAttr(getAttr(reader, "duration")) orelse 0.0,
+        .sample_rate = parseIntAttr(getAttr(reader, "sampleRate")) orelse 44100,
+        .channels = parseIntAttr(getAttr(reader, "channels")) orelse 2,
+        .algorithm = if (getAttr(reader, "algorithm")) |a| try allocator.dupe(u8, a) else null,
+    };
+}
+
+fn finalizeClipFrame(allocator: std.mem.Allocator, frame: *ClipFrame) !Clip {
+    var clip = frame.clip;
+    clip.points = try frame.points_list.toOwnedSlice(allocator);
+    frame.points_list = .empty;
+
+    // If warps were never closed but we have points, finalize here
+    if (clip.warps == null and frame.warps != null) {
+        var w = frame.warps.?;
+        if (frame.audio) |a| w.audio = a;
+        if (frame.warp_points.items.len > 0) {
+            w.warps = try frame.warp_points.toOwnedSlice(allocator);
+            frame.warp_points = .empty;
+        }
+        clip.warps = w;
+    }
+
+    if (clip.audio == null and frame.audio != null and clip.warps == null) {
+        clip.audio = frame.audio;
+    }
+
+    // Nested clips not yet attached
+    if (clip.nested_clips == null and frame.nested_list.items.len > 0) {
+        clip.nested_clips = .{
+            .id = frame.nested_id,
+            .clips = try frame.nested_list.toOwnedSlice(allocator),
+        };
+        frame.nested_list = .empty;
+    }
+
+    frame.warp_points.deinit(allocator);
+    frame.points_list.deinit(allocator);
+    frame.nested_list.deinit(allocator);
+
+    return clip;
+}
+
 fn getAttr(reader: anytype, name: []const u8) ?[]const u8 {
     if (reader.attributeIndex(name)) |idx| {
         return reader.attributeValue(idx) catch null;
@@ -503,12 +679,18 @@ fn parseBool(s: ?[]const u8) bool {
 
 fn parseContentType(s: ?[]const u8) ContentType {
     const str = s orelse return .notes;
+    // Prefer audio when multi-token (e.g. "audio notes")
+    if (std.mem.indexOf(u8, str, "audio") != null and std.mem.indexOf(u8, str, "notes") == null) {
+        return .audio;
+    }
     if (std.mem.eql(u8, str, "audio")) return .audio;
     if (std.mem.eql(u8, str, "automation")) return .automation;
     if (std.mem.eql(u8, str, "notes")) return .notes;
     if (std.mem.eql(u8, str, "video")) return .video;
     if (std.mem.eql(u8, str, "markers")) return .markers;
     if (std.mem.eql(u8, str, "tracks")) return .tracks;
+    // "audio notes" master tracks → notes for structure enum; master is detected via role
+    if (std.mem.indexOf(u8, str, "audio") != null) return .audio;
     return .notes;
 }
 
@@ -543,4 +725,11 @@ pub fn parseUnit(s: ?[]const u8) Unit {
     if (std.mem.eql(u8, str, "beats")) return .beats;
     if (std.mem.eql(u8, str, "bpm")) return .bpm;
     return .linear;
+}
+
+pub fn parseTimeUnit(s: ?[]const u8) ?TimeUnit {
+    const str = s orelse return null;
+    if (std.mem.eql(u8, str, "beats")) return .beats;
+    if (std.mem.eql(u8, str, "seconds")) return .seconds;
+    return null;
 }

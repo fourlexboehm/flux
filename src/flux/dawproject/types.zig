@@ -154,7 +154,11 @@ pub const Track = struct {
     id: []const u8,
     name: []const u8,
     color: ?[]const u8 = null,
+    /// Single primary type (legacy / simple cases). Prefer `content_types_attr` when set.
     content_type: ContentType = .notes,
+    /// Space-separated DAWproject list (e.g. "audio notes") for hybrid tracks.
+    /// When non-null, XML export writes this instead of `content_type`.
+    content_types_attr: ?[]const u8 = null,
     loaded: bool = true,
     channel: ?Channel = null,
 };
@@ -195,15 +199,52 @@ pub const Points = struct {
     points: []const AutomationPoint,
 };
 
-/// Clip containing notes or other content
+/// Warp marker mapping outer timeline time ↔ content time
+pub const WarpPoint = struct {
+    time: f64, // outer (usually beats)
+    content_time: f64, // inner (usually seconds for audio)
+};
+
+/// Audio media file reference (full file length in seconds)
+pub const Audio = struct {
+    id: []const u8 = "",
+    file: FileReference,
+    duration: f64, // full file length in seconds
+    sample_rate: i32,
+    channels: i32,
+    algorithm: ?[]const u8 = null, // free-form vendor string; round-trip
+};
+
+/// Warps timeline: content (usually Audio) + piecewise-linear warp points
+pub const Warps = struct {
+    id: []const u8 = "",
+    time_unit: ?TimeUnit = null, // outer unit
+    content_time_unit: TimeUnit, // required by schema
+    audio: ?Audio = null,
+    warps: []const WarpPoint = &.{},
+};
+
+/// Clip containing notes, audio, nested clips, or other content
 pub const Clip = struct {
-    time: f64, // start time in beats
+    time: f64, // start time on parent timeline
     duration: f64,
     play_start: f64 = 0.0,
+    play_stop: ?f64 = null,
+    loop_start: ?f64 = null,
+    loop_end: ?f64 = null,
+    content_time_unit: ?TimeUnit = null,
+    fade_time_unit: ?TimeUnit = null,
+    fade_in_time: ?f64 = null,
+    fade_out_time: ?f64 = null,
+    enable: bool = true,
     name: ?[]const u8 = null,
     lanes: ?Lanes = null,
     notes: ?Notes = null,
     points: []const Points = &.{},
+    warps: ?Warps = null,
+    audio: ?Audio = null,
+    /// Nested Clips timeline (Bitwig-style audio events inside a clip)
+    nested_clips: ?Clips = null,
 };
 
 /// Clips container

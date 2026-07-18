@@ -254,7 +254,9 @@ pub const SessionView = struct {
     armed_track: ?usize = null, // Track armed for recording (only one at a time)
     finalize_recording_track: ?usize = null, // Track to finalize notes on
     finalize_recording_scene: ?usize = null, // Scene to finalize notes on
-    clear_piano_clip_request: ?OpenClipRequest = null, // Request to clear piano clip notes (for new recordings)
+    clear_piano_clip_request: ?OpenClipRequest = null, // Clear piano notes (new MIDI recording)
+    /// Drop sample on slot so MIDI owns the cell (hybrid exclusive content).
+    claim_midi_slot_request: ?OpenClipRequest = null,
 
     // Render-time hover tracking (updated during clip slot rendering for accurate hit detection)
     render_hover_track: ?usize = null,

@@ -73,6 +73,16 @@
             .url = "git+https://codeberg.org/fellowtraveler/wdf.git#a43cca2ff95051057c8b19e825b7ce2faf04d63f",
             .hash = "wdf-0.0.0-oWaQ7EWZAAD9cP6tUtTD1ZJA3JaSpRm5PBOPN-Rh1bJZ",
         },
+        // Signalsmith Stretch + Linear DSP (MIT, header-only C++). Used for offline
+        // pitch-preserving audio clip bake — not called from the audio thread.
+        .signalsmith_stretch = .{
+            .url = "git+https://github.com/Signalsmith-Audio/signalsmith-stretch#57b93f4e9206a089a45387eaa39bdc9f310d3308",
+            .hash = "N-V-__8AAMN9DACMIOx_RG0mh6T_zxDBb8OyTh6qOX5NYeyZ",
+        },
+        .signalsmith_linear = .{
+            .url = "git+https://github.com/Signalsmith-Audio/linear#7f53cdd1ccd52b409dacf2af24e7ff838c5580cd",
+            .hash = "N-V-__8AAGduBACPHKVSKUhy0zdnFCucNQb9ARpGnQMZCHZH",
+        },
     },
 
     .paths = .{

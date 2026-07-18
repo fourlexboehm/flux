@@ -18,6 +18,8 @@ const Notes = types.Notes;
 const AutomationPoint = types.AutomationPoint;
 const AutomationTarget = types.AutomationTarget;
 const Points = types.Points;
+const Audio = types.Audio;
+const Warps = types.Warps;
 const Clip = types.Clip;
 const Clips = types.Clips;
 const Lanes = types.Lanes;
@@ -190,7 +192,9 @@ pub const XmlWriter = struct {
     fn writeTrack(self: *Self, track: *const Track) !void {
         try self.writeIndent();
         try self.buffer.appendSlice(self.allocator, "<Track");
-        try self.writeAttr("contentType", track.content_type.toString());
+        // DAWproject contentType is a space-separated list (hybrid: "audio notes")
+        const content_attr = track.content_types_attr orelse track.content_type.toString();
+        try self.writeAttr("contentType", content_attr);
         try self.writeAttrBool("loaded", track.loaded);
         try self.writeAttr("id", track.id);
         try self.writeAttr("name", track.name);
@@ -376,7 +380,10 @@ pub const XmlWriter = struct {
         try self.buffer.appendSlice(self.allocator, "</Lanes>\n");
     }
 
-    fn writeClips(self: *Self, clips: *const Clips) !void {
+    // Explicit error set breaks recursive writeClips ↔ writeClip ↔ writeClipBody inference cycle.
+    const WriteError = std.mem.Allocator.Error;
+
+    fn writeClips(self: *Self, clips: *const Clips) WriteError!void {
         try self.writeIndent();
         try self.buffer.appendSlice(self.allocator, "<Clips");
         try self.writeAttr("id", clips.id);
@@ -396,32 +403,106 @@ pub const XmlWriter = struct {
         try self.buffer.appendSlice(self.allocator, "</Clips>\n");
     }
 
-    fn writeClip(self: *Self, clip: *const Clip) !void {
+    fn writeClip(self: *Self, clip: *const Clip) WriteError!void {
         try self.writeIndent();
         try self.buffer.appendSlice(self.allocator, "<Clip");
-        try self.writeAttrFloat("time", clip.time);
-        try self.writeAttrFloat("duration", clip.duration);
-        try self.writeAttrFloat("playStart", clip.play_start);
-        if (clip.name) |name| try self.writeAttr("name", name);
-
-        if (clip.notes == null) {
+        try self.writeClipAttrs(clip);
+        if (!clipHasBody(clip)) {
             try self.buffer.appendSlice(self.allocator, "/>\n");
             return;
         }
         try self.buffer.appendSlice(self.allocator, ">\n");
         self.indent_level += 1;
+        try self.writeClipBody(clip);
+        self.indent_level -= 1;
+        try self.writeIndent();
+        try self.buffer.appendSlice(self.allocator, "</Clip>\n");
+    }
 
-        if (clip.lanes) |lanes| {
+    fn writeClipAttrs(self: *Self, clip: *const Clip) WriteError!void {
+        try self.writeAttrFloat("time", clip.time);
+        try self.writeAttrFloat("duration", clip.duration);
+        if (clip.content_time_unit) |tu| try self.writeAttr("contentTimeUnit", tu.toString());
+        try self.writeAttrFloat("playStart", clip.play_start);
+        if (clip.play_stop) |v| try self.writeAttrFloat("playStop", v);
+        if (clip.loop_start) |v| try self.writeAttrFloat("loopStart", v);
+        if (clip.loop_end) |v| try self.writeAttrFloat("loopEnd", v);
+        if (clip.fade_time_unit) |tu| try self.writeAttr("fadeTimeUnit", tu.toString());
+        if (clip.fade_in_time) |v| try self.writeAttrFloat("fadeInTime", v);
+        if (clip.fade_out_time) |v| try self.writeAttrFloat("fadeOutTime", v);
+        if (!clip.enable) try self.writeAttrBool("enable", false);
+        if (clip.name) |name| try self.writeAttr("name", name);
+    }
+
+    fn clipHasBody(clip: *const Clip) bool {
+        return clip.lanes != null or clip.notes != null or clip.points.len > 0 or
+            clip.warps != null or clip.audio != null or clip.nested_clips != null;
+    }
+
+    fn writeClipBody(self: *Self, clip: *const Clip) WriteError!void {
+        // Prefer nested structure when present (Bitwig-style); else flat content.
+        if (clip.nested_clips) |nested| {
+            try self.writeClips(&nested);
+        } else if (clip.warps) |warps| {
+            try self.writeWarps(&warps);
+        } else if (clip.audio) |audio| {
+            try self.writeAudio(&audio);
+        } else if (clip.lanes) |lanes| {
             try self.writeLanes(&lanes);
         } else if (clip.notes) |notes| {
             try self.writeNotes(&notes);
-        } else if (clip.points.len > 0) {
-            try self.writePoints(&clip.points[0]);
+        }
+        // Clip-level automation may coexist with any content type.
+        for (clip.points) |points| {
+            try self.writePoints(&points);
+        }
+    }
+
+    fn writeWarps(self: *Self, warps: *const Warps) WriteError!void {
+        try self.writeIndent();
+        try self.buffer.appendSlice(self.allocator, "<Warps");
+        if (warps.time_unit) |tu| try self.writeAttr("timeUnit", tu.toString());
+        try self.writeAttr("contentTimeUnit", warps.content_time_unit.toString());
+        if (warps.id.len > 0) try self.writeAttr("id", warps.id);
+        try self.buffer.appendSlice(self.allocator, ">\n");
+        self.indent_level += 1;
+
+        if (warps.audio) |audio| {
+            try self.writeAudio(&audio);
+        }
+        for (warps.warps) |wp| {
+            try self.writeIndent();
+            try self.buffer.appendSlice(self.allocator, "<Warp");
+            try self.writeAttrFloat("time", wp.time);
+            try self.writeAttrFloat("contentTime", wp.content_time);
+            try self.buffer.appendSlice(self.allocator, "/>\n");
         }
 
         self.indent_level -= 1;
         try self.writeIndent();
-        try self.buffer.appendSlice(self.allocator, "</Clip>\n");
+        try self.buffer.appendSlice(self.allocator, "</Warps>\n");
+    }
+
+    fn writeAudio(self: *Self, audio: *const Audio) WriteError!void {
+        try self.writeIndent();
+        try self.buffer.appendSlice(self.allocator, "<Audio");
+        if (audio.algorithm) |algo| try self.writeAttr("algorithm", algo);
+        try self.writeAttrInt("channels", audio.channels);
+        try self.writeAttrFloat("duration", audio.duration);
+        try self.writeAttrInt("sampleRate", audio.sample_rate);
+        if (audio.id.len > 0) try self.writeAttr("id", audio.id);
+        try self.buffer.appendSlice(self.allocator, ">\n");
+        self.indent_level += 1;
+
+        try self.writeIndent();
+        try self.buffer.appendSlice(self.allocator, "<File");
+        try self.writeAttr("path", audio.file.path);
+        if (audio.file.external) try self.writeAttrBool("external", true);
+        try self.buffer.appendSlice(self.allocator, "/>\n");
+
+        self.indent_level -= 1;
+        try self.writeIndent();
+        try self.buffer.appendSlice(self.allocator, "</Audio>\n");
     }
 
     fn writeNotes(self: *Self, notes: *const Notes) !void {
@@ -547,26 +628,20 @@ pub const XmlWriter = struct {
         try self.writeAttrFloat("time", clip.time);
         try self.writeAttrFloat("duration", clip.duration);
         try self.writeAttrFloat("playStart", clip.play_start);
-        try self.writeAttrFloat("loopStart", 0.0);
-        try self.writeAttrFloat("loopEnd", clip.duration);
-        try self.writeAttrBool("enable", true);
+        const loop_start = clip.loop_start orelse 0.0;
+        const loop_end = clip.loop_end orelse clip.duration;
+        try self.writeAttrFloat("loopStart", loop_start);
+        try self.writeAttrFloat("loopEnd", loop_end);
+        try self.writeAttrBool("enable", clip.enable);
         if (clip.name) |name| try self.writeAttr("name", name);
 
-        if (clip.notes == null) {
+        if (!clipHasBody(clip)) {
             try self.buffer.appendSlice(self.allocator, "/>\n");
             return;
         }
         try self.buffer.appendSlice(self.allocator, ">\n");
         self.indent_level += 1;
-
-        if (clip.lanes) |lanes| {
-            try self.writeLanes(&lanes);
-        } else if (clip.notes) |notes| {
-            try self.writeNotes(&notes);
-        } else if (clip.points.len > 0) {
-            try self.writePoints(&clip.points[0]);
-        }
-
+        try self.writeClipBody(clip);
         self.indent_level -= 1;
         try self.writeIndent();
         try self.buffer.appendSlice(self.allocator, "</Clip>\n");

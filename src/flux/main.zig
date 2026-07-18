@@ -280,7 +280,8 @@ pub fn main(init: std.process.Init) !void {
 
                 const descriptor = objc.metal.RenderPassDescriptor.renderPassDescriptor();
                 const color_attachment = descriptor.colorAttachments().objectAtIndexedSubscript(0);
-                const clear_color = objc.metal.ClearColor.init(0.08, 0.08, 0.1, 1.0);
+                const bg = colors.Colors.current.bg_dark;
+                const clear_color = objc.metal.ClearColor.init(bg[0], bg[1], bg[2], bg[3]);
                 color_attachment.setClearColor(clear_color);
                 const attachment_descriptor = color_attachment.as(objc.metal.RenderPassAttachmentDescriptor);
                 const drawable_opt = app.layer.nextDrawable();
