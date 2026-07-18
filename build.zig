@@ -83,6 +83,9 @@ pub fn build(b: *std.Build) void {
     const zig_xml = b.dependency("zig-xml", dep_target);
     const portmidi_zig = b.dependency("portmidi-zig", dep_target);
     const wdf = b.dependency("wdf", dep_target);
+    // Header-only C++ (MIT): fetched via build.zig.zon, no Zig package build.zig.
+    const signalsmith_stretch = b.dependency("signalsmith_stretch", .{});
+    const signalsmith_linear = b.dependency("signalsmith_linear", .{});
     const portmidi_c = b.addTranslateC(.{
         .root_source_file = portmidi_zig.path("pm_common/portmidi.h"),
         .target = target,
@@ -340,6 +343,23 @@ pub fn build(b: *std.Build) void {
         },
         .flags = &.{"-std=c++17"},
     });
+    // Signalsmith Stretch (MIT) — offline pitch-preserving bake for audio clips.
+    // Upstream headers from HTTPS deps; thin C ABI stays in-tree.
+    flux.root_module.addIncludePath(signalsmith_stretch.path(""));
+    flux.root_module.addIncludePath(signalsmith_linear.path("include"));
+    flux.root_module.addIncludePath(b.path("src/flux/audio/stretch"));
+    flux.root_module.addCSourceFiles(.{
+        .root = b.path(""),
+        .files = &.{
+            "src/flux/audio/stretch/wrapper.cpp",
+        },
+        .flags = &.{
+            "-std=c++14",
+            "-O2",
+            "-fno-exceptions",
+            "-fno-rtti",
+        },
+    });
     if (target_os == .macos) {
         flux.root_module.addImport("objc", objc_no_helpers);
         flux.root_module.linkFramework("AppKit", .{});
@@ -489,11 +509,42 @@ pub fn build(b: *std.Build) void {
     });
     const run_dawproject_tests = b.addRunArtifact(dawproject_tests);
 
+    const audio_clip_test_module = b.createModule(.{
+        .root_source_file = b.path("src/flux/audio_clip_playback_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    // Relative imports under src/flux resolve sample_store → zaudio + stretch ABI.
+    audio_clip_test_module.addImport("zaudio", zaudio.module("root"));
+    audio_clip_test_module.addIncludePath(signalsmith_stretch.path(""));
+    audio_clip_test_module.addIncludePath(signalsmith_linear.path("include"));
+    audio_clip_test_module.addIncludePath(b.path("src/flux/audio/stretch"));
+    audio_clip_test_module.addCSourceFiles(.{
+        .root = b.path(""),
+        .files = &.{
+            "src/flux/audio/stretch/wrapper.cpp",
+        },
+        .flags = &.{
+            "-std=c++14",
+            "-O2",
+            "-fno-exceptions",
+            "-fno-rtti",
+        },
+    });
+    audio_clip_test_module.link_libcpp = true;
+    const audio_clip_tests = b.addTest(.{
+        .root_module = audio_clip_test_module,
+        .use_llvm = use_llvm,
+    });
+    audio_clip_tests.root_module.linkLibrary(zaudio.artifact("miniaudio"));
+    const run_audio_clip_tests = b.addRunArtifact(audio_clip_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_filter_tests.step);
     test_step.dependOn(&run_dsp_tests.step);
     test_step.dependOn(&run_zsynth_smoke_tests.step);
     test_step.dependOn(&run_dawproject_tests.step);
+    test_step.dependOn(&run_audio_clip_tests.step);
 }
 
 fn createClapPluginStep(

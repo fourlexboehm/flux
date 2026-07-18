@@ -143,5 +143,6 @@ pub fn rebuildPresetFilter(state: *State) void {
     }
     state.preset_filter_items_z = state.allocator.dupeSentinel(u8, buffer.items, 0) catch &[_:0]u8{};
     state.preset_filter_indices = indices.toOwnedSlice(state.allocator) catch &[_]i32{};
-    state.preset_combo_width = @max(260.0, max_width + 24.0);
+    // Unscaled logical width; device panel multiplies by ui_scale and clamps.
+    state.preset_combo_width = std.math.clamp(max_width + 24.0, 200.0, 420.0);
 }

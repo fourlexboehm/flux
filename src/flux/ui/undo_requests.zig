@@ -1,7 +1,11 @@
 const undo = @import("../undo/root.zig");
 const session_constants = @import("session_view/constants.zig");
 const piano_roll_types = @import("piano_roll/types.zig");
+const audio_clip_types = @import("audio_clip/types.zig");
 const State = @import("state.zig").State;
+
+const AudioClip = audio_clip_types.AudioClip;
+const AudioClipSnapshot = audio_clip_types.AudioClipSnapshot;
 
 const max_tracks = session_constants.max_tracks;
 const max_scenes = session_constants.max_scenes;
@@ -20,6 +24,10 @@ pub fn processUndoRequests(state: *State) void {
                 });
             },
             .clip_delete => {
+                const audio = AudioClipSnapshot.capture(
+                    &state.audio_clips[req.track][req.scene],
+                    &state.sample_store,
+                ) catch continue;
                 // Capture notes before they're lost (they may already be cleared)
                 const notes = state.allocator.dupe(
                     undo.Note,
@@ -31,12 +39,25 @@ pub fn processUndoRequests(state: *State) void {
                         .scene = req.scene,
                         .length_beats = req.length_beats,
                         .notes = notes,
+                        .audio = audio,
                     },
                 });
-                // Clear the piano clip notes
+                // Clear the piano clip notes and any audio
                 state.piano_clips[req.track][req.scene].clear();
+                state.audio_clips[req.track][req.scene].clear(&state.sample_store);
             },
             .clip_paste => {
+                var old_audio = AudioClipSnapshot.capture(
+                    &state.audio_clips[req.track][req.scene],
+                    &state.sample_store,
+                ) catch continue;
+                const new_audio = AudioClipSnapshot.capture(
+                    &state.audio_clips[req.src_track][req.src_scene],
+                    &state.sample_store,
+                ) catch {
+                    old_audio.deinit();
+                    continue;
+                };
                 const old_notes = state.allocator.dupe(
                     undo.Note,
                     state.piano_clips[req.track][req.scene].notes.items,
@@ -59,6 +80,8 @@ pub fn processUndoRequests(state: *State) void {
                         },
                         .old_notes = old_notes,
                         .new_notes = new_notes,
+                        .old_audio = old_audio,
+                        .new_audio = new_audio,
                     },
                 });
             },
@@ -72,6 +95,7 @@ pub fn processUndoRequests(state: *State) void {
                 });
             },
             .track_delete => {
+                var audio = captureTrackAudio(state, req.track) catch continue;
                 var clips: [max_scenes]undo.ClipSlotData = undefined;
                 for (0..max_scenes) |s| {
                     clips[s] = .{
@@ -100,9 +124,12 @@ pub fn processUndoRequests(state: *State) void {
                             },
                             .clips = clips,
                             .notes = notes,
+                            .audio = audio,
                         },
                     });
-                } else |_| {}
+                } else |_| {
+                    deinitSnapshots(&audio);
+                }
 
                 const old_track_count = @min(state.session.track_count + 1, max_tracks);
                 state.deleteTrackPianoClips(req.track, old_track_count);
@@ -117,6 +144,7 @@ pub fn processUndoRequests(state: *State) void {
                 });
             },
             .scene_delete => {
+                var audio = captureSceneAudio(state, req.scene) catch continue;
                 var clips: [max_tracks]undo.ClipSlotData = undefined;
                 for (0..max_tracks) |t| {
                     clips[t] = .{
@@ -142,9 +170,12 @@ pub fn processUndoRequests(state: *State) void {
                             },
                             .clips = clips,
                             .notes = notes,
+                            .audio = audio,
                         },
                     });
-                } else |_| {}
+                } else |_| {
+                    deinitSnapshots(&audio);
+                }
 
                 const old_scene_count = @min(state.session.scene_count + 1, max_scenes);
                 state.deleteScenePianoClips(req.scene, old_scene_count);
@@ -166,11 +197,19 @@ pub fn processUndoRequests(state: *State) void {
     if (state.session.clip_move_count > 0) {
         // First, move the piano clips (session_view already moved the clip slots)
         if (state.session.pending_piano_moves) {
-            for (state.session.clip_move_requests[0..state.session.clip_move_count]) |req| {
-                // Swap piano clips from src to dst
-                const temp = state.piano_clips[req.src_track][req.src_scene];
-                state.piano_clips[req.dst_track][req.dst_scene] = temp;
+            var temp_clips: [max_tracks * max_scenes]piano_roll_types.PianoRollClip = undefined;
+            var temp_audio: [max_tracks * max_scenes]AudioClip = undefined;
+            const requests = state.session.clip_move_requests[0..state.session.clip_move_count];
+            for (requests, 0..) |req, i| {
+                temp_clips[i] = state.piano_clips[req.src_track][req.src_scene];
                 state.piano_clips[req.src_track][req.src_scene] = piano_roll_types.PianoRollClip.init(state.allocator);
+                temp_audio[i] = state.audio_clips[req.src_track][req.src_scene];
+                state.audio_clips[req.src_track][req.src_scene] = AudioClip.init(state.allocator);
+            }
+            for (requests, 0..) |req, i| {
+                state.piano_clips[req.dst_track][req.dst_scene].deinit();
+                state.piano_clips[req.dst_track][req.dst_scene] = temp_clips[i];
+                state.audio_clips[req.dst_track][req.dst_scene].takeFrom(&temp_audio[i], &state.sample_store);
             }
             state.session.pending_piano_moves = false;
         }
@@ -197,6 +236,7 @@ pub fn processUndoRequests(state: *State) void {
     // Process piano clip copy requests (from session view paste)
     if (state.session.pending_piano_copies and state.session.piano_copy_count > 0) {
         var temp_clips: [max_tracks * max_scenes]piano_roll_types.PianoRollClip = undefined;
+        var temp_audio: [max_tracks * max_scenes]AudioClip = undefined;
         var temp_valid: [max_tracks * max_scenes]bool = undefined;
         for (state.session.piano_copy_requests[0..state.session.piano_copy_count], 0..) |req, i| {
             if (req.src_track == req.dst_track and req.src_scene == req.dst_scene) {
@@ -207,17 +247,49 @@ pub fn processUndoRequests(state: *State) void {
             temp_clips[i] = piano_roll_types.PianoRollClip.init(state.allocator);
             temp_clips[i].copyFrom(&state.piano_clips[req.src_track][req.src_scene]);
             temp_clips[i].length_beats = state.session.clips[req.dst_track][req.dst_scene].length_beats;
+            temp_audio[i] = AudioClip.init(state.allocator);
+            state.audio_clips[req.src_track][req.src_scene].copyTo(&temp_audio[i], &state.sample_store) catch {
+                temp_audio[i].clear(&state.sample_store);
+            };
+            temp_audio[i].length_beats = state.session.clips[req.dst_track][req.dst_scene].length_beats;
         }
 
         for (state.session.piano_copy_requests[0..state.session.piano_copy_count], 0..) |req, i| {
             if (!temp_valid[i]) continue;
             state.piano_clips[req.dst_track][req.dst_scene].deinit();
             state.piano_clips[req.dst_track][req.dst_scene] = temp_clips[i];
+            state.audio_clips[req.dst_track][req.dst_scene].takeFrom(&temp_audio[i], &state.sample_store);
         }
 
         state.session.pending_piano_copies = false;
         state.session.piano_copy_count = 0;
     }
+}
+
+fn captureTrackAudio(state: *State, track: usize) ![max_scenes]AudioClipSnapshot {
+    var snapshots: [max_scenes]AudioClipSnapshot = undefined;
+    var count: usize = 0;
+    errdefer deinitSnapshots(snapshots[0..count]);
+    for (0..max_scenes) |scene| {
+        snapshots[scene] = try AudioClipSnapshot.capture(&state.audio_clips[track][scene], &state.sample_store);
+        count += 1;
+    }
+    return snapshots;
+}
+
+fn captureSceneAudio(state: *State, scene: usize) ![max_tracks]AudioClipSnapshot {
+    var snapshots: [max_tracks]AudioClipSnapshot = undefined;
+    var count: usize = 0;
+    errdefer deinitSnapshots(snapshots[0..count]);
+    for (0..max_tracks) |track| {
+        snapshots[track] = try AudioClipSnapshot.capture(&state.audio_clips[track][scene], &state.sample_store);
+        count += 1;
+    }
+    return snapshots;
+}
+
+fn deinitSnapshots(snapshots: []AudioClipSnapshot) void {
+    for (snapshots) |*snapshot| snapshot.deinit();
 }
 
 pub fn processPianoRollUndoRequests(state: *State) void {

@@ -9,11 +9,20 @@ const libz_jobs = @import("libz_jobs");
 const audio_events = @import("audio_events.zig");
 const audio_mix = @import("audio_mix.zig");
 const note_source = @import("note_source.zig");
+const audio_clip_source = @import("audio_clip_source.zig");
 
 const max_tracks = session_constants.max_tracks;
 const max_scenes = session_constants.max_scenes;
 const max_controller_param_writes = ui_state.max_controller_param_writes;
 const master_track_index = session_view.master_track_index;
+
+pub const ClipAudioRt = audio_clip_source.ClipAudioRt;
+pub const SampleSlotRt = audio_clip_source.SampleSlotRt;
+pub const max_rt_samples = audio_clip_source.max_rt_samples;
+pub const max_warp_points = audio_clip_source.max_warp_points;
+
+pub const copyPlayingAudioClip = audio_clip_source.copyClipFromUi;
+pub const publishSampleTableFromStore = audio_clip_source.publishSampleTable;
 
 pub const JobQueue = libz_jobs.JobQueue(.{
     .max_jobs_per_thread = 64,
@@ -35,6 +44,7 @@ pub const FxId = u16;
 pub const GainId = u16;
 pub const MixerId = u16;
 pub const NoteSourceId = u16;
+pub const AudioClipSourceId = u16;
 pub const BufferId = u16;
 pub const invalid_id = std.math.maxInt(u16);
 
@@ -72,6 +82,10 @@ pub const StateSnapshot = struct {
     tracks: [max_tracks]session_view.Track,
     clips: [max_tracks][max_scenes]session_view.ClipSlot,
     piano_clips: [max_tracks][max_scenes]ClipNotes,
+    /// Playing audio clip per track (active scene only); empty when MIDI/empty.
+    playing_audio: [max_tracks]ClipAudioRt,
+    /// Sample PCM views indexed by SampleId; publish only after fully loaded.
+    sample_table: [max_rt_samples]SampleSlotRt,
     track_plugins: [max_tracks]?*const clap.Plugin,
     track_fx_plugins: [max_tracks][ui_state.max_fx_slots]?*const clap.Plugin,
     live_key_states: [max_tracks][128]bool,
@@ -82,6 +96,7 @@ pub const StateSnapshot = struct {
 
 const NodeKind = enum(u8) {
     note_source,
+    audio_clip_source,
     synth,
     fx,
     gain,
@@ -121,6 +136,12 @@ const SynthRuntime = struct {
         .context = undefined,
         .tryPush = audio_events.outputEventsTryPush,
     },
+};
+
+const AudioClipSourceRuntime = struct {
+    track_index: u8,
+    out: BufferId,
+    player: audio_clip_source.AudioClipSource,
 };
 
 const FxPolicy = enum(u8) {
@@ -170,6 +191,7 @@ pub const Graph = struct {
     max_frames: u32 = 0,
 
     note_sources: std.ArrayList(note_source.NoteSource),
+    audio_clip_sources: std.ArrayList(AudioClipSourceRuntime),
     synths: std.ArrayList(SynthRuntime),
     fx: std.ArrayList(FxRuntime),
     gains: std.ArrayList(GainRuntime),
@@ -177,6 +199,7 @@ pub const Graph = struct {
     master: ?MasterRuntime = null,
 
     note_source_order: std.ArrayList(NoteSourceId),
+    audio_clip_source_order: std.ArrayList(AudioClipSourceId),
     synth_order: std.ArrayList(SynthId),
     fx_order: std.ArrayList(FxId),
     gain_order: std.ArrayList(GainId),
@@ -194,11 +217,13 @@ pub const Graph = struct {
             .connections = .empty,
             .render_order = .empty,
             .note_sources = .empty,
+            .audio_clip_sources = .empty,
             .synths = .empty,
             .fx = .empty,
             .gains = .empty,
             .mixers = .empty,
             .note_source_order = .empty,
+            .audio_clip_source_order = .empty,
             .synth_order = .empty,
             .fx_order = .empty,
             .gain_order = .empty,
@@ -214,11 +239,13 @@ pub const Graph = struct {
         self.connections.deinit(self.allocator);
         self.render_order.deinit(self.allocator);
         self.note_sources.deinit(self.allocator);
+        self.audio_clip_sources.deinit(self.allocator);
         self.synths.deinit(self.allocator);
         self.fx.deinit(self.allocator);
         self.gains.deinit(self.allocator);
         self.mixers.deinit(self.allocator);
         self.note_source_order.deinit(self.allocator);
+        self.audio_clip_source_order.deinit(self.allocator);
         self.synth_order.deinit(self.allocator);
         self.fx_order.deinit(self.allocator);
         self.gain_order.deinit(self.allocator);
@@ -231,6 +258,17 @@ pub const Graph = struct {
         const id: NoteSourceId = @intCast(self.note_sources.items.len);
         try self.note_sources.append(self.allocator, note_source.NoteSource.init(track_index, emit_notes, target_fx_index));
         return self.appendNodeRef(.{ .kind = .note_source, .index = id });
+    }
+
+    pub fn addAudioClipSource(self: *Graph, track_index: usize) !NodeId {
+        const out = try self.addStereoBuffer();
+        const id: AudioClipSourceId = @intCast(self.audio_clip_sources.items.len);
+        try self.audio_clip_sources.append(self.allocator, .{
+            .track_index = @intCast(track_index),
+            .out = out,
+            .player = audio_clip_source.AudioClipSource.init(track_index),
+        });
+        return self.appendNodeRef(.{ .kind = .audio_clip_source, .index = id });
     }
 
     pub fn addSynth(self: *Graph, track_index: usize) !NodeId {
@@ -373,6 +411,7 @@ pub const Graph = struct {
         };
 
         self.processNoteSources(snapshot, frame_count);
+        self.processAudioClipSources(snapshot, frame_count);
         self.processSynths(&ctx, jobs);
         self.processFx(&ctx);
         self.processGains(&ctx);
@@ -388,6 +427,27 @@ pub const Graph = struct {
         }
     }
 
+    fn processAudioClipSources(self: *Graph, snapshot: *const StateSnapshot, frame_count: u32) void {
+        const zone = tracy.ZoneN(@src(), "Audio clip sources");
+        defer zone.End();
+        for (self.audio_clip_source_order.items) |src_id| {
+            var runtime = &self.audio_clip_sources.items[src_id];
+            const out = &self.buffers.items[runtime.out];
+            const wrote = runtime.player.process(
+                snapshot,
+                self.sample_rate,
+                frame_count,
+                out.left,
+                out.right,
+            );
+            if (wrote) {
+                self.markBufferWritten(runtime.out);
+            } else {
+                self.zeroBufferOnce(runtime.out, frame_count);
+            }
+        }
+    }
+
     fn processSynths(self: *Graph, ctx: *ProcessContext, jobs: ?*JobQueue) void {
         const zone = tracy.ZoneN(@src(), "Synths");
         defer zone.End();
@@ -398,6 +458,13 @@ pub const Graph = struct {
             var synth = &self.synths.items[synth_id];
             if (synth.removed) {
                 self.zeroBufferOnce(synth.out, ctx.frame_count);
+                continue;
+            }
+
+            // Audio clip on this track's active scene: silence instrument (Phase 2).
+            if (ctx.snapshot.playing_audio[synth.track_index].hasAudio()) {
+                self.zeroBufferOnce(synth.out, ctx.frame_count);
+                synth.sleeping = false;
                 continue;
             }
 
@@ -714,6 +781,7 @@ pub const Graph = struct {
     fn buildRenderOrder(self: *Graph) !void {
         self.render_order.clearRetainingCapacity();
         self.note_source_order.clearRetainingCapacity();
+        self.audio_clip_source_order.clearRetainingCapacity();
         self.synth_order.clearRetainingCapacity();
         self.fx_order.clearRetainingCapacity();
         self.gain_order.clearRetainingCapacity();
@@ -740,6 +808,7 @@ pub const Graph = struct {
             const ref = self.node_refs.items[node_id];
             switch (ref.kind) {
                 .note_source => try self.note_source_order.append(self.allocator, ref.index),
+                .audio_clip_source => try self.audio_clip_source_order.append(self.allocator, ref.index),
                 .synth => try self.synth_order.append(self.allocator, ref.index),
                 .fx => try self.fx_order.append(self.allocator, ref.index),
                 .gain => try self.gain_order.append(self.allocator, ref.index),
@@ -808,6 +877,7 @@ pub const Graph = struct {
         const ref = self.node_refs.items[node_id];
         return switch (ref.kind) {
             .synth => self.synths.items[ref.index].out,
+            .audio_clip_source => self.audio_clip_sources.items[ref.index].out,
             .fx => self.fx.items[ref.index].out,
             .gain => self.gains.items[ref.index].out,
             .mixer => self.mixers.items[ref.index].out,

@@ -6,6 +6,8 @@ const ui_state = @import("../ui/state.zig");
 const session_constants = @import("../ui/session_view/constants.zig");
 const session_view = @import("../ui/session_view.zig");
 const audio_graph = @import("audio_graph.zig");
+const clip_bake = @import("clip_bake.zig");
+const audio_constants = @import("audio_constants.zig");
 
 const max_tracks = session_constants.max_tracks;
 const max_scenes = session_constants.max_scenes;
@@ -49,7 +51,22 @@ pub const SharedState = struct {
         allocator.free(self.snapshots);
     }
 
-    pub fn updateFromUi(self: *SharedState, state: *const ui_state.State) void {
+    pub fn updateFromUi(self: *SharedState, state: *ui_state.State) void {
+        // Offline stretch bake before taking the RT snapshot lock (can allocate / CPU).
+        // Only dirty *playing/queued* clips recompute — keeps load/idle frames cheap.
+        clip_bake.bakeDirtyClips(
+            &state.audio_clips,
+            &state.sample_store,
+            &state.session.clips,
+            state.session.track_count,
+            state.session.scene_count,
+            state.bpm,
+            audio_constants.sample_rate,
+            true,
+        );
+
+        self.setSuspendProcessing(true);
+        defer self.setSuspendProcessing(false);
         while (self.processing.load(.acquire) != 0) {
             std.atomic.spinLoopHint();
         }
@@ -77,13 +94,22 @@ pub const SharedState = struct {
                 state.controller_param_writes[0..state.controller_param_write_count],
             );
         }
+
+        // Sample table: immutable views; only fully loaded assets, never touch store on RT.
+        audio_graph.publishSampleTableFromStore(&back.sample_table, &state.sample_store);
+
         for (0..max_tracks) |t| {
             back.active_scene_by_track[t] = -1;
+            back.playing_audio[t].clear();
             const active_scene_count = @min(state.session.scene_count, max_scenes);
             for (0..active_scene_count) |scene_index| {
                 const slot = state.session.clips[t][scene_index];
                 if (slot.state == .playing) {
                     back.active_scene_by_track[t] = @intCast(scene_index);
+                    const audio = &state.audio_clips[t][scene_index];
+                    if (audio.hasAudio()) {
+                        audio_graph.copyPlayingAudioClip(&back.playing_audio[t], audio);
+                    }
                     break;
                 }
             }
@@ -132,6 +158,13 @@ pub const SharedState = struct {
             }
         }
         self.active_index.store(next, .release);
+        // Safe: audio thread is idle and will next read the new snapshot without freed buffers.
+        state.sample_store.flushDeferredFrees();
+        for (&state.audio_clips) |*track_clips| {
+            for (track_clips) |*clip| {
+                clip.flushDeferredBakeFrees();
+            }
+        }
     }
 
     pub fn updatePlugins(
@@ -275,7 +308,7 @@ pub const AudioEngine = struct {
         self.shared.deinit(self.allocator);
     }
 
-    pub fn updateFromUi(self: *AudioEngine, state: *const ui_state.State) void {
+    pub fn updateFromUi(self: *AudioEngine, state: *ui_state.State) void {
         if (state.session.track_count != self.track_count) {
             self.rebuildGraph(state.session.track_count, false) catch |err| {
                 std.log.warn("Failed to rebuild graph: {}", .{err});
@@ -304,9 +337,9 @@ pub const AudioEngine = struct {
         const sample_count: usize = @as(usize, frame_count) * Channels;
         @memset(out_ptr[0..sample_count], 0);
 
-        if (self.shared.isProcessingSuspended()) return;
         self.shared.beginProcess();
         defer self.shared.endProcess();
+        if (self.shared.isProcessingSuspended()) return;
 
         if (self.rebuilding.load(.acquire) != 0) return;
         if (frame_count == 0) return;
@@ -429,6 +462,8 @@ fn buildGraph(
     for (0..count) |track_index| {
         const note_id = try graph.addNoteSource(track_index, true, -1);
         synth_nodes[track_index] = try graph.addSynth(track_index);
+        // Audio clips feed the same FX chain as the instrument (instrument silenced when audio plays).
+        const audio_clip_id = try graph.addAudioClipSource(track_index);
 
         var prev_node = synth_nodes[track_index];
         for (0..ui_state.max_fx_slots) |fx_index| {
@@ -436,6 +471,10 @@ fn buildGraph(
             const fx_id = try graph.addFx(track_index, fx_index);
             try graph.connect(fx_note_id, 0, fx_id, 0, .events);
             try graph.connect(prev_node, 0, fx_id, 0, .audio);
+            if (fx_index == 0) {
+                // Sum audio clip into first FX input alongside synth.
+                try graph.connect(audio_clip_id, 0, fx_id, 0, .audio);
+            }
             prev_node = fx_id;
         }
 
@@ -473,6 +512,8 @@ fn initSnapshot(snapshot: *audio_graph.StateSnapshot) void {
     snapshot.scene_count = max_scenes;
     for (0..max_tracks) |t| {
         snapshot.active_scene_by_track[t] = -1;
+        // sample_id 0 is valid; zero-fill would falsely mark audio present.
+        snapshot.playing_audio[t].clear();
         for (0..max_scenes) |s| {
             snapshot.clips[t][s].length_beats = default_clip_bars * beats_per_bar;
             snapshot.piano_clips[t][s].length_beats = default_clip_bars * beats_per_bar;

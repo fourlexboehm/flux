@@ -21,6 +21,8 @@ pub const LoadedProject = struct {
     arena: std.heap.ArenaAllocator,
     project: Project,
     plugin_states: std.StringHashMap([]const u8),
+    /// Embedded media files from the ZIP (path → bytes), e.g. "audio/loop.wav"
+    media_files: std.StringHashMap([]const u8),
 
     pub fn deinit(self: *LoadedProject) void {
         self.arena.deinit();
@@ -89,6 +91,9 @@ pub fn save(
         try zip.addFile(ps.path, ps.data);
     }
 
+    // Embed audio media referenced by session audio clips
+    try packAudioMedia(arena.allocator(), &zip, state);
+
     const zip_data = try zip.finish();
 
     // Write to file
@@ -154,6 +159,7 @@ fn loadFromFile(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File) !Lo
 
     // Read plugin state files from plugins/ directory
     var plugin_states = std.StringHashMap([]const u8).init(arena.allocator());
+    var media_files = std.StringHashMap([]const u8).init(arena.allocator());
 
     if (tmp_dir.openDir(io, "plugins", .{})) |*plugins_dir| {
         defer plugins_dir.close(io);
@@ -178,6 +184,9 @@ fn loadFromFile(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File) !Lo
         // No plugins directory, that's OK
     }
 
+    // Read audio/ media (and any other non-xml embedded files) into media_files
+    try loadMediaTree(arena.allocator(), io, tmp_dir, "", &media_files);
+
     // Parse the XML
     const parsed_project = try parse.parseProjectXml(arena.allocator(), project_xml);
 
@@ -185,5 +194,81 @@ fn loadFromFile(allocator: std.mem.Allocator, io: std.Io, file: std.Io.File) !Lo
         .arena = arena,
         .project = parsed_project,
         .plugin_states = plugin_states,
+        .media_files = media_files,
     };
+}
+
+const skip_media_names = [_][]const u8{
+    "project.xml",
+    "metadata.xml",
+    "flux_undo.xml",
+};
+
+fn shouldSkipMediaName(name: []const u8) bool {
+    for (skip_media_names) |skip| {
+        if (std.mem.eql(u8, name, skip)) return true;
+    }
+    return false;
+}
+
+/// Recursively load non-plugin binary/media files from an extracted dawproject tree.
+/// Paths are stored relative to the archive root (e.g. "audio/loop.wav").
+fn loadMediaTree(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir: std.Io.Dir,
+    prefix: []const u8,
+    media_files: *std.StringHashMap([]const u8),
+) !void {
+    var dir_iter = dir.iterate();
+    while (try dir_iter.next(io)) |entry| {
+        if (entry.kind == .directory) {
+            // plugins/ is handled separately as plugin_states
+            if (std.mem.eql(u8, entry.name, "plugins")) continue;
+            const child_prefix = if (prefix.len == 0)
+                try allocator.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(allocator, "{s}/{s}", .{ prefix, entry.name });
+            var child = try dir.openDir(io, entry.name, .{});
+            defer child.close(io);
+            try loadMediaTree(allocator, io, child, child_prefix, media_files);
+        } else if (entry.kind == .file) {
+            if (prefix.len == 0 and shouldSkipMediaName(entry.name)) continue;
+            const full_path = if (prefix.len == 0)
+                try allocator.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(allocator, "{s}/{s}", .{ prefix, entry.name });
+
+            var file = try dir.openFile(io, entry.name, .{});
+            defer file.close(io);
+
+            const file_stat = try file.stat(io);
+            const data = try allocator.alloc(u8, file_stat.size);
+            const bytes = try file.readPositionalAll(io, data, 0);
+            if (bytes != file_stat.size) return error.UnexpectedEof;
+
+            try media_files.put(full_path, data);
+        }
+    }
+}
+
+fn packAudioMedia(
+    allocator: std.mem.Allocator,
+    zip: *ZipWriter,
+    state: *const ui_state.State,
+) !void {
+    var packed_paths = std.StringHashMap(void).init(allocator);
+    defer packed_paths.deinit();
+
+    for (0..state.session.track_count) |t| {
+        for (0..state.session.scene_count) |s| {
+            const clip = &state.audio_clips[t][s];
+            const sample_id = clip.sample_id orelse continue;
+            const asset = state.sample_store.get(sample_id) orelse continue;
+            if (asset.source_bytes.len == 0) continue;
+            if (packed_paths.contains(asset.path_in_project)) continue;
+            try zip.addFile(asset.path_in_project, asset.source_bytes);
+            try packed_paths.put(asset.path_in_project, {});
+        }
+    }
 }

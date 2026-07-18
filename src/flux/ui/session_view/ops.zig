@@ -279,7 +279,7 @@ pub fn deleteScene(self: *session_view.SessionView, scene: usize) bool {
     if (self.scene_count <= 1) return false;
     if (scene >= self.scene_count) return false;
 
-    var clip_snapshots: [max_tracks]@TypeOf(self.undo_requests[0].scene_clips[0]) = undefined;
+    var clip_snapshots: [max_tracks]@TypeOf(self.undo_requests[0].scene_clips[0]) = @splat(.{});
     for (0..self.track_count) |t| {
         const slot = self.clips[t][scene];
         clip_snapshots[t] = .{
@@ -333,7 +333,7 @@ pub fn deleteTrack(self: *session_view.SessionView, track: usize) bool {
     if (self.track_count <= 1) return false;
     if (track >= self.track_count) return false;
 
-    var clip_snapshots: [max_scenes]@TypeOf(self.undo_requests[0].track_clips[0]) = undefined;
+    var clip_snapshots: [max_scenes]@TypeOf(self.undo_requests[0].track_clips[0]) = @splat(.{});
     for (0..self.scene_count) |s| {
         const slot = self.clips[track][s];
         clip_snapshots[s] = .{

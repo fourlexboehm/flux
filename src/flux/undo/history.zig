@@ -102,7 +102,11 @@ pub const UndoHistory = struct {
         self.undo_stack.append(self.allocator, .{
             .cmd = cmd,
             .timestamp = timestamp,
-        }) catch return;
+        }) catch {
+            var mutable_cmd = cmd;
+            mutable_cmd.deinit(self.allocator);
+            return;
+        };
 
         // Enforce max commands limit
         while (self.undo_stack.items.len > self.max_commands) {

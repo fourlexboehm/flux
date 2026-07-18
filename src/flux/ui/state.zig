@@ -7,10 +7,14 @@ const session_view = @import("session_view.zig");
 const session_constants = @import("session_view/constants.zig");
 const session_ops = @import("session_view/ops.zig");
 const piano_roll_types = @import("piano_roll/types.zig");
+const audio_clip_types = @import("audio_clip/types.zig");
+const sample_store_mod = @import("../audio/sample_store.zig");
 
 const SessionView = session_view.SessionView;
 const max_tracks = session_constants.max_tracks;
 const max_scenes = session_constants.max_scenes;
+const SampleStore = sample_store_mod.SampleStore;
+const AudioClip = audio_clip_types.AudioClip;
 
 // Constants for audio buffer options.
 pub const max_fx_slots = 4;
@@ -145,6 +149,10 @@ pub const State = struct {
     // Piano clips storage (separate from session view's clip metadata)
     piano_clips: [max_tracks][max_scenes]piano_roll_types.PianoRollClip,
 
+    // Audio clips (parallel to piano_clips; one content type per slot preferred)
+    audio_clips: [max_tracks][max_scenes]AudioClip,
+    sample_store: SampleStore,
+
     // Track plugin UI state
     track_plugins: [max_tracks]TrackPluginUI,
     track_fx: [max_tracks][max_fx_slots]TrackPluginUI,
@@ -237,6 +245,12 @@ pub const State = struct {
                 clip.* = piano_roll_types.PianoRollClip.init(allocator);
             }
         }
+        var audio_clips_data: [max_tracks][max_scenes]AudioClip = undefined;
+        for (&audio_clips_data) |*track_clips| {
+            for (track_clips) |*clip| {
+                clip.* = AudioClip.init(allocator);
+            }
+        }
 
         return .{
             .allocator = allocator,
@@ -263,6 +277,8 @@ pub const State = struct {
             .session = session_ops.init(allocator),
             .piano_state = piano_roll_types.PianoRollState.init(allocator),
             .piano_clips = piano_clips_data,
+            .audio_clips = audio_clips_data,
+            .sample_store = SampleStore.init(allocator),
             .track_plugins = track_plugins_data,
             .track_fx = track_fx_data,
             .track_fx_slot_count = @splat(1),
@@ -325,8 +341,22 @@ pub const State = struct {
                 clip.deinit();
             }
         }
+        for (&self.audio_clips) |*track_clips| {
+            for (track_clips) |*clip| {
+                clip.deinit(&self.sample_store);
+            }
+        }
+        self.sample_store.deinit();
         session_ops.deinit(&self.session);
         self.piano_state.deinit();
+    }
+
+    pub fn clearAllAudioClips(self: *State) void {
+        for (&self.audio_clips) |*track_clips| {
+            for (track_clips) |*clip| {
+                clip.clear(&self.sample_store);
+            }
+        }
     }
 
     pub fn selectedTrack(self: *const State) usize {
@@ -343,6 +373,42 @@ pub const State = struct {
 
     pub fn currentClipLabel(self: *const State) []const u8 {
         return self.session.scenes[self.selectedScene()].getName();
+    }
+
+    /// True if any scene on this track holds an audio sample.
+    pub fn trackHasAudio(self: *const State, track: usize) bool {
+        if (track >= max_tracks) return false;
+        const scene_count = @min(self.session.scene_count, max_scenes);
+        for (0..scene_count) |s| {
+            if (self.audio_clips[track][s].hasAudio()) return true;
+        }
+        return false;
+    }
+
+    /// True if any scene holds MIDI notes or a non-empty non-audio slot.
+    pub fn trackHasNotes(self: *const State, track: usize) bool {
+        if (track >= max_tracks) return false;
+        const scene_count = @min(self.session.scene_count, max_scenes);
+        for (0..scene_count) |s| {
+            if (self.audio_clips[track][s].hasAudio()) continue;
+            if (self.piano_clips[track][s].notes.items.len > 0) return true;
+            if (self.session.clips[track][s].state != .empty) return true;
+        }
+        return false;
+    }
+
+    /// Hybrid track, exclusive slot: claim cell for audio (drops MIDI notes).
+    pub fn claimSlotForAudio(self: *State, track: usize, scene: usize) void {
+        if (track >= max_tracks or scene >= max_scenes) return;
+        var piano = &self.piano_clips[track][scene];
+        piano.notes.clearRetainingCapacity();
+        // Keep length/automation; audio clip owns musical length when playing samples.
+    }
+
+    /// Hybrid track, exclusive slot: claim cell for MIDI (drops sample).
+    pub fn claimSlotForMidi(self: *State, track: usize, scene: usize) void {
+        if (track >= max_tracks or scene >= max_scenes) return;
+        self.audio_clips[track][scene].clear(&self.sample_store);
     }
 
     pub fn beatsPerBar(self: *const State) f32 {
@@ -425,6 +491,7 @@ pub const State = struct {
                 if (direction == .undo) {
                     self.session.clips[c.track][c.scene] = .{};
                     self.piano_clips[c.track][c.scene].clear();
+                    self.audio_clips[c.track][c.scene].clear(&self.sample_store);
                 } else {
                     self.session.clips[c.track][c.scene] = .{
                         .state = .stopped,
@@ -442,14 +509,17 @@ pub const State = struct {
                     for (c.notes) |note| {
                         self.piano_clips[c.track][c.scene].addNote(note.pitch, note.start, note.duration) catch {};
                     }
+                    c.audio.apply(&self.audio_clips[c.track][c.scene]) catch {};
                 } else {
                     self.session.clips[c.track][c.scene] = .{};
                     self.piano_clips[c.track][c.scene].clear();
+                    self.audio_clips[c.track][c.scene].clear(&self.sample_store);
                 }
             },
             .clip_paste => |c| {
                 const slot = if (direction == .undo) c.old_clip else c.new_clip;
                 const notes = if (direction == .undo) c.old_notes else c.new_notes;
+                const audio = if (direction == .undo) &c.old_audio else &c.new_audio;
                 if (slot.has_clip) {
                     self.session.clips[c.track][c.scene] = .{
                         .state = .stopped,
@@ -463,7 +533,9 @@ pub const State = struct {
                 } else {
                     self.session.clips[c.track][c.scene] = .{};
                     self.piano_clips[c.track][c.scene].clear();
+                    self.audio_clips[c.track][c.scene].clear(&self.sample_store);
                 }
+                audio.apply(&self.audio_clips[c.track][c.scene]) catch {};
             },
             .note_add => |c| {
                 if (direction == .undo) {
@@ -563,31 +635,13 @@ pub const State = struct {
                 self.quantize_last = if (direction == .undo) c.old_index else c.new_index;
             },
             .clip_move => |c| {
-                if (direction == .undo) {
-                    var i = c.moves.len;
-                    while (i > 0) {
-                        i -= 1;
-                        const m = c.moves[i];
-                        self.session.clips[m.src_track][m.src_scene] = self.session.clips[m.dst_track][m.dst_scene];
-                        self.session.clips[m.dst_track][m.dst_scene] = .{};
-                        const temp_notes = self.piano_clips[m.dst_track][m.dst_scene];
-                        self.piano_clips[m.src_track][m.src_scene] = temp_notes;
-                        self.piano_clips[m.dst_track][m.dst_scene] = piano_roll_types.PianoRollClip.init(self.allocator);
-                    }
-                } else {
-                    for (c.moves) |m| {
-                        self.session.clips[m.dst_track][m.dst_scene] = self.session.clips[m.src_track][m.src_scene];
-                        self.session.clips[m.src_track][m.src_scene] = .{};
-                        const temp_notes = self.piano_clips[m.src_track][m.src_scene];
-                        self.piano_clips[m.dst_track][m.dst_scene] = temp_notes;
-                        self.piano_clips[m.src_track][m.src_scene] = piano_roll_types.PianoRollClip.init(self.allocator);
-                    }
-                }
+                self.moveClipPayloads(c.moves, direction == .undo);
             },
             .clip_resize => |c| {
                 const length = if (direction == .undo) c.old_length else c.new_length;
                 self.session.clips[c.track][c.scene].length_beats = length;
                 self.piano_clips[c.track][c.scene].length_beats = length;
+                self.audio_clips[c.track][c.scene].length_beats = length;
             },
             .plugin_state => |c| {
                 self.plugin_state_restore_request = .{
@@ -612,16 +666,44 @@ pub const State = struct {
         }
     }
 
+    fn moveClipPayloads(self: *State, moves: []const undo.command.ClipMoveCmd.ClipMove, reverse: bool) void {
+        var slots: [max_tracks * max_scenes]@TypeOf(self.session.clips[0][0]) = undefined;
+        var piano: [max_tracks * max_scenes]piano_roll_types.PianoRollClip = undefined;
+        var audio: [max_tracks * max_scenes]AudioClip = undefined;
+
+        for (moves, 0..) |move, i| {
+            const src_track = if (reverse) move.dst_track else move.src_track;
+            const src_scene = if (reverse) move.dst_scene else move.src_scene;
+            slots[i] = self.session.clips[src_track][src_scene];
+            self.session.clips[src_track][src_scene] = .{};
+            piano[i] = self.piano_clips[src_track][src_scene];
+            self.piano_clips[src_track][src_scene] = piano_roll_types.PianoRollClip.init(self.allocator);
+            audio[i] = self.audio_clips[src_track][src_scene];
+            self.audio_clips[src_track][src_scene] = AudioClip.init(self.allocator);
+        }
+
+        for (moves, 0..) |move, i| {
+            const dst_track = if (reverse) move.src_track else move.dst_track;
+            const dst_scene = if (reverse) move.src_scene else move.dst_scene;
+            self.session.clips[dst_track][dst_scene] = slots[i];
+            self.piano_clips[dst_track][dst_scene].deinit();
+            self.piano_clips[dst_track][dst_scene] = piano[i];
+            self.audio_clips[dst_track][dst_scene].takeFrom(&audio[i], &self.sample_store);
+        }
+    }
+
     pub fn deleteTrackPianoClips(self: *State, track: usize, old_track_count: usize) void {
         if (track >= old_track_count) return;
         for (0..max_scenes) |s| {
             self.piano_clips[track][s].deinit();
+            self.audio_clips[track][s].clear(&self.sample_store);
         }
         if (track + 1 > old_track_count - 1) return;
         for (track..old_track_count - 1) |t| {
             for (0..max_scenes) |s| {
                 self.piano_clips[t][s] = self.piano_clips[t + 1][s];
                 self.piano_clips[t + 1][s] = piano_roll_types.PianoRollClip.init(self.allocator);
+                self.audio_clips[t][s].takeFrom(&self.audio_clips[t + 1][s], &self.sample_store);
             }
         }
     }
@@ -630,12 +712,14 @@ pub const State = struct {
         if (scene >= old_scene_count) return;
         for (0..max_tracks) |t| {
             self.piano_clips[t][scene].deinit();
+            self.audio_clips[t][scene].clear(&self.sample_store);
         }
         if (scene + 1 > old_scene_count - 1) return;
         for (0..max_tracks) |t| {
             for (scene..old_scene_count - 1) |s| {
                 self.piano_clips[t][s] = self.piano_clips[t][s + 1];
                 self.piano_clips[t][s + 1] = piano_roll_types.PianoRollClip.init(self.allocator);
+                self.audio_clips[t][s].takeFrom(&self.audio_clips[t][s + 1], &self.sample_store);
             }
         }
     }
@@ -705,6 +789,7 @@ pub const State = struct {
                 self.session.clip_selected[t][s] = self.session.clip_selected[t - 1][s];
                 self.piano_clips[t][s] = self.piano_clips[t - 1][s];
                 self.piano_clips[t - 1][s] = piano_roll_types.PianoRollClip.init(self.allocator);
+                self.audio_clips[t][s].takeFrom(&self.audio_clips[t - 1][s], &self.sample_store);
             }
         }
 
@@ -722,6 +807,8 @@ pub const State = struct {
             } else .{};
             self.session.clip_selected[cmd.track_index][s] = false;
             self.piano_clips[cmd.track_index][s].clear();
+            self.audio_clips[cmd.track_index][s].clear(&self.sample_store);
+            cmd.audio[s].apply(&self.audio_clips[cmd.track_index][s]) catch {};
             if (slot.has_clip) {
                 self.piano_clips[cmd.track_index][s].length_beats = slot.length_beats;
                 if (s < cmd.notes.len) {
@@ -749,6 +836,7 @@ pub const State = struct {
                 self.session.clip_selected[t][s] = self.session.clip_selected[t][s - 1];
                 self.piano_clips[t][s] = self.piano_clips[t][s - 1];
                 self.piano_clips[t][s - 1] = piano_roll_types.PianoRollClip.init(self.allocator);
+                self.audio_clips[t][s].takeFrom(&self.audio_clips[t][s - 1], &self.sample_store);
             }
         }
 
@@ -763,6 +851,8 @@ pub const State = struct {
             } else .{};
             self.session.clip_selected[t][cmd.scene_index] = false;
             self.piano_clips[t][cmd.scene_index].clear();
+            self.audio_clips[t][cmd.scene_index].clear(&self.sample_store);
+            cmd.audio[t].apply(&self.audio_clips[t][cmd.scene_index]) catch {};
             if (slot.has_clip) {
                 self.piano_clips[t][cmd.scene_index].length_beats = slot.length_beats;
                 if (t < cmd.notes.len) {

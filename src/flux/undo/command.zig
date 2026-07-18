@@ -5,8 +5,10 @@ const std = @import("std");
 const session_view = @import("../ui/session_view.zig");
 const session_view_constants = @import("../ui/session_view/constants.zig");
 const piano_roll_types = @import("../ui/piano_roll/types.zig");
+const audio_clip_types = @import("../ui/audio_clip/types.zig");
 
 pub const Note = piano_roll_types.Note;
+pub const AudioClipSnapshot = audio_clip_types.AudioClipSnapshot;
 pub const max_tracks = session_view_constants.max_tracks;
 pub const max_scenes = session_view_constants.max_scenes;
 
@@ -60,6 +62,7 @@ pub const ClipDeleteCmd = struct {
     scene: usize,
     length_beats: f32,
     notes: []const Note,
+    audio: AudioClipSnapshot,
 };
 
 /// Paste clip command - stores old/new clip state for undo/redo
@@ -70,6 +73,8 @@ pub const ClipPasteCmd = struct {
     new_clip: ClipSlotData,
     old_notes: []const Note,
     new_notes: []const Note,
+    old_audio: AudioClipSnapshot,
+    new_audio: AudioClipSnapshot,
 };
 
 /// Move clip command - stores source and destination
@@ -148,6 +153,7 @@ pub const TrackDeleteCmd = struct {
     track_data: TrackData,
     clips: [max_scenes]ClipSlotData,
     notes: []const []const Note, // Notes for each scene
+    audio: [max_scenes]AudioClipSnapshot,
 };
 
 /// Track data for serialization (avoids dependency on full Track type)
@@ -204,6 +210,7 @@ pub const SceneDeleteCmd = struct {
     scene_data: SceneData,
     clips: [max_tracks]ClipSlotData,
     notes: []const []const Note, // Notes for each track
+    audio: [max_tracks]AudioClipSnapshot,
 };
 
 /// Scene data for serialization
@@ -346,6 +353,7 @@ pub const Command = union(CommandKind) {
                 if (cmd.notes.len > 0) {
                     allocator.free(cmd.notes);
                 }
+                cmd.audio.deinit();
             },
             .clip_paste => |*cmd| {
                 if (cmd.old_notes.len > 0) {
@@ -354,6 +362,8 @@ pub const Command = union(CommandKind) {
                 if (cmd.new_notes.len > 0) {
                     allocator.free(cmd.new_notes);
                 }
+                cmd.old_audio.deinit();
+                cmd.new_audio.deinit();
             },
             .clip_move => |*cmd| {
                 if (cmd.moves.len > 0) {
@@ -374,6 +384,7 @@ pub const Command = union(CommandKind) {
                     }
                     allocator.free(cmd.notes);
                 }
+                for (&cmd.audio) |*audio| audio.deinit();
             },
             .scene_delete => |*cmd| {
                 if (cmd.notes.len > 0) {
@@ -384,6 +395,7 @@ pub const Command = union(CommandKind) {
                     }
                     allocator.free(cmd.notes);
                 }
+                for (&cmd.audio) |*audio| audio.deinit();
             },
             .plugin_state => |*cmd| {
                 if (cmd.old_state.len > 0) {

@@ -11,6 +11,9 @@ const session_constants = @import("session_view/constants.zig");
 const session_ops = @import("session_view/ops.zig");
 const session_draw = @import("session_view/draw.zig");
 const piano_roll_draw = @import("piano_roll/draw.zig");
+const audio_clip_viewer = @import("audio_clip/draw_viewer.zig");
+const widgets = @import("widgets.zig");
+const tokens = @import("tokens.zig");
 
 const Colors = colors.Colors;
 const State = state_mod.State;
@@ -54,25 +57,31 @@ pub fn draw(state: *State, ui_scale: f32) void {
         }
 
         drawTransport(state, ui_scale);
-        zgui.spacing();
+        zgui.dummy(.{ .w = 0, .h = tokens.s(4, ui_scale) });
         const avail = zgui.getContentRegionAvail();
-        const splitter_h = 6.0 * ui_scale;
-        const min_bottom = 100.0 * ui_scale;
-        const max_bottom = avail[1] - 100.0 * ui_scale;
+        const splitter_h = tokens.s(5, ui_scale);
+        const min_bottom = tokens.s(100, ui_scale);
+        const max_bottom = avail[1] - tokens.s(100, ui_scale);
         const bottom_height = std.math.clamp(state.bottom_panel_height * ui_scale, min_bottom, max_bottom);
         const top_height = @max(0.0, avail[1] - bottom_height - splitter_h);
 
         // Clip grid area
+        const session_child_pos = zgui.getCursorScreenPos();
         if (zgui.beginChild("clip_area##root", .{ .w = 0, .h = top_height, .window_flags = .{ .no_scrollbar = true, .no_scroll_with_mouse = true } })) {
-            // Track focus
             if (zgui.isWindowHovered(.{ .child_windows = true }) and zgui.isMouseClicked(.left)) {
                 state.focused_pane = .session;
             }
             drawClipGrid(state, ui_scale);
         }
         zgui.endChild();
+        widgets.focusFrame(
+            session_child_pos,
+            .{ session_child_pos[0] + avail[0], session_child_pos[1] + top_height },
+            state.focused_pane == .session,
+            ui_scale,
+        );
 
-        // Splitter handle
+        // Splitter handle with grip
         const splitter_pos = zgui.getCursorScreenPos();
         const avail_w = zgui.getContentRegionAvail()[0];
         const draw_list = zgui.getWindowDrawList();
@@ -80,10 +89,7 @@ pub fn draw(state: *State, ui_scale: f32) void {
         _ = zgui.invisibleButton("##splitter", .{ .w = avail_w, .h = splitter_h });
         const is_hovered = zgui.isItemHovered(.{});
         const is_active = zgui.isItemActive();
-
-        if (is_hovered or is_active) {
-            zgui.setMouseCursor(.resize_ns);
-        }
+        if (is_hovered or is_active) zgui.setMouseCursor(.resize_ns);
 
         const splitter_color = if (is_active)
             Colors.current.accent
@@ -96,6 +102,18 @@ pub fn draw(state: *State, ui_scale: f32) void {
             .pmax = .{ splitter_pos[0] + avail_w, splitter_pos[1] + splitter_h },
             .col = zgui.colorConvertFloat4ToU32(splitter_color),
         });
+        // Grip dots
+        const grip_col = zgui.colorConvertFloat4ToU32(Colors.current.text_soft);
+        const mid_x = splitter_pos[0] + avail_w * 0.5;
+        const mid_y = splitter_pos[1] + splitter_h * 0.5;
+        const gap = tokens.s(5, ui_scale);
+        for ([_]f32{ -1, 0, 1 }) |i| {
+            draw_list.addCircleFilled(.{
+                .p = .{ mid_x + i * gap, mid_y },
+                .r = tokens.s(1.2, ui_scale),
+                .col = grip_col,
+            });
+        }
 
         if (zgui.isItemActivated()) {
             state.splitter_drag_start = state.bottom_panel_height;
@@ -107,14 +125,20 @@ pub fn draw(state: *State, ui_scale: f32) void {
         }
 
         // Bottom panel
+        const bottom_child_pos = zgui.getCursorScreenPos();
         if (zgui.beginChild("bottom_panel##root", .{ .w = 0, .h = bottom_height, .child_flags = .{ .border = true }, .window_flags = .{ .no_scrollbar = true, .no_scroll_with_mouse = true } })) {
-            // Track focus
             if (zgui.isWindowHovered(.{ .child_windows = true }) and zgui.isMouseClicked(.left)) {
                 state.focused_pane = .bottom;
             }
             drawBottomPanel(state, ui_scale);
         }
         zgui.endChild();
+        widgets.focusFrame(
+            bottom_child_pos,
+            .{ bottom_child_pos[0] + avail_w, bottom_child_pos[1] + bottom_height },
+            state.focused_pane == .bottom,
+            ui_scale,
+        );
     }
 
     // Undo/Redo shortcuts (Cmd+Z / Cmd+Shift+Z on Mac, Ctrl+Z / Ctrl+Shift+Z on other platforms)
@@ -132,78 +156,91 @@ pub fn draw(state: *State, ui_scale: f32) void {
 }
 
 fn drawTransport(state: *State, ui_scale: f32) void {
-    const transport_h = 52.0 * ui_scale;
-    const btn_size = 36.0 * ui_scale;
-    const spacing = 20.0 * ui_scale;
+    const transport_h = tokens.transportH(ui_scale);
+    const control_h = zgui.getFrameHeight();
+    const tight = tokens.gapTight(ui_scale);
+    const group = tokens.gapGroup(ui_scale);
 
     const draw_list = zgui.getWindowDrawList();
-    const pos = zgui.getCursorScreenPos();
+    const bar_screen = zgui.getCursorScreenPos();
+    const bar_start_y = zgui.getCursorPosY();
     const avail_w = zgui.getContentRegionAvail()[0];
     draw_list.addRectFilled(.{
-        .pmin = .{ pos[0], pos[1] },
-        .pmax = .{ pos[0] + avail_w, pos[1] + transport_h },
+        .pmin = .{ bar_screen[0], bar_screen[1] },
+        .pmax = .{ bar_screen[0] + avail_w, bar_screen[1] + transport_h },
         .col = zgui.colorConvertFloat4ToU32(Colors.current.bg_header),
+        .rounding = tokens.radius(.md, ui_scale),
     });
 
-    zgui.setCursorPosY(zgui.getCursorPosY() + 6.0 * ui_scale);
-    zgui.setCursorPosX(zgui.getCursorPosX() + 8.0 * ui_scale);
+    // Single baseline so every control (play, combos, save) sits on one row.
+    const row_y = tokens.centerInBar(bar_start_y, transport_h, control_h);
+    zgui.setCursorPosY(row_y);
+    zgui.setCursorPosX(zgui.getCursorPosX() + tokens.s(8, ui_scale));
 
-    const play_color = if (state.playing) Colors.current.transport_play else Colors.current.text_dim;
-    zgui.pushStyleColor4f(.{ .idx = .button, .c = Colors.current.bg_header });
+    // --- Transport icons ---
+    const play_kind: widgets.Icon = if (state.playing) .stop else .play;
+    const play_col = if (state.playing) Colors.current.transport_stop else Colors.current.transport_play;
+    zgui.pushStyleColor4f(.{ .idx = .button, .c = Colors.current.bg_cell });
     zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = Colors.current.bg_cell_hover });
     zgui.pushStyleColor4f(.{ .idx = .button_active, .c = Colors.current.bg_cell_active });
-    defer zgui.popStyleColor(.{ .count = 3 });
-
-    const btn_pos = zgui.getCursorScreenPos();
-    if (zgui.button("##play_btn", .{ .w = btn_size, .h = btn_size })) {
+    const play_pos = zgui.getCursorScreenPos();
+    if (zgui.button("##play_btn", .{ .w = control_h, .h = control_h })) {
         state.playing = !state.playing;
         state.playhead_beat = 0;
     }
-
-    if (state.playing) {
-        const sq_size = 14.0 * ui_scale;
-        const cx = btn_pos[0] + btn_size / 2.0;
-        const cy = btn_pos[1] + btn_size / 2.0;
-        draw_list.addRectFilled(.{
-            .pmin = .{ cx - sq_size / 2.0, cy - sq_size / 2.0 },
-            .pmax = .{ cx + sq_size / 2.0, cy + sq_size / 2.0 },
-            .col = zgui.colorConvertFloat4ToU32(play_color),
-        });
-    } else {
-        const tri_size = 16.0 * ui_scale;
-        const cx = btn_pos[0] + btn_size / 2.0 + 2.0 * ui_scale;
-        const cy = btn_pos[1] + btn_size / 2.0;
-        draw_list.addTriangleFilled(.{
-            .p1 = .{ cx - tri_size / 2.0, cy - tri_size / 2.0 },
-            .p2 = .{ cx - tri_size / 2.0, cy + tri_size / 2.0 },
-            .p3 = .{ cx + tri_size / 2.0, cy },
-            .col = zgui.colorConvertFloat4ToU32(play_color),
-        });
+    widgets.itemTooltip(if (state.playing) "Stop" else "Play");
+    // Draw play/stop with transport color (override default dim icon)
+    {
+        // re-draw icon in transport color over the button
+        const pad = control_h * 0.28;
+        const cx = play_pos[0] + control_h * 0.5;
+        const cy = play_pos[1] + control_h * 0.5;
+        const col = zgui.colorConvertFloat4ToU32(play_col);
+        if (state.playing) {
+            const half = control_h * 0.16;
+            draw_list.addRectFilled(.{ .pmin = .{ cx - half, cy - half }, .pmax = .{ cx + half, cy + half }, .col = col });
+        } else {
+            draw_list.addTriangleFilled(.{
+                .p1 = .{ cx - control_h * 0.14, cy - control_h * 0.18 },
+                .p2 = .{ cx - control_h * 0.14, cy + control_h * 0.18 },
+                .p3 = .{ cx + control_h * 0.2, cy },
+                .col = col,
+            });
+        }
+        _ = pad;
+        _ = play_kind;
     }
 
-    zgui.sameLine(.{ .spacing = spacing });
-
+    zgui.sameLine(.{ .spacing = tight });
+    zgui.setCursorPosY(row_y);
     const metro_pos = zgui.getCursorScreenPos();
-    if (zgui.button("##metronome", .{ .w = btn_size, .h = btn_size })) {
+    if (zgui.button("##metronome", .{ .w = control_h, .h = control_h })) {
         state.metronome_enabled = !state.metronome_enabled;
     }
-    const signature_pulse = state.playhead_beat * @as(f32, @floatFromInt(state.time_signature_denominator)) / 4.0;
-    const active_dot: usize = if (state.playing) @intFromFloat(@mod(@floor(signature_pulse), 2.0)) else 0;
-    const dot_radius = 4.0 * ui_scale;
-    const dot_gap = 12.0 * ui_scale;
-    const dot_y = metro_pos[1] + btn_size / 2.0;
-    for (0..2) |dot| {
-        const dot_color = if (state.metronome_enabled and dot == active_dot)
-            Colors.current.accent
-        else
-            Colors.current.text_dim;
-        draw_list.addCircleFilled(.{
-            .p = .{ metro_pos[0] + btn_size / 2.0 + (@as(f32, @floatFromInt(dot)) - 0.5) * dot_gap, dot_y },
-            .r = dot_radius,
-            .col = zgui.colorConvertFloat4ToU32(dot_color),
-        });
+    widgets.itemTooltip("Metronome");
+    {
+        const signature_pulse = state.playhead_beat * @as(f32, @floatFromInt(state.time_signature_denominator)) / 4.0;
+        const active_dot: usize = if (state.playing) @intFromFloat(@mod(@floor(signature_pulse), 2.0)) else 0;
+        const dot_radius = tokens.s(3.2, ui_scale);
+        const dot_gap = tokens.s(9, ui_scale);
+        const dot_y = metro_pos[1] + control_h * 0.5;
+        for (0..2) |dot| {
+            const dot_color = if (state.metronome_enabled and dot == active_dot)
+                Colors.current.accent
+            else
+                Colors.current.text_soft;
+            draw_list.addCircleFilled(.{
+                .p = .{ metro_pos[0] + control_h * 0.5 + (@as(f32, @floatFromInt(dot)) - 0.5) * dot_gap, dot_y },
+                .r = dot_radius,
+                .col = zgui.colorConvertFloat4ToU32(dot_color),
+            });
+        }
     }
-    zgui.sameLine(.{ .spacing = spacing });
+    zgui.popStyleColor(.{ .count = 3 });
+
+    // --- Time / tempo group ---
+    widgets.toolbarSeparator(ui_scale, control_h);
+    zgui.setCursorPosY(row_y);
 
     var time_signature_index: i32 = 2;
     for (time_signatures, 0..) |signature, index| {
@@ -212,7 +249,8 @@ fn drawTransport(state: *State, ui_scale: f32) void {
             break;
         }
     }
-    zgui.setNextItemWidth(90.0 * ui_scale);
+    const time_sig_labels = [_][]const u8{ "2/4", "3/4", "4/4", "5/4", "6/8", "7/8", "9/8", "12/8" };
+    zgui.setNextItemWidth(widgets.comboContentWidthForLabels(&time_sig_labels, ui_scale));
     if (zgui.combo("##transport_time_signature", .{
         .current_item = &time_signature_index,
         .items_separated_by_zeros = time_signature_items,
@@ -221,14 +259,15 @@ fn drawTransport(state: *State, ui_scale: f32) void {
         state.time_signature_numerator = signature[0];
         state.time_signature_denominator = signature[1];
     }
+    widgets.itemTooltip("Time signature");
 
-    zgui.sameLine(.{ .spacing = spacing });
-
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
-    zgui.textUnformatted("BPM");
-    zgui.popStyleColor(.{ .count = 1 });
-    zgui.sameLine(.{ .spacing = 6.0 * ui_scale });
-    zgui.setNextItemWidth(100.0 * ui_scale);
+    zgui.sameLine(.{ .spacing = group });
+    zgui.setCursorPosY(row_y);
+    zgui.alignTextToFramePadding();
+    widgets.dimLabel("BPM");
+    zgui.sameLine(.{ .spacing = tight });
+    zgui.setCursorPosY(row_y);
+    zgui.setNextItemWidth(tokens.s(88, ui_scale));
     const bpm_before = state.bpm;
     _ = zgui.sliderFloat("##transport_bpm", .{
         .v = &state.bpm,
@@ -236,15 +275,12 @@ fn drawTransport(state: *State, ui_scale: f32) void {
         .max = 200.0,
         .cfmt = "%.0f",
     });
-
-    // Track BPM drag for undo
     if (zgui.isItemActive()) {
         if (!state.bpm_drag_active) {
             state.bpm_drag_active = true;
             state.bpm_drag_start = bpm_before;
         }
     } else if (state.bpm_drag_active) {
-        // Drag ended - emit undo if changed
         if (state.bpm != state.bpm_drag_start) {
             state.undo_history.push(.{
                 .bpm_change = .{
@@ -256,23 +292,20 @@ fn drawTransport(state: *State, ui_scale: f32) void {
         state.bpm_drag_active = false;
     }
 
-    zgui.sameLine(.{ .spacing = spacing });
-
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
-    zgui.textUnformatted("Quantize");
-    zgui.popStyleColor(.{ .count = 1 });
-    zgui.sameLine(.{ .spacing = 6.0 * ui_scale });
-    const quantize_label_size = zgui.calcTextSize("1/4", .{});
-    const frame_height = zgui.getFrameHeight();
-    const frame_padding = zgui.getStyle().frame_padding;
-    const quantize_width = quantize_label_size[0] + frame_height + frame_padding[0] * 2.0 + 6.0 * ui_scale;
-    zgui.setNextItemWidth(quantize_width);
+    // --- Quantize / buffer ---
+    widgets.toolbarSeparator(ui_scale, control_h);
+    zgui.setCursorPosY(row_y);
+    zgui.alignTextToFramePadding();
+    widgets.dimLabel("Q");
+    widgets.itemTooltip("Quantize");
+    zgui.sameLine(.{ .spacing = tight });
+    zgui.setCursorPosY(row_y);
+    const quantize_labels = [_][]const u8{ "1/4", "1/2", "1", "2", "4" };
+    zgui.setNextItemWidth(widgets.comboContentWidthForLabels(&quantize_labels, ui_scale));
     _ = zgui.combo("##transport_quantize", .{
         .current_item = &state.quantize_index,
         .items_separated_by_zeros = quantize_items,
     });
-
-    // Track quantize change for undo
     if (state.quantize_index != state.quantize_last) {
         state.undo_history.push(.{
             .quantize_change = .{
@@ -283,12 +316,13 @@ fn drawTransport(state: *State, ui_scale: f32) void {
         state.quantize_last = state.quantize_index;
     }
 
-    zgui.sameLine(.{ .spacing = spacing });
-
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
-    zgui.textUnformatted("Buffer");
-    zgui.popStyleColor(.{ .count = 1 });
-    zgui.sameLine(.{ .spacing = 6.0 * ui_scale });
+    zgui.sameLine(.{ .spacing = group });
+    zgui.setCursorPosY(row_y);
+    zgui.alignTextToFramePadding();
+    widgets.dimLabel("Buf");
+    widgets.itemTooltip("Buffer size");
+    zgui.sameLine(.{ .spacing = tight });
+    zgui.setCursorPosY(row_y);
     var buffer_index: i32 = 0;
     for (state_mod.buffer_frame_options, 0..) |frames, idx| {
         if (state.buffer_frames == frames) {
@@ -296,17 +330,8 @@ fn drawTransport(state: *State, ui_scale: f32) void {
             break;
         }
     }
-    var max_buffer_label_w: f32 = 0.0;
-    var label_buf: [16]u8 = undefined;
-    for (state_mod.buffer_frame_options) |frames| {
-        const label = std.fmt.bufPrint(&label_buf, "{d}", .{frames}) catch unreachable;
-        const label_size = zgui.calcTextSize(label, .{});
-        if (label_size[0] > max_buffer_label_w) {
-            max_buffer_label_w = label_size[0];
-        }
-    }
-    const buffer_width = max_buffer_label_w + frame_height + frame_padding[0] * 2.0 + 6.0 * ui_scale;
-    zgui.setNextItemWidth(buffer_width);
+    const buffer_labels = [_][]const u8{ "64", "128", "256", "512", "1024" };
+    zgui.setNextItemWidth(widgets.comboContentWidthForLabels(&buffer_labels, ui_scale));
     if (zgui.combo("##transport_buffer", .{
         .current_item = &buffer_index,
         .items_separated_by_zeros = buffer_items,
@@ -318,50 +343,58 @@ fn drawTransport(state: *State, ui_scale: f32) void {
         }
     }
 
-    zgui.sameLine(.{ .spacing = 10.0 * ui_scale });
+    zgui.sameLine(.{ .spacing = group });
+    zgui.setCursorPosY(row_y);
+    zgui.alignTextToFramePadding();
     var dsp_buf: [16]u8 = undefined;
     const dsp_label = std.fmt.bufPrint(&dsp_buf, "DSP {d}%", .{state.dsp_load_pct}) catch "DSP";
-    const dsp_size = zgui.calcTextSize(dsp_label, .{});
-    const dsp_max_w = zgui.calcTextSize("DSP 100%", .{})[0];
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
-    zgui.textUnformatted(dsp_label);
-    zgui.popStyleColor(.{ .count = 1 });
+    widgets.dimLabel(dsp_label);
 
-    // Load/Save buttons (right-aligned, centered vertically)
-    const dsp_pad = @max(0.0, dsp_max_w - dsp_size[0]);
-    zgui.sameLine(.{ .spacing = spacing * 2.0 + dsp_pad });
-
-    // Move buttons up to center in transport bar
-    const save_y = zgui.getCursorPosY();
-    zgui.setCursorPosY(save_y - 4.0 * ui_scale);
-
-    zgui.pushStyleVar2f(.{ .idx = .frame_padding, .v = .{ 16.0 * ui_scale, 8.0 * ui_scale } });
-    if (zgui.button("Load", .{})) {
+    // --- File actions: same row height, right-aligned on the bar ---
+    const file_gap = tight;
+    const file_total_w = control_h * 3.0 + file_gap * 2.0;
+    const right_pad = tokens.s(8, ui_scale);
+    zgui.sameLine(.{ .spacing = 0 });
+    {
+        const x = zgui.getCursorPosX();
+        const remain = zgui.getContentRegionAvail()[0];
+        const target_x = x + remain - file_total_w - right_pad;
+        zgui.setCursorPosX(if (target_x > x + tight) target_x else x + tight);
+    }
+    zgui.setCursorPosY(row_y);
+    if (widgets.iconButton("##load_project", .folder, ui_scale, "Load project")) {
         state.load_project_request = true;
     }
-
-    zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
-    zgui.setCursorPosY(save_y - 4.0 * ui_scale);
-
-    if (zgui.button("Save", .{})) {
+    zgui.sameLine(.{ .spacing = file_gap });
+    zgui.setCursorPosY(row_y);
+    if (widgets.iconButton("##save_project", .save, ui_scale, "Save project")) {
         state.save_project_request = true;
     }
-
-    zgui.sameLine(.{ .spacing = 8.0 * ui_scale });
-    zgui.setCursorPosY(save_y - 4.0 * ui_scale);
-
-    if (zgui.button("Save As", .{})) {
+    zgui.sameLine(.{ .spacing = file_gap });
+    zgui.setCursorPosY(row_y);
+    if (widgets.iconButton("##save_project_as", .save_as, ui_scale, "Save project as…")) {
         state.save_project_as_request = true;
     }
-    zgui.popStyleVar(.{ .count = 1 });
 
-    zgui.setCursorPosY(save_y + transport_h - 6.0 * ui_scale);
+    // Consume full bar height so following layout starts below the transport.
+    zgui.setCursorPosY(bar_start_y + transport_h);
 }
 
 fn drawClipGrid(state: *State, ui_scale: f32) void {
     // Draw session view
     const is_focused = state.focused_pane == .session;
-    session_draw.draw(&state.session, ui_scale, state.playing, is_focused, state.playhead_beat, state.beatsPerBar());
+    session_draw.draw(
+        &state.session,
+        ui_scale,
+        state.playing,
+        is_focused,
+        state.playhead_beat,
+        state.beatsPerBar(),
+        .{
+            .audio_clips = &state.audio_clips,
+            .sample_store = &state.sample_store,
+        },
+    );
     // Lock selection to the active recording clip to avoid cross-clip input confusion.
     if (state.session.recording.isRecording()) {
         if (state.session.recording.track) |track| {
@@ -378,6 +411,11 @@ fn drawClipGrid(state: *State, ui_scale: f32) void {
         state.session.primary_scene = req.scene;
         state.bottom_mode = .sequencer;
         state.focused_pane = .bottom;
+    }
+    // Hybrid slot exclusivity: MIDI recording/edit drops sample on this cell
+    if (state.session.claim_midi_slot_request) |req| {
+        state.session.claim_midi_slot_request = null;
+        state.claimSlotForMidi(req.track, req.scene);
     }
     // Handle request to clear piano clip (when starting new recording on empty slot)
     if (state.session.clear_piano_clip_request) |req| {
@@ -396,39 +434,26 @@ fn drawClipGrid(state: *State, ui_scale: f32) void {
 }
 
 fn drawBottomPanel(state: *State, ui_scale: f32) void {
-    // Device tab
     const device_active = state.bottom_mode == .device;
-    const device_color = if (device_active) Colors.current.accent else Colors.current.bg_header;
-    zgui.pushStyleColor4f(.{ .idx = .button, .c = device_color });
-    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = if (device_active) Colors.current.accent else Colors.current.bg_cell_hover });
-    zgui.pushStyleColor4f(.{ .idx = .button_active, .c = Colors.current.accent_dim });
-    if (zgui.button("Device", .{})) {
+    const seq_active = state.bottom_mode == .sequencer;
+
+    if (widgets.segmentedTab("##tab_device", .device, "Device", ui_scale, device_active)) {
         state.bottom_mode = .device;
     }
-    zgui.popStyleColor(.{ .count = 3 });
-
-    zgui.sameLine(.{});
-
-    // Clip tab
-    const seq_active = state.bottom_mode == .sequencer;
-    const seq_color = if (seq_active) Colors.current.accent else Colors.current.bg_header;
-    zgui.pushStyleColor4f(.{ .idx = .button, .c = seq_color });
-    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = if (seq_active) Colors.current.accent else Colors.current.bg_cell_hover });
-    zgui.pushStyleColor4f(.{ .idx = .button_active, .c = Colors.current.accent_dim });
-    if (zgui.button("Clip", .{})) {
+    zgui.sameLine(.{ .spacing = tokens.s(4, ui_scale) });
+    if (widgets.segmentedTab("##tab_clip", .clip, "Clip", ui_scale, seq_active)) {
         state.bottom_mode = .sequencer;
     }
-    zgui.popStyleColor(.{ .count = 3 });
 
-    zgui.sameLine(.{});
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
-    var track_buf: [64]u8 = undefined;
-    const track_info = if (state.session.mixer_target == .master)
-        std.fmt.bufPrintSentinel(&track_buf, "  Master", .{}, 0) catch "  Master"
-    else
-        std.fmt.bufPrintSentinel(&track_buf, "  Track {d} / Scene {d}", .{ state.selectedTrack() + 1, state.selectedScene() + 1 }, 0) catch "";
-    zgui.textUnformatted(track_info);
-    zgui.popStyleColor(.{ .count = 1 });
+    zgui.sameLine(.{ .spacing = tokens.gapGroup(ui_scale) });
+    {
+        var track_buf: [64]u8 = undefined;
+        const track_info = if (state.session.mixer_target == .master)
+            std.fmt.bufPrint(&track_buf, "Master", .{}) catch "Master"
+        else
+            std.fmt.bufPrint(&track_buf, "Track {d} · Scene {d}", .{ state.selectedTrack() + 1, state.selectedScene() + 1 }) catch "";
+        widgets.statusPill(track_info, ui_scale);
+    }
 
     zgui.separator();
 
@@ -437,16 +462,27 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
             device_panel.drawDevicePanel(state, ui_scale);
         },
         .sequencer => {
-            // Only show piano roll if there's a clip at this position
-            const clip_slot = state.session.clips[state.selectedTrack()][state.selectedScene()];
+            const track_idx = state.selectedTrack();
+            const scene_idx = state.selectedScene();
+            const clip_slot = state.session.clips[track_idx][scene_idx];
+            const audio = &state.audio_clips[track_idx][scene_idx];
             if (clip_slot.state == .empty) {
-                zgui.spacing();
-                zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_dim });
-                zgui.textUnformatted("No clip. Double-click in session view to create one.");
-                zgui.popStyleColor(.{ .count = 1 });
+                widgets.emptyState("No clip", "Double-click a slot in the session grid to create one", ui_scale);
+            } else if (audio.hasAudio()) {
+                // Audio clip detail: waveform + format / I/O (not the piano roll)
+                const is_focused = state.focused_pane == .bottom;
+                audio_clip_viewer.draw(
+                    audio,
+                    &state.sample_store,
+                    state.currentClipLabel(),
+                    state.playhead_beat,
+                    state.playing,
+                    state.beatsPerBar(),
+                    ui_scale,
+                    is_focused,
+                );
             } else {
                 const is_focused = state.focused_pane == .bottom;
-                const track_idx = state.selectedTrack();
                 const instrument_plugin = state.track_plugin_ptrs[track_idx];
                 const fx_plugins = state.track_fx_plugin_ptrs[track_idx][0..state.track_fx_slot_count[track_idx]];
                 piano_roll_draw.drawSequencer(
@@ -459,9 +495,9 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
                     state.beatsPerBar(),
                     ui_scale,
                     is_focused,
-                    state.selectedTrack(),
-                    state.selectedScene(),
-                    &state.live_key_states[state.selectedTrack()],
+                    track_idx,
+                    scene_idx,
+                    &state.live_key_states[track_idx],
                     instrument_plugin,
                     fx_plugins,
                 );

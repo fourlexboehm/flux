@@ -11,17 +11,20 @@ pub fn startRecording(self: *session_view.SessionView, track: usize, scene: usiz
         stopRecording(self, .stop);
     }
 
+    // MIDI recording owns the slot (hybrid exclusivity: drop sample if present)
+    self.claim_midi_slot_request = .{ .track = track, .scene = scene };
+
     // Create clip if empty, set to recording state
     if (self.clips[track][scene].state == .empty) {
         self.clips[track][scene] = .{
             .state = if (playing) .record_queued else .recording,
             .length_beats = default_clip_bars * beats_per_bar_in,
         };
-        // Request to clear any old notes in the piano clip (new recording, not overdub)
+        // Clear any old notes in the piano clip (new recording, not overdub)
         self.clear_piano_clip_request = .{ .track = track, .scene = scene };
         self.recording.is_new_clip = true;
     } else {
-        // Overdub mode - don't clear existing notes
+        // Overdub mode - keep existing MIDI notes
         self.clips[track][scene].state = if (playing) .record_queued else .recording;
         self.recording.is_new_clip = false;
     }

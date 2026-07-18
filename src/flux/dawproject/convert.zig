@@ -13,6 +13,7 @@ const RealParameter = types.RealParameter;
 const Note = types.Note;
 const AutomationPoint = types.AutomationPoint;
 const Points = types.Points;
+const WarpPoint = types.WarpPoint;
 const Clip = types.Clip;
 const ClipSlot = types.ClipSlot;
 const Scene = types.Scene;
@@ -21,6 +22,7 @@ const Lanes = types.Lanes;
 const Channel = types.Channel;
 const ClapPlugin = types.ClapPlugin;
 const Project = types.Project;
+const ContentType = types.ContentType;
 
 const TrackPluginInfo = io_types.TrackPluginInfo;
 pub const IdGenerator = struct {
@@ -106,10 +108,17 @@ pub fn fromFluxProject(
         track_volume_param_ids[t] = vol_id;
         track_pan_param_ids[t] = pan_id;
 
+        const content_attr = try trackContentTypesAttr(allocator, state, t);
+        const content_type: ContentType = if (std.mem.eql(u8, content_attr, "audio"))
+            .audio
+        else
+            .notes;
+
         try tracks_list.append(allocator, .{
             .id = track_id,
             .name = try allocator.dupe(u8, track_data.getName()),
-            .content_type = .notes,
+            .content_type = content_type,
+            .content_types_attr = content_attr,
             .channel = .{
                 .id = channel_id,
                 .role = .regular,
@@ -186,6 +195,8 @@ pub fn fromFluxProject(
         .id = master_track_id,
         .name = "Master",
         .content_type = .audio,
+        // Match Bitwig hybrid master labeling
+        .content_types_attr = try allocator.dupe(u8, "audio notes"),
         .channel = .{
             .id = master_channel_id,
             .role = .master,
@@ -226,12 +237,23 @@ pub fn fromFluxProject(
         for (0..state.session.track_count) |t| {
             const slot = state.session.clips[t][s];
             const piano = &state.piano_clips[t][s];
+            const audio = &state.audio_clips[t][s];
             const clip_slot_id = try ids.next();
 
-            // Check if this slot has content
-            const has_content = slot.state != .empty or piano.notes.items.len > 0;
+            const has_audio = audio.hasAudio();
+            const has_notes = piano.notes.items.len > 0;
+            const has_content = slot.state != .empty or has_notes or has_audio;
 
-            if (has_content) {
+            if (has_content and has_audio) {
+                // Prefer audio when present (one content type per slot)
+                const clip = try buildAudioClip(allocator, state, t, s, &ids);
+                try clip_slots.append(allocator, .{
+                    .id = clip_slot_id,
+                    .track = track_ids.items[t],
+                    .has_stop = true,
+                    .clip = clip,
+                });
+            } else if (has_content) {
                 // Convert notes
                 var daw_notes = std.ArrayList(Note).empty;
                 for (piano.notes.items) |note| {
@@ -395,6 +417,88 @@ pub fn fromFluxProject(
             },
         },
         .scenes = try scenes.toOwnedSlice(allocator),
+    };
+}
+
+/// DAWproject `contentType` list: notes | audio | "audio notes" (hybrid).
+fn trackContentTypesAttr(allocator: std.mem.Allocator, state: *const ui_state.State, track: usize) ![]const u8 {
+    const has_audio = state.trackHasAudio(track);
+    const has_notes = state.trackHasNotes(track);
+    if (has_audio and has_notes) return try allocator.dupe(u8, "audio notes");
+    if (has_audio) return try allocator.dupe(u8, "audio");
+    return try allocator.dupe(u8, "notes");
+}
+
+fn buildAudioClip(
+    allocator: std.mem.Allocator,
+    state: *const ui_state.State,
+    track: usize,
+    scene: usize,
+    ids: *IdGenerator,
+) !Clip {
+    const slot = state.session.clips[track][scene];
+    const audio = &state.audio_clips[track][scene];
+    const sample_id = audio.sample_id orelse return error.MissingSample;
+    const asset = state.sample_store.get(sample_id) orelse return error.MissingSample;
+
+    const clip_duration: f64 = if (slot.state != .empty)
+        slot.length_beats
+    else
+        audio.length_beats;
+
+    var warp_points: []WarpPoint = undefined;
+    if (audio.warps.items.len >= 2) {
+        warp_points = try allocator.alloc(WarpPoint, audio.warps.items.len);
+        for (audio.warps.items, 0..) |m, i| {
+            warp_points[i] = .{ .time = m.beat, .content_time = m.content_seconds };
+        }
+    } else {
+        warp_points = try allocator.alloc(WarpPoint, 2);
+        warp_points[0] = .{ .time = 0.0, .content_time = 0.0 };
+        warp_points[1] = .{ .time = clip_duration, .content_time = asset.duration_seconds };
+    }
+
+    const name: ?[]const u8 = if (audio.name.len > 0)
+        try allocator.dupe(u8, audio.name.get())
+    else
+        null;
+
+    const algorithm: ?[]const u8 = if (audio.algorithm) |a|
+        try allocator.dupe(u8, a)
+    else
+        try allocator.dupe(u8, "stretch");
+
+    const path = try allocator.dupe(u8, asset.path_in_project);
+    const warps_id = try ids.next();
+    const audio_id = try ids.next();
+
+    const loop_end: f64 = if (audio.loop_end_beats > 0) audio.loop_end_beats else clip_duration;
+
+    return .{
+        .time = 0.0,
+        .duration = clip_duration,
+        .play_start = audio.play_start_beats,
+        .loop_start = audio.loop_start_beats,
+        .loop_end = loop_end,
+        .fade_in_time = if (audio.fade_in_beats > 0) audio.fade_in_beats else null,
+        .fade_out_time = if (audio.fade_out_beats > 0) audio.fade_out_beats else null,
+        .fade_time_unit = .beats,
+        .enable = true,
+        .name = name,
+        .warps = .{
+            .id = warps_id,
+            .time_unit = .beats,
+            .content_time_unit = .seconds,
+            .audio = .{
+                .id = audio_id,
+                .file = .{ .path = path, .external = false },
+                .duration = asset.duration_seconds,
+                .sample_rate = asset.original_sample_rate,
+                .channels = asset.original_channels,
+                .algorithm = algorithm,
+            },
+            .warps = warp_points,
+        },
     };
 }
 
