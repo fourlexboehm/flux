@@ -36,6 +36,14 @@ pub const IdGenerator = struct {
     }
 };
 
+/// How audio File refs are written into project.xml.
+pub const MediaMode = enum {
+    /// Thin save: relative paths with external="true"
+    external,
+    /// Pack: in-zip paths with external="false"
+    embedded,
+};
+
 /// Convert Flux project state to DAWproject format
 pub fn fromFluxProject(
     allocator: std.mem.Allocator,
@@ -43,6 +51,7 @@ pub fn fromFluxProject(
     catalog: *const plugins.PluginCatalog,
     track_plugin_info: []const TrackPluginInfo,
     track_fx_plugin_info: []const [ui_state.max_fx_slots]TrackPluginInfo,
+    media_mode: MediaMode,
 ) !Project {
     var ids = IdGenerator{ .allocator = allocator };
 
@@ -246,7 +255,7 @@ pub fn fromFluxProject(
 
             if (has_content and has_audio) {
                 // Prefer audio when present (one content type per slot)
-                const clip = try buildAudioClip(allocator, state, t, s, &ids);
+                const clip = try buildAudioClip(allocator, state, t, s, &ids, media_mode);
                 try clip_slots.append(allocator, .{
                     .id = clip_slot_id,
                     .track = track_ids.items[t],
@@ -435,6 +444,7 @@ fn buildAudioClip(
     track: usize,
     scene: usize,
     ids: *IdGenerator,
+    media_mode: MediaMode,
 ) !Clip {
     const slot = state.session.clips[track][scene];
     const audio = &state.audio_clips[track][scene];
@@ -491,7 +501,7 @@ fn buildAudioClip(
             .content_time_unit = .seconds,
             .audio = .{
                 .id = audio_id,
-                .file = .{ .path = path, .external = false },
+                .file = .{ .path = path, .external = media_mode == .external },
                 .duration = asset.duration_seconds,
                 .sample_rate = asset.original_sample_rate,
                 .channels = asset.original_channels,
@@ -519,6 +529,8 @@ fn buildClapPlugin(
             const param_id = try std.fmt.allocPrint(allocator, "{s}_p{d}", .{ device_id, param.id });
             try params.append(allocator, .{
                 .id = param_id,
+                // Bitwig requires parameterID on device params (xs:int bit pattern of CLAP id).
+                .parameter_id = @bitCast(param.id),
                 .name = try allocator.dupe(u8, param.name),
                 .value = param.value,
                 .min = param.min,
@@ -558,6 +570,7 @@ fn buildMissingPlugin(
     for (info.params) |param| {
         try params.append(allocator, .{
             .id = try std.fmt.allocPrint(allocator, "{s}_p{d}", .{ device_id, param.id }),
+            .parameter_id = @bitCast(param.id),
             .name = try allocator.dupe(u8, param.name),
             .value = param.value,
             .min = param.min,

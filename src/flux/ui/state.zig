@@ -186,7 +186,10 @@ pub const State = struct {
     load_project_request: bool,
     save_project_request: bool,
     save_project_as_request: bool,
+    pack_project_request: bool,
     project_path: ?[]u8,
+    /// Packed/Bitwig open hydrated to external layout; needs thin Save even if undo clean.
+    needs_thin_save: bool,
 
     // Undo/redo history
     undo_history: undo.UndoHistory,
@@ -313,7 +316,9 @@ pub const State = struct {
             .load_project_request = false,
             .save_project_request = false,
             .save_project_as_request = false,
+            .pack_project_request = false,
             .project_path = null,
+            .needs_thin_save = false,
             .undo_history = undo.UndoHistory.init(allocator),
         };
     }
@@ -442,6 +447,20 @@ pub const State = struct {
             self.allocator.free(old_path);
         }
         self.project_path = try self.allocator.dupe(u8, path);
+    }
+
+    /// Dirty = undo past save point, or opened packed project not yet thin-saved.
+    pub fn isProjectDirty(self: *const State) bool {
+        return self.needs_thin_save or self.undo_history.hasUnsavedChanges();
+    }
+
+    pub fn clearProjectDirty(self: *State) void {
+        self.needs_thin_save = false;
+        self.undo_history.markSavePoint();
+    }
+
+    pub fn markProjectDirty(self: *State) void {
+        self.needs_thin_save = true;
     }
 
     pub fn clearMissingTrackPlugin(self: *State, track_index: usize) void {

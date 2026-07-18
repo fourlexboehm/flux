@@ -3,6 +3,8 @@ const parse = @import("parse.zig");
 const xml_writer = @import("xml_writer.zig");
 const types = @import("types.zig");
 const flatten = @import("flatten.zig");
+const media_layout = @import("media_layout.zig");
+const zip_writer = @import("zip_writer.zig");
 
 const XmlWriter = xml_writer.XmlWriter;
 const toXml = xml_writer.toXml;
@@ -65,6 +67,17 @@ test "CLAP identity and embedded state path round trip" {
                             .device_name = "Portable Synth",
                             .device_role = .instrument,
                             .state = .{ .path = "plugins/track0.clap-preset" },
+                            .parameters = &.{
+                                .{
+                                    .id = "device0_p42",
+                                    .parameter_id = 42,
+                                    .name = "Cutoff",
+                                    .value = 0.5,
+                                    .min = 0,
+                                    .max = 1,
+                                    .unit = .linear,
+                                },
+                            },
                         },
                     },
                 },
@@ -73,6 +86,7 @@ test "CLAP identity and embedded state path round trip" {
     };
 
     const xml = try toXml(allocator, &proj);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "parameterID=\"42\"") != null);
     const parsed = try parse.parseProjectXml(allocator, xml);
 
     const device = parsed.tracks[0].channel.?.devices[0];
@@ -402,4 +416,95 @@ test "collect audio paths from nested clip" {
     try flatten.collectAudioPaths(allocator, &clip, &paths);
     try std.testing.expectEqual(@as(usize, 1), paths.items.len);
     try std.testing.expectEqualStrings("audio/nested.wav", paths.items[0]);
+}
+
+test "external audio file attribute round trip" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const warps_pts = [_]WarpPoint{
+        .{ .time = 0.0, .content_time = 0.0 },
+        .{ .time = 4.0, .content_time = 1.0 },
+    };
+    const proj = Project{
+        .application = .{ .name = "Flux", .version = "1.0" },
+        .tracks = &.{
+            .{
+                .id = "tr1",
+                .name = "Audio",
+                .content_type = .audio,
+                .channel = .{ .id = "ch1" },
+            },
+        },
+        .scenes = &.{
+            .{
+                .id = "sc1",
+                .name = "Scene 1",
+                .lanes_id = "sl1",
+                .clip_slots = &.{
+                    .{
+                        .id = "cs1",
+                        .track = "tr1",
+                        .clip = .{
+                            .time = 0,
+                            .duration = 4,
+                            .warps = .{
+                                .id = "w1",
+                                .time_unit = .beats,
+                                .content_time_unit = .seconds,
+                                .audio = .{
+                                    .id = "a1",
+                                    .file = .{ .path = "samples/kick.wav", .external = true },
+                                    .duration = 1.0,
+                                    .sample_rate = 48000,
+                                    .channels = 2,
+                                },
+                                .warps = &warps_pts,
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    };
+
+    const xml = try toXml(allocator, &proj);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "samples/kick.wav") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "external=\"true\"") != null);
+
+    const parsed = try parse.parseProjectXml(allocator, xml);
+    const file = parsed.scenes[0].clip_slots[0].clip.?.warps.?.audio.?.file;
+    try std.testing.expectEqualStrings("samples/kick.wav", file.path);
+    try std.testing.expect(file.external);
+}
+
+test "media_layout path safety and sanitize" {
+    const allocator = std.testing.allocator;
+    try std.testing.expect(media_layout.isSafeRelativePath("samples/kick.wav"));
+    try std.testing.expect(media_layout.isSafeRelativePath("recordings/Track1-001.wav"));
+    try std.testing.expect(!media_layout.isSafeRelativePath("../etc/passwd"));
+    try std.testing.expect(!media_layout.isSafeRelativePath("/abs/path.wav"));
+    try std.testing.expect(media_layout.isMediaSubdirPath("samples/a.wav"));
+    try std.testing.expect(media_layout.isMediaSubdirPath("recordings/b.wav"));
+    try std.testing.expect(!media_layout.isMediaSubdirPath("audio/c.wav"));
+
+    const safe = try media_layout.sanitizeBaseName(allocator, "foo/../../kick drum!.wav");
+    defer allocator.free(safe);
+    try std.testing.expectEqualStrings("kick drum_.wav", safe);
+}
+
+test "thin zip has no wav members" {
+    const allocator = std.testing.allocator;
+    var zip = zip_writer.ZipWriter.init(allocator);
+    defer zip.deinit();
+    try zip.addFile("project.xml", "<Project/>");
+    try zip.addFile("metadata.xml", "<MetaData/>");
+    try zip.addFile("flux_undo.xml", "<Metadata/>");
+    try zip.addFile("plugins/track0.clap-preset", "clap....");
+    // Intentionally no samples/ or recordings/
+    const data = try zip.finish();
+    try std.testing.expect(std.mem.indexOf(u8, data, "project.xml") != null);
+    try std.testing.expect(std.mem.indexOf(u8, data, "samples/") == null);
+    try std.testing.expect(std.mem.indexOf(u8, data, ".wav") == null);
 }

@@ -110,8 +110,10 @@ fn saveFileMacOS(
     const title_str = objc.foundation.String.stringWithUTF8String(title_z.ptr);
     panel.setTitle(title_str);
 
-    // Set default filename
-    const name_z = allocator.dupeSentinel(u8, default_name, 0) catch return FileDialogError.OutOfMemory;
+    // Name field must NOT include allowed extensions — NSSavePanel appends the first
+    // allowed type (e.g. "foo.dawproject" + allowed "dawproject" → "foo.dawproject.dawproject").
+    const name_for_field = stripAllowedExtension(default_name, file_types);
+    const name_z = allocator.dupeSentinel(u8, name_for_field, 0) catch return FileDialogError.OutOfMemory;
     defer allocator.free(name_z);
     const name_str = objc.foundation.String.stringWithUTF8String(name_z.ptr);
     panel.setNameFieldStringValue(name_str);
@@ -134,7 +136,43 @@ fn saveFileMacOS(
     const path_ptr = path_ns.UTF8String();
     const path_slice = std.mem.span(path_ptr);
 
-    return allocator.dupe(u8, path_slice) catch return FileDialogError.OutOfMemory;
+    // Belt-and-suspenders: collapse accidental double extensions from older panels.
+    const normalized = collapseDuplicateExtension(path_slice, file_types);
+    return allocator.dupe(u8, normalized) catch return FileDialogError.OutOfMemory;
+}
+
+/// "song.dawproject" → "song" when "dawproject" is an allowed type (panel will re-append).
+fn stripAllowedExtension(name: []const u8, file_types: []const FileType) []const u8 {
+    for (file_types) |ft| {
+        for (ft.extensions) |ext| {
+            if (ext.len == 0) continue;
+            if (name.len > ext.len + 1 and
+                name[name.len - ext.len - 1] == '.' and
+                std.mem.eql(u8, name[name.len - ext.len ..], ext))
+            {
+                return name[0 .. name.len - ext.len - 1];
+            }
+        }
+    }
+    return name;
+}
+
+/// "…/foo.dawproject.dawproject" → "…/foo.dawproject"
+fn collapseDuplicateExtension(path: []const u8, file_types: []const FileType) []const u8 {
+    for (file_types) |ft| {
+        for (ft.extensions) |ext| {
+            if (ext.len == 0) continue;
+            // ".ext.ext" suffix
+            if (path.len < ext.len * 2 + 2) continue;
+            const dot1 = path.len - ext.len * 2 - 2;
+            const mid = path.len - ext.len - 1;
+            if (path[dot1] != '.' or path[mid] != '.') continue;
+            if (!std.mem.eql(u8, path[dot1 + 1 .. mid], ext)) continue;
+            if (!std.mem.eql(u8, path[mid + 1 ..], ext)) continue;
+            return path[0..mid]; // drop second .ext
+        }
+    }
+    return path;
 }
 
 // Create array of extension strings

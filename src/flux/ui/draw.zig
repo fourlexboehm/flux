@@ -352,7 +352,8 @@ fn drawTransport(state: *State, ui_scale: f32) void {
 
     // --- File actions: same row height, right-aligned on the bar ---
     const file_gap = tight;
-    const file_total_w = control_h * 3.0 + file_gap * 2.0;
+    const file_btn_count: f32 = 4.0;
+    const file_total_w = control_h * file_btn_count + file_gap * (file_btn_count - 1.0);
     const right_pad = tokens.s(8, ui_scale);
     zgui.sameLine(.{ .spacing = 0 });
     {
@@ -367,13 +368,18 @@ fn drawTransport(state: *State, ui_scale: f32) void {
     }
     zgui.sameLine(.{ .spacing = file_gap });
     zgui.setCursorPosY(row_y);
-    if (widgets.iconButton("##save_project", .save, ui_scale, "Save project")) {
+    if (widgets.iconButton("##save_project", .save, ui_scale, if (state.isProjectDirty()) "Save project •" else "Save project")) {
         state.save_project_request = true;
     }
     zgui.sameLine(.{ .spacing = file_gap });
     zgui.setCursorPosY(row_y);
     if (widgets.iconButton("##save_project_as", .save_as, ui_scale, "Save project as…")) {
         state.save_project_as_request = true;
+    }
+    zgui.sameLine(.{ .spacing = file_gap });
+    zgui.setCursorPosY(row_y);
+    if (widgets.iconButton("##pack_project", .open_window, ui_scale, "Pack Project… (embedded audio)")) {
+        state.pack_project_request = true;
     }
 
     // Consume full bar height so following layout starts below the transport.

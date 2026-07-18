@@ -436,7 +436,7 @@ fn drawMetaRow(clip: *const AudioClip, asset: *const SampleAsset, ui_scale: f32)
     const frames_s = std.fmt.bufPrint(&frames_buf, "{d} frames", .{asset.frame_count}) catch "?";
 
     var size_buf: [32]u8 = undefined;
-    const size_s = formatBytes(&size_buf, asset.source_bytes.len);
+    const size_s = formatBytes(&size_buf, if (asset.source_bytes) |b| b.len else asset.file_size);
 
     var warp_buf: [24]u8 = undefined;
     const warp_s = std.fmt.bufPrint(&warp_buf, "{d} warps", .{clip.warps.items.len}) catch "?";

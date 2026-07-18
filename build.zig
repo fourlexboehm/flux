@@ -539,12 +539,29 @@ pub fn build(b: *std.Build) void {
     audio_clip_tests.root_module.linkLibrary(zaudio.artifact("miniaudio"));
     const run_audio_clip_tests = b.addRunArtifact(audio_clip_tests);
 
+    // Thin Save As media roundtrip (uses tests/fixtures/*.dawproject when present)
+    const media_roundtrip_module = b.createModule(.{
+        .root_source_file = b.path("src/flux/media_roundtrip_test.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    media_roundtrip_module.addImport("zaudio", zaudio.module("root"));
+    const media_roundtrip_tests = b.addTest(.{
+        .root_module = media_roundtrip_module,
+        .use_llvm = use_llvm,
+    });
+    media_roundtrip_tests.root_module.linkLibrary(zaudio.artifact("miniaudio"));
+    // Run from repo root so tests/fixtures/ resolves
+    const run_media_roundtrip_tests = b.addRunArtifact(media_roundtrip_tests);
+    run_media_roundtrip_tests.setCwd(b.path("."));
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_filter_tests.step);
     test_step.dependOn(&run_dsp_tests.step);
     test_step.dependOn(&run_zsynth_smoke_tests.step);
     test_step.dependOn(&run_dawproject_tests.step);
     test_step.dependOn(&run_audio_clip_tests.step);
+    test_step.dependOn(&run_media_roundtrip_tests.step);
 }
 
 fn createClapPluginStep(

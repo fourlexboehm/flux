@@ -298,6 +298,7 @@ pub const XmlWriter = struct {
                 try self.writeIndent();
                 try self.buffer.appendSlice(self.allocator, "<RealParameter");
                 try self.writeAttr("id", param.id);
+                if (param.parameter_id) |pid| try self.writeAttrInt("parameterID", pid);
                 try self.writeAttr("name", param.name);
                 if (param.min) |min| try self.writeAttrFloat("min", min);
                 if (param.max) |max| try self.writeAttrFloat("max", max);
@@ -315,6 +316,7 @@ pub const XmlWriter = struct {
             try self.buffer.appendSlice(self.allocator, "<Enabled");
             try self.writeAttrBool("value", enabled.value);
             try self.writeAttr("id", enabled.id);
+            if (enabled.parameter_id) |pid| try self.writeAttrInt("parameterID", pid);
             try self.writeAttr("name", enabled.name);
             try self.buffer.appendSlice(self.allocator, "/>\n");
         }
