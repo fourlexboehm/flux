@@ -17,7 +17,9 @@ const dawproject_io = @import("io.zig");
 const dawproject_types = @import("types.zig");
 const dawproject_io_types = @import("io_types.zig");
 const flatten = @import("flatten.zig");
+const media_layout = @import("media_layout.zig");
 const audio_clip_types = @import("../ui/audio_clip/types.zig");
+const sample_store = @import("../audio/sample_store.zig");
 
 const track_count = session_constants.max_tracks;
 const scene_count = session_constants.max_scenes;
@@ -54,6 +56,13 @@ pub fn handleFileRequests(
         state.save_project_as_request = false;
         handleSaveProjectAs(allocator, io, state, catalog, track_plugins, track_fx, shared) catch |err| {
             std.log.err("Failed to save project as: {}", .{err});
+        };
+    }
+
+    if (state.pack_project_request) {
+        state.pack_project_request = false;
+        handlePackProject(allocator, io, state, catalog, track_plugins, track_fx, shared) catch |err| {
+            std.log.err("Failed to pack project: {}", .{err});
         };
     }
 
@@ -120,7 +129,7 @@ pub fn applyPresetLoadRequests(
 fn handleSaveProject(
     allocator: std.mem.Allocator,
     io: std.Io,
-    state: *const ui_state.State,
+    state: *ui_state.State,
     catalog: *const plugins.PluginCatalog,
     track_plugins: *const [track_count]TrackPlugin,
     track_fx: *const [track_count][ui_state.max_fx_slots]TrackPlugin,
@@ -161,60 +170,71 @@ fn handleSaveProjectAs(
     try state.setProjectPath(path.?);
 }
 
-fn saveProjectToPath(
+fn handlePackProject(
     allocator: std.mem.Allocator,
     io: std.Io,
-    path: []const u8,
-    state: *const ui_state.State,
+    state: *ui_state.State,
     catalog: *const plugins.PluginCatalog,
     track_plugins: *const [track_count]TrackPlugin,
     track_fx: *const [track_count][ui_state.max_fx_slots]TrackPlugin,
     shared: ?*audio_engine.SharedState,
 ) !void {
-    if (shared) |s| {
-        s.setSuspendProcessing(true);
-        defer s.setSuspendProcessing(false);
-        s.waitForIdle(io);
-        const was_audio = thread_context.is_audio_thread;
-        thread_context.is_audio_thread = true;
-        defer thread_context.is_audio_thread = was_audio;
-
-        const plugins_for_tracks = plugin_runtime.collectPlugins(track_plugins, track_fx);
-        defer {
-            for (0..track_count) |t| {
-                if (plugins_for_tracks.instruments[t] != null) {
-                    s.requestStartProcessing(t);
-                }
-                for (0..ui_state.max_fx_slots) |fx_index| {
-                    if (plugins_for_tracks.fx[t][fx_index] != null) {
-                        s.requestStartProcessingFx(t, fx_index);
-                    }
-                }
-            }
+    const default_name = blk: {
+        if (state.project_path) |pp| {
+            const base = std.fs.path.stem(pp);
+            break :blk try std.fmt.allocPrint(allocator, "{s}-packed.dawproject", .{base});
         }
-        for (0..track_count) |t| {
-            if (s.isPluginStarted(t)) {
-                if (plugins_for_tracks.instruments[t]) |plugin| {
-                    plugin.stopProcessing(plugin);
-                }
-                s.clearPluginStarted(t);
-            }
-            for (0..ui_state.max_fx_slots) |fx_index| {
-                if (s.isFxPluginStarted(t, fx_index)) {
-                    if (plugins_for_tracks.fx[t][fx_index]) |plugin| {
-                        plugin.stopProcessing(plugin);
-                    }
-                    s.clearFxPluginStarted(t, fx_index);
-                }
-            }
-        }
-    }
+        break :blk try allocator.dupe(u8, "project-packed.dawproject");
+    };
+    defer allocator.free(default_name);
 
+    const path = file_dialog.saveFile(
+        allocator,
+        io,
+        "Pack Project",
+        default_name,
+        &dawproject_file_types,
+    ) catch |err| {
+        std.log.err("File dialog error: {}", .{err});
+        return;
+    };
+    if (path == null) return;
+    defer allocator.free(path.?);
+
+    try writeProjectToPath(allocator, io, path.?, state, catalog, track_plugins, track_fx, shared, .pack);
+    std.log.info("Packed project to: {s}", .{path.?});
+}
+
+const WriteMode = enum { thin_save, pack };
+
+fn saveProjectToPath(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    state: *ui_state.State,
+    catalog: *const plugins.PluginCatalog,
+    track_plugins: *const [track_count]TrackPlugin,
+    track_fx: *const [track_count][ui_state.max_fx_slots]TrackPlugin,
+    shared: ?*audio_engine.SharedState,
+) !void {
+    try writeProjectToPath(allocator, io, path, state, catalog, track_plugins, track_fx, shared, .thin_save);
+}
+
+fn writeProjectToPath(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+    state: *ui_state.State,
+    catalog: *const plugins.PluginCatalog,
+    track_plugins: *const [track_count]TrackPlugin,
+    track_fx: *const [track_count][ui_state.max_fx_slots]TrackPlugin,
+    shared: ?*audio_engine.SharedState,
+    mode: WriteMode,
+) !void {
     var param_arena = std.heap.ArenaAllocator.init(allocator);
     defer param_arena.deinit();
     const param_alloc = param_arena.allocator();
 
-    // Collect plugin states and plugin info
     var plugin_states: std.ArrayList(dawproject_io_types.PluginStateFile) = .empty;
     defer {
         for (plugin_states.items) |plugin_state| {
@@ -225,86 +245,113 @@ fn saveProjectToPath(
     }
 
     var track_plugin_info: [track_count]dawproject_io_types.TrackPluginInfo = undefined;
-    for (&track_plugin_info) |*info| {
-        info.* = .{};
-    }
+    for (&track_plugin_info) |*info| info.* = .{};
     var track_fx_plugin_info: [track_count][ui_state.max_fx_slots]dawproject_io_types.TrackPluginInfo = undefined;
     for (&track_fx_plugin_info) |*track_slots| {
-        for (track_slots) |*info| {
-            info.* = .{};
-        }
+        for (track_slots) |*info| info.* = .{};
     }
 
-    for (track_plugins, 0..) |track, t| {
-        if (track.getPlugin()) |plugin| {
-            track_plugin_info[t].plugin_id = std.mem.span(plugin.descriptor.id);
-            track_plugin_info[t].params = collectPluginParams(param_alloc, plugin);
-
-            if (capturePluginStateForDawproject(allocator, plugin, t, null)) |ps| {
-                track_plugin_info[t].state_path = ps.path;
-                plugin_states.append(allocator, ps) catch |err| {
-                    allocator.free(ps.path);
-                    allocator.free(ps.data);
-                    return err;
-                };
-            }
-        } else if (state.missing_track_plugins[t]) |missing| {
-            track_plugin_info[t].plugin_id = missing.device_id;
-            track_plugin_info[t].params = missingPluginParams(param_alloc, &missing);
-            if (copyMissingPluginState(allocator, &missing, t, null)) |plugin_state| {
-                track_plugin_info[t].state_path = plugin_state.path;
-                plugin_states.append(allocator, plugin_state) catch |err| {
-                    allocator.free(plugin_state.path);
-                    allocator.free(plugin_state.data);
-                    return err;
-                };
-            }
-        }
-    }
-    for (track_fx, 0..) |track_slots, t| {
-        for (track_slots, 0..) |slot, fx_index| {
-            if (slot.getPlugin()) |plugin| {
-                track_fx_plugin_info[t][fx_index].plugin_id = std.mem.span(plugin.descriptor.id);
-                track_fx_plugin_info[t][fx_index].params = collectPluginParams(param_alloc, plugin);
-                if (capturePluginStateForDawproject(allocator, plugin, t, fx_index)) |ps| {
-                    track_fx_plugin_info[t][fx_index].state_path = ps.path;
-                    plugin_states.append(allocator, ps) catch |err| {
-                        allocator.free(ps.path);
-                        allocator.free(ps.data);
-                        return err;
-                    };
+    // Plugin calls require a stable, stopped processing state. Resume before
+    // media copying, XML generation, compression, and filesystem writes.
+    {
+        const plugins_for_tracks = plugin_runtime.collectPlugins(track_plugins, track_fx);
+        const was_audio = thread_context.is_audio_thread;
+        if (shared) |s| {
+            s.setSuspendProcessing(true);
+            s.waitForIdle(io);
+            thread_context.is_audio_thread = true;
+            for (0..track_count) |t| {
+                if (s.isPluginStarted(t)) {
+                    if (plugins_for_tracks.instruments[t]) |plugin| plugin.stopProcessing(plugin);
+                    s.clearPluginStarted(t);
                 }
-            } else if (state.missing_track_fx[t][fx_index]) |missing| {
-                track_fx_plugin_info[t][fx_index].plugin_id = missing.device_id;
-                track_fx_plugin_info[t][fx_index].params = missingPluginParams(param_alloc, &missing);
-                if (copyMissingPluginState(allocator, &missing, t, fx_index)) |plugin_state| {
-                    track_fx_plugin_info[t][fx_index].state_path = plugin_state.path;
-                    plugin_states.append(allocator, plugin_state) catch |err| {
-                        allocator.free(plugin_state.path);
-                        allocator.free(plugin_state.data);
-                        return err;
-                    };
+                for (0..ui_state.max_fx_slots) |fx_index| {
+                    if (s.isFxPluginStarted(t, fx_index)) {
+                        if (plugins_for_tracks.fx[t][fx_index]) |plugin| plugin.stopProcessing(plugin);
+                        s.clearFxPluginStarted(t, fx_index);
+                    }
                 }
             }
         }
+        defer {
+            if (shared) |s| {
+                for (0..track_count) |t| {
+                    if (plugins_for_tracks.instruments[t] != null) s.requestStartProcessing(t);
+                    for (0..ui_state.max_fx_slots) |fx_index| {
+                        if (plugins_for_tracks.fx[t][fx_index] != null) s.requestStartProcessingFx(t, fx_index);
+                    }
+                }
+                thread_context.is_audio_thread = was_audio;
+                s.setSuspendProcessing(false);
+            }
+        }
+
+        for (track_plugins, 0..) |track, t| {
+            if (track.getPlugin()) |plugin| {
+                track_plugin_info[t].plugin_id = std.mem.span(plugin.descriptor.id);
+                track_plugin_info[t].params = collectPluginParams(param_alloc, plugin);
+                if (capturePluginStateForDawproject(allocator, plugin, t, null)) |ps| {
+                    track_plugin_info[t].state_path = ps.path;
+                    try plugin_states.append(allocator, ps);
+                }
+            } else if (state.missing_track_plugins[t]) |missing| {
+                track_plugin_info[t].plugin_id = missing.device_id;
+                track_plugin_info[t].params = missingPluginParams(param_alloc, &missing);
+                if (copyMissingPluginState(allocator, &missing, t, null)) |plugin_state| {
+                    track_plugin_info[t].state_path = plugin_state.path;
+                    try plugin_states.append(allocator, plugin_state);
+                }
+            }
+        }
+        for (track_fx, 0..) |track_slots, t| {
+            for (track_slots, 0..) |slot, fx_index| {
+                if (slot.getPlugin()) |plugin| {
+                    track_fx_plugin_info[t][fx_index].plugin_id = std.mem.span(plugin.descriptor.id);
+                    track_fx_plugin_info[t][fx_index].params = collectPluginParams(param_alloc, plugin);
+                    if (capturePluginStateForDawproject(allocator, plugin, t, fx_index)) |ps| {
+                        track_fx_plugin_info[t][fx_index].state_path = ps.path;
+                        try plugin_states.append(allocator, ps);
+                    }
+                } else if (state.missing_track_fx[t][fx_index]) |missing| {
+                    track_fx_plugin_info[t][fx_index].plugin_id = missing.device_id;
+                    track_fx_plugin_info[t][fx_index].params = missingPluginParams(param_alloc, &missing);
+                    if (copyMissingPluginState(allocator, &missing, t, fx_index)) |plugin_state| {
+                        track_fx_plugin_info[t][fx_index].state_path = plugin_state.path;
+                        try plugin_states.append(allocator, plugin_state);
+                    }
+                }
+            }
+        }
     }
 
-    // Save the project
-    dawproject_io.save(
-        allocator,
-        io,
-        path,
-        state,
-        catalog,
-        plugin_states.items,
-        &track_plugin_info,
-        &track_fx_plugin_info,
-    ) catch |err| {
-        std.log.err("Failed to write dawproject: {}", .{err});
-        return;
-    };
-
-    std.log.info("Saved project to: {s}", .{path});
+    switch (mode) {
+        .thin_save => {
+            try dawproject_io.save(
+                allocator,
+                io,
+                path,
+                state,
+                catalog,
+                plugin_states.items,
+                &track_plugin_info,
+                &track_fx_plugin_info,
+            );
+            state.clearProjectDirty();
+            std.log.info("Saved project to: {s}", .{path});
+        },
+        .pack => {
+            try dawproject_io.pack(
+                allocator,
+                io,
+                path,
+                state,
+                catalog,
+                plugin_states.items,
+                &track_plugin_info,
+                &track_fx_plugin_info,
+            );
+        },
+    }
 }
 
 fn collectPluginParams(
@@ -420,6 +467,16 @@ fn handleLoadProject(
     };
 
     try state.setProjectPath(path.?);
+    if (loaded.needs_thin_save) {
+        state.needs_thin_save = true;
+        std.log.info("Opened packed project; media under samples/ — Save to convert to thin layout", .{});
+    } else {
+        state.clearProjectDirty();
+    }
+    // flux_undo.xml is kept in the archive on Save; full stack restore is not wired yet.
+    if (loaded.undo_xml) |_| {
+        std.log.info("Project archive includes flux_undo.xml (restore not implemented)", .{});
+    }
     std.log.info("Loaded project from: {s}", .{path.?});
 }
 
@@ -674,7 +731,7 @@ fn applyDawprojectToState(
         state.session.scenes[s].setName(proj.scenes[s].name);
     }
 
-    // Clear piano + audio clips
+    // Clear piano + audio clips + sample store (fresh load)
     state.undo_history.clear();
     for (&state.piano_clips) |*track_clips| {
         for (track_clips) |*clip| {
@@ -682,23 +739,15 @@ fn applyDawprojectToState(
         }
     }
     state.clearAllAudioClips();
+    state.sample_store.clear();
 
-    // Apply session clips from scenes when available, otherwise fall back to arrangement lanes.
-    var applied_scene_clips = false;
-    if (proj.scenes.len > 0) {
-        for (proj.scenes) |scene| {
-            if (scene.clip_slots.len > 0) {
-                applied_scene_clips = true;
-                break;
-            }
-        }
-    }
-
-    if (applied_scene_clips) {
-        try applyScenes(state, loaded, proj.scenes, proj.tracks, proj.master_track, &instrument_device_ids, &fx_device_ids);
+    // Prefer Scenes only when they contain real clips. Bitwig often emits empty
+    // ClipSlots under Scenes while audio lives only in Arrangement.
+    if (scenesHaveClipContent(proj.scenes)) {
+        try applyScenes(state, loaded, io, proj.scenes, proj.tracks, proj.master_track, &instrument_device_ids, &fx_device_ids);
     } else if (proj.arrangement) |arr| {
         if (arr.lanes) |root_lanes| {
-            try applyLanes(state, loaded, &root_lanes, proj.tracks, &instrument_device_ids, &fx_device_ids);
+            try applyLanes(state, loaded, io, &root_lanes, proj.tracks, &instrument_device_ids, &fx_device_ids);
         }
     }
 
@@ -814,9 +863,19 @@ fn copyMissingPlugin(
     };
 }
 
+fn scenesHaveClipContent(scenes: []const dawproject_types.Scene) bool {
+    for (scenes) |scene| {
+        for (scene.clip_slots) |slot| {
+            if (slot.clip != null) return true;
+        }
+    }
+    return false;
+}
+
 fn applyLanes(
     state: *ui_state.State,
     loaded: *const dawproject_io.LoadedProject,
+    io: std.Io,
     lanes: *const dawproject_types.Lanes,
     tracks: []const dawproject_types.Track,
     instrument_device_ids: *const [track_count]?[]const u8,
@@ -843,14 +902,11 @@ fn applyLanes(
                 }
                 for (clips.clips, 0..) |clip, s| {
                     if (s >= scene_count) break;
-
-                    // Set clip slot state
                     state.session.clips[t][s] = .{
                         .state = .stopped,
                         .length_beats = @floatCast(clip.duration),
                     };
-
-                    try applyClipContent(state, loaded, t, s, &clip, tracks, instrument_device_ids, fx_device_ids);
+                    try applyClipContent(state, loaded, io, t, s, &clip, tracks, instrument_device_ids, fx_device_ids);
                 }
             }
         }
@@ -858,13 +914,14 @@ fn applyLanes(
 
     // Recurse into child lanes
     for (lanes.children) |child| {
-        try applyLanes(state, loaded, &child, tracks, instrument_device_ids, fx_device_ids);
+        try applyLanes(state, loaded, io, &child, tracks, instrument_device_ids, fx_device_ids);
     }
 }
 
 fn applyScenes(
     state: *ui_state.State,
     loaded: *const dawproject_io.LoadedProject,
+    io: std.Io,
     scenes: []const dawproject_types.Scene,
     tracks: []const dawproject_types.Track,
     master_track: ?dawproject_types.Track,
@@ -894,8 +951,7 @@ fn applyScenes(
                         .state = .stopped,
                         .length_beats = @floatCast(clip.duration),
                     };
-
-                    try applyClipContent(state, loaded, t, s, &clip, tracks, instrument_device_ids, fx_device_ids);
+                    try applyClipContent(state, loaded, io, t, s, &clip, tracks, instrument_device_ids, fx_device_ids);
                 }
             }
         }
@@ -905,6 +961,7 @@ fn applyScenes(
 fn applyClipContent(
     state: *ui_state.State,
     loaded: *const dawproject_io.LoadedProject,
+    io: std.Io,
     track_idx: usize,
     scene_idx: usize,
     clip: *const dawproject_types.Clip,
@@ -919,7 +976,7 @@ fn applyClipContent(
         var flat_arena = std.heap.ArenaAllocator.init(state.allocator);
         defer flat_arena.deinit();
         if (try flatten.flattenClipAudio(flat_arena.allocator(), clip)) |flat| {
-            try applyFlattenedAudio(state, loaded, track_idx, scene_idx, flat);
+            try applyFlattenedAudio(state, loaded, io, track_idx, scene_idx, flat);
             applied_audio = state.audio_clips[track_idx][scene_idx].hasAudio();
         }
     }
@@ -990,20 +1047,27 @@ fn applyClipContent(
 fn applyFlattenedAudio(
     state: *ui_state.State,
     loaded: *const dawproject_io.LoadedProject,
+    io: std.Io,
     track_idx: usize,
     scene_idx: usize,
     flat: flatten.FlattenedAudio,
 ) !void {
-    const path = flat.audio.file.path;
-    if (path.len == 0) return;
+    const raw_xml_path = flat.audio.file.path;
+    if (raw_xml_path.len == 0) return;
+    const xml_path = try state.allocator.dupe(u8, raw_xml_path);
+    defer state.allocator.free(xml_path);
+    for (xml_path) |*c| {
+        if (c.* == '\\') c.* = '/';
+    }
 
-    const bytes = loaded.media_files.get(path) orelse {
-        std.log.warn("Audio media missing from package: {s}", .{path});
-        return;
-    };
+    // Project-relative key for SampleStore (prefer hydrated samples/… path).
+    const path_in_project = loaded.media_rel_paths.get(xml_path) orelse xml_path;
 
-    const sample_id = state.sample_store.loadFromMemory(path, bytes) catch |err| {
-        std.log.warn("Failed to decode audio {s}: {}", .{ path, err });
+    // Prefer external/hydrated media so packed projects become disk-backed.
+    // Embedded bytes remain a fallback when hydration was not possible.
+    // Never bail after a single failed strategy.
+    const sample_id = loadSampleForClip(state, loaded, io, xml_path, path_in_project) orelse {
+        std.log.warn("Audio media missing: {s}", .{xml_path});
         return;
     };
     var sample_owned = true;
@@ -1038,6 +1102,33 @@ fn applyFlattenedAudio(
     try audio.setWarps(markers);
     audio.setSample(&state.sample_store, sample_id);
     sample_owned = false;
+}
+
+/// Load sample the way Flux always did (zip memory first), plus thin external disk.
+fn loadSampleForClip(
+    state: *ui_state.State,
+    loaded: *const dawproject_io.LoadedProject,
+    io: std.Io,
+    xml_path: []const u8,
+    path_in_project: []const u8,
+) ?sample_store.SampleId {
+    const store = &state.sample_store;
+    // 1) Pre-resolved absolute path from load().
+    if (loaded.media_abs_paths.get(xml_path)) |abs| {
+        if (store.loadFromPath(path_in_project, abs, io)) |id| return id else |_| {}
+    }
+    // 2) External relative to project dir (thin save layout).
+    if (media_layout.isSafeRelativePath(xml_path)) {
+        if (media_layout.joinRel(state.allocator, loaded.project_dir, xml_path)) |abs| {
+            defer state.allocator.free(abs);
+            if (store.loadFromPath(path_in_project, abs, io)) |id| return id else |_| {}
+        } else |_| {}
+    }
+    // 3) Embedded archive bytes when disk resolution/hydration failed.
+    if (loaded.embedded_media.get(xml_path)) |bytes| {
+        if (store.loadFromMemory(path_in_project, bytes)) |id| return id else |_| {}
+    }
+    return null;
 }
 
 fn timeToBeats(value: f64, unit: dawproject_types.TimeUnit, bpm: f32) f64 {

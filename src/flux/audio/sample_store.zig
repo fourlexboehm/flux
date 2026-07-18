@@ -1,5 +1,6 @@
 //! Sample asset store for audio clips (main thread only).
-//! Loads media via zaudio (miniaudio), keeps source bytes for DAWproject re-export.
+//! Decodes media via zaudio (miniaudio). Disk-backed paths for thin dawproject;
+//! optional source_bytes only until flushed to samples/recordings.
 
 const std = @import("std");
 const zaudio = @import("zaudio");
@@ -13,7 +14,7 @@ pub const PeakBin = peaks_mod.PeakBin;
 
 pub const SampleAsset = struct {
     refcount: u32 = 1,
-    /// Path inside the .dawproject package (e.g. "audio/loop.wav")
+    /// Project-relative path (e.g. "samples/loop.wav" or pack "audio/loop.wav")
     path_in_project: []u8,
     /// Decoded interleaved f32 PCM
     pcm: []f32,
@@ -28,8 +29,12 @@ pub const SampleAsset = struct {
     original_channels: i32,
     /// Bits per sample from source container when known (0 = unknown / compressed).
     original_bits: u16 = 0,
-    /// Original file bytes for lossless re-export
-    source_bytes: []u8,
+    /// Original file bytes until flushed to disk; null when disk-backed.
+    source_bytes: ?[]u8 = null,
+    /// Last known file size (for dirty / external-change checks).
+    file_size: u64 = 0,
+    /// Last known mtime in nanoseconds (plugins.statMtimeNs style).
+    file_mtime_ns: i64 = 0,
     /// Min/max peaks for UI waveform thumbnails (main thread only).
     peaks: [peak_bin_count]PeakBin = @splat(.{}),
 };
@@ -119,8 +124,9 @@ pub const SampleStore = struct {
         }
     }
 
-    /// Load or retain a sample from in-memory file bytes (e.g. from dawproject ZIP).
+    /// Load or retain a sample from in-memory file bytes (e.g. temporary import).
     /// `path` is the package-relative path used as the cache key and export path.
+    /// Keeps a copy of bytes until flushed to disk on thin Save.
     pub fn loadFromMemory(self: *SampleStore, path: []const u8, bytes: []const u8) !SampleId {
         if (self.path_to_id.get(path)) |existing| {
             self.retain(existing);
@@ -128,9 +134,7 @@ pub const SampleStore = struct {
         }
 
         const decoded = try decodeMemory(self.allocator, bytes);
-        errdefer {
-            self.allocator.free(decoded.pcm);
-        }
+        errdefer self.allocator.free(decoded.pcm);
 
         const path_owned = try self.allocator.dupe(u8, path);
         errdefer self.allocator.free(path_owned);
@@ -155,11 +159,112 @@ pub const SampleStore = struct {
             .original_channels = decoded.original_channels,
             .original_bits = bits,
             .source_bytes = source,
+            .file_size = bytes.len,
+            .file_mtime_ns = 0,
             .peaks = peak_bins,
         };
         errdefer self.assets.items[id] = null;
         try self.path_to_id.put(path_owned, id);
         return id;
+    }
+
+    /// Decode from disk; do not keep source_bytes (Pack/Save read the file).
+    /// `path_in_project` is the project-relative key; `abs_path` is the file to open.
+    pub fn loadFromPath(
+        self: *SampleStore,
+        path_in_project: []const u8,
+        abs_path: []const u8,
+        io: std.Io,
+    ) !SampleId {
+        if (self.path_to_id.get(path_in_project)) |existing| {
+            self.retain(existing);
+            return existing;
+        }
+
+        const bytes = try readFile(self.allocator, io, abs_path);
+        defer self.allocator.free(bytes);
+
+        const st = std.Io.Dir.cwd().statFile(io, abs_path, .{}) catch null;
+        const size: u64 = if (st) |s| s.size else bytes.len;
+        const mtime_ns: i64 = if (st) |s| @intCast(s.mtime.toNanoseconds()) else 0;
+
+        const decoded = try decodeMemory(self.allocator, bytes);
+        errdefer self.allocator.free(decoded.pcm);
+
+        const path_owned = try self.allocator.dupe(u8, path_in_project);
+        errdefer self.allocator.free(path_owned);
+
+        var peak_bins: [peak_bin_count]PeakBin = @splat(.{});
+        peaks_mod.buildPeaks(decoded.pcm, decoded.channels, decoded.frame_count, &peak_bins);
+        const bits = probeSourceBits(bytes);
+
+        const id = try self.allocId();
+        self.assets.items[id] = .{
+            .refcount = 1,
+            .path_in_project = path_owned,
+            .pcm = decoded.pcm,
+            .channels = decoded.channels,
+            .sample_rate = decoded.sample_rate,
+            .frame_count = decoded.frame_count,
+            .duration_seconds = decoded.duration_seconds,
+            .original_sample_rate = decoded.original_sample_rate,
+            .original_channels = decoded.original_channels,
+            .original_bits = bits,
+            .source_bytes = null,
+            .file_size = size,
+            .file_mtime_ns = mtime_ns,
+            .peaks = peak_bins,
+        };
+        errdefer self.assets.items[id] = null;
+        try self.path_to_id.put(path_owned, id);
+        return id;
+    }
+
+    /// Update project-relative path (e.g. after flushing RAM bytes to samples/).
+    pub fn setPathInProject(self: *SampleStore, id: SampleId, new_path: []const u8) !void {
+        const asset = self.getMut(id) orelse return error.InvalidSampleId;
+        if (std.mem.eql(u8, asset.path_in_project, new_path)) return;
+
+        const owned = try self.allocator.dupe(u8, new_path);
+        errdefer self.allocator.free(owned);
+
+        _ = self.path_to_id.remove(asset.path_in_project);
+        self.allocator.free(asset.path_in_project);
+        asset.path_in_project = owned;
+        try self.path_to_id.put(owned, id);
+    }
+
+    /// Drop in-memory source after a successful flush to disk.
+    pub fn clearSourceBytes(self: *SampleStore, id: SampleId, file_size: u64, mtime_ns: i64) void {
+        const asset = self.getMut(id) orelse return;
+        if (asset.source_bytes) |bytes| {
+            self.allocator.free(bytes);
+            asset.source_bytes = null;
+        }
+        asset.file_size = file_size;
+        asset.file_mtime_ns = mtime_ns;
+    }
+
+    /// Bytes for Pack: source_bytes if present, else read from abs_path.
+    pub fn readSourceForPack(
+        self: *const SampleStore,
+        id: SampleId,
+        abs_path: ?[]const u8,
+        io: std.Io,
+        allocator: std.mem.Allocator,
+    ) ![]u8 {
+        const asset = self.get(id) orelse return error.InvalidSampleId;
+        if (asset.source_bytes) |bytes| {
+            return try allocator.dupe(u8, bytes);
+        }
+        const path = abs_path orelse return error.MissingMediaPath;
+        return try readFile(allocator, io, path);
+    }
+
+    pub fn sourceSize(self: *const SampleStore, id: SampleId) u64 {
+        const asset = self.get(id) orelse return 0;
+        if (asset.source_bytes) |b| return b.len;
+        return asset.file_size;
     }
 
     fn allocId(self: *SampleStore) !SampleId {
@@ -168,6 +273,11 @@ pub const SampleStore = struct {
         }
         try self.assets.append(self.allocator, null);
         return @intCast(self.assets.items.len - 1);
+    }
+
+    /// Test helper: allocate a free sample slot without loading media.
+    pub fn allocIdForTest(self: *SampleStore) !SampleId {
+        return self.allocId();
     }
 };
 
@@ -184,8 +294,21 @@ const Decoded = struct {
 fn freeAsset(allocator: std.mem.Allocator, asset: *SampleAsset) void {
     allocator.free(asset.path_in_project);
     allocator.free(asset.pcm);
-    allocator.free(asset.source_bytes);
+    if (asset.source_bytes) |bytes| {
+        allocator.free(bytes);
+    }
     asset.* = undefined;
+}
+
+fn readFile(allocator: std.mem.Allocator, io: std.Io, abs_path: []const u8) ![]u8 {
+    var file = try std.Io.Dir.cwd().openFile(io, abs_path, .{});
+    defer file.close(io);
+    const st = try file.stat(io);
+    const data = try allocator.alloc(u8, st.size);
+    errdefer allocator.free(data);
+    const n = try file.readPositionalAll(io, data, 0);
+    if (n != st.size) return error.UnexpectedEof;
+    return data;
 }
 
 fn decodeMemory(allocator: std.mem.Allocator, bytes: []const u8) !Decoded {

@@ -100,6 +100,10 @@ pub const RealParameter = struct {
     min: ?f64 = null,
     max: ?f64 = null,
     unit: Unit,
+    /// Plugin-native param id (DAWproject `parameterID`, xs:int). Required by Bitwig
+    /// for device Parameters — missing value causes NPE on import. Mixer/transport
+    /// params leave this null. CLAP u32 ids are stored as i32 bit pattern.
+    parameter_id: ?i32 = null,
 };
 
 /// Boolean parameter (mute, solo, enabled)
@@ -107,6 +111,7 @@ pub const BoolParameter = struct {
     id: []const u8,
     name: []const u8,
     value: bool,
+    parameter_id: ?i32 = null,
 };
 
 /// Time signature parameter
