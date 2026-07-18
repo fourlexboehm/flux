@@ -1,8 +1,8 @@
 const std = @import("std");
 const clap = @import("clap-bindings");
 const tracy = @import("tracy");
-const session_constants = @import("../ui/session_view/constants.zig");
-const piano_roll_types = @import("../ui/piano_roll/types.zig");
+const session_constants = @import("../session/constants.zig");
+const piano_roll_types = @import("../session/notes.zig");
 const audio_events = @import("audio_events.zig");
 
 const PianoNote = piano_roll_types.Note;

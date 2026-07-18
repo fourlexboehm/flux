@@ -4,9 +4,9 @@ const zaudio = @import("zaudio");
 const audio_constants = @import("audio_constants.zig");
 const audio_engine = @import("audio_engine.zig");
 const plugin_runtime = @import("../plugin/plugin_runtime.zig");
-const session_constants = @import("../ui/session_view/constants.zig");
-const thread_context = @import("../thread_context.zig");
-const time_utils = @import("../time_utils.zig");
+const session_constants = @import("../session/constants.zig");
+const thread_context = @import("../util/thread_context.zig");
+const time_utils = @import("../util/time_utils.zig");
 const ui_state = @import("../ui/state.zig");
 const clock_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 

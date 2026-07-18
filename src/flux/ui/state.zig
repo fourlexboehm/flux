@@ -3,11 +3,11 @@ const clap = @import("clap-bindings");
 const presets = @import("../plugin/presets.zig");
 
 const undo = @import("../undo/root.zig");
-const session_view = @import("session_view.zig");
-const session_constants = @import("session_view/constants.zig");
-const session_ops = @import("session_view/ops.zig");
-const piano_roll_types = @import("piano_roll/types.zig");
-const audio_clip_types = @import("audio_clip/types.zig");
+const session_view = @import("../session/types.zig");
+const session_constants = @import("../session/constants.zig");
+const session_ops = @import("../session/ops.zig");
+const piano_roll_types = @import("../session/notes.zig");
+const audio_clip_types = @import("../session/audio_clip.zig");
 const sample_store_mod = @import("../audio/sample_store.zig");
 
 const SessionView = session_view.SessionView;

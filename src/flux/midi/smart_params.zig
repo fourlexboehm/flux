@@ -1,7 +1,7 @@
 const std = @import("std");
 const clap = @import("clap-bindings");
 
-const selection = @import("../ui/selection.zig");
+const selection = @import("../ui/input/selection.zig");
 const state_mod = @import("../ui/state.zig");
 
 const State = state_mod.State;

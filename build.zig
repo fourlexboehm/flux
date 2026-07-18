@@ -497,20 +497,20 @@ pub fn build(b: *std.Build) void {
     }
     const run_zsynth_smoke_tests = b.addRunArtifact(zsynth_smoke_tests);
 
-    const dawproject_test_module = b.createModule(.{
-        .root_source_file = b.path("src/flux/dawproject/tests.zig"),
+    const project_test_module = b.createModule(.{
+        .root_source_file = b.path("src/flux/project/tests.zig"),
         .target = target,
         .optimize = optimize,
     });
-    dawproject_test_module.addImport("xml", zig_xml.module("xml"));
-    const dawproject_tests = b.addTest(.{
-        .root_module = dawproject_test_module,
+    project_test_module.addImport("xml", zig_xml.module("xml"));
+    const project_tests = b.addTest(.{
+        .root_module = project_test_module,
         .use_llvm = use_llvm,
     });
-    const run_dawproject_tests = b.addRunArtifact(dawproject_tests);
+    const run_project_tests = b.addRunArtifact(project_tests);
 
     const audio_clip_test_module = b.createModule(.{
-        .root_source_file = b.path("src/flux/audio_clip_playback_test.zig"),
+        .root_source_file = b.path("src/flux/run_audio_clip_tests.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -541,7 +541,7 @@ pub fn build(b: *std.Build) void {
 
     // Thin Save As media roundtrip (uses tests/fixtures/*.dawproject when present)
     const media_roundtrip_module = b.createModule(.{
-        .root_source_file = b.path("src/flux/media_roundtrip_test.zig"),
+        .root_source_file = b.path("src/flux/run_media_roundtrip_tests.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -559,7 +559,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_filter_tests.step);
     test_step.dependOn(&run_dsp_tests.step);
     test_step.dependOn(&run_zsynth_smoke_tests.step);
-    test_step.dependOn(&run_dawproject_tests.step);
+    test_step.dependOn(&run_project_tests.step);
     test_step.dependOn(&run_audio_clip_tests.step);
     test_step.dependOn(&run_media_roundtrip_tests.step);
 }

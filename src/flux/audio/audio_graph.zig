@@ -2,8 +2,8 @@ const std = @import("std");
 const clap = @import("clap-bindings");
 const tracy = @import("tracy");
 const ui_state = @import("../ui/state.zig");
-const session_view = @import("../ui/session_view.zig");
-const session_constants = @import("../ui/session_view/constants.zig");
+const session_view = @import("../session/types.zig");
+const session_constants = @import("../session/constants.zig");
 const audio_engine = @import("audio_engine.zig");
 const libz_jobs = @import("libz_jobs");
 const audio_events = @import("audio_events.zig");
@@ -671,7 +671,7 @@ pub const Graph = struct {
     }
 
     fn processSynthDirect(ctx: *ProcessContext, synth_id: SynthId) void {
-        const thread_context = @import("../thread_context.zig");
+        const thread_context = @import("../util/thread_context.zig");
         thread_context.is_audio_thread = true;
         thread_context.in_jobs_worker = true;
         defer thread_context.in_jobs_worker = false;

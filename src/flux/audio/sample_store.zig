@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const zaudio = @import("zaudio");
-const peaks_mod = @import("../ui/audio_clip/peaks.zig");
+const peaks_mod = @import("../session/peaks.zig");
 
 pub const SampleId = u32;
 pub const invalid_sample_id: SampleId = std.math.maxInt(SampleId);

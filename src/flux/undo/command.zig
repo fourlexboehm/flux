@@ -2,10 +2,10 @@
 //! Uses command pattern - each command stores both forward and reverse data.
 
 const std = @import("std");
-const session_view = @import("../ui/session_view.zig");
-const session_view_constants = @import("../ui/session_view/constants.zig");
-const piano_roll_types = @import("../ui/piano_roll/types.zig");
-const audio_clip_types = @import("../ui/audio_clip/types.zig");
+const session_view = @import("../session/types.zig");
+const session_view_constants = @import("../session/constants.zig");
+const piano_roll_types = @import("../session/notes.zig");
+const audio_clip_types = @import("../session/audio_clip.zig");
 
 pub const Note = piano_roll_types.Note;
 pub const AudioClipSnapshot = audio_clip_types.AudioClipSnapshot;
