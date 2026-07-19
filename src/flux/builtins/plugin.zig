@@ -257,75 +257,10 @@ fn processRange(self: *Plugin, start: usize, end: usize) void {
     }
 }
 
-const audio_ports = clap.ext.audio_ports.Plugin{
-    .count = audioPortsCount,
-    .get = audioPortsGet,
-};
-
-fn audioPortsCount(_: *const clap.Plugin, _: bool) callconv(.c) u32 {
-    return 1;
-}
-
-fn audioPortsGet(_: *const clap.Plugin, index: u32, is_input: bool, info: *clap.ext.audio_ports.Info) callconv(.c) bool {
-    if (index != 0) return false;
-    const name = if (is_input) "Input" else "Output";
-    @memset(&info.name, 0);
-    @memcpy(info.name[0..name.len], name);
-    info.id = @enumFromInt(if (is_input) @as(u32, 0) else 1);
-    info.channel_count = 2;
-    info.flags = .{ .is_main = true, .supports_64bits = false };
-    info.port_type = "stereo";
-    info.in_place_pair = .invalid_id;
-    return true;
-}
-
+const shared = @import("shared");
+const audio_ports = shared.ext.audioports.createEffect();
 const ext_params = Params.createExt(Plugin);
-
-const state_ext = clap.ext.state.Plugin{
-    .save = stateSave,
-    .load = stateLoad,
-};
-
-fn stateSave(clap_plugin: *const clap.Plugin, stream: *const clap.OStream) callconv(.c) bool {
-    const self = Plugin.fromClapPlugin(clap_plugin);
-    var buf: [params_mod.max_params * 12 + 4]u8 = undefined;
-    std.mem.writeInt(u32, buf[0..4], self.params.count, .little);
-    var off: usize = 4;
-    for (0..self.params.count) |i| {
-        std.mem.writeInt(u32, buf[off..][0..4], self.params.defs[i].id, .little);
-        off += 4;
-        std.mem.writeInt(u64, buf[off..][0..8], @bitCast(self.params.values[i]), .little);
-        off += 8;
-    }
-    return stream.write(stream, &buf, off) != .write_error;
-}
-
-fn stateLoad(clap_plugin: *const clap.Plugin, stream: *const clap.IStream) callconv(.c) bool {
-    const self = Plugin.fromClapPlugin(clap_plugin);
-    var buf: [params_mod.max_params * 12 + 4]u8 = undefined;
-    var total: usize = 0;
-    while (total < buf.len) {
-        const res = stream.read(stream, buf[total..].ptr, @intCast(buf.len - total));
-        if (res == .read_error) return false;
-        if (res == .end_of_file) break;
-        const n: usize = @intCast(@intFromEnum(res));
-        if (n == 0) break;
-        total += n;
-    }
-    if (total < 4) return false;
-    const count = std.mem.readInt(u32, buf[0..4], .little);
-    var off: usize = 4;
-    var i: u32 = 0;
-    while (i < count and off + 12 <= total) : (i += 1) {
-        const id = std.mem.readInt(u32, buf[off..][0..4], .little);
-        off += 4;
-        const bits = std.mem.readInt(u64, buf[off..][0..8], .little);
-        off += 8;
-        self.params.set(id, @bitCast(bits));
-    }
-    self.applyParamsToDsp();
-    return true;
-}
+const state_ext = shared.ext.state.createTable(Plugin);
 
 fn _getExtension(_: *const clap.Plugin, id: [*:0]const u8) callconv(.c) ?*const anyopaque {
     const sid = std.mem.span(id);

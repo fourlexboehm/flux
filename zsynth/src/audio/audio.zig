@@ -6,7 +6,6 @@ const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 
 const Plugin = @import("../plugin.zig");
 const Params = @import("../ext/params.zig");
-const ThreadPool = @import("../ext/thread_pool.zig");
 const ADSR = @import("adsr.zig");
 const Voices = @import("voices.zig");
 
@@ -136,7 +135,9 @@ pub fn renderAudio(plugin: *Plugin, start: u32, end: u32, output_left: [*]f32, o
     // If the thread pool wasn't available, synchronously render all voices individually
     if (!did_render_audio) {
         for (0..plugin.voices.getVoiceCount()) |i| {
-            ThreadPool._exec(&plugin.plugin, @intCast(i));
+            processVoice(plugin, @intCast(i)) catch |err| {
+                std.log.err("Unable to process voice data at index {d}: {}", .{ i, err });
+            };
         }
     }
 }

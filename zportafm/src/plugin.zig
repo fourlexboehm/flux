@@ -5,7 +5,7 @@ const clap = @import("clap-bindings");
 const shared = @import("shared");
 const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 
-const Params = @import("ext/params.zig");
+const params_mod = @import("ext/params.zig");
 const ViewType = @import("ext/gui/view.zig");
 const bridge = @import("bridge.zig");
 
@@ -20,7 +20,7 @@ sample_rate: ?f64 = null,
 allocator: std.mem.Allocator,
 plugin: clap.Plugin,
 host: *const clap.Host,
-params: Params,
+params: params_mod.Store,
 engine: ?*bridge.Engine,
 tail_frames_remaining: u64,
 
@@ -72,7 +72,7 @@ pub fn init(allocator: std.mem.Allocator, host: *const clap.Host) !*Plugin {
             .onMainThread = _onMainThread,
         },
         .host = host,
-        .params = Params.init(allocator),
+        .params = params_mod.Store.init(allocator),
         .engine = null,
         .tail_frames_remaining = 0,
         .job_mutex = .init,
@@ -106,7 +106,7 @@ pub fn notifyHostParamsChanged(self: *Plugin) bool {
     return true;
 }
 
-fn patchParamValue(self: *Plugin, param: Params.Parameter) f32 {
+fn patchParamValue(self: *Plugin, param: params_mod.Parameter) f32 {
     return @floatCast(self.params.get(param).Float);
 }
 
@@ -286,7 +286,7 @@ fn _process(clap_plugin: *const clap.Plugin, clap_process: *const clap.Process) 
 
     std.debug.assert(clap_process.audio_outputs_count == 1);
 
-    Params._flush(clap_plugin, clap_process.in_events, clap_process.out_events);
+    params_mod._flush(clap_plugin, clap_process.in_events, clap_process.out_events);
 
     const frame_count = clap_process.frames_count;
     const output_left = clap_process.audio_outputs[0].data32.?[0];
@@ -346,8 +346,8 @@ fn _process(clap_plugin: *const clap.Plugin, clap_process: *const clap.Process) 
 
 const ext_audio_ports = shared.ext.audioports.create();
 const ext_note_ports = shared.ext.noteports.create();
-const ext_params = Params.create();
-const ext_state = shared.ext.state.create(Params, Plugin);
+const ext_params = params_mod.create();
+const ext_state = shared.ext.state.create(params_mod, Plugin);
 
 fn _getExtension(_: *const clap.Plugin, id: [*:0]const u8) callconv(.c) ?*const anyopaque {
     if (std.mem.eql(u8, std.mem.span(id), clap.ext.audio_ports.id)) return &ext_audio_ports;

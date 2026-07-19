@@ -5,7 +5,6 @@ const zgui = @import("zgui");
 
 const Params = @import("../params.zig");
 const Plugin = @import("../../plugin.zig");
-const Undo = @import("../undo.zig");
 
 const polyblep = @import("../../audio/polyblep.zig");
 const waves = @import("../../audio/waves.zig");
@@ -259,10 +258,10 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
             }
             // Undo support: track slider drag start/end
             if (zgui.isItemActivated()) {
-                Undo.beginChange();
+                plugin.undo.beginChange();
             }
             if (zgui.isItemDeactivated()) {
-                Undo.changeMade(value_text);
+                plugin.undo.changeMade(value_text);
             }
         },
         .Sustain, .Mix => {
@@ -292,10 +291,10 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
             }
             // Undo support
             if (zgui.isItemActivated()) {
-                Undo.beginChange();
+                plugin.undo.beginChange();
             }
             if (zgui.isItemDeactivated()) {
-                Undo.changeMade(value_text);
+                plugin.undo.changeMade(value_text);
             }
         },
         .Octave1, .Octave2 => {
@@ -321,10 +320,10 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
             }
             // Undo support
             if (zgui.isItemActivated()) {
-                Undo.beginChange();
+                plugin.undo.beginChange();
             }
             if (zgui.isItemDeactivated()) {
-                Undo.changeMade(value_text);
+                plugin.undo.changeMade(value_text);
             }
         },
         .FilterEnable => {
@@ -333,14 +332,14 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
                 .v = &val,
             })) {
                 // Instant change: begin + complete immediately
-                Undo.beginChange();
+                plugin.undo.beginChange();
                 plugin.params.set(param_type, .{ .Bool = val }, .{
                     .should_notify_host = options.notify_host,
                 }) catch return;
                 if (!options.notify_host) {
                     plugin.applyParamChanges(false);
                 }
-                Undo.changeMade(value_text);
+                plugin.undo.changeMade(value_text);
             }
         },
         .ScaleVoices, .DebugBool1, .DebugBool2 => {
@@ -350,14 +349,14 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
                     .v = &val,
                 })) {
                     // Instant change: begin + complete immediately
-                    Undo.beginChange();
+                    plugin.undo.beginChange();
                     plugin.params.set(param_type, .{ .Bool = val }, .{
                         .should_notify_host = options.notify_host,
                     }) catch return;
                     if (!options.notify_host) {
                         plugin.applyParamChanges(false);
                     }
-                    Undo.changeMade(value_text);
+                    plugin.undo.changeMade(value_text);
                 }
             }
         },
@@ -370,14 +369,14 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
                     .active = plugin.params.get(param_type).Wave == wave,
                 })) {
                     // Instant change
-                    Undo.beginChange();
+                    plugin.undo.beginChange();
                     plugin.params.set(param_type, .{ .Wave = wave }, .{
                         .should_notify_host = options.notify_host,
                     }) catch return;
                     if (!options.notify_host) {
                         plugin.applyParamChanges(false);
                     }
-                    Undo.changeMade(value_text);
+                    plugin.undo.changeMade(value_text);
                 }
             }
         },
@@ -390,14 +389,14 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
                     .active = plugin.params.get(param_type).Filter == filter,
                 })) {
                     // Instant change
-                    Undo.beginChange();
+                    plugin.undo.beginChange();
                     plugin.params.set(param_type, .{ .Filter = filter }, .{
                         .should_notify_host = options.notify_host,
                     }) catch return;
                     if (!options.notify_host) {
                         plugin.applyParamChanges(false);
                     }
-                    Undo.changeMade(value_text);
+                    plugin.undo.changeMade(value_text);
                 }
             }
         },
@@ -445,9 +444,9 @@ fn renderMix(plugin: *Plugin, osc1: bool, options: DrawOptions) void {
     }
     // Undo support
     if (zgui.isItemActivated()) {
-        Undo.beginChange();
+        plugin.undo.beginChange();
     }
     if (zgui.isItemDeactivated()) {
-        Undo.changeMade("Mix");
+        plugin.undo.changeMade("Mix");
     }
 }

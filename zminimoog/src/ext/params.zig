@@ -1,59 +1,36 @@
-const Params = @This();
-
 const std = @import("std");
 const clap = @import("clap-bindings");
-const tracy = @import("tracy");
-const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.io();
-
+const shared_params = @import("shared").ext.params;
 const Plugin = @import("../plugin.zig");
 
-const Info = clap.ext.params.Info;
-
 pub const Parameter = enum {
-    // Oscillator 1
     Osc1Level,
     Osc1Waveform,
     Osc1Range,
-
-    // Oscillator 2
     Osc2Level,
     Osc2Waveform,
     Osc2Range,
     Osc2Detune,
-
-    // Oscillator 3
     Osc3Level,
     Osc3Waveform,
     Osc3Range,
     Osc3Detune,
     Osc3KeyboardCtrl,
-
-    // Noise
     NoiseLevel,
     NoiseType,
-
-    // Filter
     FilterCutoff,
     FilterEmphasis,
     FilterContour,
     FilterKeyTracking,
-
-    // Modulation
     Osc3ToFilter,
     Osc3ToOsc,
-
-    // Envelope
     Attack,
     Decay,
     Sustain,
     Release,
-
-    // Controllers
     Glide,
     PitchBendRange,
     MasterVolume,
-
-    // Quality
     OversampleFactor,
 };
 
@@ -67,509 +44,101 @@ pub const ParameterValue = union(enum) {
     }
 };
 
-pub const ParameterArray = std.EnumArray(Parameter, ParameterValue);
-
 pub const param_defaults = std.enums.EnumFieldStruct(Parameter, ParameterValue, null){
-    // Oscillator 1
     .Osc1Level = .{ .Float = 1.0 },
-    .Osc1Waveform = .{ .Float = 2.0 }, // 0=tri, 1=shark, 2=saw, 3=sq, 4=wide, 5=narrow
-    .Osc1Range = .{ .Float = 3.0 }, // 0=LO, 1=32', 2=16', 3=8', 4=4', 5=2'
-
-    // Oscillator 2
+    .Osc1Waveform = .{ .Float = 2.0 },
+    .Osc1Range = .{ .Float = 3.0 },
     .Osc2Level = .{ .Float = 0.0 },
     .Osc2Waveform = .{ .Float = 2.0 },
     .Osc2Range = .{ .Float = 3.0 },
-    .Osc2Detune = .{ .Float = 0.0 }, // cents (-100 to +100)
-
-    // Oscillator 3
+    .Osc2Detune = .{ .Float = 0.0 },
     .Osc3Level = .{ .Float = 0.0 },
     .Osc3Waveform = .{ .Float = 2.0 },
     .Osc3Range = .{ .Float = 3.0 },
     .Osc3Detune = .{ .Float = 0.0 },
-    .Osc3KeyboardCtrl = .{ .Float = 1.0 }, // 0=off (LFO mode), 1=on
-
-    // Noise
+    .Osc3KeyboardCtrl = .{ .Float = 1.0 },
     .NoiseLevel = .{ .Float = 0.0 },
-    .NoiseType = .{ .Float = 0.0 }, // 0=white, 1=pink
-
-    // Filter
-    .FilterCutoff = .{ .Float = 5000.0 }, // Hz
-    .FilterEmphasis = .{ .Float = 0.0 }, // Resonance 0-4
-    .FilterContour = .{ .Float = 0.5 }, // Envelope amount 0-1
-    .FilterKeyTracking = .{ .Float = 1.0 }, // 0=off, 1=half, 2=full
-
-    // Modulation
-    .Osc3ToFilter = .{ .Float = 0.0 }, // 0=off, 1=on
-    .Osc3ToOsc = .{ .Float = 0.0 }, // 0=off, 1=on
-
-    // Envelope (seconds)
+    .NoiseType = .{ .Float = 0.0 },
+    .FilterCutoff = .{ .Float = 5000.0 },
+    .FilterEmphasis = .{ .Float = 0.0 },
+    .FilterContour = .{ .Float = 0.5 },
+    .FilterKeyTracking = .{ .Float = 1.0 },
+    .Osc3ToFilter = .{ .Float = 0.0 },
+    .Osc3ToOsc = .{ .Float = 0.0 },
     .Attack = .{ .Float = 0.01 },
     .Decay = .{ .Float = 0.3 },
     .Sustain = .{ .Float = 0.7 },
     .Release = .{ .Float = 0.3 },
-
-    // Controllers
-    .Glide = .{ .Float = 0.0 }, // Glide time in seconds
-    .PitchBendRange = .{ .Float = 2.0 }, // semitones
+    .Glide = .{ .Float = 0.0 },
+    .PitchBendRange = .{ .Float = 2.0 },
     .MasterVolume = .{ .Float = 0.8 },
-
-    // Quality
-    .OversampleFactor = .{ .Float = 2.0 }, // 0=1x, 1=2x, 2=4x (default 4x)
+    .OversampleFactor = .{ .Float = 2.0 },
 };
 
-pub const param_count = std.meta.fieldNames(Parameter).len;
-const max_queued_param_events = 128;
+pub const waveform_names = [_][]const u8{ "Triangle", "Shark", "Sawtooth", "Square", "Wide Pulse", "Narrow Pulse" };
+pub const range_names = [_][]const u8{ "LO", "32'", "16'", "8'", "4'", "2'" };
+pub const noise_names = [_][]const u8{ "White", "Pink" };
+pub const tracking_names = [_][]const u8{ "Off", "Half", "Full" };
+pub const switch_names = [_][]const u8{ "Off", "On" };
+pub const oversample_names = [_][]const u8{ "1x", "2x", "4x" };
 
-values: ParameterArray = .init(param_defaults),
-mutex: std.Io.Mutex,
-events: std.ArrayList(clap.events.ParamValue),
-allocator: std.mem.Allocator,
+pub const Store = shared_params.EnumStore(Parameter, ParameterValue, param_defaults);
+pub const ParameterArray = Store.ParameterArray;
+pub const param_count = Store.param_count;
+pub const defaults = param_defaults;
 
-pub fn init(allocator: std.mem.Allocator) Params {
-    return .{
-        .events = .empty,
-        .mutex = .init,
-        .allocator = allocator,
+fn id(p: Parameter) u32 {
+    return @intFromEnum(p);
+}
+
+pub fn meta(param: Parameter) shared_params.ParamDef {
+    const d = param_defaults;
+    return switch (param) {
+        .Osc1Level => .{ .id = id(param), .name = "Osc 1 Level", .module = "Oscillators/Osc1", .min = 0, .max = 1, .default = d.Osc1Level.Float },
+        .Osc1Waveform => .{ .id = id(param), .name = "Osc 1 Waveform", .module = "Oscillators/Osc1", .min = 0, .max = 5, .default = d.Osc1Waveform.Float, .stepped = true, .is_enum = true, .display = .labels, .labels = &waveform_names },
+        .Osc1Range => .{ .id = id(param), .name = "Osc 1 Range", .module = "Oscillators/Osc1", .min = 0, .max = 5, .default = d.Osc1Range.Float, .stepped = true, .is_enum = true, .display = .labels, .labels = &range_names },
+        .Osc2Level => .{ .id = id(param), .name = "Osc 2 Level", .module = "Oscillators/Osc2", .min = 0, .max = 1, .default = d.Osc2Level.Float },
+        .Osc2Waveform => .{ .id = id(param), .name = "Osc 2 Waveform", .module = "Oscillators/Osc2", .min = 0, .max = 5, .default = d.Osc2Waveform.Float, .stepped = true, .is_enum = true, .display = .labels, .labels = &waveform_names },
+        .Osc2Range => .{ .id = id(param), .name = "Osc 2 Range", .module = "Oscillators/Osc2", .min = 0, .max = 5, .default = d.Osc2Range.Float, .stepped = true, .is_enum = true, .display = .labels, .labels = &range_names },
+        .Osc2Detune => .{ .id = id(param), .name = "Osc 2 Detune", .module = "Oscillators/Osc2", .min = -100, .max = 100, .default = d.Osc2Detune.Float, .display = .cents },
+        .Osc3Level => .{ .id = id(param), .name = "Osc 3 Level", .module = "Oscillators/Osc3", .min = 0, .max = 1, .default = d.Osc3Level.Float },
+        .Osc3Waveform => .{ .id = id(param), .name = "Osc 3 Waveform", .module = "Oscillators/Osc3", .min = 0, .max = 5, .default = d.Osc3Waveform.Float, .stepped = true, .is_enum = true, .display = .labels, .labels = &waveform_names },
+        .Osc3Range => .{ .id = id(param), .name = "Osc 3 Range", .module = "Oscillators/Osc3", .min = 0, .max = 5, .default = d.Osc3Range.Float, .stepped = true, .is_enum = true, .display = .labels, .labels = &range_names },
+        .Osc3Detune => .{ .id = id(param), .name = "Osc 3 Detune", .module = "Oscillators/Osc3", .min = -100, .max = 100, .default = d.Osc3Detune.Float, .display = .cents },
+        .Osc3KeyboardCtrl => .{ .id = id(param), .name = "Osc 3 Keyboard", .module = "Oscillators/Osc3", .min = 0, .max = 1, .default = d.Osc3KeyboardCtrl.Float, .stepped = true, .display = .labels, .labels = &switch_names },
+        .NoiseLevel => .{ .id = id(param), .name = "Noise Level", .module = "Mixer/Noise", .min = 0, .max = 1, .default = d.NoiseLevel.Float },
+        .NoiseType => .{ .id = id(param), .name = "Noise Type", .module = "Mixer/Noise", .min = 0, .max = 1, .default = d.NoiseType.Float, .stepped = true, .display = .labels, .labels = &noise_names },
+        .FilterCutoff => .{ .id = id(param), .name = "Cutoff", .module = "Filter", .min = 20, .max = 20000, .default = d.FilterCutoff.Float, .display = .hz },
+        .FilterEmphasis => .{ .id = id(param), .name = "Emphasis", .module = "Filter", .min = 0, .max = 4, .default = d.FilterEmphasis.Float },
+        .FilterContour => .{ .id = id(param), .name = "Contour Amt", .module = "Filter", .min = 0, .max = 1, .default = d.FilterContour.Float },
+        .FilterKeyTracking => .{ .id = id(param), .name = "Key Tracking", .module = "Filter", .min = 0, .max = 2, .default = d.FilterKeyTracking.Float, .stepped = true, .display = .labels, .labels = &tracking_names },
+        .Osc3ToFilter => .{ .id = id(param), .name = "Osc3 > Filter", .module = "Modulation", .min = 0, .max = 1, .default = d.Osc3ToFilter.Float, .stepped = true, .display = .labels, .labels = &switch_names },
+        .Osc3ToOsc => .{ .id = id(param), .name = "Osc3 > Osc", .module = "Modulation", .min = 0, .max = 1, .default = d.Osc3ToOsc.Float, .stepped = true, .display = .labels, .labels = &switch_names },
+        .Attack => .{ .id = id(param), .name = "Attack", .module = "Envelope", .min = 0.001, .max = 10, .default = d.Attack.Float, .display = .seconds },
+        .Decay => .{ .id = id(param), .name = "Decay", .module = "Envelope", .min = 0.001, .max = 10, .default = d.Decay.Float, .display = .seconds },
+        .Sustain => .{ .id = id(param), .name = "Sustain", .module = "Envelope", .min = 0, .max = 1, .default = d.Sustain.Float },
+        .Release => .{ .id = id(param), .name = "Release", .module = "Envelope", .min = 0.001, .max = 10, .default = d.Release.Float, .display = .seconds },
+        .Glide => .{ .id = id(param), .name = "Glide", .module = "Controllers", .min = 0, .max = 5, .default = d.Glide.Float, .display = .seconds },
+        .PitchBendRange => .{ .id = id(param), .name = "Bend Range", .module = "Controllers", .min = 0, .max = 12, .default = d.PitchBendRange.Float, .display = .semitones },
+        .MasterVolume => .{ .id = id(param), .name = "Master Volume", .module = "Output", .min = 0, .max = 1, .default = d.MasterVolume.Float },
+        .OversampleFactor => .{ .id = id(param), .name = "Oversample", .module = "Quality", .min = 0, .max = 2, .default = d.OversampleFactor.Float, .stepped = true, .display = .labels, .labels = &oversample_names },
     };
 }
 
-pub fn deinit(self: *Params) void {
-    self.events.deinit(self.allocator);
+pub fn create() clap.ext.params.Plugin {
+    return clap_ext;
 }
 
-pub fn prepare(self: *Params) !void {
-    try self.events.ensureTotalCapacity(self.allocator, max_queued_param_events);
-}
+const clap_ext = shared_params.enumCreate(
+    Plugin,
+    Parameter,
+    ParameterValue,
+    meta,
+    shared_params.fromFloatOnly(Parameter, ParameterValue),
+    null,
+    null,
+);
 
-pub fn get(self: *Params, param: Parameter) ParameterValue {
-    self.mutex.lockUncancelable(mutex_io);
-    defer self.mutex.unlock(mutex_io);
-    return self.values.get(param);
-}
-
-const ParamSetFlags = struct {
-    should_notify_host: bool = false,
-};
-
-pub fn set(self: *Params, param: Parameter, val: ParameterValue, flags: ParamSetFlags) !void {
-    self.mutex.lockUncancelable(mutex_io);
-    defer self.mutex.unlock(mutex_io);
-    self.values.set(param, val);
-
-    if (flags.should_notify_host) {
-        const param_index: usize = @intFromEnum(param);
-        const event = clap.events.ParamValue{
-            .header = .{
-                .type = .param_value,
-                .size = @sizeOf(clap.events.ParamValue),
-                .space_id = clap.events.core_space_id,
-                .sample_offset = 0,
-                .flags = .{},
-            },
-            .note_id = .unspecified,
-            .channel = .unspecified,
-            .key = .unspecified,
-            .port_index = .unspecified,
-            .param_id = @enumFromInt(param_index),
-            .value = val.asFloat(),
-            .cookie = null,
-        };
-
-        if (self.events.items.len < self.events.capacity) {
-            self.events.appendAssumeCapacity(event);
-        }
-    }
-}
-
-pub inline fn create() clap.ext.params.Plugin {
-    return .{
-        .count = _count,
-        .getInfo = _getInfo,
-        .getValue = _getValue,
-        .valueToText = _valueToText,
-        .textToValue = _textToValue,
-        .flush = _flush,
-    };
-}
-
-fn _count(_: *const clap.Plugin) callconv(.c) u32 {
-    return @intCast(param_count);
-}
-
-pub fn _getInfo(_: *const clap.Plugin, index: u32, info: *Info) callconv(.c) bool {
-    if (index >= _count(undefined)) return false;
-
-    const param_type: Parameter = @enumFromInt(index);
-    info.* = getParamInfo(param_type);
-    return true;
-}
-
-fn getParamInfo(param: Parameter) Info {
-    var info: Info = .{
-        .cookie = null,
-        .default_value = 0,
-        .min_value = 0,
-        .max_value = 1,
-        .name = @splat(0),
-        .flags = .{ .is_automatable = true },
-        .id = @enumFromInt(@intFromEnum(param)),
-        .module = @splat(0),
-    };
-
-    switch (param) {
-        // Oscillator 1
-        .Osc1Level => {
-            info.default_value = param_defaults.Osc1Level.Float;
-            info.min_value = 0.0;
-            info.max_value = 1.0;
-            std.mem.copyForwards(u8, &info.name, "Osc 1 Level");
-            std.mem.copyForwards(u8, &info.module, "Oscillators/Osc1");
-        },
-        .Osc1Waveform => {
-            info.default_value = param_defaults.Osc1Waveform.Float;
-            info.min_value = 0.0;
-            info.max_value = 5.0;
-            info.flags.is_stepped = true;
-            std.mem.copyForwards(u8, &info.name, "Osc 1 Waveform");
-            std.mem.copyForwards(u8, &info.module, "Oscillators/Osc1");
-        },
-        .Osc1Range => {
-            info.default_value = param_defaults.Osc1Range.Float;
-            info.min_value = 0.0;
-            info.max_value = 5.0;
-            info.flags.is_stepped = true;
-            std.mem.copyForwards(u8, &info.name, "Osc 1 Range");
-            std.mem.copyForwards(u8, &info.module, "Oscillators/Osc1");
-        },
-        // Oscillator 2
-        .Osc2Level => {
-            info.default_value = param_defaults.Osc2Level.Float;
-            info.min_value = 0.0;
-            info.max_value = 1.0;
-            std.mem.copyForwards(u8, &info.name, "Osc 2 Level");
-            std.mem.copyForwards(u8, &info.module, "Oscillators/Osc2");
-        },
-        .Osc2Waveform => {
-            info.default_value = param_defaults.Osc2Waveform.Float;
-            info.min_value = 0.0;
-            info.max_value = 5.0;
-            info.flags.is_stepped = true;
-            std.mem.copyForwards(u8, &info.name, "Osc 2 Waveform");
-            std.mem.copyForwards(u8, &info.module, "Oscillators/Osc2");
-        },
-        .Osc2Range => {
-            info.default_value = param_defaults.Osc2Range.Float;
-            info.min_value = 0.0;
-            info.max_value = 5.0;
-            info.flags.is_stepped = true;
-            std.mem.copyForwards(u8, &info.name, "Osc 2 Range");
-            std.mem.copyForwards(u8, &info.module, "Oscillators/Osc2");
-        },
-        .Osc2Detune => {
-            info.default_value = param_defaults.Osc2Detune.Float;
-            info.min_value = -100.0;
-            info.max_value = 100.0;
-            std.mem.copyForwards(u8, &info.name, "Osc 2 Detune");
-            std.mem.copyForwards(u8, &info.module, "Oscillators/Osc2");
-        },
-        // Oscillator 3
-        .Osc3Level => {
-            info.default_value = param_defaults.Osc3Level.Float;
-            info.min_value = 0.0;
-            info.max_value = 1.0;
-            std.mem.copyForwards(u8, &info.name, "Osc 3 Level");
-            std.mem.copyForwards(u8, &info.module, "Oscillators/Osc3");
-        },
-        .Osc3Waveform => {
-            info.default_value = param_defaults.Osc3Waveform.Float;
-            info.min_value = 0.0;
-            info.max_value = 5.0;
-            info.flags.is_stepped = true;
-            std.mem.copyForwards(u8, &info.name, "Osc 3 Waveform");
-            std.mem.copyForwards(u8, &info.module, "Oscillators/Osc3");
-        },
-        .Osc3Range => {
-            info.default_value = param_defaults.Osc3Range.Float;
-            info.min_value = 0.0;
-            info.max_value = 5.0;
-            info.flags.is_stepped = true;
-            std.mem.copyForwards(u8, &info.name, "Osc 3 Range");
-            std.mem.copyForwards(u8, &info.module, "Oscillators/Osc3");
-        },
-        .Osc3Detune => {
-            info.default_value = param_defaults.Osc3Detune.Float;
-            info.min_value = -100.0;
-            info.max_value = 100.0;
-            std.mem.copyForwards(u8, &info.name, "Osc 3 Detune");
-            std.mem.copyForwards(u8, &info.module, "Oscillators/Osc3");
-        },
-        .Osc3KeyboardCtrl => {
-            info.default_value = param_defaults.Osc3KeyboardCtrl.Float;
-            info.min_value = 0.0;
-            info.max_value = 1.0;
-            info.flags.is_stepped = true;
-            std.mem.copyForwards(u8, &info.name, "Osc 3 Keyboard");
-            std.mem.copyForwards(u8, &info.module, "Oscillators/Osc3");
-        },
-        // Noise
-        .NoiseLevel => {
-            info.default_value = param_defaults.NoiseLevel.Float;
-            info.min_value = 0.0;
-            info.max_value = 1.0;
-            std.mem.copyForwards(u8, &info.name, "Noise Level");
-            std.mem.copyForwards(u8, &info.module, "Mixer/Noise");
-        },
-        .NoiseType => {
-            info.default_value = param_defaults.NoiseType.Float;
-            info.min_value = 0.0;
-            info.max_value = 1.0;
-            info.flags.is_stepped = true;
-            std.mem.copyForwards(u8, &info.name, "Noise Type");
-            std.mem.copyForwards(u8, &info.module, "Mixer/Noise");
-        },
-        // Filter
-        .FilterCutoff => {
-            info.default_value = param_defaults.FilterCutoff.Float;
-            info.min_value = 20.0;
-            info.max_value = 20000.0;
-            std.mem.copyForwards(u8, &info.name, "Cutoff");
-            std.mem.copyForwards(u8, &info.module, "Filter");
-        },
-        .FilterEmphasis => {
-            info.default_value = param_defaults.FilterEmphasis.Float;
-            info.min_value = 0.0;
-            info.max_value = 4.0;
-            std.mem.copyForwards(u8, &info.name, "Emphasis");
-            std.mem.copyForwards(u8, &info.module, "Filter");
-        },
-        .FilterContour => {
-            info.default_value = param_defaults.FilterContour.Float;
-            info.min_value = 0.0;
-            info.max_value = 1.0;
-            std.mem.copyForwards(u8, &info.name, "Contour Amt");
-            std.mem.copyForwards(u8, &info.module, "Filter");
-        },
-        .FilterKeyTracking => {
-            info.default_value = param_defaults.FilterKeyTracking.Float;
-            info.min_value = 0.0;
-            info.max_value = 2.0;
-            info.flags.is_stepped = true;
-            std.mem.copyForwards(u8, &info.name, "Key Tracking");
-            std.mem.copyForwards(u8, &info.module, "Filter");
-        },
-        // Modulation
-        .Osc3ToFilter => {
-            info.default_value = param_defaults.Osc3ToFilter.Float;
-            info.min_value = 0.0;
-            info.max_value = 1.0;
-            info.flags.is_stepped = true;
-            std.mem.copyForwards(u8, &info.name, "Osc3 > Filter");
-            std.mem.copyForwards(u8, &info.module, "Modulation");
-        },
-        .Osc3ToOsc => {
-            info.default_value = param_defaults.Osc3ToOsc.Float;
-            info.min_value = 0.0;
-            info.max_value = 1.0;
-            info.flags.is_stepped = true;
-            std.mem.copyForwards(u8, &info.name, "Osc3 > Osc");
-            std.mem.copyForwards(u8, &info.module, "Modulation");
-        },
-        // Envelope
-        .Attack => {
-            info.default_value = param_defaults.Attack.Float;
-            info.min_value = 0.001;
-            info.max_value = 10.0;
-            std.mem.copyForwards(u8, &info.name, "Attack");
-            std.mem.copyForwards(u8, &info.module, "Envelope");
-        },
-        .Decay => {
-            info.default_value = param_defaults.Decay.Float;
-            info.min_value = 0.001;
-            info.max_value = 10.0;
-            std.mem.copyForwards(u8, &info.name, "Decay");
-            std.mem.copyForwards(u8, &info.module, "Envelope");
-        },
-        .Sustain => {
-            info.default_value = param_defaults.Sustain.Float;
-            info.min_value = 0.0;
-            info.max_value = 1.0;
-            std.mem.copyForwards(u8, &info.name, "Sustain");
-            std.mem.copyForwards(u8, &info.module, "Envelope");
-        },
-        .Release => {
-            info.default_value = param_defaults.Release.Float;
-            info.min_value = 0.001;
-            info.max_value = 10.0;
-            std.mem.copyForwards(u8, &info.name, "Release");
-            std.mem.copyForwards(u8, &info.module, "Envelope");
-        },
-        // Controllers
-        .Glide => {
-            info.default_value = param_defaults.Glide.Float;
-            info.min_value = 0.0;
-            info.max_value = 5.0;
-            std.mem.copyForwards(u8, &info.name, "Glide");
-            std.mem.copyForwards(u8, &info.module, "Controllers");
-        },
-        .PitchBendRange => {
-            info.default_value = param_defaults.PitchBendRange.Float;
-            info.min_value = 0.0;
-            info.max_value = 12.0;
-            std.mem.copyForwards(u8, &info.name, "Bend Range");
-            std.mem.copyForwards(u8, &info.module, "Controllers");
-        },
-        .MasterVolume => {
-            info.default_value = param_defaults.MasterVolume.Float;
-            info.min_value = 0.0;
-            info.max_value = 1.0;
-            std.mem.copyForwards(u8, &info.name, "Master Volume");
-            std.mem.copyForwards(u8, &info.module, "Output");
-        },
-        // Quality
-        .OversampleFactor => {
-            info.default_value = param_defaults.OversampleFactor.Float;
-            info.min_value = 0.0;
-            info.max_value = 2.0;
-            info.flags.is_stepped = true;
-            std.mem.copyForwards(u8, &info.name, "Oversample");
-            std.mem.copyForwards(u8, &info.module, "Quality");
-        },
-    }
-
-    return info;
-}
-
-fn _getValue(clap_plugin: *const clap.Plugin, param_id: clap.Id, value: *f64) callconv(.c) bool {
-    const plugin = Plugin.fromClapPlugin(clap_plugin);
-    const index = @intFromEnum(param_id);
-    if (index >= param_count) return false;
-    const param: Parameter = @enumFromInt(index);
-    value.* = plugin.params.get(param).Float;
-    return true;
-}
-
-const waveform_names = [_][]const u8{ "Triangle", "Shark", "Sawtooth", "Square", "Wide Pulse", "Narrow Pulse" };
-const range_names = [_][]const u8{ "LO", "32'", "16'", "8'", "4'", "2'" };
-const noise_names = [_][]const u8{ "White", "Pink" };
-const tracking_names = [_][]const u8{ "Off", "Half", "Full" };
-const switch_names = [_][]const u8{ "Off", "On" };
-const oversample_names = [_][]const u8{ "1x", "2x", "4x" };
-
-pub fn _valueToText(
-    _: *const clap.Plugin,
-    param_id: clap.Id,
-    value: f64,
-    buffer: [*]u8,
-    size: u32,
-) callconv(.c) bool {
-    const index = @intFromEnum(param_id);
-    if (index >= param_count) return false;
-    const param: Parameter = @enumFromInt(index);
-
-    // Format with units based on parameter type
-    const out = switch (param) {
-        .FilterCutoff => std.fmt.bufPrintSentinel(buffer[0..size], "{d:.0} Hz", .{value}, 0),
-        .Attack, .Decay, .Release, .Glide => std.fmt.bufPrintSentinel(buffer[0..size], "{d:.3} s", .{value}, 0),
-        .Osc2Detune, .Osc3Detune => std.fmt.bufPrintSentinel(buffer[0..size], "{d:.1} ct", .{value}, 0),
-        .PitchBendRange => std.fmt.bufPrintSentinel(buffer[0..size], "{d:.0} st", .{value}, 0),
-        .Osc1Waveform, .Osc2Waveform, .Osc3Waveform => blk: {
-            const idx: usize = @intFromFloat(@round(@max(0.0, @min(5.0, value))));
-            break :blk std.fmt.bufPrintSentinel(buffer[0..size], "{s}", .{waveform_names[idx]}, 0);
-        },
-        .Osc1Range, .Osc2Range, .Osc3Range => blk: {
-            const idx: usize = @intFromFloat(@round(@max(0.0, @min(5.0, value))));
-            break :blk std.fmt.bufPrintSentinel(buffer[0..size], "{s}", .{range_names[idx]}, 0);
-        },
-        .NoiseType => blk: {
-            const idx: usize = @intFromFloat(@round(@max(0.0, @min(1.0, value))));
-            break :blk std.fmt.bufPrintSentinel(buffer[0..size], "{s}", .{noise_names[idx]}, 0);
-        },
-        .FilterKeyTracking => blk: {
-            const idx: usize = @intFromFloat(@round(@max(0.0, @min(2.0, value))));
-            break :blk std.fmt.bufPrintSentinel(buffer[0..size], "{s}", .{tracking_names[idx]}, 0);
-        },
-        .Osc3KeyboardCtrl, .Osc3ToFilter, .Osc3ToOsc => blk: {
-            const idx: usize = @intFromFloat(@round(@max(0.0, @min(1.0, value))));
-            break :blk std.fmt.bufPrintSentinel(buffer[0..size], "{s}", .{switch_names[idx]}, 0);
-        },
-        .OversampleFactor => blk: {
-            const idx: usize = @intFromFloat(@round(@max(0.0, @min(2.0, value))));
-            break :blk std.fmt.bufPrintSentinel(buffer[0..size], "{s}", .{oversample_names[idx]}, 0);
-        },
-        .FilterEmphasis => std.fmt.bufPrintSentinel(buffer[0..size], "{d:.2}", .{value}, 0),
-        else => std.fmt.bufPrintSentinel(buffer[0..size], "{d:.2}", .{value}, 0),
-    } catch return false;
-    _ = out;
-    return true;
-}
-
-fn _textToValue(
-    _: *const clap.Plugin,
-    _: clap.Id,
-    text: [*:0]const u8,
-    value: *f64,
-) callconv(.c) bool {
-    const slice = std.mem.span(text);
-    // Try to parse, stripping common suffixes
-    var parse_slice: []const u8 = slice;
-    if (std.mem.endsWith(u8, slice, " Hz")) {
-        parse_slice = slice[0 .. slice.len - 3];
-    } else if (std.mem.endsWith(u8, slice, " s")) {
-        parse_slice = slice[0 .. slice.len - 2];
-    }
-    value.* = std.fmt.parseFloat(f64, parse_slice) catch return false;
-    return true;
-}
-
-fn processEvent(plugin: *Plugin, event: *const clap.events.Header) bool {
-    if (event.space_id != clap.events.core_space_id) {
-        return false;
-    }
-    if (event.type == .param_value) {
-        const param_event: *align(1) const clap.events.ParamValue = @ptrCast(event);
-        const index = @intFromEnum(param_event.param_id);
-        if (index >= param_count) {
-            return false;
-        }
-
-        const param: Parameter = @enumFromInt(index);
-        const value: ParameterValue = .{ .Float = param_event.value };
-        plugin.params.set(param, value, .{}) catch unreachable;
-        return true;
-    }
-    return false;
-}
-
-pub fn _flush(
-    clap_plugin: *const clap.Plugin,
-    input_events: *const clap.events.InputEvents,
-    output_events: *const clap.events.OutputEvents,
-) callconv(.c) void {
-    const zone = tracy.ZoneN(@src(), "Flush parameters");
-    defer zone.End();
-
-    const plugin = Plugin.fromClapPlugin(clap_plugin);
-    var params_did_change = false;
-    for (0..input_events.size(input_events)) |i| {
-        const event = input_events.get(input_events, @intCast(i));
-        if (processEvent(plugin, event)) {
-            params_did_change = true;
-        }
-    }
-
-    if (plugin.params.mutex.tryLock()) {
-        defer plugin.params.mutex.unlock(mutex_io);
-
-        if (plugin.params.events.items.len > 0) {
-            params_did_change = true;
-        }
-        while (plugin.params.events.pop()) |event_value| {
-            var event = event_value;
-            _ = output_events.tryPush(output_events, &event.header);
-        }
-    }
-
-    if (params_did_change) {
-        plugin.applyParamChanges(true);
-    }
-}
+pub const _flush = clap_ext.flush;
+pub const _getInfo = clap_ext.getInfo;
+pub const _valueToText = clap_ext.valueToText;
