@@ -212,6 +212,8 @@ pub const State = struct {
 
     pub const PluginStateRestoreRequest = struct {
         track_index: usize,
+        /// null = instrument; Some = FX slot index
+        fx_index: ?usize = null,
         state_data: []const u8,
     };
 
@@ -523,6 +525,7 @@ pub const State = struct {
                     self.session.clips[c.track][c.scene] = .{
                         .state = .stopped,
                         .length_beats = c.length_beats,
+                        .name = c.name,
                     };
                     self.piano_clips[c.track][c.scene].notes.clearRetainingCapacity();
                     for (c.notes) |note| {
@@ -543,6 +546,7 @@ pub const State = struct {
                     self.session.clips[c.track][c.scene] = .{
                         .state = .stopped,
                         .length_beats = slot.length_beats,
+                        .name = slot.name,
                     };
                     const clip = &self.piano_clips[c.track][c.scene];
                     clip.notes.clearRetainingCapacity();
@@ -646,6 +650,11 @@ pub const State = struct {
             .scene_rename => |c| {
                 self.session.scenes[c.scene_index].name = if (direction == .undo) c.old_name else c.new_name;
             },
+            .clip_rename => |c| {
+                const name = if (direction == .undo) c.old_name else c.new_name;
+                self.session.clips[c.track][c.scene].name = name;
+                self.audio_clips[c.track][c.scene].name = name;
+            },
             .bpm_change => |c| {
                 self.bpm = if (direction == .undo) c.old_bpm else c.new_bpm;
             },
@@ -665,6 +674,7 @@ pub const State = struct {
             .plugin_state => |c| {
                 self.plugin_state_restore_request = .{
                     .track_index = c.track_index,
+                    .fx_index = c.fx_index,
                     .state_data = if (direction == .undo) c.old_state else c.new_state,
                 };
             },

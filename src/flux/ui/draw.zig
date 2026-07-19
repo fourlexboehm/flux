@@ -68,7 +68,11 @@ pub fn draw(state: *State, ui_scale: f32) void {
         // Clip grid area
         const session_child_pos = zgui.getCursorScreenPos();
         if (zgui.beginChild("clip_area##root", .{ .w = 0, .h = top_height, .window_flags = .{ .no_scrollbar = true, .no_scroll_with_mouse = true } })) {
-            if (zgui.isWindowHovered(.{ .child_windows = true }) and zgui.isMouseClicked(.left)) {
+            // Only steal focus when the pointer is actually over this pane (not
+            // while dragging a bottom-panel control that wandered upward).
+            if (zgui.isWindowHovered(.{ .child_windows = true, .allow_when_blocked_by_active_item = false }) and
+                zgui.isMouseClicked(.left) and !zgui.isAnyItemActive())
+            {
                 state.focused_pane = .session;
             }
             drawClipGrid(state, ui_scale);
@@ -127,10 +131,19 @@ pub fn draw(state: *State, ui_scale: f32) void {
         // Bottom panel
         const bottom_child_pos = zgui.getCursorScreenPos();
         if (zgui.beginChild("bottom_panel##root", .{ .w = 0, .h = bottom_height, .child_flags = .{ .border = true }, .window_flags = .{ .no_scrollbar = true, .no_scroll_with_mouse = true } })) {
-            if (zgui.isWindowHovered(.{ .child_windows = true }) and zgui.isMouseClicked(.left)) {
+            // Capture focus on press/hover so horizontal slider drags don't
+            // fall through to session track selection behind the panel.
+            const bottom_hover = zgui.isWindowHovered(.{
+                .child_windows = true,
+                .allow_when_blocked_by_active_item = true,
+            });
+            if (bottom_hover and (zgui.isMouseClicked(.left) or zgui.isMouseDown(.left))) {
                 state.focused_pane = .bottom;
             }
             drawBottomPanel(state, ui_scale);
+            if (bottom_hover and zgui.isAnyItemActive()) {
+                state.focused_pane = .bottom;
+            }
         }
         zgui.endChild();
         widgets.focusFrame(

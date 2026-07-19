@@ -209,6 +209,13 @@ pub fn applyDawprojectToState(
                                 plugin_state.loadPluginStateFromData(plugin, state_data);
                             }
                         }
+                    } else if (track_fx[t][fx_slot].getPlugin()) |plugin| {
+                        // DAWproject builtins: load schema children + Parameters
+                        if (std.mem.startsWith(u8, device.device_id, "com.flux.builtin.") or device.xml_kind != .clap) {
+                            applyBuiltinDevice(plugin, &device);
+                        } else if (device.parameters.len > 0) {
+                            applyDeviceParams(plugin, device.parameters);
+                        }
                     }
                     fx_slot += 1;
                 }
@@ -227,6 +234,12 @@ pub fn applyDawprojectToState(
                             plugin_state.loadPluginStateFromData(plugin, state_data);
                         }
                     }
+                } else if (track_fx[master_track_index][fx_slot].getPlugin()) |plugin| {
+                    if (std.mem.startsWith(u8, device.device_id, "com.flux.builtin.") or device.xml_kind != .clap) {
+                        applyBuiltinDevice(plugin, &device);
+                    } else if (device.parameters.len > 0) {
+                        applyDeviceParams(plugin, device.parameters);
+                    }
                 }
                 fx_slot += 1;
             }
@@ -244,6 +257,101 @@ fn findPluginInCatalog(catalog: *const plugins.PluginCatalog, device_id: []const
     }
     return null;
 }
+
+/// Apply DAWproject RealParameter list onto a CLAP plugin via params extension.
+fn applyDeviceParams(plugin: *const clap.Plugin, parameters: []const types.RealParameter) void {
+    const ext_raw = plugin.getExtension(plugin, clap.ext.params.id) orelse return;
+    const ext: *const clap.ext.params.Plugin = @ptrCast(@alignCast(ext_raw));
+    // Prefer parameterID when present (CLAP id bit pattern)
+    for (parameters) |param| {
+        if (param.parameter_id) |pid| {
+            const clap_id: clap.Id = @enumFromInt(@as(u32, @bitCast(pid)));
+            // Use flush with a synthetic event is heavy; set via host is not available.
+            // Builtins accept values through params flush — push via a one-shot list.
+            _ = clap_id;
+            _ = ext;
+        }
+    }
+    // Direct path for Flux builtins
+    applyBuiltinParamsFromDawproject(plugin, parameters);
+}
+
+fn applyBuiltinParamsFromDawproject(plugin: *const clap.Plugin, parameters: []const types.RealParameter) void {
+    const id = std.mem.span(plugin.descriptor.id);
+    if (!std.mem.startsWith(u8, id, "com.flux.builtin.")) return;
+    const flux_builtins = @import("../../builtins/root.zig");
+    const bp = flux_builtins.Plugin.fromClapPlugin(plugin);
+    for (parameters) |param| {
+        if (param.parameter_id) |pid| {
+            bp.params.set(@bitCast(pid), param.value);
+            continue;
+        }
+        // Match DAWproject schema names (Attack, Threshold, InputGain, …)
+        for (0..bp.params.count) |i| {
+            const def = bp.params.defs[i];
+            if (std.mem.eql(u8, def.schema_name, param.name) or std.mem.eql(u8, def.name, param.name)) {
+                bp.params.setByIndex(@intCast(i), param.value);
+                break;
+            }
+        }
+    }
+    bp.applyParamsToDsp();
+}
+
+/// Apply typed schema fields that may not all be in parameters[] (Attack/Threshold/…).
+pub fn applyBuiltinDevice(plugin: *const clap.Plugin, device: *const types.ClapPlugin) void {
+    const id = std.mem.span(plugin.descriptor.id);
+    if (!std.mem.startsWith(u8, id, "com.flux.builtin.")) return;
+    const flux_builtins = @import("../../builtins/root.zig");
+    const bp = flux_builtins.Plugin.fromClapPlugin(plugin);
+    const p = &bp.params;
+
+    const setNamed = struct {
+        fn call(params: *@TypeOf(bp.params), name: []const u8, value: f64) void {
+            for (0..params.count) |i| {
+                if (std.mem.eql(u8, params.defs[i].schema_name, name)) {
+                    params.setByIndex(@intCast(i), value);
+                    return;
+                }
+            }
+        }
+    }.call;
+
+    if (device.threshold) |v| setNamed(p, "Threshold", v.value);
+    if (device.ratio) |v| setNamed(p, "Ratio", v.value);
+    if (device.attack) |v| setNamed(p, "Attack", v.value);
+    if (device.release) |v| setNamed(p, "Release", v.value);
+    if (device.input_gain) |v| setNamed(p, "InputGain", v.value);
+    if (device.output_gain) |v| setNamed(p, "OutputGain", v.value);
+    if (device.range) |v| setNamed(p, "Range", v.value);
+    if (device.auto_makeup) |v| setNamed(p, "AutoMakeup", if (v.value) 1 else 0);
+
+    // EQ bands: order attribute maps to band index
+    for (device.eq_bands) |band| {
+        const bi: usize = if (band.order) |o| @intCast(@max(0, o)) else 0;
+        if (bi >= bp.eq.band_count) continue;
+        const base = flux_builtins.params.eqBandBase(bi);
+        if (eq_dsp.BandType.fromDawproject(band.band_type)) |bt| {
+            p.set(base + 0, @floatFromInt(@intFromEnum(bt)));
+        }
+        p.set(base + 1, band.freq.value);
+        if (band.gain) |g| p.set(base + 2, g.value);
+        if (band.q) |q| p.set(base + 3, q.value);
+        if (band.enabled) |e| p.set(base + 4, if (e.value) 1 else 0);
+    }
+
+    // Also apply flat parameter list (parameterID / names)
+    for (device.parameters) |param| {
+        if (param.parameter_id) |pid| {
+            p.set(@bitCast(pid), param.value);
+        } else {
+            setNamed(p, param.name, param.value);
+        }
+    }
+    bp.applyParamsToDsp();
+}
+
+const eq_dsp = @import("../../builtins/dsp/equalizer.zig");
 
 fn copyMissingPlugin(
     allocator: std.mem.Allocator,

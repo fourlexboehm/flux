@@ -87,6 +87,11 @@
             .url = "git+https://github.com/Signalsmith-Audio/linear#7f53cdd1ccd52b409dacf2af24e7ff838c5580cd",
             .hash = "N-V-__8AAGduBACPHKVSKUhy0zdnFCucNQb9ARpGnQMZCHZH",
         },
+        // YM2413 / VRC7 / YMF281B emulator (MIT). Used by zportafm.
+        .emu2413 = .{
+            .url = "git+https://github.com/digital-sound-antiques/emu2413#11676f6c43af7a53a0a940f8faea57eed73a22ba",
+            .hash = "N-V-__8AAFnsAABcT3bEtgv_kZ5BW4noQmjXriXUC8qQxPBu",
+        },
     },
 
     .paths = .{

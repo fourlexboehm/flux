@@ -10,6 +10,7 @@ const ui_state = @import("../../ui/state.zig");
 
 const project_io = @import("../io.zig");
 const apply = @import("apply.zig");
+const undo = @import("../../undo/root.zig");
 
 const track_count = session_constants.max_tracks;
 const TrackPlugin = plugin_runtime.TrackPlugin;
@@ -59,15 +60,23 @@ pub fn handleLoadProject(
     };
 
     try state.setProjectPath(path.?);
+
+    // Restore undo stack from flux_undo.xml (apply cleared history).
+    if (loaded.undo_xml) |undo_xml| {
+        undo.deserializeFromXml(&state.undo_history, undo_xml, &state.sample_store) catch |err| {
+            std.log.warn("Failed to restore undo history: {}", .{err});
+            state.undo_history.clear();
+        };
+        if (state.undo_history.undoCount() > 0) {
+            std.log.info("Restored {} undo step(s) from project", .{state.undo_history.undoCount()});
+        }
+    }
+
     if (loaded.needs_thin_save) {
         state.needs_thin_save = true;
         std.log.info("Opened packed project; media under samples/ — Save to convert to thin layout", .{});
     } else {
         state.clearProjectDirty();
-    }
-    // flux_undo.xml is kept in the archive on Save; full stack restore is not wired yet.
-    if (loaded.undo_xml) |_| {
-        std.log.info("Project archive includes flux_undo.xml (restore not implemented)", .{});
     }
     std.log.info("Loaded project from: {s}", .{path.?});
 }

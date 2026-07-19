@@ -229,7 +229,7 @@ pub const XmlWriter = struct {
             self.indent_level += 1;
 
             for (channel.devices) |device| {
-                try self.writeClapPlugin(&device);
+                try self.writeDevice(&device);
             }
 
             self.indent_level -= 1;
@@ -278,9 +278,11 @@ pub const XmlWriter = struct {
         try self.buffer.appendSlice(self.allocator, "</Channel>\n");
     }
 
-    fn writeClapPlugin(self: *Self, device: *const ClapPlugin) !void {
+    fn writeDevice(self: *Self, device: *const ClapPlugin) !void {
+        const tag = device.xml_kind.xmlTag();
         try self.writeIndent();
-        try self.buffer.appendSlice(self.allocator, "<ClapPlugin");
+        try self.buffer.append(self.allocator, '<');
+        try self.buffer.appendSlice(self.allocator, tag);
         try self.writeAttr("deviceID", device.device_id);
         try self.writeAttr("deviceName", device.device_name);
         try self.writeAttr("deviceRole", device.device_role.toString());
@@ -295,22 +297,14 @@ pub const XmlWriter = struct {
             try self.buffer.appendSlice(self.allocator, "<Parameters>\n");
             self.indent_level += 1;
             for (device.parameters) |param| {
-                try self.writeIndent();
-                try self.buffer.appendSlice(self.allocator, "<RealParameter");
-                try self.writeAttr("id", param.id);
-                if (param.parameter_id) |pid| try self.writeAttrInt("parameterID", pid);
-                try self.writeAttr("name", param.name);
-                if (param.min) |min| try self.writeAttrFloat("min", min);
-                if (param.max) |max| try self.writeAttrFloat("max", max);
-                try self.writeAttr("unit", param.unit.toString());
-                try self.writeAttrFloat("value", param.value);
-                try self.buffer.appendSlice(self.allocator, "/>\n");
+                try self.writeRealParameter("RealParameter", &param);
             }
             self.indent_level -= 1;
             try self.writeIndent();
             try self.buffer.appendSlice(self.allocator, "</Parameters>\n");
         }
 
+        // Base device children must precede builtin-specific extension children.
         if (device.enabled) |enabled| {
             try self.writeIndent();
             try self.buffer.appendSlice(self.allocator, "<Enabled");
@@ -320,7 +314,6 @@ pub const XmlWriter = struct {
             try self.writeAttr("name", enabled.name);
             try self.buffer.appendSlice(self.allocator, "/>\n");
         }
-
         if (device.state) |state| {
             try self.writeIndent();
             try self.buffer.appendSlice(self.allocator, "<State");
@@ -329,9 +322,85 @@ pub const XmlWriter = struct {
             try self.buffer.appendSlice(self.allocator, "/>\n");
         }
 
+        switch (device.xml_kind) {
+            .clap => {},
+            .equalizer => {
+                for (device.eq_bands) |band| try self.writeEqBand(&band);
+                if (device.input_gain) |p| try self.writeRealParameter("InputGain", &p);
+                if (device.output_gain) |p| try self.writeRealParameter("OutputGain", &p);
+            },
+            .compressor => {
+                if (device.attack) |p| try self.writeRealParameter("Attack", &p);
+                if (device.auto_makeup) |b| try self.writeBoolParameter("AutoMakeup", &b);
+                if (device.input_gain) |p| try self.writeRealParameter("InputGain", &p);
+                if (device.output_gain) |p| try self.writeRealParameter("OutputGain", &p);
+                if (device.ratio) |p| try self.writeRealParameter("Ratio", &p);
+                if (device.release) |p| try self.writeRealParameter("Release", &p);
+                if (device.threshold) |p| try self.writeRealParameter("Threshold", &p);
+            },
+            .noise_gate => {
+                if (device.attack) |p| try self.writeRealParameter("Attack", &p);
+                if (device.range) |p| try self.writeRealParameter("Range", &p);
+                if (device.ratio) |p| try self.writeRealParameter("Ratio", &p);
+                if (device.release) |p| try self.writeRealParameter("Release", &p);
+                if (device.threshold) |p| try self.writeRealParameter("Threshold", &p);
+            },
+            .limiter => {
+                if (device.attack) |p| try self.writeRealParameter("Attack", &p);
+                if (device.input_gain) |p| try self.writeRealParameter("InputGain", &p);
+                if (device.output_gain) |p| try self.writeRealParameter("OutputGain", &p);
+                if (device.release) |p| try self.writeRealParameter("Release", &p);
+                if (device.threshold) |p| try self.writeRealParameter("Threshold", &p);
+            },
+        }
+
         self.indent_level -= 1;
         try self.writeIndent();
-        try self.buffer.appendSlice(self.allocator, "</ClapPlugin>\n");
+        try self.buffer.append(self.allocator, '<');
+        try self.buffer.append(self.allocator, '/');
+        try self.buffer.appendSlice(self.allocator, tag);
+        try self.buffer.appendSlice(self.allocator, ">\n");
+    }
+
+    fn writeEqBand(self: *Self, band: *const types.EqBand) !void {
+        try self.writeIndent();
+        try self.buffer.appendSlice(self.allocator, "<Band");
+        try self.writeAttr("type", band.band_type);
+        if (band.order) |o| try self.writeAttrInt("order", o);
+        try self.buffer.appendSlice(self.allocator, ">\n");
+        self.indent_level += 1;
+        try self.writeRealParameter("Freq", &band.freq);
+        if (band.gain) |p| try self.writeRealParameter("Gain", &p);
+        if (band.q) |p| try self.writeRealParameter("Q", &p);
+        if (band.enabled) |p| try self.writeBoolParameter("Enabled", &p);
+        self.indent_level -= 1;
+        try self.writeIndent();
+        try self.buffer.appendSlice(self.allocator, "</Band>\n");
+    }
+
+    fn writeBoolParameter(self: *Self, tag: []const u8, param: *const BoolParameter) !void {
+        try self.writeIndent();
+        try self.buffer.append(self.allocator, '<');
+        try self.buffer.appendSlice(self.allocator, tag);
+        try self.writeAttrBool("value", param.value);
+        try self.writeAttr("id", param.id);
+        if (param.parameter_id) |pid| try self.writeAttrInt("parameterID", pid);
+        try self.writeAttr("name", param.name);
+        try self.buffer.appendSlice(self.allocator, "/>\n");
+    }
+
+    fn writeRealParameter(self: *Self, tag: []const u8, param: *const RealParameter) !void {
+        try self.writeIndent();
+        try self.buffer.append(self.allocator, '<');
+        try self.buffer.appendSlice(self.allocator, tag);
+        try self.writeAttr("id", param.id);
+        if (param.parameter_id) |pid| try self.writeAttrInt("parameterID", pid);
+        try self.writeAttr("name", param.name);
+        if (param.min) |min| try self.writeAttrFloat("min", min);
+        if (param.max) |max| try self.writeAttrFloat("max", max);
+        try self.writeAttr("unit", param.unit.toString());
+        try self.writeAttrFloat("value", param.value);
+        try self.buffer.appendSlice(self.allocator, "/>\n");
     }
 
     fn writeArrangement(self: *Self, arr: *const Arrangement) !void {

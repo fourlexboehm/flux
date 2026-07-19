@@ -95,7 +95,7 @@ pub fn fromFluxProject(
             const fx_choice = state.track_fx[t][fx_index].choice_index;
             var has_fx = false;
             if (catalog.entryForIndex(fx_choice)) |entry| {
-                if (entry.kind == .clap) {
+                if (entry.kind == .clap or (entry.kind == .builtin and entry.is_audio_effect)) {
                     const info = if (t < track_fx_plugin_info.len) track_fx_plugin_info[t][fx_index] else TrackPluginInfo{};
                     const device = try buildClapPlugin(allocator, entry, info, .audioFX, &ids);
                     fx_device_ids[t][fx_index] = device.id;
@@ -177,7 +177,7 @@ pub fn fromFluxProject(
         const fx_choice = state.track_fx[master_track_index][fx_index].choice_index;
         var has_fx = false;
         if (catalog.entryForIndex(fx_choice)) |entry| {
-            if (entry.kind == .clap) {
+            if (entry.kind == .clap or (entry.kind == .builtin and entry.is_audio_effect)) {
                 const info = if (master_track_index < track_fx_plugin_info.len)
                     track_fx_plugin_info[master_track_index][fx_index]
                 else
@@ -324,6 +324,7 @@ pub fn fromFluxProject(
                     }
                 }
 
+                const loop_end: f64 = if (piano.loop_end_beats > 0) piano.loop_end_beats else clip_duration;
                 try clip_slots.append(allocator, .{
                     .id = clip_slot_id,
                     .track = track_ids.items[t],
@@ -331,8 +332,10 @@ pub fn fromFluxProject(
                     .clip = .{
                         .time = 0.0,
                         .duration = clip_duration,
-                        .play_start = 0.0,
-                        .name = null,
+                        .play_start = piano.play_start_beats,
+                        .loop_start = piano.loop_start_beats,
+                        .loop_end = loop_end,
+                        .name = try clipExportName(allocator, slot, null),
                         .lanes = if (points_list.items.len > 0) .{
                             .id = try ids.next(),
                             .notes = .{
@@ -438,6 +441,20 @@ fn trackContentTypesAttr(allocator: std.mem.Allocator, state: *const ui_state.St
     return try allocator.dupe(u8, "notes");
 }
 
+fn clipExportName(
+    allocator: std.mem.Allocator,
+    slot: session_view.ClipSlot,
+    audio: ?*const @import("../session/audio_clip.zig").AudioClip,
+) !?[]const u8 {
+    const slot_name = slot.name.get();
+    if (slot_name.len > 0) return try allocator.dupe(u8, slot_name);
+    if (audio) |a| {
+        const audio_name = a.name.get();
+        if (audio_name.len > 0) return try allocator.dupe(u8, audio_name);
+    }
+    return null;
+}
+
 fn buildAudioClip(
     allocator: std.mem.Allocator,
     state: *const ui_state.State,
@@ -468,10 +485,7 @@ fn buildAudioClip(
         warp_points[1] = .{ .time = clip_duration, .content_time = asset.duration_seconds };
     }
 
-    const name: ?[]const u8 = if (audio.name.len > 0)
-        try allocator.dupe(u8, audio.name.get())
-    else
-        null;
+    const name = try clipExportName(allocator, slot, audio);
 
     const algorithm: ?[]const u8 = if (audio.algorithm) |a|
         try allocator.dupe(u8, a)
@@ -522,40 +536,208 @@ fn buildClapPlugin(
     const device_id = try ids.next();
     const enabled_id = try ids.next();
     const clap_plugin_id = info.plugin_id orelse entry.id orelse "";
+    const xml_kind = builtinXmlKind(clap_plugin_id);
 
     var params = std.ArrayList(RealParameter).empty;
     if (info.params.len > 0) {
         for (info.params) |param| {
             const param_id = try std.fmt.allocPrint(allocator, "{s}_p{d}", .{ device_id, param.id });
+            // Prefer schema element names for builtins (InputGain not "Input Gain")
+            const schema_name = schemaParamName(param.name, param.id);
             try params.append(allocator, .{
                 .id = param_id,
-                // Bitwig requires parameterID on device params (xs:int bit pattern of CLAP id).
                 .parameter_id = @bitCast(param.id),
-                .name = try allocator.dupe(u8, param.name),
+                .name = try allocator.dupe(u8, schema_name),
                 .value = param.value,
                 .min = param.min,
                 .max = param.max,
-                .unit = .linear,
+                .unit = unitForSchemaName(schema_name),
             });
         }
     }
 
+    // Portable builtins: params live in schema XML elements, no clap-preset.
+    const use_state = xml_kind == .clap;
+
+    // Map DAWproject typed children from collected params
+    const threshold = try namedParam(allocator, params.items, "Threshold");
+    const ratio = try namedParam(allocator, params.items, "Ratio");
+    const attack = try namedParam(allocator, params.items, "Attack");
+    const release = try namedParam(allocator, params.items, "Release");
+    const input_gain = try namedParam(allocator, params.items, "InputGain");
+    const output_gain = try namedParam(allocator, params.items, "OutputGain");
+    const range = try namedParam(allocator, params.items, "Range");
+    const auto_makeup: ?types.BoolParameter = blk: {
+        for (params.items) |p| {
+            if (std.mem.eql(u8, p.name, "AutoMakeup")) {
+                break :blk .{
+                    .id = try allocator.dupe(u8, p.id),
+                    .name = try allocator.dupe(u8, "AutoMakeup"),
+                    .value = p.value >= 0.5,
+                    .parameter_id = p.parameter_id,
+                };
+            }
+        }
+        break :blk null;
+    };
+
+    const eq_bands = if (xml_kind == .equalizer)
+        try buildEqBands(allocator, device_id, params.items)
+    else
+        &[_]types.EqBand{};
+
+    // For dynamics builtins, schema children carry the values; keep Parameters too for param IDs.
     return .{
         .id = device_id,
         .name = try allocator.dupe(u8, entry.name),
         .device_id = try allocator.dupe(u8, clap_plugin_id),
         .device_name = try allocator.dupe(u8, entry.name),
         .device_role = device_role,
+        .xml_kind = xml_kind,
         .parameters = try params.toOwnedSlice(allocator),
         .enabled = .{
             .id = enabled_id,
             .name = "On/Off",
             .value = true,
         },
-        .state = if (info.state_path) |sp| .{
-            .path = try allocator.dupe(u8, sp),
+        .state = if (use_state) blk: {
+            if (info.state_path) |sp| break :blk .{ .path = try allocator.dupe(u8, sp) };
+            break :blk null;
         } else null,
+        .eq_bands = eq_bands,
+        .threshold = threshold,
+        .ratio = ratio,
+        .attack = attack,
+        .release = release,
+        .input_gain = input_gain,
+        .output_gain = output_gain,
+        .range = range,
+        .auto_makeup = auto_makeup,
     };
+}
+
+fn builtinXmlKind(plugin_id: []const u8) types.DeviceXmlKind {
+    if (std.mem.eql(u8, plugin_id, "com.flux.builtin.equalizer")) return .equalizer;
+    if (std.mem.eql(u8, plugin_id, "com.flux.builtin.compressor")) return .compressor;
+    if (std.mem.eql(u8, plugin_id, "com.flux.builtin.noise_gate")) return .noise_gate;
+    if (std.mem.eql(u8, plugin_id, "com.flux.builtin.limiter")) return .limiter;
+    return .clap;
+}
+
+/// Map CLAP param names / ids → DAWproject schema names.
+fn schemaParamName(name: []const u8, id: u32) []const u8 {
+    // Builtin ids from builtins/params.zig
+    return switch (id) {
+        1 => "Attack",
+        2 => "Release",
+        3 => "Threshold",
+        4 => "Ratio",
+        5 => "InputGain",
+        6 => "OutputGain",
+        7 => "AutoMakeup",
+        8 => "Range",
+        100 => "InputGain",
+        101 => "OutputGain",
+        else => name,
+    };
+}
+
+fn unitForSchemaName(name: []const u8) types.Unit {
+    if (std.mem.eql(u8, name, "Threshold") or
+        std.mem.eql(u8, name, "InputGain") or
+        std.mem.eql(u8, name, "OutputGain") or
+        std.mem.eql(u8, name, "Range") or
+        std.mem.eql(u8, name, "Gain") or
+        std.mem.endsWith(u8, name, "Gain"))
+        return .decibel;
+    if (std.mem.eql(u8, name, "Attack") or std.mem.eql(u8, name, "Release"))
+        return .seconds;
+    if (std.mem.eql(u8, name, "Freq") or std.mem.endsWith(u8, name, "Freq"))
+        return .hertz;
+    return .linear;
+}
+
+fn namedParam(allocator: std.mem.Allocator, items: []const RealParameter, name: []const u8) !?RealParameter {
+    for (items) |p| {
+        if (std.mem.eql(u8, p.name, name)) {
+            return .{
+                .id = try allocator.dupe(u8, p.id),
+                .name = try allocator.dupe(u8, name),
+                .value = p.value,
+                .min = p.min,
+                .max = p.max,
+                .unit = p.unit,
+                .parameter_id = p.parameter_id,
+            };
+        }
+    }
+    return null;
+}
+
+fn buildEqBands(allocator: std.mem.Allocator, device_id: []const u8, items: []const RealParameter) ![]const types.EqBand {
+    // Band param ids: 200 + b*10 + {0 type, 1 freq, 2 gain, 3 q, 4 enabled}
+    var bands = std.ArrayList(types.EqBand).empty;
+    const type_names = [_][]const u8{ "highPass", "lowPass", "bandPass", "highShelf", "lowShelf", "bell", "notch" };
+    var b: usize = 0;
+    while (b < 6) : (b += 1) {
+        const base: u32 = 200 + @as(u32, @intCast(b)) * 10;
+        const type_p = findParamById(items, base + 0) orelse continue;
+        const freq_p = findParamById(items, base + 1) orelse continue;
+        const gain_p = findParamById(items, base + 2);
+        const q_p = findParamById(items, base + 3);
+        const en_p = findParamById(items, base + 4);
+
+        const t_idx: usize = @intFromFloat(@max(0, @min(6, type_p.value)));
+        const band_type = type_names[t_idx];
+
+        try bands.append(allocator, .{
+            .band_type = try allocator.dupe(u8, band_type),
+            .order = @intCast(b),
+            .freq = .{
+                .id = try std.fmt.allocPrint(allocator, "{s}_b{d}_freq", .{ device_id, b }),
+                .name = "Freq",
+                .value = freq_p.value,
+                .min = freq_p.min,
+                .max = freq_p.max,
+                .unit = .hertz,
+                .parameter_id = freq_p.parameter_id,
+            },
+            .gain = if (gain_p) |g| .{
+                .id = try std.fmt.allocPrint(allocator, "{s}_b{d}_gain", .{ device_id, b }),
+                .name = "Gain",
+                .value = g.value,
+                .min = g.min,
+                .max = g.max,
+                .unit = .decibel,
+                .parameter_id = g.parameter_id,
+            } else null,
+            .q = if (q_p) |q| .{
+                .id = try std.fmt.allocPrint(allocator, "{s}_b{d}_q", .{ device_id, b }),
+                .name = "Q",
+                .value = q.value,
+                .min = q.min,
+                .max = q.max,
+                .unit = .linear,
+                .parameter_id = q.parameter_id,
+            } else null,
+            .enabled = if (en_p) |e| .{
+                .id = try std.fmt.allocPrint(allocator, "{s}_b{d}_en", .{ device_id, b }),
+                .name = "Enabled",
+                .value = e.value >= 0.5,
+                .parameter_id = e.parameter_id,
+            } else null,
+        });
+    }
+    return try bands.toOwnedSlice(allocator);
+}
+
+fn findParamById(items: []const RealParameter, id: u32) ?RealParameter {
+    for (items) |p| {
+        if (p.parameter_id) |pid| {
+            if (@as(u32, @bitCast(pid)) == id) return p;
+        }
+    }
+    return null;
 }
 
 fn buildMissingPlugin(

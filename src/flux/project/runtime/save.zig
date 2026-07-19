@@ -200,11 +200,15 @@ fn writeProjectToPath(
         for (track_fx, 0..) |track_slots, t| {
             for (track_slots, 0..) |slot, fx_index| {
                 if (slot.getPlugin()) |plugin| {
-                    track_fx_plugin_info[t][fx_index].plugin_id = std.mem.span(plugin.descriptor.id);
+                    const pid = std.mem.span(plugin.descriptor.id);
+                    track_fx_plugin_info[t][fx_index].plugin_id = pid;
                     track_fx_plugin_info[t][fx_index].params = collectPluginParams(param_alloc, plugin);
-                    if (plugin_state.capturePluginStateForDawproject(allocator, plugin, t, fx_index)) |ps| {
-                        track_fx_plugin_info[t][fx_index].state_path = ps.path;
-                        try plugin_states.append(allocator, ps);
+                    // Portable Flux builtins serialize via XML params only (no clap-preset).
+                    if (!std.mem.startsWith(u8, pid, "com.flux.builtin.")) {
+                        if (plugin_state.capturePluginStateForDawproject(allocator, plugin, t, fx_index)) |ps| {
+                            track_fx_plugin_info[t][fx_index].state_path = ps.path;
+                            try plugin_states.append(allocator, ps);
+                        }
                     }
                 } else if (state.missing_track_fx[t][fx_index]) |missing| {
                     track_fx_plugin_info[t][fx_index].plugin_id = missing.device_id;

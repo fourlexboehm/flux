@@ -35,6 +35,13 @@ pub const ClipState = enum {
 pub const ClipSlot = struct {
     state: ClipState = .empty,
     length_beats: f32 = constants.default_clip_bars * constants.beats_per_bar,
+    name: NameField = .{},
+};
+
+pub const RenameKind = enum {
+    none,
+    scene,
+    clip,
 };
 
 pub const Track = struct {
@@ -126,10 +133,12 @@ pub const UndoRequestKind = enum {
     clip_create,
     clip_delete,
     clip_paste,
+    clip_rename,
     track_add,
     track_delete,
     scene_add,
     scene_delete,
+    scene_rename,
     track_volume,
 };
 
@@ -152,6 +161,9 @@ pub const UndoRequest = struct {
     // For scene_delete
     scene_data: SceneSnapshot = .{},
     scene_clips: [constants.max_tracks]ClipSnapshot = @splat(.{}),
+    // For rename
+    old_name: NameField = .{},
+    new_name: NameField = .{},
 };
 
 /// Single clip move for undo
@@ -262,6 +274,14 @@ pub const SessionView = struct {
     render_hover_track: ?usize = null,
     render_hover_scene: ?usize = null,
     render_hover_has_content: bool = false,
+
+    // Inline rename (scene header / clip slot)
+    rename_kind: RenameKind = .none,
+    rename_track: usize = 0,
+    rename_scene: usize = 0,
+    rename_buf: [32:0]u8 = @splat(0),
+    rename_old: NameField = .{},
+    rename_focus: bool = false,
 
     pub fn emitUndoRequest(self: *SessionView, req: UndoRequest) void {
         if (self.undo_request_count < self.undo_requests.len) {

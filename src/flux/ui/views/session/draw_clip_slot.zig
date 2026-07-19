@@ -226,20 +226,30 @@ pub fn drawClipSlot(
         const armed_label = "ARMED";
         const armed_size = zgui.calcTextSize(armed_label, .{});
         draw_list.addText(.{ label_x, pos[1] + (height - armed_size[1]) / 2.0 }, text_color, "{s}", .{armed_label});
-    } else if (slot.state != .empty and !is_audio) {
-        const bars = slot.length_beats / beats_per_bar_in;
-        var buf: [16]u8 = undefined;
-        const label = std.fmt.bufPrint(&buf, "{d:.0} bars", .{bars}) catch "";
+    } else if (slot.state != .empty and !ops.isRenamingClip(self, track, scene)) {
+        const clip_name = slot.name.get();
         const text_color = zgui.colorConvertFloat4ToU32(colors.Colors.textOn(bg_color));
-        const label_size = zgui.calcTextSize(label, .{});
-        draw_list.addText(.{ label_x, pos[1] + (height - label_size[1]) / 2.0 }, text_color, "{s}", .{label});
-    } else if (slot.state != .empty and is_audio) {
-        // Compact bar length in top-left so the waveform stays readable
-        const bars = slot.length_beats / beats_per_bar_in;
-        var buf: [16]u8 = undefined;
-        const label = std.fmt.bufPrint(&buf, "{d:.0}b", .{bars}) catch "";
-        const text_color = zgui.colorConvertFloat4ToU32(withAlpha(colors.Colors.textOn(bg_color), 0.85));
-        draw_list.addText(.{ label_x, pos[1] + tokens.s(2, ui_scale) }, text_color, "{s}", .{label});
+        if (clip_name.len > 0) {
+            const label_size = zgui.calcTextSize(clip_name, .{});
+            if (is_audio) {
+                draw_list.addText(.{ label_x, pos[1] + tokens.s(2, ui_scale) }, text_color, "{s}", .{clip_name});
+            } else {
+                draw_list.addText(.{ label_x, pos[1] + (height - label_size[1]) / 2.0 }, text_color, "{s}", .{clip_name});
+            }
+        } else if (!is_audio) {
+            const bars = slot.length_beats / beats_per_bar_in;
+            var buf: [16]u8 = undefined;
+            const label = std.fmt.bufPrint(&buf, "{d:.0} bars", .{bars}) catch "";
+            const label_size = zgui.calcTextSize(label, .{});
+            draw_list.addText(.{ label_x, pos[1] + (height - label_size[1]) / 2.0 }, text_color, "{s}", .{label});
+        } else {
+            // Compact bar length in top-left so the waveform stays readable
+            const bars = slot.length_beats / beats_per_bar_in;
+            var buf: [16]u8 = undefined;
+            const label = std.fmt.bufPrint(&buf, "{d:.0}b", .{bars}) catch "";
+            const dim = zgui.colorConvertFloat4ToU32(withAlpha(colors.Colors.textOn(bg_color), 0.85));
+            draw_list.addText(.{ label_x, pos[1] + tokens.s(2, ui_scale) }, dim, "{s}", .{label});
+        }
     }
 
     // Invisible button for clip interaction
@@ -262,15 +272,38 @@ pub fn drawClipSlot(
 
     // Show move cursor when hovering over a clip with content (but not recording clips)
     const is_recording_state = slot.state == .recording or slot.state == .record_queued;
-    if (over_clip and slot.state != .empty and !is_recording_state and !self.drag_moving) {
+    if (over_clip and slot.state != .empty and !is_recording_state and !self.drag_moving and !ops.isRenaming(self)) {
         zgui.setMouseCursor(.resize_all);
     }
 
     // Invisible button for double-click detection
     _ = zgui.invisibleButton(clip_id, .{ .w = clip_w, .h = height });
 
+    // Inline rename field for this clip
+    if (ops.isRenamingClip(self, track, scene)) {
+        zgui.setCursorScreenPos(.{ pos[0] + strip_w + tokens.s(2, ui_scale), pos[1] + tokens.s(2, ui_scale) });
+        zgui.setNextItemWidth(clip_w - strip_w - tokens.s(4, ui_scale));
+        if (self.rename_focus) {
+            zgui.setKeyboardFocusHere(0);
+            self.rename_focus = false;
+        }
+        var rename_id_buf: [40]u8 = undefined;
+        const rename_id = std.fmt.bufPrintSentinel(&rename_id_buf, "##clip_rename_t{d}s{d}", .{ track, scene }, 0) catch "##clip_rename";
+        const enter = zgui.inputText(rename_id, .{
+            .buf = self.rename_buf[0..],
+            .flags = .{ .enter_returns_true = true, .auto_select_all = true },
+        });
+        if (enter or zgui.isItemDeactivatedAfterEdit()) {
+            ops.commitRename(self);
+        } else if (zgui.isKeyPressed(.escape, false)) {
+            ops.cancelRename(self);
+        } else if (zgui.isItemDeactivated()) {
+            ops.commitRename(self);
+        }
+    }
+
     // Handle double-click to create/open clip
-    if (over_clip and zgui.isMouseDoubleClicked(.left)) {
+    if (over_clip and !ops.isRenaming(self) and zgui.isMouseDoubleClicked(.left)) {
         if (slot.state == .empty) {
             ops.createClip(self, track, scene, beats_per_bar_in);
         }

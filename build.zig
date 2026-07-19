@@ -86,6 +86,7 @@ pub fn build(b: *std.Build) void {
     // Header-only C++ (MIT): fetched via build.zig.zon, no Zig package build.zig.
     const signalsmith_stretch = b.dependency("signalsmith_stretch", .{});
     const signalsmith_linear = b.dependency("signalsmith_linear", .{});
+    const emu2413 = b.dependency("emu2413", .{});
     const portmidi_c = b.addTranslateC(.{
         .root_source_file = portmidi_zig.path("pm_common/portmidi.h"),
         .target = target,
@@ -94,12 +95,12 @@ pub fn build(b: *std.Build) void {
     });
     portmidi_c.addIncludePath(portmidi_zig.path("pm_common"));
     const emu2413_c = b.addTranslateC(.{
-        .root_source_file = b.path("zportafm/native/emu2413/emu2413.h"),
+        .root_source_file = emu2413.path("emu2413.h"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
     });
-    emu2413_c.addIncludePath(b.path("zportafm/native"));
+    emu2413_c.addIncludePath(emu2413.path(""));
 
     const ztracy = b.dependency("ztracy", .{
         .target = target,
@@ -281,7 +282,7 @@ pub fn build(b: *std.Build) void {
     zportafm_core.addImport("options", options_core_module);
     zportafm_core.addImport("static_data", static_data_module);
     zportafm_core.addImport("emu2413_c", emu2413_c.createModule());
-    zportafm_core.addIncludePath(b.path("zportafm/native"));
+    zportafm_core.addIncludePath(emu2413.path(""));
 
     // Specific steps for different targets
     // Library
@@ -304,6 +305,17 @@ pub fn build(b: *std.Build) void {
     flux.root_module.addImport("zminimoog-core", zminimoog_core);
     flux.root_module.addImport("zportafm-core", zportafm_core);
     flux.root_module.addImport("zaudio", zaudio.module("root"));
+    flux.root_module.addIncludePath(zaudio.path("libs/miniaudio"));
+    flux.root_module.addIncludePath(b.path("src/flux/builtins/native"));
+    flux.root_module.addCSourceFiles(.{
+        .root = b.path(""),
+        .files = &.{
+            "src/flux/builtins/native/dsp_bridge.c",
+            "src/flux/builtins/native/sndfilter/compressor.c",
+        },
+        .flags = &.{ "-std=c11", "-fno-sanitize=undefined" },
+    });
+    flux.root_module.link_libc = true;
     flux.root_module.addImport("zgui", zgui.module("root"));
     flux.root_module.addImport("zglfw", zglfw.module("root"));
     flux.root_module.linkLibrary(zglfw.artifact("glfw"));
@@ -326,14 +338,11 @@ pub fn build(b: *std.Build) void {
     flux.root_module.addIncludePath(portmidi_zig.path("pm_mac"));
     flux.root_module.addIncludePath(portmidi_zig.path("pm_linux"));
     flux.root_module.addIncludePath(portmidi_zig.path("porttime"));
-    flux.root_module.addIncludePath(b.path("zportafm/native"));
+    flux.root_module.addIncludePath(emu2413.path(""));
     flux.root_module.addIncludePath(zgui.path("libs/imgui"));
     flux.root_module.link_libc = true;
-    flux.root_module.addCSourceFiles(.{
-        .root = b.path(""),
-        .files = &.{
-            "zportafm/native/emu2413/emu2413.c",
-        },
+    flux.root_module.addCSourceFile(.{
+        .file = emu2413.path("emu2413.c"),
         .flags = &.{"-std=c11"},
     });
     flux.root_module.addCSourceFiles(.{
@@ -509,6 +518,29 @@ pub fn build(b: *std.Build) void {
     });
     const run_project_tests = b.addRunArtifact(project_tests);
 
+    const builtin_dsp_test_module = b.createModule(.{
+        .root_source_file = b.path("src/flux/builtins/dsp/tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    builtin_dsp_test_module.addIncludePath(zaudio.path("libs/miniaudio"));
+    builtin_dsp_test_module.addIncludePath(b.path("src/flux/builtins/native"));
+    builtin_dsp_test_module.addCSourceFiles(.{
+        .root = b.path(""),
+        .files = &.{
+            "src/flux/builtins/native/dsp_bridge.c",
+            "src/flux/builtins/native/sndfilter/compressor.c",
+        },
+        .flags = &.{ "-std=c11", "-fno-sanitize=undefined" },
+    });
+    builtin_dsp_test_module.link_libc = true;
+    const builtin_dsp_tests = b.addTest(.{
+        .root_module = builtin_dsp_test_module,
+        .use_llvm = use_llvm,
+    });
+    builtin_dsp_tests.root_module.linkLibrary(zaudio.artifact("miniaudio"));
+    const run_builtin_dsp_tests = b.addRunArtifact(builtin_dsp_tests);
+
     const audio_clip_test_module = b.createModule(.{
         .root_source_file = b.path("src/flux/run_audio_clip_tests.zig"),
         .target = target,
@@ -560,6 +592,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_dsp_tests.step);
     test_step.dependOn(&run_zsynth_smoke_tests.step);
     test_step.dependOn(&run_project_tests.step);
+    test_step.dependOn(&run_builtin_dsp_tests.step);
     test_step.dependOn(&run_audio_clip_tests.step);
     test_step.dependOn(&run_media_roundtrip_tests.step);
 }
