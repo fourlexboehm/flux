@@ -13,6 +13,7 @@ const arr_types = @import("../arrangement/types.zig");
 const arr_undo = @import("../arrangement/undo.zig");
 const arr_ops = @import("../arrangement/ops.zig");
 const arr_draw = @import("views/arrangement/draw.zig");
+const browser = @import("panels/browser.zig");
 
 const SessionView = session_view.SessionView;
 const max_tracks = session_constants.max_tracks;
@@ -205,6 +206,14 @@ pub const State = struct {
     /// Packed/Bitwig open hydrated to external layout; needs thin Save even if undo clean.
     needs_thin_save: bool,
 
+    // Browser sidebar
+    browser_open: bool = true,
+    browser_width: f32 = 600.0,
+    browser_search: [64:0]u8 = @splat(0),
+    browser_sort_asc: bool = true,
+    browser_active_tab: browser.BrowserTab = .sounds,
+    browser_folders: std.ArrayListUnmanaged([]u8) = .empty,
+
     // Undo/redo history
     undo_history: undo.UndoHistory,
     preset_catalog: ?*const presets.PresetCatalog = null,
@@ -375,6 +384,8 @@ pub const State = struct {
         session_ops.deinit(&self.session);
         self.piano_state.deinit();
         self.arrangement.deinit();
+        for (self.browser_folders.items) |f| self.allocator.free(f);
+        self.browser_folders.deinit(self.allocator);
     }
 
     pub fn clearAllAudioClips(self: *State) void {

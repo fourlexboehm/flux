@@ -83,6 +83,13 @@ pub fn build(b: *std.Build) void {
     const zig_xml = b.dependency("zig-xml", dep_target);
     const portmidi_zig = b.dependency("portmidi-zig", dep_target);
     const wdf = b.dependency("wdf", dep_target);
+    const sqlite3 = b.dependency("sqlite3", .{});
+    const sqlite3_c = b.addTranslateC(.{
+        .root_source_file = sqlite3.path("sqlite3.h"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
     // Header-only C++ (MIT): fetched via build.zig.zon, no Zig package build.zig.
     const signalsmith_stretch = b.dependency("signalsmith_stretch", .{});
     const signalsmith_linear = b.dependency("signalsmith_linear", .{});
@@ -315,6 +322,17 @@ pub fn build(b: *std.Build) void {
     flux.root_module.addImport("zminimoog-core", zminimoog_core);
     flux.root_module.addImport("zportafm-core", zportafm_core);
     flux.root_module.addImport("zaudio", zaudio.module("root"));
+    flux.root_module.addImport("sqlite3", sqlite3_c.createModule());
+    flux.root_module.addCSourceFile(.{
+        .file = sqlite3.path("sqlite3.c"),
+        .flags = &.{
+            "-std=c99",
+            "-DSQLITE_DQS=0",
+            "-DSQLITE_OMIT_LOAD_EXTENSION=1",
+            "-DSQLITE_OMIT_DEPRECATED=1",
+            "-DSQLITE_THREADSAFE=1",
+        },
+    });
     flux.root_module.addIncludePath(zaudio.path("libs/miniaudio"));
     flux.root_module.addIncludePath(b.path("src/flux/builtins/native"));
     flux.root_module.addCSourceFiles(.{

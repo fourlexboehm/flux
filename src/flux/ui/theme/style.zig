@@ -66,10 +66,10 @@ pub fn applyMinimalStyle(ui_scale: f32) void {
     style.child_border_size = tokens.s(1, scale);
     style.popup_border_size = tokens.s(1, scale);
     style.frame_border_size = tokens.s(1, scale);
-    style.item_spacing = .{ tokens.s(8, scale), tokens.s(6, scale) };
+    style.item_spacing = .{ tokens.s(9, scale), tokens.s(7, scale) };
     style.item_inner_spacing = .{ tokens.s(6, scale), tokens.s(4, scale) };
-    style.frame_padding = .{ tokens.s(8, scale), tokens.s(5, scale) };
-    style.window_padding = .{ tokens.s(10, scale), tokens.s(8, scale) };
+    style.frame_padding = .{ tokens.s(9, scale), tokens.s(6, scale) };
+    style.window_padding = .{ tokens.s(12, scale), tokens.s(10, scale) };
     style.cell_padding = .{ tokens.s(6, scale), tokens.s(4, scale) };
     style.indent_spacing = tokens.s(16, scale);
     style.scrollbar_size = tokens.s(12, scale);

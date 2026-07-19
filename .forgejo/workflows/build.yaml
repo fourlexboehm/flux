@@ -23,6 +23,15 @@ jobs:
           echo "version=${ZIG_VERSION}" >> "$GITHUB_OUTPUT"
           echo "dir=zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_OUTPUT"
 
+      - name: Set build mode
+        id: build-mode
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "optimize=ReleaseFast" >> "$GITHUB_OUTPUT"
+          else
+            echo "optimize=Debug" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Cache Zig toolchain
         id: cache-zig
         uses: https://data.forgejo.org/actions/cache@v4
@@ -61,11 +70,11 @@ jobs:
             zig-local-linux-
 
       - name: Test
-        run: zig build test -Doptimize=Debug --summary all
+        run: zig build test -Doptimize=${{ steps.build-mode.outputs.optimize }} --summary all
 
       - name: Build Linux x86_64
         run: |
-          zig build install -Doptimize=ReleaseFast -Ddisable_profiling=true --summary all
+          zig build install -Doptimize=${{ steps.build-mode.outputs.optimize }} -Ddisable_profiling=true --summary all
           mkdir -p artifacts/linux-x86_64
           cp zig-out/lib/*.clap artifacts/linux-x86_64/ 2>/dev/null || true
           cp zig-out/lib/*.so artifacts/linux-x86_64/ 2>/dev/null || true
@@ -90,6 +99,15 @@ jobs:
           ZIG_VERSION=$(grep -oP '\.minimum_zig_version\s*=\s*"\K[^"]+' build.zig.zon)
           echo "version=${ZIG_VERSION}" >> "$GITHUB_OUTPUT"
           echo "dir=zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Set build mode
+        id: build-mode
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "optimize=ReleaseFast" >> "$GITHUB_OUTPUT"
+          else
+            echo "optimize=Debug" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Cache Zig toolchain
         id: cache-zig
@@ -145,7 +163,7 @@ jobs:
 
       - name: Build macOS aarch64
         run: |
-          zig build bundle-flux-app -Dtarget=aarch64-macos -Doptimize=ReleaseFast -Ddisable_profiling=true -Dgui-backend=osx_metal --sysroot "$PWD/MacOSX26.1.sdk" --summary all
+          zig build bundle-flux-app -Dtarget=aarch64-macos -Doptimize=${{ steps.build-mode.outputs.optimize }} -Ddisable_profiling=true -Dgui-backend=osx_metal --sysroot "$PWD/MacOSX26.1.sdk" --summary all
           mkdir -p artifacts/macos-aarch64
           cp -R zig-out/Flux.app artifacts/macos-aarch64/ 2>/dev/null || true
           cp -r zig-out/lib/*.clap artifacts/macos-aarch64/ 2>/dev/null || true

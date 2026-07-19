@@ -5,6 +5,8 @@ const colors = @import("theme/colors.zig");
 const style = @import("theme/style.zig");
 const selection = @import("input/selection.zig");
 const device_panel = @import("panels/device.zig");
+const browser = @import("panels/browser.zig");
+const presets = @import("../plugin/presets.zig");
 const undo_requests = @import("undo_requests.zig");
 const state_mod = @import("state.zig");
 const session_constants = @import("../session/constants.zig");
@@ -86,14 +88,42 @@ pub fn draw(state: *State, ui_scale: f32) void {
         // Clip grid area
         const session_child_pos = zgui.getCursorScreenPos();
         if (zgui.beginChild("clip_area##root", .{ .w = 0, .h = top_height, .window_flags = .{ .no_scrollbar = true, .no_scroll_with_mouse = true } })) {
-            // Only steal focus when the pointer is actually over this pane (not
-            // while dragging a bottom-panel control that wandered upward).
             if (zgui.isWindowHovered(.{ .child_windows = true, .allow_when_blocked_by_active_item = false }) and
                 zgui.isMouseClicked(.left) and !zgui.isAnyItemActive())
             {
                 state.focused_pane = .session;
             }
-            drawClipGrid(state, ui_scale);
+            // Sidebar + clip grid side by side (shared across both views)
+            var preset_selected: ?usize = null;
+            var plugin_selected: ?browser.PluginSelection = null;
+            browser.draw(
+                &state.browser_open,
+                &state.browser_width,
+                &state.browser_active_tab,
+                &state.browser_search,
+                &state.browser_sort_asc,
+                &state.browser_folders,
+                state.plugin_instrument_items,
+                state.plugin_instrument_indices,
+                state.plugin_fx_items,
+                state.plugin_fx_indices,
+                state.preset_catalog.?.entries.items,
+                &preset_selected,
+                &plugin_selected,
+                state.allocator,
+                ui_scale,
+            );
+            if (preset_selected) |preset_idx| {
+                loadPresetFromBrowser(state, preset_idx);
+            }
+            if (plugin_selected) |sel| {
+                loadPluginFromBrowser(state, sel);
+            }
+            zgui.sameLine(.{ .spacing = 0 });
+            if (zgui.beginChild("##clip_grid_side", .{ .w = 0, .h = 0, .window_flags = .{ .no_scrollbar = true, .no_scroll_with_mouse = true } })) {
+                drawClipGrid(state, ui_scale);
+            }
+            zgui.endChild();
         }
         zgui.endChild();
         widgets.focusFrame(
@@ -654,4 +684,61 @@ fn drawArrangementClipPanel(state: *State, selected: [2]usize, ui_scale: f32) vo
     var duration_buf: [48]u8 = undefined;
     const duration = std.fmt.bufPrint(&duration_buf, "{d:.2} bars · {d:.2} beats", .{ bars, beats }) catch "";
     widgets.dimLabel(duration);
+}
+
+fn loadPresetFromBrowser(state: *State, preset_idx: usize) void {
+    const catalog = state.preset_catalog.?;
+    if (preset_idx >= catalog.entries.items.len) return;
+    const entry = catalog.entries.items[preset_idx];
+
+    const track_idx = state.selectedTrack();
+    if (track_idx >= max_tracks) return;
+
+    const track_plugin = &state.track_plugins[track_idx];
+    track_plugin.preset_choice_index = preset_idx;
+
+    if (entry.catalog_index >= 0 and entry.catalog_index != track_plugin.choice_index) {
+        state.clearMissingTrackPlugin(track_idx);
+        track_plugin.choice_index = entry.catalog_index;
+        track_plugin.gui_open = false;
+    }
+
+    state.preset_load_request = .{
+        .track_index = track_idx,
+        .plugin_id = entry.plugin_id,
+        .location_kind = entry.location_kind,
+        .location = entry.location_z,
+        .load_key = entry.load_key_z,
+    };
+}
+
+fn loadPluginFromBrowser(state: *State, sel: browser.PluginSelection) void {
+    if (sel.catalog_index <= 0) return;
+
+    if (sel.is_fx) {
+        const track_idx = state.selectedTrack();
+        if (track_idx >= max_tracks) return;
+        const fx_slot_count = state.track_fx_slot_count[track_idx];
+        if (fx_slot_count >= state_mod.max_fx_slots) return;
+        const fx_slot = &state.track_fx[track_idx][fx_slot_count - 1];
+        // If last slot is empty, use it; otherwise add a new slot
+        if (fx_slot.choice_index == 0) {
+            fx_slot.choice_index = sel.catalog_index;
+        } else if (fx_slot_count < state_mod.max_fx_slots) {
+            state.track_fx_slot_count[track_idx] += 1;
+            state.track_fx[track_idx][fx_slot_count].choice_index = sel.catalog_index;
+        }
+    } else {
+        const track_idx = state.selectedTrack();
+        if (track_idx >= max_tracks) return;
+        const track_plugin = &state.track_plugins[track_idx];
+        if (track_plugin.choice_index == 0) {
+            track_plugin.choice_index = sel.catalog_index;
+            track_plugin.preset_choice_index = null;
+        } else {
+            if (!session_ops.addTrack(&state.session)) return;
+            const new_track = state.session.track_count - 1;
+            state.track_plugins[new_track].choice_index = sel.catalog_index;
+        }
+    }
 }
