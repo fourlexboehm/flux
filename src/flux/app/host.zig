@@ -48,6 +48,7 @@ pub const Host = struct {
     catalog_ptr: ?*const plugins.PluginCatalog = null,
     undo_change_in_progress: bool = false,
     undo_track_index: ?usize = null, // Track that started the change
+    undo_fx_index: ?usize = null, // null = instrument; Some = FX slot
     undo_pre_state: ?[]u8 = null, // State captured at begin_change
     gui_timers: [max_gui_timers]GuiTimer = @splat(.{ .plugin = undefined, .timer_id = .invalid_id, .period_ms = 0, .next_fire_ns = 0 }),
     next_gui_timer_id: u32 = 1,
@@ -512,16 +513,49 @@ pub const Host = struct {
         return null;
     }
 
-    /// Get the CLAP plugin for a given track (external or builtin)
-    fn getPluginForTrack(self: *Host, state: *ui_state.State, track_idx: usize) ?*const clap.Plugin {
-        _ = state;
+    /// Resolve the device panel target (instrument or FX slot) for undo capture.
+    const UndoTarget = struct {
+        track_index: usize,
+        fx_index: ?usize,
+        plugin: *const clap.Plugin,
+    };
+
+    fn getActivePluginForUndo(self: *Host, state: *ui_state.State) ?UndoTarget {
+        const track_idx = state.device_target_track;
         if (track_idx >= track_count) return null;
 
-        // All plugins (builtin and external) are now in TrackPlugin
-        if (self.track_plugins_ptr) |track_plugins| {
-            return track_plugins[track_idx].getPlugin();
+        switch (state.device_target_kind) {
+            .instrument => {
+                const track_plugins = self.track_plugins_ptr orelse return null;
+                const plugin = track_plugins[track_idx].getPlugin() orelse return null;
+                return .{ .track_index = track_idx, .fx_index = null, .plugin = plugin };
+            },
+            .fx => {
+                const track_fx = self.track_fx_ptr orelse return null;
+                const fx_idx = state.device_target_fx;
+                if (fx_idx >= ui_state.max_fx_slots) return null;
+                const plugin = track_fx[track_idx][fx_idx].getPlugin() orelse return null;
+                return .{ .track_index = track_idx, .fx_index = fx_idx, .plugin = plugin };
+            },
         }
-        return null;
+    }
+
+    fn getPluginForUndoSlot(self: *Host, track_idx: usize, fx_index: ?usize) ?*const clap.Plugin {
+        if (track_idx >= track_count) return null;
+        if (fx_index) |fx| {
+            if (fx >= ui_state.max_fx_slots) return null;
+            const track_fx = self.track_fx_ptr orelse return null;
+            return track_fx[track_idx][fx].getPlugin();
+        }
+        const track_plugins = self.track_plugins_ptr orelse return null;
+        return track_plugins[track_idx].getPlugin();
+    }
+
+    fn clearUndoChange(self: *Host) void {
+        self.undo_pre_state = null;
+        self.undo_track_index = null;
+        self.undo_fx_index = null;
+        self.undo_change_in_progress = false;
     }
 
     fn _undoBeginChange(host: *const clap.Host) callconv(.c) void {
@@ -531,18 +565,15 @@ pub const Host = struct {
             return;
         }
 
-        // Determine which track is making this call (use selected track with open GUI)
         const state = self.ui_state orelse return;
-        const track_idx = state.selectedTrack();
         const allocator = self.allocator orelse return;
-
-        // Get the plugin for this track (external or builtin)
-        const plugin = self.getPluginForTrack(state, track_idx) orelse return;
+        const target = self.getActivePluginForUndo(state) orelse return;
 
         // Capture the current state before the change
-        if (dawproject_runtime.capturePluginStateForUndo(allocator, plugin)) |pre_state| {
+        if (dawproject_runtime.capturePluginStateForUndo(allocator, target.plugin)) |pre_state| {
             self.undo_pre_state = pre_state;
-            self.undo_track_index = track_idx;
+            self.undo_track_index = target.track_index;
+            self.undo_fx_index = target.fx_index;
             self.undo_change_in_progress = true;
         }
     }
@@ -555,9 +586,7 @@ pub const Host = struct {
         if (self.undo_pre_state) |pre_state| {
             allocator.free(pre_state);
         }
-        self.undo_pre_state = null;
-        self.undo_track_index = null;
-        self.undo_change_in_progress = false;
+        self.clearUndoChange();
     }
 
     fn _undoChangeMade(
@@ -575,8 +604,12 @@ pub const Host = struct {
         const state = self.ui_state orelse return;
         const allocator = self.allocator orelse return;
 
-        // Determine track index - use tracked one from begin_change or selected track
-        const track_idx = self.undo_track_index orelse state.selectedTrack();
+        // Prefer slot recorded at begin_change; fall back to current device target
+        const track_idx = self.undo_track_index orelse state.device_target_track;
+        const fx_index = self.undo_fx_index orelse switch (state.device_target_kind) {
+            .instrument => null,
+            .fx => state.device_target_fx,
+        };
 
         // Get the pre-change state (either from begin_change or capture now)
         const old_state = if (self.undo_pre_state) |pre| pre else blk: {
@@ -590,16 +623,13 @@ pub const Host = struct {
 
         if (old_state == null) {
             // Can't create undo entry without old state
-            self.undo_change_in_progress = false;
-            self.undo_track_index = null;
+            self.clearUndoChange();
             return;
         }
 
-        // Get the plugin for this track (external or builtin)
-        const plugin = self.getPluginForTrack(state, track_idx) orelse {
+        const plugin = self.getPluginForUndoSlot(track_idx, fx_index) orelse {
             allocator.free(old_state.?);
-            self.undo_change_in_progress = false;
-            self.undo_track_index = null;
+            self.clearUndoChange();
             return;
         };
 
@@ -609,20 +639,18 @@ pub const Host = struct {
             state.undo_history.push(.{
                 .plugin_state = .{
                     .track_index = track_idx,
+                    .fx_index = fx_index,
                     .old_state = old_state.?,
                     .new_state = new_state,
                 },
             });
-            std.log.debug("Plugin undo entry created: {s}", .{name});
+            std.log.debug("Plugin undo entry created: {s} track={d} fx={?}", .{ name, track_idx, fx_index });
         } else {
             // Failed to capture new state, free old state
             allocator.free(old_state.?);
         }
 
-        // Reset change tracking
-        self.undo_pre_state = null;
-        self.undo_track_index = null;
-        self.undo_change_in_progress = false;
+        self.clearUndoChange();
     }
 
     fn _undoRequestUndo(host: *const clap.Host) callconv(.c) void {

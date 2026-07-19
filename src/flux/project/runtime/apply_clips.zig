@@ -45,9 +45,12 @@ pub fn applyLanes(
                 }
                 for (clips.clips, 0..) |clip, s| {
                     if (s >= scene_count) break;
+                    var name: @TypeOf(state.session.clips[0][0].name) = .{};
+                    if (clip.name) |n| name.set(n);
                     state.session.clips[t][s] = .{
                         .state = .stopped,
                         .length_beats = @floatCast(clip.duration),
+                        .name = name,
                     };
                     try applyClipContent(state, loaded, io, t, s, &clip, tracks, instrument_device_ids, fx_device_ids);
                 }
@@ -90,9 +93,12 @@ pub fn applyScenes(
             if (track_idx) |t| {
                 if (t >= track_count) continue;
                 if (slot.clip) |clip| {
+                    var name: @TypeOf(state.session.clips[0][0].name) = .{};
+                    if (clip.name) |n| name.set(n);
                     state.session.clips[t][s] = .{
                         .state = .stopped,
                         .length_beats = @floatCast(clip.duration),
+                        .name = name,
                     };
                     try applyClipContent(state, loaded, io, t, s, &clip, tracks, instrument_device_ids, fx_device_ids);
                 }
@@ -126,6 +132,19 @@ fn applyClipContent(
 
     var piano = &state.piano_clips[track_idx][scene_idx];
     piano.length_beats = @floatCast(clip.duration);
+    // Punch in/out + loop region (DAWproject playStart/playStop/loopStart/loopEnd).
+    // contentTimeUnit defaults to parent (beats for session/arrangement).
+    const content_unit = clip.content_time_unit orelse .beats;
+    piano.play_start_beats = @floatCast(time_mod.timeToBeats(clip.play_start, content_unit, state.bpm));
+    piano.loop_start_beats = @floatCast(time_mod.timeToBeats(clip.loop_start orelse 0, content_unit, state.bpm));
+    if (clip.loop_end) |end| {
+        piano.loop_end_beats = @floatCast(time_mod.timeToBeats(end, content_unit, state.bpm));
+    } else if (clip.play_stop) |stop| {
+        // One-shot punch-out when no loopEnd: play through playStop, then wrap at stop.
+        piano.loop_end_beats = @floatCast(time_mod.timeToBeats(stop, content_unit, state.bpm));
+    } else {
+        piano.loop_end_beats = piano.length_beats;
+    }
     piano.notes.clearRetainingCapacity();
 
     // One content type per slot: skip notes when audio was applied
@@ -135,8 +154,8 @@ fn applyClipContent(
                 if (note.key < 0 or note.key > 127) continue;
                 piano.addNoteWithVelocity(
                     @intCast(note.key),
-                    @floatCast(note.time),
-                    @floatCast(note.duration),
+                    @floatCast(time_mod.timeToBeats(note.time, content_unit, state.bpm)),
+                    @floatCast(time_mod.timeToBeats(note.duration, content_unit, state.bpm)),
                     @floatCast(note.vel),
                     @floatCast(note.rel),
                 ) catch continue;
@@ -148,8 +167,8 @@ fn applyClipContent(
                     if (note.key < 0 or note.key > 127) continue;
                     piano.addNoteWithVelocity(
                         @intCast(note.key),
-                        @floatCast(note.time),
-                        @floatCast(note.duration),
+                        @floatCast(time_mod.timeToBeats(note.time, content_unit, state.bpm)),
+                        @floatCast(time_mod.timeToBeats(note.duration, content_unit, state.bpm)),
                         @floatCast(note.vel),
                         @floatCast(note.rel),
                     ) catch continue;
@@ -226,12 +245,20 @@ fn applyFlattenedAudio(
     audio.loop_start_beats = @floatCast(time_mod.timeToBeats(flat.loop_start orelse 0, flat.content_time_unit, state.bpm));
     audio.loop_end_beats = if (flat.loop_end) |end|
         @floatCast(time_mod.timeToBeats(end, flat.content_time_unit, state.bpm))
+    else if (flat.play_stop) |stop|
+        @floatCast(time_mod.timeToBeats(stop, flat.content_time_unit, state.bpm))
     else
         audio.length_beats;
     const fade_unit = flat.fade_time_unit orelse .beats;
     audio.fade_in_beats = @floatCast(time_mod.timeToBeats(flat.fade_in_time orelse 0, fade_unit, state.bpm));
     audio.fade_out_beats = @floatCast(time_mod.timeToBeats(flat.fade_out_time orelse 0, fade_unit, state.bpm));
-    if (flat.name) |n| audio.name.set(n);
+    if (flat.name) |n| {
+        audio.name.set(n);
+        // Prefer outer clip name already applied; fill empty slot name from media.
+        if (state.session.clips[track_idx][scene_idx].name.len == 0) {
+            state.session.clips[track_idx][scene_idx].name.set(n);
+        }
+    }
     try audio.setAlgorithm(flat.algorithm);
 
     var markers = try state.allocator.alloc(audio_clip_types.WarpMarker, flat.warps.len);

@@ -128,17 +128,58 @@ pub const FileReference = struct {
     external: bool = false,
 };
 
-/// CLAP plugin device
+/// How the device is written in project.xml (DAWproject element).
+pub const DeviceXmlKind = enum {
+    clap,
+    equalizer,
+    compressor,
+    noise_gate,
+    limiter,
+
+    pub fn xmlTag(self: DeviceXmlKind) []const u8 {
+        return switch (self) {
+            .clap => "ClapPlugin",
+            .equalizer => "Equalizer",
+            .compressor => "Compressor",
+            .noise_gate => "NoiseGate",
+            .limiter => "Limiter",
+        };
+    }
+};
+
+/// EQ band (DAWproject Equalizer/Band)
+pub const EqBand = struct {
+    band_type: []const u8, // highPass, lowPass, bell, ...
+    order: ?i32 = null,
+    freq: RealParameter,
+    gain: ?RealParameter = null,
+    q: ?RealParameter = null,
+    enabled: ?BoolParameter = null,
+};
+
+/// Device (CLAP plugin or portable DAWproject builtin)
 pub const ClapPlugin = struct {
     id: []const u8,
     name: []const u8,
-    device_id: []const u8, // e.g. "org.surge-synth-team.surge-xt"
+    device_id: []const u8, // e.g. "org.surge-synth-team.surge-xt" or "com.flux.builtin.compressor"
     device_name: []const u8,
     device_role: DeviceRole,
     loaded: bool = true,
+    xml_kind: DeviceXmlKind = .clap,
     parameters: []const RealParameter = &.{},
     enabled: ?BoolParameter = null,
     state: ?FileReference = null,
+    /// Equalizer bands (when xml_kind == .equalizer)
+    eq_bands: []const EqBand = &.{},
+    /// Schema-named params for Compressor/NoiseGate/Limiter (optional; also mirrored in parameters)
+    attack: ?RealParameter = null,
+    release: ?RealParameter = null,
+    threshold: ?RealParameter = null,
+    ratio: ?RealParameter = null,
+    input_gain: ?RealParameter = null,
+    output_gain: ?RealParameter = null,
+    auto_makeup: ?BoolParameter = null,
+    range: ?RealParameter = null,
 };
 
 /// Channel with volume, pan, mute, devices

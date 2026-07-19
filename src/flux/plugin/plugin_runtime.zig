@@ -20,6 +20,7 @@ const thread_context = @import("../util/thread_context.zig");
 const zsynth = @import("zsynth-core");
 const zminimoog = @import("zminimoog-core");
 const zportafm = @import("zportafm-core");
+const flux_builtins = @import("../builtins/root.zig");
 
 const track_count = session_constants.max_tracks;
 const master_track_index = session_view.master_track_index;
@@ -230,28 +231,7 @@ pub fn syncTrackPlugins(
                 .builtin => {
                     // Instantiate builtin plugin directly (statically linked)
                     const plugin_id = entry.?.id orelse "";
-                    if (std.mem.eql(u8, plugin_id, "com.fourlex.zminimoog")) {
-                        const plugin = try zminimoog.Plugin.init(allocator, host);
-                        if (!plugin.plugin.init(&plugin.plugin)) return error.PluginInitFailed;
-                        if (!plugin.plugin.activate(&plugin.plugin, audio_constants.sample_rate, 1, max_frames)) {
-                            return error.PluginActivateFailed;
-                        }
-                        track.builtin = .{ .plugin = &plugin.plugin };
-                    } else if (std.mem.eql(u8, plugin_id, "com.fourlex.zportafm")) {
-                        const plugin = try zportafm.Plugin.init(allocator, host);
-                        if (!plugin.plugin.init(&plugin.plugin)) return error.PluginInitFailed;
-                        if (!plugin.plugin.activate(&plugin.plugin, audio_constants.sample_rate, 1, max_frames)) {
-                            return error.PluginActivateFailed;
-                        }
-                        track.builtin = .{ .plugin = &plugin.plugin };
-                    } else {
-                        const plugin = try zsynth.Plugin.init(allocator, host);
-                        if (!plugin.plugin.init(&plugin.plugin)) return error.PluginInitFailed;
-                        if (!plugin.plugin.activate(&plugin.plugin, audio_constants.sample_rate, 1, max_frames)) {
-                            return error.PluginActivateFailed;
-                        }
-                        track.builtin = .{ .plugin = &plugin.plugin };
-                    }
+                    try loadBuiltinPlugin(track, allocator, host, plugin_id, max_frames);
                     // Builtins don't have external GUIs - they use embedded zgui views
                     track.gui_ext = null;
                 },
@@ -322,22 +302,23 @@ pub fn syncFxPlugins(
             const kind = if (entry) |item| item.kind else .none;
             const wants_gui = state.track_fx[t][fx_index].gui_open and ((t == selected_track) or (master_selected and t == master_track_index));
 
-            if (kind != .clap) {
-                if (slot.handle != null) {
+            if (kind == .none or kind == .divider) {
+                if (slot.handle != null or slot.builtin != null) {
                     closePluginGui(slot);
                     prepareUnload(shared, t, fx_index, io);
                     unloadFxPlugin(slot, allocator, shared, t, fx_index);
                 }
-                if (kind == .builtin or kind == .divider) {
-                    state.track_fx[t][fx_index].choice_index = 0;
-                    state.track_fx[t][fx_index].last_valid_choice = 0;
-                }
+                slot.choice_index = choice;
+                continue;
+            }
+
+            if (kind != .clap and kind != .builtin) {
                 slot.choice_index = state.track_fx[t][fx_index].choice_index;
                 continue;
             }
 
             if (slot.choice_index != choice) {
-                if (slot.handle != null) {
+                if (slot.handle != null or slot.builtin != null) {
                     closePluginGui(slot);
                     prepareUnload(shared, t, fx_index, io);
                     unloadFxPlugin(slot, allocator, shared, t, fx_index);
@@ -345,10 +326,20 @@ pub fn syncFxPlugins(
                 slot.choice_index = choice;
             }
 
-            if (slot.handle == null) {
-                const path = entry.?.path orelse return error.PluginMissingPath;
-                slot.handle = try PluginHandle.init(allocator, host, path, entry.?.id, max_frames);
-                slot.gui_ext = getGuiExt(slot.handle.?);
+            if (slot.handle == null and slot.builtin == null) {
+                switch (kind) {
+                    .builtin => {
+                        const plugin_id = entry.?.id orelse "";
+                        try loadBuiltinPlugin(slot, allocator, host, plugin_id, max_frames);
+                        slot.gui_ext = null;
+                    },
+                    .clap => {
+                        const path = entry.?.path orelse return error.PluginMissingPath;
+                        slot.handle = try PluginHandle.init(allocator, host, path, entry.?.id, max_frames);
+                        slot.gui_ext = getGuiExt(slot.handle.?);
+                    },
+                    else => {},
+                }
                 if (start_processing) {
                     if (shared) |s| {
                         s.requestStartProcessingFx(t, fx_index);
@@ -356,23 +347,26 @@ pub fn syncFxPlugins(
                 }
             }
 
-            if (slot.handle != null and !pluginHasAudioInput(slot.handle.?.plugin)) {
-                std.log.warn("FX plugin has no audio input: {s}", .{entry.?.name});
-                closePluginGui(slot);
-                prepareUnload(shared, t, fx_index, io);
-                unloadFxPlugin(slot, allocator, shared, t, fx_index);
-                state.track_fx[t][fx_index].gui_open = false;
-                const fallback = if (state.track_fx[t][fx_index].last_valid_choice != choice)
-                    state.track_fx[t][fx_index].last_valid_choice
-                else
-                    0;
-                state.track_fx[t][fx_index].choice_index = fallback;
-                slot.choice_index = fallback;
-                continue;
+            if (slot.getPlugin()) |plugin| {
+                if (!pluginHasAudioInput(plugin)) {
+                    std.log.warn("FX plugin has no audio input: {s}", .{entry.?.name});
+                    closePluginGui(slot);
+                    prepareUnload(shared, t, fx_index, io);
+                    unloadFxPlugin(slot, allocator, shared, t, fx_index);
+                    state.track_fx[t][fx_index].gui_open = false;
+                    const fallback = if (state.track_fx[t][fx_index].last_valid_choice != choice)
+                        state.track_fx[t][fx_index].last_valid_choice
+                    else
+                        0;
+                    state.track_fx[t][fx_index].choice_index = fallback;
+                    slot.choice_index = fallback;
+                    continue;
+                }
             }
             state.track_fx[t][fx_index].last_valid_choice = choice;
 
-            if (wants_gui and !slot.gui_open) {
+            // External CLAP windows only; builtins use embedded zgui
+            if (kind == .clap and wants_gui and !slot.gui_open) {
                 if (slot.gui_ext) |gui_ext| {
                     closeAllPluginGuis(track_plugins, track_fx);
                     openPluginGui(slot, gui_ext) catch |err| {
@@ -434,24 +428,73 @@ pub fn unloadFxPlugin(
     track_index: usize,
     fx_index: usize,
 ) void {
-    if (track.handle) |*handle| {
+    if (track.getPlugin()) |plugin| {
         if (shared) |s| {
             if (s.isFxPluginStarted(track_index, fx_index)) {
                 const was_audio = thread_context.is_audio_thread;
                 thread_context.is_audio_thread = true;
                 defer thread_context.is_audio_thread = was_audio;
-                handle.plugin.stopProcessing(handle.plugin);
+                plugin.stopProcessing(plugin);
                 s.clearFxPluginStarted(track_index, fx_index);
             }
         }
+    }
+    if (track.handle) |*handle| {
         handle.deinit(allocator);
     }
+    if (track.builtin) |*b| {
+        b.deinit();
+    }
     track.handle = null;
+    track.builtin = null;
     track.gui_ext = null;
     track.gui_window = null;
     track.gui_view = null;
     track.gui_x11_host_window = null;
     track.gui_open = false;
+}
+
+fn loadBuiltinPlugin(
+    track: *TrackPlugin,
+    allocator: std.mem.Allocator,
+    host: *const clap.Host,
+    plugin_id: []const u8,
+    max_frames: u32,
+) !void {
+    if (flux_builtins.isBuiltinFxId(plugin_id)) {
+        const plugin = try flux_builtins.initById(allocator, host, plugin_id);
+        if (!plugin.plugin.init(&plugin.plugin)) return error.PluginInitFailed;
+        if (!plugin.plugin.activate(&plugin.plugin, audio_constants.sample_rate, 1, max_frames)) {
+            return error.PluginActivateFailed;
+        }
+        track.builtin = .{ .plugin = &plugin.plugin };
+        return;
+    }
+    if (std.mem.eql(u8, plugin_id, "com.fourlex.zminimoog")) {
+        const plugin = try zminimoog.Plugin.init(allocator, host);
+        if (!plugin.plugin.init(&plugin.plugin)) return error.PluginInitFailed;
+        if (!plugin.plugin.activate(&plugin.plugin, audio_constants.sample_rate, 1, max_frames)) {
+            return error.PluginActivateFailed;
+        }
+        track.builtin = .{ .plugin = &plugin.plugin };
+        return;
+    }
+    if (std.mem.eql(u8, plugin_id, "com.fourlex.zportafm")) {
+        const plugin = try zportafm.Plugin.init(allocator, host);
+        if (!plugin.plugin.init(&plugin.plugin)) return error.PluginInitFailed;
+        if (!plugin.plugin.activate(&plugin.plugin, audio_constants.sample_rate, 1, max_frames)) {
+            return error.PluginActivateFailed;
+        }
+        track.builtin = .{ .plugin = &plugin.plugin };
+        return;
+    }
+    // Default instrument builtin
+    const plugin = try zsynth.Plugin.init(allocator, host);
+    if (!plugin.plugin.init(&plugin.plugin)) return error.PluginInitFailed;
+    if (!plugin.plugin.activate(&plugin.plugin, audio_constants.sample_rate, 1, max_frames)) {
+        return error.PluginActivateFailed;
+    }
+    track.builtin = .{ .plugin = &plugin.plugin };
 }
 
 fn getGuiExt(handle: PluginHandle) ?*const clap.ext.gui.Plugin {

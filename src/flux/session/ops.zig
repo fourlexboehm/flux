@@ -180,15 +180,14 @@ pub fn copySelected(self: *session_view.SessionView) void {
             const slot = self.clips[t][s];
             // Only copy non-empty clips
             if (slot.state != .empty) {
+                var copied = slot;
+                if (copied.state == .playing) copied.state = .stopped;
                 self.clipboard.append(self.allocator, .{
                     .src_track = t,
                     .src_scene = s,
                     .track_offset = @as(i32, @intCast(t)) - @as(i32, @intCast(min_track)),
                     .scene_offset = @as(i32, @intCast(s)) - @as(i32, @intCast(min_scene)),
-                    .slot = .{
-                        .state = if (slot.state == .playing) .stopped else slot.state,
-                        .length_beats = slot.length_beats,
-                    },
+                    .slot = copied,
                 }) catch {};
             }
         }
@@ -502,4 +501,85 @@ pub fn moveSelectedClips(self: *session_view.SessionView, delta_track: i32, delt
         }
     }
     self.pending_piano_moves = true;
+}
+
+fn fillRenameBuf(self: *session_view.SessionView, name: []const u8) void {
+    self.rename_buf = @splat(0);
+    const len = @min(name.len, self.rename_buf.len);
+    if (len > 0) @memcpy(self.rename_buf[0..len], name[0..len]);
+    self.rename_focus = true;
+}
+
+pub fn beginRenameScene(self: *session_view.SessionView, scene: usize) void {
+    if (scene >= self.scene_count) return;
+    self.rename_kind = .scene;
+    self.rename_scene = scene;
+    self.rename_old = self.scenes[scene].name;
+    fillRenameBuf(self, self.scenes[scene].getName());
+}
+
+pub fn beginRenameClip(self: *session_view.SessionView, track: usize, scene: usize) void {
+    if (track >= self.track_count or scene >= self.scene_count) return;
+    if (self.clips[track][scene].state == .empty) return;
+    self.rename_kind = .clip;
+    self.rename_track = track;
+    self.rename_scene = scene;
+    self.rename_old = self.clips[track][scene].name;
+    fillRenameBuf(self, self.clips[track][scene].name.get());
+}
+
+pub fn cancelRename(self: *session_view.SessionView) void {
+    self.rename_kind = .none;
+    self.rename_focus = false;
+}
+
+pub fn commitRename(self: *session_view.SessionView) void {
+    const new_slice = std.mem.sliceTo(&self.rename_buf, 0);
+    const new_name = session_view.NameField.init(new_slice);
+    switch (self.rename_kind) {
+        .none => {},
+        .scene => {
+            const scene = self.rename_scene;
+            if (scene < self.scene_count and !std.mem.eql(u8, self.rename_old.get(), new_name.get())) {
+                self.scenes[scene].name = new_name;
+                self.emitUndoRequest(.{
+                    .kind = .scene_rename,
+                    .scene = scene,
+                    .old_name = self.rename_old,
+                    .new_name = new_name,
+                });
+            }
+        },
+        .clip => {
+            const track = self.rename_track;
+            const scene = self.rename_scene;
+            if (track < self.track_count and scene < self.scene_count and
+                self.clips[track][scene].state != .empty and
+                !std.mem.eql(u8, self.rename_old.get(), new_name.get()))
+            {
+                self.clips[track][scene].name = new_name;
+                self.emitUndoRequest(.{
+                    .kind = .clip_rename,
+                    .track = track,
+                    .scene = scene,
+                    .old_name = self.rename_old,
+                    .new_name = new_name,
+                });
+            }
+        },
+    }
+    self.rename_kind = .none;
+    self.rename_focus = false;
+}
+
+pub fn isRenaming(self: *const session_view.SessionView) bool {
+    return self.rename_kind != .none;
+}
+
+pub fn isRenamingScene(self: *const session_view.SessionView, scene: usize) bool {
+    return self.rename_kind == .scene and self.rename_scene == scene;
+}
+
+pub fn isRenamingClip(self: *const session_view.SessionView, track: usize, scene: usize) bool {
+    return self.rename_kind == .clip and self.rename_track == track and self.rename_scene == scene;
 }

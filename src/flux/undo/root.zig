@@ -26,6 +26,7 @@ pub const Note = command.Note;
 pub const ClipCreateCmd = command.ClipCreateCmd;
 pub const ClipDeleteCmd = command.ClipDeleteCmd;
 pub const ClipMoveCmd = command.ClipMoveCmd;
+pub const ClipRenameCmd = command.ClipRenameCmd;
 pub const NoteAddCmd = command.NoteAddCmd;
 pub const NoteRemoveCmd = command.NoteRemoveCmd;
 pub const NoteMoveCmd = command.NoteMoveCmd;
@@ -49,4 +50,5 @@ pub const ClipSlotData = command.ClipSlotData;
 
 // Re-export serialization functions
 pub const serializeToXml = serialization.serializeToXml;
+pub const deserializeFromXml = serialization.deserializeFromXml;
 pub const MetadataWriter = serialization.MetadataWriter;

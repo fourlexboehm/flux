@@ -20,6 +20,7 @@ pub const CommandKind = enum {
     clip_paste,
     clip_move,
     clip_resize,
+    clip_rename,
 
     // Note operations
     note_add,
@@ -61,6 +62,7 @@ pub const ClipDeleteCmd = struct {
     track: usize,
     scene: usize,
     length_beats: f32,
+    name: session_view.NameField = .{},
     notes: []const Note,
     audio: AudioClipSnapshot,
 };
@@ -96,6 +98,14 @@ pub const ClipResizeCmd = struct {
     scene: usize,
     old_length: f32,
     new_length: f32,
+};
+
+/// Rename clip command
+pub const ClipRenameCmd = struct {
+    track: usize,
+    scene: usize,
+    old_name: session_view.NameField,
+    new_name: session_view.NameField,
 };
 
 /// Add note command
@@ -168,6 +178,7 @@ pub const TrackData = struct {
 pub const ClipSlotData = struct {
     has_clip: bool,
     length_beats: f32,
+    name: session_view.NameField = .{},
 };
 
 /// Rename track command
@@ -240,6 +251,8 @@ pub const QuantizeChangeCmd = struct {
 /// Plugin state change command - stores full state blobs for undo/redo
 pub const PluginStateCmd = struct {
     track_index: usize,
+    /// null = instrument; Some = FX slot index
+    fx_index: ?usize = null,
     old_state: []const u8, // State before the change
     new_state: []const u8, // State after the change
 };
@@ -251,6 +264,7 @@ pub const Command = union(CommandKind) {
     clip_paste: ClipPasteCmd,
     clip_move: ClipMoveCmd,
     clip_resize: ClipResizeCmd,
+    clip_rename: ClipRenameCmd,
     note_add: NoteAddCmd,
     note_remove: NoteRemoveCmd,
     note_move: NoteMoveCmd,
@@ -326,6 +340,7 @@ pub const Command = union(CommandKind) {
             .clip_paste => "Paste Clip",
             .clip_move => "Move Clip",
             .clip_resize => "Resize Clip",
+            .clip_rename => "Rename Clip",
             .note_add => "Add Note",
             .note_remove => "Remove Note",
             .note_move => "Move Note",

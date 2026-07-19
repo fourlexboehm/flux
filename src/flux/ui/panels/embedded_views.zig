@@ -3,6 +3,7 @@ const clap = @import("clap-bindings");
 const zsynth = @import("zsynth-core");
 const zminimoog = @import("zminimoog-core");
 const zportafm = @import("zportafm-core");
+const flux_builtins = @import("../../builtins/root.zig");
 
 const zsynth_view = zsynth.View;
 const zminimoog_view = zminimoog.View;
@@ -25,10 +26,18 @@ fn zportafmDraw(clap_plugin: *const clap.Plugin) void {
     zportafm_view.drawEmbedded(plugin, .{ .notify_host = false });
 }
 
+fn builtinFxDraw(clap_plugin: *const clap.Plugin) void {
+    flux_builtins.view.drawFromClap(clap_plugin);
+}
+
 pub const embedded_views = std.StaticStringMap(EmbeddedViewDrawFn).initComptime(.{
     .{ "com.juge.zsynth", zsynthDraw },
     .{ "com.fourlex.zminimoog", zminimoogDraw },
     .{ "com.fourlex.zportafm", zportafmDraw },
+    .{ "com.flux.builtin.equalizer", builtinFxDraw },
+    .{ "com.flux.builtin.compressor", builtinFxDraw },
+    .{ "com.flux.builtin.noise_gate", builtinFxDraw },
+    .{ "com.flux.builtin.limiter", builtinFxDraw },
 });
 
 /// Check if a plugin has an embedded view available.

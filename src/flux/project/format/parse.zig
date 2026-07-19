@@ -52,6 +52,7 @@ const ParseState = enum {
     channel,
     devices,
     device,
+    eq_band,
     arrangement,
     root_lanes,
     track_lanes,
@@ -93,6 +94,9 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
     var current_channel: ?Channel = null;
     var current_devices = std.ArrayList(ClapPlugin).empty;
     var current_device: ?ClapPlugin = null;
+    var current_device_params = std.ArrayList(RealParameter).empty;
+    var current_eq_bands = std.ArrayList(types.EqBand).empty;
+    var current_band: ?types.EqBand = null;
     var root_lanes: ?Lanes = null;
     var current_lanes: ?Lanes = null;
     var current_clips: ?Clips = null;
@@ -169,15 +173,42 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
                     };
                 } else if (std.mem.eql(u8, elem_name, "Devices") and state == .channel) {
                     state = .devices;
-                } else if (std.mem.eql(u8, elem_name, "ClapPlugin") and state == .devices) {
+                } else if (isDeviceElement(elem_name) and state == .devices) {
                     state = .device;
+                    const xml_kind = deviceXmlKind(elem_name);
+                    var device_id = getAttr(reader, "deviceID") orelse "";
+                    // Portable DAWproject builtins without deviceID map to Flux stock FX ids
+                    if (device_id.len == 0) {
+                        device_id = switch (xml_kind) {
+                            .equalizer => "com.flux.builtin.equalizer",
+                            .compressor => "com.flux.builtin.compressor",
+                            .noise_gate => "com.flux.builtin.noise_gate",
+                            .limiter => "com.flux.builtin.limiter",
+                            .clap => "",
+                        };
+                    }
                     current_device = .{
                         .id = try allocator.dupe(u8, getAttr(reader, "id") orelse ""),
-                        .name = try allocator.dupe(u8, getAttr(reader, "name") orelse ""),
-                        .device_id = try allocator.dupe(u8, getAttr(reader, "deviceID") orelse ""),
-                        .device_name = try allocator.dupe(u8, getAttr(reader, "deviceName") orelse ""),
-                        .device_role = parseDeviceRole(getAttr(reader, "deviceRole")),
+                        .name = try allocator.dupe(u8, getAttr(reader, "name") orelse getAttr(reader, "deviceName") orelse elem_name),
+                        .device_id = try allocator.dupe(u8, device_id),
+                        .device_name = try allocator.dupe(u8, getAttr(reader, "deviceName") orelse getAttr(reader, "name") orelse elem_name),
+                        .device_role = parseDeviceRole(getAttr(reader, "deviceRole") orelse "audioFX"),
                         .loaded = parseBool(getAttr(reader, "loaded")),
+                        .xml_kind = xml_kind,
+                    };
+                    current_device_params = std.ArrayList(RealParameter).empty;
+                    current_eq_bands = std.ArrayList(types.EqBand).empty;
+                } else if (std.mem.eql(u8, elem_name, "Band") and state == .device) {
+                    state = .eq_band;
+                    current_band = .{
+                        .band_type = try allocator.dupe(u8, getAttr(reader, "type") orelse "bell"),
+                        .order = parseIntAttr(getAttr(reader, "order")),
+                        .freq = .{
+                            .id = "",
+                            .name = "Freq",
+                            .value = 1000,
+                            .unit = .hertz,
+                        },
                     };
                 } else if (std.mem.eql(u8, elem_name, "State") and state == .device) {
                     if (current_device) |*dev| {
@@ -188,16 +219,104 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
                             };
                         }
                     }
-                } else if (std.mem.eql(u8, elem_name, "RealParameter") and (state == .channel or state == .device)) {
-                    const param_name = getAttr(reader, "name") orelse "";
+                } else if ((std.mem.eql(u8, elem_name, "BoolParameter") or std.mem.eql(u8, elem_name, "AutoMakeup") or std.mem.eql(u8, elem_name, "Enabled")) and (state == .device or state == .eq_band)) {
+                    const param_value = parseBool(getAttr(reader, "value"));
+                    const param_id = getAttr(reader, "id") orelse "";
+                    const param_name = getAttr(reader, "name") orelse elem_name;
+                    if (state == .eq_band) {
+                        if (current_band) |*band| {
+                            if (std.mem.eql(u8, elem_name, "Enabled") or std.mem.eql(u8, param_name, "Enabled")) {
+                                band.enabled = .{
+                                    .id = try allocator.dupe(u8, param_id),
+                                    .name = try allocator.dupe(u8, "Enabled"),
+                                    .value = param_value,
+                                };
+                            }
+                        }
+                    } else if (current_device) |*dev| {
+                        if (std.mem.eql(u8, elem_name, "AutoMakeup") or std.mem.eql(u8, param_name, "AutoMakeup")) {
+                            dev.auto_makeup = .{
+                                .id = try allocator.dupe(u8, param_id),
+                                .name = try allocator.dupe(u8, "AutoMakeup"),
+                                .value = param_value,
+                            };
+                        }
+                    }
+                } else if ((std.mem.eql(u8, elem_name, "RealParameter") or
+                    std.mem.eql(u8, elem_name, "Volume") or
+                    std.mem.eql(u8, elem_name, "Pan") or
+                    std.mem.eql(u8, elem_name, "Attack") or
+                    std.mem.eql(u8, elem_name, "Release") or
+                    std.mem.eql(u8, elem_name, "Threshold") or
+                    std.mem.eql(u8, elem_name, "Ratio") or
+                    std.mem.eql(u8, elem_name, "InputGain") or
+                    std.mem.eql(u8, elem_name, "OutputGain") or
+                    std.mem.eql(u8, elem_name, "Range") or
+                    std.mem.eql(u8, elem_name, "Freq") or
+                    std.mem.eql(u8, elem_name, "Gain") or
+                    std.mem.eql(u8, elem_name, "Q")) and (state == .channel or state == .device or state == .eq_band))
+                {
+                    // Bitwig writes <Volume>/<Pan>; Flux also accepts generic RealParameter.
+                    const param_name = getAttr(reader, "name") orelse elem_name;
                     const param_id = getAttr(reader, "id") orelse "";
                     const param_value = parseFloatAttr(getAttr(reader, "value")) orelse 0.0;
                     const param_unit = parseUnit(getAttr(reader, "unit"));
                     const param_min = parseFloatAttr(getAttr(reader, "min"));
                     const param_max = parseFloatAttr(getAttr(reader, "max"));
+                    const parameter_id = parseI32Attr(getAttr(reader, "parameterID"));
 
-                    if (current_channel) |*ch| {
-                        if (std.mem.eql(u8, param_name, "Volume")) {
+                    if (state == .eq_band) {
+                        if (current_band) |*band| {
+                            const rp = RealParameter{
+                                .id = try allocator.dupe(u8, param_id),
+                                .name = try allocator.dupe(u8, param_name),
+                                .value = param_value,
+                                .min = param_min,
+                                .max = param_max,
+                                .unit = param_unit,
+                                .parameter_id = parameter_id,
+                            };
+                            if (std.mem.eql(u8, elem_name, "Freq") or std.mem.eql(u8, param_name, "Freq")) {
+                                band.freq = rp;
+                            } else if (std.mem.eql(u8, elem_name, "Gain") or std.mem.eql(u8, param_name, "Gain")) {
+                                band.gain = rp;
+                            } else if (std.mem.eql(u8, elem_name, "Q") or std.mem.eql(u8, param_name, "Q")) {
+                                band.q = rp;
+                            }
+                        }
+                    } else if (state == .device) {
+                        if (current_device) |*dev| {
+                            const rp = RealParameter{
+                                .id = try allocator.dupe(u8, param_id),
+                                .name = try allocator.dupe(u8, param_name),
+                                .value = param_value,
+                                .min = param_min,
+                                .max = param_max,
+                                .unit = param_unit,
+                                .parameter_id = parameter_id,
+                            };
+                            try current_device_params.append(allocator, rp);
+                            // Schema-named fields
+                            if (std.mem.eql(u8, elem_name, "Threshold") or std.mem.eql(u8, param_name, "Threshold")) {
+                                dev.threshold = try cloneRealParam(allocator, &rp);
+                            } else if (std.mem.eql(u8, elem_name, "OutputGain") or std.mem.eql(u8, param_name, "OutputGain") or std.mem.eql(u8, param_name, "Output Gain")) {
+                                dev.output_gain = try cloneRealParam(allocator, &rp);
+                            } else if (std.mem.eql(u8, elem_name, "InputGain") or std.mem.eql(u8, param_name, "InputGain") or std.mem.eql(u8, param_name, "Input Gain")) {
+                                dev.input_gain = try cloneRealParam(allocator, &rp);
+                            } else if (std.mem.eql(u8, elem_name, "Ratio") or std.mem.eql(u8, param_name, "Ratio")) {
+                                dev.ratio = try cloneRealParam(allocator, &rp);
+                            } else if (std.mem.eql(u8, elem_name, "Attack") or std.mem.eql(u8, param_name, "Attack")) {
+                                dev.attack = try cloneRealParam(allocator, &rp);
+                            } else if (std.mem.eql(u8, elem_name, "Release") or std.mem.eql(u8, param_name, "Release")) {
+                                dev.release = try cloneRealParam(allocator, &rp);
+                            } else if (std.mem.eql(u8, elem_name, "Range") or std.mem.eql(u8, param_name, "Range")) {
+                                dev.range = try cloneRealParam(allocator, &rp);
+                            }
+                        }
+                    } else if (current_channel) |*ch| {
+                        const is_volume = std.mem.eql(u8, elem_name, "Volume") or std.mem.eql(u8, param_name, "Volume");
+                        const is_pan = std.mem.eql(u8, elem_name, "Pan") or std.mem.eql(u8, param_name, "Pan");
+                        if (is_volume) {
                             ch.volume = .{
                                 .id = try allocator.dupe(u8, param_id),
                                 .name = "Volume",
@@ -206,7 +325,7 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
                                 .max = param_max,
                                 .unit = param_unit,
                             };
-                        } else if (std.mem.eql(u8, param_name, "Pan")) {
+                        } else if (is_pan) {
                             ch.pan = .{
                                 .id = try allocator.dupe(u8, param_id),
                                 .name = "Pan",
@@ -217,13 +336,13 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
                             };
                         }
                     }
-                } else if (std.mem.eql(u8, elem_name, "BoolParameter") and state == .channel) {
-                    const param_name = getAttr(reader, "name") orelse "";
+                } else if ((std.mem.eql(u8, elem_name, "BoolParameter") or std.mem.eql(u8, elem_name, "Mute")) and state == .channel) {
+                    const param_name = getAttr(reader, "name") orelse elem_name;
                     const param_id = getAttr(reader, "id") orelse "";
                     const param_value = parseBool(getAttr(reader, "value"));
 
                     if (current_channel) |*ch| {
-                        if (std.mem.eql(u8, param_name, "Mute")) {
+                        if (std.mem.eql(u8, elem_name, "Mute") or std.mem.eql(u8, param_name, "Mute")) {
                             ch.mute = .{
                                 .id = try allocator.dupe(u8, param_id),
                                 .name = "Mute",
@@ -424,12 +543,23 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
                     current_devices = std.ArrayList(ClapPlugin).empty;
                 } else if (std.mem.eql(u8, elem_name, "Devices") and state == .devices) {
                     state = .channel;
-                } else if (std.mem.eql(u8, elem_name, "ClapPlugin") and state == .device) {
+                } else if (std.mem.eql(u8, elem_name, "Band") and state == .eq_band) {
+                    state = .device;
+                    if (current_band) |band| {
+                        try current_eq_bands.append(allocator, band);
+                    }
+                    current_band = null;
+                } else if (isDeviceElement(elem_name) and state == .device) {
                     state = .devices;
                     if (current_device) |dev| {
-                        try current_devices.append(allocator, dev);
+                        var dev_copy = dev;
+                        dev_copy.parameters = try current_device_params.toOwnedSlice(allocator);
+                        dev_copy.eq_bands = try current_eq_bands.toOwnedSlice(allocator);
+                        try current_devices.append(allocator, dev_copy);
                     }
                     current_device = null;
+                    current_device_params = std.ArrayList(RealParameter).empty;
+                    current_eq_bands = std.ArrayList(types.EqBand).empty;
                 } else if (std.mem.eql(u8, elem_name, "Scenes")) {
                     state = .root;
                 } else if (std.mem.eql(u8, elem_name, "Scene") and state == .scene) {
@@ -672,9 +802,46 @@ fn parseIntAttr(s: ?[]const u8) ?i32 {
     return std.fmt.parseInt(i32, str, 10) catch null;
 }
 
+fn parseI32Attr(s: ?[]const u8) ?i32 {
+    return parseIntAttr(s);
+}
+
 fn parseBool(s: ?[]const u8) bool {
     const str = s orelse return false;
     return std.mem.eql(u8, str, "true");
+}
+
+fn isDeviceElement(name: []const u8) bool {
+    return std.mem.eql(u8, name, "ClapPlugin") or
+        std.mem.eql(u8, name, "Equalizer") or
+        std.mem.eql(u8, name, "Compressor") or
+        std.mem.eql(u8, name, "NoiseGate") or
+        std.mem.eql(u8, name, "Limiter") or
+        std.mem.eql(u8, name, "BuiltinDevice") or
+        std.mem.eql(u8, name, "Vst2Plugin") or
+        std.mem.eql(u8, name, "Vst3Plugin") or
+        std.mem.eql(u8, name, "AuPlugin") or
+        std.mem.eql(u8, name, "Device");
+}
+
+fn deviceXmlKind(name: []const u8) types.DeviceXmlKind {
+    if (std.mem.eql(u8, name, "Equalizer")) return .equalizer;
+    if (std.mem.eql(u8, name, "Compressor")) return .compressor;
+    if (std.mem.eql(u8, name, "NoiseGate")) return .noise_gate;
+    if (std.mem.eql(u8, name, "Limiter")) return .limiter;
+    return .clap;
+}
+
+fn cloneRealParam(allocator: std.mem.Allocator, p: *const RealParameter) !RealParameter {
+    return .{
+        .id = try allocator.dupe(u8, p.id),
+        .name = try allocator.dupe(u8, p.name),
+        .value = p.value,
+        .min = p.min,
+        .max = p.max,
+        .unit = p.unit,
+        .parameter_id = p.parameter_id,
+    };
 }
 
 fn parseContentType(s: ?[]const u8) ContentType {

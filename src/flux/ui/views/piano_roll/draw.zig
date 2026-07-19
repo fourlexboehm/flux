@@ -25,6 +25,116 @@ fn mouseToRow(mouse_y: f32, grid_y: f32, scroll_y: f32, row_height: f32) f32 {
     return (mouse_y - grid_y + scroll_y) / row_height;
 }
 
+fn beatToScreenX(beat: f32, grid_x: f32, scroll_x: f32, pixels_per_beat: f32) f32 {
+    return grid_x + beat * pixels_per_beat - scroll_x;
+}
+
+/// Gold loop brace + green playStart punch-in (same visual language as the audio viewer).
+fn drawClipRegionMarkers(
+    draw_list: zgui.DrawList,
+    clip: *const PianoRollClip,
+    grid_pos: [2]f32,
+    view_w: f32,
+    view_h: f32,
+    scroll_x: f32,
+    pixels_per_beat: f32,
+    ui_scale: f32,
+) void {
+    const length = clip.length_beats;
+    if (length <= 0.001) return;
+
+    const x_min = grid_pos[0];
+    const x_max = grid_pos[0] + view_w;
+    const y0 = grid_pos[1];
+    const y1 = grid_pos[1] + view_h;
+    const loop_col = zgui.colorConvertFloat4ToU32(.{ 0.95, 0.78, 0.28, 0.75 });
+    const play_col = zgui.colorConvertFloat4ToU32(colors.Colors.current.transport_play);
+    const dim_col = zgui.colorConvertFloat4ToU32(.{ 0.0, 0.0, 0.0, 0.22 });
+    const tri = 6.0 * ui_scale;
+    const line_th = 1.5 * ui_scale;
+
+    const loop_start = clip.loop_start_beats;
+    const loop_end = clip.loopEnd();
+    const play_start = clip.play_start_beats;
+    const has_sub_loop = (loop_start > 0.001) or (loop_end < length - 0.001);
+
+    // Dim content outside the loop brace (within clip bounds).
+    if (has_sub_loop) {
+        if (loop_start > 0.001) {
+            const x0 = beatToScreenX(0, x_min, scroll_x, pixels_per_beat);
+            const x1 = beatToScreenX(loop_start, x_min, scroll_x, pixels_per_beat);
+            const left = @max(x0, x_min);
+            const right = @min(x1, x_max);
+            if (right > left) {
+                draw_list.addRectFilled(.{ .pmin = .{ left, y0 }, .pmax = .{ right, y1 }, .col = dim_col });
+            }
+        }
+        if (loop_end < length - 0.001) {
+            const x0 = beatToScreenX(loop_end, x_min, scroll_x, pixels_per_beat);
+            const x1 = beatToScreenX(length, x_min, scroll_x, pixels_per_beat);
+            const left = @max(x0, x_min);
+            const right = @min(x1, x_max);
+            if (right > left) {
+                draw_list.addRectFilled(.{ .pmin = .{ left, y0 }, .pmax = .{ right, y1 }, .col = dim_col });
+            }
+        }
+    }
+
+    const drawMarkerLine = struct {
+        fn go(dl: zgui.DrawList, x: f32, ymin: f32, ymax: f32, xmin: f32, xmax: f32, col: u32, thickness: f32) void {
+            if (x < xmin - 1 or x > xmax + 1) return;
+            dl.addLine(.{ .p1 = .{ x, ymin }, .p2 = .{ x, ymax }, .col = col, .thickness = thickness });
+        }
+    }.go;
+
+    const drawTopFlag = struct {
+        fn go(dl: zgui.DrawList, x: f32, ymin: f32, xmin: f32, xmax: f32, col: u32, half: f32) void {
+            if (x < xmin - 1 or x > xmax + 1) return;
+            dl.addTriangleFilled(.{
+                .p1 = .{ x - half, ymin },
+                .p2 = .{ x + half, ymin },
+                .p3 = .{ x, ymin + half * 1.4 },
+                .col = col,
+            });
+        }
+    }.go;
+
+    if (has_sub_loop) {
+        if (loop_start > 0.001) {
+            const lx = beatToScreenX(loop_start, x_min, scroll_x, pixels_per_beat);
+            drawMarkerLine(draw_list, lx, y0, y1, x_min, x_max, loop_col, line_th);
+            // Left brace tick at top
+            if (lx >= x_min and lx <= x_max) {
+                draw_list.addLine(.{
+                    .p1 = .{ lx, y0 },
+                    .p2 = .{ lx + tri, y0 },
+                    .col = loop_col,
+                    .thickness = line_th,
+                });
+            }
+        }
+        if (loop_end > 0.001 and loop_end < length - 0.001) {
+            const lx = beatToScreenX(loop_end, x_min, scroll_x, pixels_per_beat);
+            drawMarkerLine(draw_list, lx, y0, y1, x_min, x_max, loop_col, line_th);
+            if (lx >= x_min and lx <= x_max) {
+                draw_list.addLine(.{
+                    .p1 = .{ lx - tri, y0 },
+                    .p2 = .{ lx, y0 },
+                    .col = loop_col,
+                    .thickness = line_th,
+                });
+            }
+        }
+    }
+
+    // Punch-in (playStart): only when offset from clip start.
+    if (play_start > 0.001 and play_start < length - 0.001) {
+        const px = beatToScreenX(play_start, x_min, scroll_x, pixels_per_beat);
+        drawMarkerLine(draw_list, px, y0, y1, x_min, x_max, play_col, line_th);
+        drawTopFlag(draw_list, px, y0, x_min, x_max, play_col, tri);
+    }
+}
+
 fn rowToPitch(row: f32) i32 {
     return std.math.clamp(127 - @as(i32, @intFromFloat(row)), 0, 127);
 }
@@ -258,6 +368,18 @@ pub fn drawSequencer(
             .col = zgui.colorConvertFloat4ToU32(end_color),
         });
     }
+
+    // Punch-in (playStart) + loop brace (loopStart/loopEnd) — match audio viewer markers.
+    drawClipRegionMarkers(
+        draw_list,
+        clip,
+        grid_window_pos,
+        grid_view_width,
+        grid_view_height,
+        state.scroll_x,
+        pixels_per_beat,
+        ui_scale,
+    );
 
     // Draw playhead
     if (playing) {
@@ -500,7 +622,7 @@ pub fn drawSequencer(
         zgui.openPopup("piano_roll_ctx", .{});
     }
 
-    const menu_action = drawContextMenu(state, clip, min_note_duration, track_index, scene_index);
+    const menu_action = drawContextMenu(state, clip, min_note_duration, track_index, scene_index, quantize_beats);
     const popup_active = popup_open or zgui.isPopupOpen("piano_roll_ctx", .{});
 
     // Double-click to create note
@@ -1358,6 +1480,38 @@ fn menuSelectAll(ctx: *MenuCtx) void {
     }
 }
 
+fn quantizeSelectedNotes(
+    state: *PianoRollState,
+    clip: *PianoRollClip,
+    quantize_beats: f32,
+    track_index: usize,
+    scene_index: usize,
+) void {
+    if (!state.hasSelection() or quantize_beats <= 0) return;
+
+    for (state.note_selection.keys()) |idx| {
+        if (idx >= clip.notes.items.len) continue;
+        const note = &clip.notes.items[idx];
+        const old_start = note.start;
+        const max_start = @max(0.0, clip.length_beats - note.duration);
+        const snapped = @round(old_start / quantize_beats) * quantize_beats;
+        const new_start = std.math.clamp(snapped, 0.0, max_start);
+        if (new_start == old_start) continue;
+
+        note.start = new_start;
+        state.emitUndoRequest(.{
+            .kind = .note_move,
+            .track = track_index,
+            .scene = scene_index,
+            .note_index = idx,
+            .old_start = old_start,
+            .old_pitch = note.pitch,
+            .new_start = new_start,
+            .new_pitch = note.pitch,
+        });
+    }
+}
+
 fn copyNotes(state: *PianoRollState, clip: *const PianoRollClip) void {
     if (!state.hasSelection()) return;
 
@@ -1695,7 +1849,14 @@ fn finalizeRectSelection(
     }
 }
 
-fn drawContextMenu(state: *PianoRollState, clip: *PianoRollClip, min_duration: f32, track_index: usize, scene_index: usize) bool {
+fn drawContextMenu(
+    state: *PianoRollState,
+    clip: *PianoRollClip,
+    min_duration: f32,
+    track_index: usize,
+    scene_index: usize,
+    quantize_beats: f32,
+) bool {
     if (zgui.beginPopup("piano_roll_ctx", .{})) {
         var menu_ctx = MenuCtx{
             .state = state,
@@ -1704,7 +1865,7 @@ fn drawContextMenu(state: *PianoRollState, clip: *PianoRollClip, min_duration: f
             .scene_index = scene_index,
             .min_note_duration = min_duration,
         };
-        const action_triggered = edit_actions.drawMenu(&menu_ctx, .{
+        var action_triggered = edit_actions.drawMenu(&menu_ctx, .{
             .has_selection = state.hasSelection(),
             .can_paste = state.clipboard.items.len > 0 and state.context_in_grid,
         }, .{
@@ -1714,6 +1875,12 @@ fn drawContextMenu(state: *PianoRollState, clip: *PianoRollClip, min_duration: f
             .delete = menuDelete,
             .select_all = menuSelectAll,
         });
+
+        zgui.separator();
+        if (zgui.menuItem("Quantize", .{ .enabled = state.hasSelection() })) {
+            quantizeSelectedNotes(state, clip, quantize_beats, track_index, scene_index);
+            action_triggered = true;
+        }
 
         zgui.endPopup();
         return action_triggered;

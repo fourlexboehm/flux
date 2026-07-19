@@ -336,6 +336,12 @@ pub fn discover(allocator: std.mem.Allocator, io: Io) !PluginCatalog {
     const zportafm_path = try zportafmPluginPath();
     try appendStaticEntry(&catalog, .builtin, "ZPortaFM", zportafm_path, "com.fourlex.zportafm");
 
+    // Stock DAWproject-portable audio FX.
+    try appendStaticEntryFx(&catalog, "Equalizer", "com.flux.builtin.equalizer");
+    try appendStaticEntryFx(&catalog, "Compressor", "com.flux.builtin.compressor");
+    try appendStaticEntryFx(&catalog, "Noise Gate", "com.flux.builtin.noise_gate");
+    try appendStaticEntryFx(&catalog, "Limiter", "com.flux.builtin.limiter");
+
     var clap_entries: std.ArrayListUnmanaged(PluginEntry) = .empty;
     defer clap_entries.deinit(allocator);
     discoverClapEntries(allocator, io, &clap_entries) catch {};
@@ -371,6 +377,18 @@ fn appendStaticEntry(
     });
 }
 
+fn appendStaticEntryFx(catalog: *PluginCatalog, name: []const u8, id: []const u8) !void {
+    const name_copy = try catalog.allocator.dupe(u8, name);
+    const id_copy = try catalog.allocator.dupe(u8, id);
+    try catalog.entries.append(catalog.allocator, .{
+        .kind = .builtin,
+        .name = name_copy,
+        .path = null,
+        .id = id_copy,
+        .is_audio_effect = true,
+    });
+}
+
 fn rebuildItemsZ(catalog: *PluginCatalog) !void {
     var buffer: std.ArrayList(u8) = .empty;
     defer buffer.deinit(catalog.allocator);
@@ -401,7 +419,7 @@ fn rebuildFxItemsZ(catalog: *PluginCatalog) !void {
                 try buffer.append(catalog.allocator, 0);
                 try indices.append(catalog.allocator, @intCast(idx));
             },
-            .clap => {
+            .builtin, .clap => {
                 if (entry.is_audio_effect) {
                     try buffer.appendSlice(catalog.allocator, entry.name);
                     try buffer.append(catalog.allocator, 0);
@@ -438,10 +456,12 @@ fn rebuildInstrumentItemsZ(catalog: *PluginCatalog) !void {
                 try indices.append(catalog.allocator, @intCast(idx));
             },
             .builtin => {
-                // Built-in plugins (like ZSynth) are instruments
-                try buffer.appendSlice(catalog.allocator, entry.name);
-                try buffer.append(catalog.allocator, 0);
-                try indices.append(catalog.allocator, @intCast(idx));
+                // Instruments only (stock FX have is_audio_effect)
+                if (!entry.is_audio_effect) {
+                    try buffer.appendSlice(catalog.allocator, entry.name);
+                    try buffer.append(catalog.allocator, 0);
+                    try indices.append(catalog.allocator, @intCast(idx));
+                }
             },
             .clap => {
                 // Only include non-audio-effect plugins (instruments)

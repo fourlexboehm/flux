@@ -242,4 +242,22 @@ pub const UndoHistory = struct {
     pub fn setSavePoint(self: *Self, point: usize) void {
         self.save_point = point;
     }
+
+    /// Append a restored history entry without coalescing or clearing redo.
+    /// Used when reloading flux_undo.xml.
+    pub fn appendRestored(self: *Self, entry: HistoryEntry) void {
+        self.undo_stack.append(self.allocator, entry) catch {
+            var cmd_copy = entry.cmd;
+            cmd_copy.deinit(self.allocator);
+            return;
+        };
+
+        while (self.undo_stack.items.len > self.max_commands) {
+            var removed = self.undo_stack.orderedRemove(0);
+            removed.cmd.deinit(self.allocator);
+            if (self.save_point > 0) {
+                self.save_point -= 1;
+            }
+        }
+    }
 };

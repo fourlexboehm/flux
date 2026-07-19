@@ -159,13 +159,18 @@ pub fn draw(
         }
     }.map;
 
+    const loop_col = zgui.colorConvertFloat4ToU32(.{ 0.95, 0.78, 0.28, 0.75 });
+    const play_col = zgui.colorConvertFloat4ToU32(colors.Colors.current.transport_play);
+    const line_th: f32 = 1.5 * ui_scale;
+    const flag_half: f32 = 5.0 * ui_scale;
+
     if (clip.loop_start_beats > 0.001) {
         if (beatToX(clip.loop_start_beats, length, &view_state, x0, inner_w)) |lx| {
             draw_list.addLine(.{
                 .p1 = .{ lx, wave_min[1] },
                 .p2 = .{ lx, wave_max[1] },
-                .col = zgui.colorConvertFloat4ToU32(.{ 0.95, 0.78, 0.28, 0.75 }),
-                .thickness = 1.5,
+                .col = loop_col,
+                .thickness = line_th,
             });
         }
     }
@@ -175,8 +180,26 @@ pub fn draw(
             draw_list.addLine(.{
                 .p1 = .{ lx, wave_min[1] },
                 .p2 = .{ lx, wave_max[1] },
-                .col = zgui.colorConvertFloat4ToU32(.{ 0.95, 0.78, 0.28, 0.75 }),
-                .thickness = 1.5,
+                .col = loop_col,
+                .thickness = line_th,
+            });
+        }
+    }
+
+    // Punch-in (playStart)
+    if (clip.play_start_beats > 0.001 and clip.play_start_beats < length - 0.001) {
+        if (beatToX(clip.play_start_beats, length, &view_state, x0, inner_w)) |px| {
+            draw_list.addLine(.{
+                .p1 = .{ px, wave_min[1] },
+                .p2 = .{ px, wave_max[1] },
+                .col = play_col,
+                .thickness = line_th,
+            });
+            draw_list.addTriangleFilled(.{
+                .p1 = .{ px - flag_half, wave_min[1] },
+                .p2 = .{ px + flag_half, wave_min[1] },
+                .p3 = .{ px, wave_min[1] + flag_half * 1.4 },
+                .col = play_col,
             });
         }
     }

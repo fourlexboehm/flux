@@ -51,9 +51,13 @@ pub fn draw(
     self.render_hover_scene = null;
     self.render_hover_has_content = false;
 
+    // Mouse selection only when this pane owns focus — otherwise device-panel
+    // interactions (horizontal sliders, chain chips) fall through here.
+    const allow_mouse = is_focused;
+
     // Right-click context menu (handle before left-click selection)
     const ctrl_click = zgui.isMouseClicked(.left) and (zgui.isKeyDown(.mod_ctrl) or zgui.isKeyDown(.left_ctrl) or zgui.isKeyDown(.right_ctrl));
-    if (in_grid and (zgui.isMouseClicked(.right) or (builtin.os.tag == .macos and ctrl_click))) {
+    if (allow_mouse and in_grid and (zgui.isMouseClicked(.right) or (builtin.os.tag == .macos and ctrl_click))) {
         if (hover_track != null and hover_scene != null) {
             if (hover_has_content) {
                 if (!ops.isSelected(self, hover_track.?, hover_scene.?)) {
@@ -86,6 +90,16 @@ pub fn draw(
             .select_all = ops.selectAllClips,
         });
         zgui.separator();
+        const primary_has_clip = self.clips[self.primary_track][self.primary_scene].state != .empty;
+        if (zgui.menuItem("Rename Clip", .{ .shortcut = "F2", .enabled = primary_has_clip })) {
+            ops.beginRenameClip(self, self.primary_track, self.primary_scene);
+            menu_action = true;
+        }
+        if (zgui.menuItem("Rename Scene", .{ .enabled = true })) {
+            ops.beginRenameScene(self, self.primary_scene);
+            menu_action = true;
+        }
+        zgui.separator();
         // Delete track/scene options
         var track_label_buf: [48]u8 = undefined;
         const track_del_label = std.fmt.bufPrintSentinel(&track_label_buf, "Delete Track \"{s}\"", .{self.tracks[self.primary_track].getName()}, 0) catch "Delete Track";
@@ -105,7 +119,7 @@ pub fn draw(
     // Handle mouse release - complete drag move and reset all drag state
     if (!zgui.isMouseDown(.left)) {
         // If we were dragging clips and have a valid target, do the actual move now
-        if (self.drag_moving and self.drag_target_track != null and self.drag_target_scene != null) {
+        if (allow_mouse and self.drag_moving and self.drag_target_track != null and self.drag_target_scene != null) {
             const delta_track = @as(i32, @intCast(self.drag_target_track.?)) - @as(i32, @intCast(self.drag_start_track));
             const delta_scene = @as(i32, @intCast(self.drag_target_scene.?)) - @as(i32, @intCast(self.drag_start_scene));
             if (delta_track != 0 or delta_scene != 0) {
@@ -120,7 +134,7 @@ pub fn draw(
     }
 
     // On click, decide: drag move (if over clip with content) or drag select (if over empty)
-    if (!popup_open and !menu_action and zgui.isMouseClicked(.left) and in_grid) {
+    if (allow_mouse and !popup_open and !menu_action and !ops.isRenaming(self) and zgui.isMouseClicked(.left) and in_grid) {
         if (hover_has_content) {
             // Start drag move
             self.drag_moving = true;
@@ -145,15 +159,15 @@ pub fn draw(
     }
 
     // Update drag select position
-    if (self.drag_select.active or self.drag_select.pending) {
+    if (allow_mouse and (self.drag_select.active or self.drag_select.pending)) {
         self.drag_select.update(mouse);
     }
 
     // Activate selection rectangle after drag threshold
-    _ = self.drag_select.checkThreshold(4.0);
+    if (allow_mouse) _ = self.drag_select.checkThreshold(4.0);
 
     // Handle drag moving - track target position for preview (actual move happens on release)
-    if (self.drag_moving and zgui.isMouseDragging(.left, 4.0)) {
+    if (allow_mouse and self.drag_moving and zgui.isMouseDragging(.left, 4.0)) {
         zgui.setMouseCursor(.resize_all);
         if (hover_track != null and hover_scene != null) {
             // Just track the target, don't actually move yet
@@ -203,11 +217,13 @@ pub fn draw(
         const track_pad = tokens.s(4, ui_scale);
         zgui.setCursorPosX(zgui.getCursorPosX() + track_pad);
         if (zgui.selectable(track_label, .{ .selected = is_track_selected, .w = track_col_w - track_pad * 2.0 })) {
-            self.primary_track = t;
-            ops.clearSelection(self);
-            self.mixer_target = .track;
+            if (allow_mouse) {
+                self.primary_track = t;
+                ops.clearSelection(self);
+                self.mixer_target = .track;
+            }
         }
-        if (zgui.isItemClicked(.right)) {
+        if (allow_mouse and zgui.isItemClicked(.right)) {
             self.primary_track = t;
             self.mixer_target = .track;
             zgui.openPopup("session_ctx", .{});
@@ -282,26 +298,56 @@ pub fn draw(
 
         zgui.sameLine(.{ .spacing = 4.0 * ui_scale });
 
-        // Scene name (clickable to select scene)
+        // Scene name (clickable to select scene; double-click / F2 / menu to rename)
         const is_scene_selected = self.primary_scene == scene_idx;
         const scene_text_color = if (is_scene_selected) colors.Colors.current.text_bright else colors.Colors.current.text_dim;
         zgui.pushStyleColor4f(.{ .idx = .text, .c = scene_text_color });
 
-        var scene_buf: [48]u8 = undefined;
-        const scene_name = self.scenes[scene_idx].getName();
-        const scene_text_size = zgui.calcTextSize(scene_name, .{});
-        const frame_padding = zgui.getStyle().frame_padding;
-        const selectable_height = scene_text_size[1] + frame_padding[1] * 2.0;
-        zgui.setCursorPosY(row_start_y + (row_height - selectable_height) / 2.0);
-        const scene_label = std.fmt.bufPrintSentinel(&scene_buf, "{s}##scene_hdr{d}", .{ scene_name, scene_idx }, 0) catch "Scene";
-        if (zgui.selectable(scene_label, .{ .selected = is_scene_selected, .w = scene_col_w - launch_size - 12.0 * ui_scale })) {
-            self.primary_scene = scene_idx;
-            ops.clearSelection(self);
-        }
-        // Right-click on scene label opens context menu
-        if (zgui.isItemClicked(.right)) {
-            self.primary_scene = scene_idx;
-            zgui.openPopup("session_ctx", .{});
+        const scene_name_w = scene_col_w - launch_size - 12.0 * ui_scale;
+        if (ops.isRenamingScene(self, scene_idx)) {
+            const frame_padding = zgui.getStyle().frame_padding;
+            const input_h = zgui.getFontSize() + frame_padding[1] * 2.0;
+            zgui.setCursorPosY(row_start_y + (row_height - input_h) / 2.0);
+            zgui.setNextItemWidth(scene_name_w);
+            if (self.rename_focus) {
+                zgui.setKeyboardFocusHere(0);
+                self.rename_focus = false;
+            }
+            var rename_id_buf: [32]u8 = undefined;
+            const rename_id = std.fmt.bufPrintSentinel(&rename_id_buf, "##scene_rename{d}", .{scene_idx}, 0) catch "##scene_rename";
+            const enter = zgui.inputText(rename_id, .{
+                .buf = self.rename_buf[0..],
+                .flags = .{ .enter_returns_true = true, .auto_select_all = true },
+            });
+            if (enter or zgui.isItemDeactivatedAfterEdit()) {
+                ops.commitRename(self);
+            } else if (zgui.isKeyPressed(.escape, false)) {
+                ops.cancelRename(self);
+            } else if (zgui.isItemDeactivated()) {
+                ops.commitRename(self);
+            }
+        } else {
+            var scene_buf: [48]u8 = undefined;
+            const scene_name = self.scenes[scene_idx].getName();
+            const scene_text_size = zgui.calcTextSize(scene_name, .{});
+            const frame_padding = zgui.getStyle().frame_padding;
+            const selectable_height = scene_text_size[1] + frame_padding[1] * 2.0;
+            zgui.setCursorPosY(row_start_y + (row_height - selectable_height) / 2.0);
+            const scene_label = std.fmt.bufPrintSentinel(&scene_buf, "{s}##scene_hdr{d}", .{ scene_name, scene_idx }, 0) catch "Scene";
+            if (zgui.selectable(scene_label, .{ .selected = is_scene_selected, .w = scene_name_w })) {
+                if (allow_mouse) {
+                    self.primary_scene = scene_idx;
+                    ops.clearSelection(self);
+                }
+            }
+            if (allow_mouse and zgui.isItemHovered(.{}) and zgui.isMouseDoubleClicked(.left)) {
+                ops.beginRenameScene(self, scene_idx);
+            }
+            // Right-click on scene label opens context menu
+            if (allow_mouse and zgui.isItemClicked(.right)) {
+                self.primary_scene = scene_idx;
+                zgui.openPopup("session_ctx", .{});
+            }
         }
         zgui.popStyleColor(.{ .count = 1 });
 
@@ -332,7 +378,7 @@ pub fn draw(
     zgui.popStyleColor(.{ .count = 3 });
 
     // Handle keyboard shortcuts (only when this pane is focused)
-    const keyboard_free = !zgui.isAnyItemActive();
+    const keyboard_free = !zgui.isAnyItemActive() and !ops.isRenaming(self);
     const modifier_down = selection.isModifierDown();
 
     if (is_focused and keyboard_free) {
@@ -365,6 +411,15 @@ pub fn draw(
         if (zgui.isKeyPressed(.enter, false)) {
             if (self.clips[self.primary_track][self.primary_scene].state == .empty) {
                 ops.createClip(self, self.primary_track, self.primary_scene, beats_per_bar_in);
+            }
+        }
+
+        // F2 renames primary clip when filled, otherwise the primary scene
+        if (zgui.isKeyPressed(.f2, false)) {
+            if (self.clips[self.primary_track][self.primary_scene].state != .empty) {
+                ops.beginRenameClip(self, self.primary_track, self.primary_scene);
+            } else {
+                ops.beginRenameScene(self, self.primary_scene);
             }
         }
     }
@@ -416,19 +471,19 @@ pub fn draw(
 
         for (0..self.track_count) |t| {
             _ = zgui.tableNextColumn();
-            drawTrackMixer(self, t, track_col_w, mixer_height - 8.0 * ui_scale, ui_scale);
+            drawTrackMixer(self, t, track_col_w, mixer_height - 8.0 * ui_scale, ui_scale, allow_mouse);
         }
         _ = zgui.tableNextColumn(); // Empty add column
         _ = zgui.tableNextColumn(); // Stretch spacer
         _ = zgui.tableNextColumn();
-        drawTrackMixer(self, session_view.master_track_index, track_col_w, mixer_height - 8.0 * ui_scale, ui_scale);
+        drawTrackMixer(self, session_view.master_track_index, track_col_w, mixer_height - 8.0 * ui_scale, ui_scale, allow_mouse);
 
         zgui.endTable();
     }
     zgui.popStyleColor(.{ .count = 1 });
 }
 
-fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, height: f32, ui_scale: f32) void {
+fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, height: f32, ui_scale: f32, allow_select: bool) void {
     const padding = tokens.s(4, ui_scale);
     const spacing = tokens.s(3, ui_scale);
     const usable_width = width - padding * 2;
@@ -472,8 +527,10 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
     zgui.pushStyleColor4f(.{ .idx = .text, .c = mute_text });
     if (zgui.button(mute_id, .{ .w = btn_width, .h = btn_height })) {
         self.tracks[track].mute = !self.tracks[track].mute;
-        if (!is_master) self.primary_track = track;
-        self.mixer_target = if (is_master) .master else .track;
+        if (allow_select) {
+            if (!is_master) self.primary_track = track;
+            self.mixer_target = if (is_master) .master else .track;
+        }
     }
     widgets.itemTooltip("Mute");
     zgui.popStyleColor(.{ .count = 4 });
@@ -492,8 +549,10 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
         zgui.pushStyleColor4f(.{ .idx = .text, .c = solo_text });
         if (zgui.button(solo_id, .{ .w = btn_width, .h = btn_height })) {
             self.tracks[track].solo = !self.tracks[track].solo;
-            self.primary_track = track;
-            self.mixer_target = .track;
+            if (allow_select) {
+                self.primary_track = track;
+                self.mixer_target = .track;
+            }
         }
         widgets.itemTooltip("Solo");
         zgui.popStyleColor(.{ .count = 4 });
@@ -521,8 +580,10 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
                 }
                 self.armed_track = track;
             }
-            self.primary_track = track;
-            self.mixer_target = .track;
+            if (allow_select) {
+                self.primary_track = track;
+                self.mixer_target = .track;
+            }
         }
         widgets.itemTooltip("Record arm");
         zgui.popStyleColor(.{ .count = 4 });
@@ -562,10 +623,10 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
             self.volume_drag_track = track;
             self.volume_drag_start = volume_before;
         }
-        if (!is_master) {
-            self.primary_track = track;
+        if (allow_select) {
+            if (!is_master) self.primary_track = track;
+            self.mixer_target = if (is_master) .master else .track;
         }
-        self.mixer_target = if (is_master) .master else .track;
     } else if (self.volume_drag_track == track) {
         // Drag ended - emit undo request if changed
         if (self.tracks[track].volume != self.volume_drag_start) {

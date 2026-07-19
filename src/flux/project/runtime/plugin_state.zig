@@ -110,13 +110,23 @@ pub fn capturePluginStateForDawproject(
 }
 
 pub fn loadPluginStateFromData(plugin: *const clap.Plugin, data: []const u8) void {
-    const ext_raw = plugin.getExtension(plugin, clap.ext.state.id) orelse return;
-    const ext: *const clap.ext.state.Plugin = @ptrCast(@alignCast(ext_raw));
-
     const payload = stripClapPresetHeader(data) orelse data;
     var stream = MemoryIStream.init(payload);
     stream.stream.context = &stream;
-    _ = ext.load(plugin, &stream.stream);
+
+    // Prefer state_context (project/preset) when available — Bitwig/DAWproject
+    // state is often saved that way; CLAP requires cross-compat with plain state.
+    if (plugin.getExtension(plugin, clap.ext.state_context.id)) |ext_raw| {
+        const ext: *const clap.ext.state_context.Plugin = @ptrCast(@alignCast(ext_raw));
+        if (ext.load(plugin, &stream.stream, .project)) return;
+        stream.offset = 0;
+        if (ext.load(plugin, &stream.stream, .preset)) return;
+        stream.offset = 0;
+    }
+
+    const state_ext_raw = plugin.getExtension(plugin, clap.ext.state.id) orelse return;
+    const state_ext: *const clap.ext.state.Plugin = @ptrCast(@alignCast(state_ext_raw));
+    _ = state_ext.load(plugin, &stream.stream);
 }
 
 fn stripClapPresetHeader(data: []const u8) ?[]const u8 {

@@ -33,7 +33,7 @@ pub const LoadedProject = struct {
     project_dir: []const u8,
     /// Packed/Bitwig project was converted to external layout; next Save should thin-write.
     needs_thin_save: bool,
-    /// Optional flux_undo.xml bytes from the archive (full deserialize not wired yet).
+    /// Optional flux_undo.xml bytes from the archive (restored by runtime/load.zig).
     undo_xml: ?[]const u8 = null,
     /// Embedded media still in RAM when hydrate-to-disk was skipped (path → bytes).
     embedded_media: std.StringHashMap([]const u8),

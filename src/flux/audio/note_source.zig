@@ -34,10 +34,19 @@ pub const AutomationLane = struct {
 
 pub const ClipNotes = struct {
     length_beats: f32 = default_clip_bars * beats_per_bar,
+    play_start_beats: f32 = 0,
+    loop_start_beats: f32 = 0,
+    /// 0 means "use length_beats"
+    loop_end_beats: f32 = 0,
     count: u16 = 0,
     notes: [max_clip_notes]PianoNote = @splat(.{ .pitch = 0, .start = 0, .duration = 0 }),
     automation_lane_count: u8 = 0,
     automation_lanes: [max_automation_lanes]AutomationLane = @splat(.{}),
+
+    pub fn loopEnd(self: *const ClipNotes) f32 {
+        if (self.loop_end_beats > 0) return self.loop_end_beats;
+        return self.length_beats;
+    }
 };
 
 pub const NoteSource = struct {
@@ -102,13 +111,19 @@ pub const NoteSource = struct {
         const active_scene: usize = @intCast(active_scene_i);
         const clip = &snapshot.piano_clips[self.track_index][active_scene];
         const scene_changed = self.last_scene == null or self.last_scene.? != active_scene;
-        if (scene_changed) {
-            self.current_beat = 0.0;
+        if (scene_changed or !self.last_playing) {
+            // Punch-in: launch at playStart (content time), matching audio clips.
+            self.current_beat = @as(f64, clip.play_start_beats);
             self.last_scene = active_scene;
         }
 
-        const clip_len = @as(f64, clip.length_beats);
-        if (clip_len <= 0.0) {
+        const loop_start = @as(f64, clip.loop_start_beats);
+        const loop_end = @as(f64, clip.loopEnd());
+        var loop_len = loop_end - loop_start;
+        if (loop_len <= 0.0) {
+            loop_len = @as(f64, clip.length_beats);
+        }
+        if (loop_len <= 0.0) {
             if (self.emit_notes) {
                 self.updateCombined(live_should, live_should, live_velocities, 0);
             }
@@ -118,24 +133,55 @@ pub const NoteSource = struct {
         const beats_per_second = @as(f64, snapshot.bpm) / 60.0;
         const beats_per_sample = beats_per_second / @as(f64, sample_rate);
         const block_beats = beats_per_sample * @as(f64, frame_count);
-        const beat_start = @mod(self.current_beat, clip_len);
+
+        // Content position is kept inside the playable region; wrap at loopEnd → loopStart.
+        var beat_start = self.current_beat;
+        if (beat_start < loop_start) {
+            // Intro before loop brace (one-shot into the loop).
+        } else if (beat_start >= loop_end) {
+            beat_start = loop_start + @mod(beat_start - loop_start, loop_len);
+        }
+
         const beat_end = beat_start + block_beats;
-        const near_clip_start = beat_start < block_beats;
+        const near_loop_boundary = beat_start < loop_start + block_beats or beat_end >= loop_end;
 
-        if (self.emit_notes and (scene_changed or live_changed or !self.last_playing or beat_end >= clip_len or near_clip_start)) {
-            self.updateNotesAtBeat(clip, @floatCast(beat_start), 0, live_should, live_velocities);
+        if (self.emit_notes and (scene_changed or live_changed or !self.last_playing or near_loop_boundary)) {
+            self.updateNotesAtBeat(clip, @floatCast(beat_start), 0, live_should, live_velocities, loop_start, loop_end);
         }
 
-        if (beat_end < clip_len) {
-            self.processSegment(clip, beat_start, beat_end, 0, beats_per_sample, clip_len);
+        if (beat_end <= loop_end) {
+            self.processSegment(clip, beat_start, beat_end, 0, beats_per_sample, loop_start, loop_end);
+            self.current_beat = beat_end;
         } else {
-            const first_len = clip_len - beat_start;
-            const wrap_offset = @as(u32, @intFromFloat(@floor(first_len / beats_per_sample)));
-            self.processSegment(clip, beat_start, clip_len, 0, beats_per_sample, clip_len);
-            self.processSegment(clip, 0.0, @mod(beat_end, clip_len), wrap_offset, beats_per_sample, clip_len);
+            // May cross loopEnd once (or more for huge blocks).
+            var seg_pos = beat_start;
+            var sample_base: u32 = 0;
+            var remaining = block_beats;
+            var guard: u32 = 0;
+            while (remaining > 1e-12 and guard < 64) : (guard += 1) {
+                const until_end = if (seg_pos < loop_end - 1e-12) loop_end - seg_pos else loop_len;
+                const chunk = @min(remaining, until_end);
+                if (chunk <= 1e-15) {
+                    seg_pos = loop_start;
+                    continue;
+                }
+                const seg_end = seg_pos + chunk;
+                self.processSegment(clip, seg_pos, seg_end, sample_base, beats_per_sample, loop_start, loop_end);
+                remaining -= chunk;
+                sample_base += @as(u32, @intFromFloat(@floor(chunk / beats_per_sample)));
+                if (seg_end >= loop_end - 1e-12) {
+                    seg_pos = loop_start;
+                } else {
+                    seg_pos = seg_end;
+                }
+            }
+            // Final content position after the block.
+            var end_pos = beat_start + block_beats;
+            if (end_pos >= loop_end) {
+                end_pos = loop_start + @mod(end_pos - loop_end, loop_len);
+            }
+            self.current_beat = end_pos;
         }
-
-        self.current_beat = if (beat_end >= clip_len) @mod(beat_end, clip_len) else beat_end;
         return &self.input_events;
     }
 
@@ -223,18 +269,15 @@ pub const NoteSource = struct {
         sample_offset: u32,
         live_should: *const [128]bool,
         live_velocities: *const [128]f32,
+        loop_start: f64,
+        loop_end: f64,
     ) void {
         var should_be_active: [128]bool = @splat(false);
-        const clip_len = clip.length_beats;
+        const loop_len = loop_end - loop_start;
 
         for (clip.notes[0..clip.count]) |note| {
-            const note_end = note.start + note.duration;
-            if (note_end <= clip_len) {
-                if (beat >= note.start and beat < note_end) should_be_active[note.pitch] = true;
-            } else {
-                const wrapped_end = note_end - clip_len;
-                if (beat >= note.start or beat < wrapped_end) should_be_active[note.pitch] = true;
-            }
+            if (noteActiveAtBeat(note, beat, loop_start, loop_end, loop_len))
+                should_be_active[note.pitch] = true;
         }
 
         for (0..128) |pitch| {
@@ -260,7 +303,8 @@ pub const NoteSource = struct {
         seg_end: f64,
         base_sample_offset: u32,
         beats_per_sample: f64,
-        clip_len: f64,
+        loop_start: f64,
+        loop_end: f64,
     ) void {
         if (seg_end <= seg_start) return;
         if (self.emit_notes) {
@@ -268,17 +312,19 @@ pub const NoteSource = struct {
                 const note_start = @as(f64, note.start);
                 const note_end = note_start + @as(f64, note.duration);
 
-                if (note_end <= clip_len) {
+                if (note_end <= loop_end) {
                     self.emitNoteEvents(note.pitch, note.velocity, note.release_velocity, note_start, note_end, seg_start, seg_end, base_sample_offset, beats_per_sample);
                 } else {
-                    const wrapped_end = note_end - clip_len;
-                    self.emitNoteEvents(note.pitch, note.velocity, note.release_velocity, note_start, clip_len, seg_start, seg_end, base_sample_offset, beats_per_sample);
-                    self.emitNoteEvents(note.pitch, note.velocity, note.release_velocity, 0.0, wrapped_end, seg_start, seg_end, base_sample_offset, beats_per_sample);
+                    // Note crosses loopEnd: first half up to loopEnd, remainder from loopStart.
+                    self.emitNoteEvents(note.pitch, note.velocity, note.release_velocity, note_start, loop_end, seg_start, seg_end, base_sample_offset, beats_per_sample);
+                    const wrapped_end = loop_start + (note_end - loop_end);
+                    self.emitNoteEvents(note.pitch, note.velocity, note.release_velocity, loop_start, wrapped_end, seg_start, seg_end, base_sample_offset, beats_per_sample);
                 }
             }
         }
 
-        self.processAutomationSegment(clip, seg_start, seg_end, base_sample_offset, beats_per_sample, clip_len);
+        const loop_len = loop_end - loop_start;
+        self.processAutomationSegment(clip, seg_start, seg_end, base_sample_offset, beats_per_sample, if (loop_len > 0) loop_len else loop_end);
     }
 
     fn processAutomationSegment(
@@ -350,3 +396,20 @@ pub const NoteSource = struct {
         }
     }
 };
+
+fn noteActiveAtBeat(note: PianoNote, beat: f32, loop_start: f64, loop_end: f64, loop_len: f64) bool {
+    const note_start = @as(f64, note.start);
+    const note_end = note_start + @as(f64, note.duration);
+    const b = @as(f64, beat);
+    if (note_end <= loop_end) return b >= note_start and b < note_end;
+    if (loop_len <= 0.0) return false;
+    const wrapped_end = loop_start + (note_end - loop_end);
+    return b >= note_start or (b >= loop_start and b < wrapped_end);
+}
+
+test "wrapped note is inactive before loop start" {
+    const note: PianoNote = .{ .pitch = 60, .start = 7, .duration = 2 };
+    try std.testing.expect(!noteActiveAtBeat(note, 0, 4, 8, 4));
+    try std.testing.expect(noteActiveAtBeat(note, 4.5, 4, 8, 4));
+    try std.testing.expect(noteActiveAtBeat(note, 7.5, 4, 8, 4));
+}

@@ -52,7 +52,7 @@ pub const SharedState = struct {
     }
 
     pub fn updateFromUi(self: *SharedState, state: *ui_state.State) void {
-        // Offline stretch bake before taking the RT snapshot lock (can allocate / CPU).
+        // Offline stretch bake before publishing RT snapshot (can allocate / CPU).
         // Only dirty *playing/queued* clips recompute — keeps load/idle frames cheap.
         clip_bake.bakeDirtyClips(
             &state.audio_clips,
@@ -65,11 +65,9 @@ pub const SharedState = struct {
             true,
         );
 
-        self.setSuspendProcessing(true);
-        defer self.setSuspendProcessing(false);
-        while (self.processing.load(.acquire) != 0) {
-            std.atomic.spinLoopHint();
-        }
+        // Double-buffer publish: write the inactive snapshot while the audio thread
+        // keeps reading the active one. Do NOT suspend/silence here — that caused
+        // buffer-sized dropouts (pops/xruns) every UI frame during continuous sample playback.
         const current = self.active_index.load(.acquire);
         const next: u32 = 1 - current;
         var back = &self.snapshots[next];
@@ -117,6 +115,9 @@ pub const SharedState = struct {
                 const src = &state.piano_clips[t][s];
                 var dst = &back.piano_clips[t][s];
                 dst.length_beats = src.length_beats;
+                dst.play_start_beats = src.play_start_beats;
+                dst.loop_start_beats = src.loop_start_beats;
+                dst.loop_end_beats = src.loop_end_beats;
                 const note_count = @min(src.notes.items.len, audio_graph.max_clip_notes);
                 dst.count = @intCast(note_count);
                 if (note_count > 0) {
@@ -158,7 +159,12 @@ pub const SharedState = struct {
             }
         }
         self.active_index.store(next, .release);
-        // Safe: audio thread is idle and will next read the new snapshot without freed buffers.
+
+        // After publish, wait until any in-flight callback finishes so no reader
+        // still holds the previous snapshot, then free retired sample/bake buffers.
+        while (self.processing.load(.acquire) != 0) {
+            std.atomic.spinLoopHint();
+        }
         state.sample_store.flushDeferredFrees();
         for (&state.audio_clips) |*track_clips| {
             for (track_clips) |*clip| {

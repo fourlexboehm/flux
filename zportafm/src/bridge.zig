@@ -114,7 +114,7 @@ pub const Engine = struct {
 
     fn reset(self: *Engine) void {
         c.OPLL_reset(self.opll);
-        c.OPLL_reset_patch(self.opll, @intFromEnum(self.tone_bank));
+        c.OPLL_reset_patch(self.opll, @intCast(@intFromEnum(self.tone_bank)));
 
         self.channels = @splat(.{});
         self.last_channel = 0;
@@ -143,7 +143,7 @@ pub const Engine = struct {
         if (self.tone_bank == next_bank) return;
 
         self.tone_bank = next_bank;
-        c.OPLL_reset_patch(self.opll, @intFromEnum(self.tone_bank));
+        c.OPLL_reset_patch(self.opll, @intCast(@intFromEnum(self.tone_bank)));
         self.sendPatchState();
     }
 
@@ -353,25 +353,29 @@ fn calculateBlockAndFNumber(note: i32, parameters: *const [synth_parameter_count
     return (noteToBlock(note) << 9) + calculateFNumber(note, (wheel * range) + tune);
 }
 
+fn writeReg(opll: *c.OPLL, reg: u32, val: u32) void {
+    c.OPLL_writeReg(opll, reg, @truncate(val));
+}
+
 fn sendKeyOn(opll: *c.OPLL, parameters: *const [synth_parameter_count]f32, channel: usize, program: u8, note: i32, wheel: f32, velocity: f32) void {
     const bf = calculateBlockAndFNumber(note, parameters, wheel);
     const vl: u32 = @intFromFloat(15.0 - (velocity * 15.0));
-    c.OPLL_writeReg(opll, @intCast(0x10 + channel), @intCast(bf & 0xff));
-    c.OPLL_writeReg(opll, @intCast(0x20 + channel), @intCast(0x10 + (bf >> 8)));
-    c.OPLL_writeReg(opll, @intCast(0x30 + channel), (@as(u32, program) << 4) + vl);
+    writeReg(opll, @intCast(0x10 + channel), @intCast(bf & 0xff));
+    writeReg(opll, @intCast(0x20 + channel), @intCast(0x10 + (bf >> 8)));
+    writeReg(opll, @intCast(0x30 + channel), (@as(u32, program) << 4) + vl);
 }
 
 fn sendKeyOff(opll: *c.OPLL, parameters: *const [synth_parameter_count]f32, channel: usize, program: u8, note: i32, wheel: f32) void {
     _ = program;
     const bf = calculateBlockAndFNumber(note, parameters, wheel);
-    c.OPLL_writeReg(opll, @intCast(0x20 + channel), @intCast(bf >> 8));
+    writeReg(opll, @intCast(0x20 + channel), @intCast(bf >> 8));
 }
 
 fn adjustPitch(opll: *c.OPLL, parameters: *const [synth_parameter_count]f32, channel: usize, note: i32, wheel: f32, key_on: bool) void {
     const bf = calculateBlockAndFNumber(note, parameters, wheel);
     const key_flag: i32 = if (key_on) 0x10 else 0;
-    c.OPLL_writeReg(opll, @intCast(0x10 + channel), @intCast(bf & 0xff));
-    c.OPLL_writeReg(opll, @intCast(0x20 + channel), @intCast(key_flag + (bf >> 8)));
+    writeReg(opll, @intCast(0x10 + channel), @intCast(bf & 0xff));
+    writeReg(opll, @intCast(0x20 + channel), @intCast(key_flag + (bf >> 8)));
 }
 
 fn sendARDR(opll: *c.OPLL, parameters: *const [synth_parameter_count]f32, op: usize) void {
@@ -379,7 +383,7 @@ fn sendARDR(opll: *c.OPLL, parameters: *const [synth_parameter_count]f32, op: us
     const dr_index = if (op == 0) SynthParameter.dr0 else SynthParameter.dr1;
     const ar: u32 = @intFromFloat((1.0 - synthValue(parameters, ar_index)) * 15.0);
     const dr: u32 = @intFromFloat((1.0 - synthValue(parameters, dr_index)) * 15.0);
-    c.OPLL_writeReg(opll, @intCast(4 + op), (ar << 4) + dr);
+    writeReg(opll, @intCast(4 + op), (ar << 4) + dr);
 }
 
 fn sendSLRR(opll: *c.OPLL, parameters: *const [synth_parameter_count]f32, op: usize) void {
@@ -387,7 +391,7 @@ fn sendSLRR(opll: *c.OPLL, parameters: *const [synth_parameter_count]f32, op: us
     const rr_index = if (op == 0) SynthParameter.rr0 else SynthParameter.rr1;
     const sl: u32 = @intFromFloat((1.0 - synthValue(parameters, sl_index)) * 15.0);
     const rr: u32 = @intFromFloat((1.0 - synthValue(parameters, rr_index)) * 15.0);
-    c.OPLL_writeReg(opll, @intCast(6 + op), (sl << 4) + rr);
+    writeReg(opll, @intCast(6 + op), (sl << 4) + rr);
 }
 
 fn sendMUL(opll: *c.OPLL, parameters: *const [synth_parameter_count]f32, op: usize) void {
@@ -397,19 +401,19 @@ fn sendMUL(opll: *c.OPLL, parameters: *const [synth_parameter_count]f32, op: usi
     const am: u32 = if (synthValue(parameters, am_index) < 0.5) 0 else 0x80;
     const vib: u32 = if (synthValue(parameters, vib_index) < 0.5) 0 else 0x40;
     const mul: u32 = @intFromFloat(synthValue(parameters, mul_index) * 15.0);
-    c.OPLL_writeReg(opll, @intCast(op), am + vib + 0x20 + mul);
+    writeReg(opll, @intCast(op), am + vib + 0x20 + mul);
 }
 
 fn sendFB(opll: *c.OPLL, parameters: *const [synth_parameter_count]f32) void {
     const dc: u32 = if (synthValue(parameters, .dc) < 0.5) 0 else 0x10;
     const dm: u32 = if (synthValue(parameters, .dm) < 0.5) 0 else 0x08;
     const fb: u32 = @intFromFloat(synthValue(parameters, .fb) * 7.0);
-    c.OPLL_writeReg(opll, 3, dc + dm + fb);
+    writeReg(opll, 3, dc + dm + fb);
 }
 
 fn sendTL(opll: *c.OPLL, parameters: *const [synth_parameter_count]f32) void {
     const tl: u32 = @intFromFloat((1.0 - synthValue(parameters, .tl)) * 63.0);
-    c.OPLL_writeReg(opll, 2, tl);
+    writeReg(opll, 2, tl);
 }
 
 fn patchParamToSynthParam(param: PatchParam) SynthParameter {

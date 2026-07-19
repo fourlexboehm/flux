@@ -63,9 +63,12 @@ pub fn handleFileRequests(
     if (state.plugin_state_restore_request) |req| {
         state.plugin_state_restore_request = null;
         if (req.track_index < track_count) {
-            // All plugins (builtin and external) are now in TrackPlugin
-            if (track_plugins[req.track_index].getPlugin()) |plugin| {
-                plugin_state.loadPluginStateFromData(plugin, req.state_data);
+            const plugin: ?*const clap.Plugin = if (req.fx_index) |fx_idx|
+                if (fx_idx < ui_state.max_fx_slots) track_fx[req.track_index][fx_idx].getPlugin() else null
+            else
+                track_plugins[req.track_index].getPlugin();
+            if (plugin) |p| {
+                plugin_state.loadPluginStateFromData(p, req.state_data);
             }
         }
     }

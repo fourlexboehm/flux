@@ -92,6 +92,12 @@ pub const ClipAutomation = struct {
 pub const PianoRollClip = struct {
     allocator: std.mem.Allocator,
     length_beats: f32,
+    /// DAWproject playStart — content position where playback begins on launch.
+    play_start_beats: f32 = 0,
+    /// DAWproject loopStart — loop region start in content time.
+    loop_start_beats: f32 = 0,
+    /// DAWproject loopEnd — 0 means "use length_beats".
+    loop_end_beats: f32 = 0,
     notes: std.ArrayListUnmanaged(Note),
     automation: ClipAutomation,
 
@@ -107,6 +113,11 @@ pub const PianoRollClip = struct {
     pub fn deinit(self: *PianoRollClip) void {
         self.notes.deinit(self.allocator);
         self.automation.deinit(self.allocator);
+    }
+
+    pub fn loopEnd(self: *const PianoRollClip) f32 {
+        if (self.loop_end_beats > 0) return self.loop_end_beats;
+        return self.length_beats;
     }
 
     pub fn addNote(self: *PianoRollClip, pitch: u8, start: f32, duration: f32) !void {
@@ -157,11 +168,17 @@ pub const PianoRollClip = struct {
         self.notes.clearRetainingCapacity();
         self.automation.clear(self.allocator);
         self.length_beats = default_clip_bars * beats_per_bar;
+        self.play_start_beats = 0;
+        self.loop_start_beats = 0;
+        self.loop_end_beats = 0;
     }
 
     pub fn copyFrom(self: *PianoRollClip, src: *const PianoRollClip) void {
         self.clear();
         self.length_beats = src.length_beats;
+        self.play_start_beats = src.play_start_beats;
+        self.loop_start_beats = src.loop_start_beats;
+        self.loop_end_beats = src.loop_end_beats;
         if (src.notes.items.len > 0) {
             self.notes.appendSlice(self.allocator, src.notes.items) catch {};
         }

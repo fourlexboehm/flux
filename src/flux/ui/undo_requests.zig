@@ -38,6 +38,7 @@ pub fn processUndoRequests(state: *State) void {
                         .track = req.track,
                         .scene = req.scene,
                         .length_beats = req.length_beats,
+                        .name = req.old_clip.name,
                         .notes = notes,
                         .audio = audio,
                     },
@@ -73,10 +74,12 @@ pub fn processUndoRequests(state: *State) void {
                         .old_clip = .{
                             .has_clip = req.old_clip.state != .empty,
                             .length_beats = req.old_clip.length_beats,
+                            .name = req.old_clip.name,
                         },
                         .new_clip = .{
                             .has_clip = req.length_beats > 0,
                             .length_beats = req.length_beats,
+                            .name = state.session.clips[req.track][req.scene].name,
                         },
                         .old_notes = old_notes,
                         .new_notes = new_notes,
@@ -186,6 +189,27 @@ pub fn processUndoRequests(state: *State) void {
                         .track_index = req.track,
                         .old_volume = req.old_volume,
                         .new_volume = req.new_volume,
+                    },
+                });
+            },
+            .scene_rename => {
+                state.undo_history.push(.{
+                    .scene_rename = .{
+                        .scene_index = req.scene,
+                        .old_name = req.old_name,
+                        .new_name = req.new_name,
+                    },
+                });
+            },
+            .clip_rename => {
+                // Keep audio payload name in sync with the session slot name.
+                state.audio_clips[req.track][req.scene].name = req.new_name;
+                state.undo_history.push(.{
+                    .clip_rename = .{
+                        .track = req.track,
+                        .scene = req.scene,
+                        .old_name = req.old_name,
+                        .new_name = req.new_name,
                     },
                 });
             },

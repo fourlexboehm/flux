@@ -289,6 +289,170 @@ test "bitwig nested clips flatten" {
     try std.testing.expectEqualStrings("Drumfunk3 170bpm", f.name.?);
 }
 
+test "dawproject portable builtins equalizer compressor parse" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const xml =
+        \\<?xml version="1.0"?>
+        \\<Project version="1.0">
+        \\  <Application name="Flux" version="0.1"/>
+        \\  <Structure>
+        \\    <Track contentType="notes" id="t0" name="T1">
+        \\      <Channel id="c0" role="regular">
+        \\        <Devices>
+        \\          <Compressor deviceID="com.flux.builtin.compressor" deviceName="Compressor" deviceRole="audioFX" loaded="true" id="d0" name="Compressor">
+        \\            <Parameters>
+        \\              <RealParameter id="d0_p10" parameterID="10" name="Compress" min="0" max="1" unit="linear" value="0.3"/>
+        \\              <RealParameter id="d0_p11" parameterID="11" name="Output" min="0" max="1" unit="linear" value="0.5"/>
+        \\            </Parameters>
+        \\            <Threshold id="d0_th" name="Threshold" unit="linear" value="0.3"/>
+        \\          </Compressor>
+        \\          <Equalizer deviceID="com.flux.builtin.equalizer" deviceName="Equalizer" deviceRole="audioFX" loaded="true" id="d1" name="Equalizer">
+        \\            <Parameters>
+        \\              <RealParameter id="d1_p100" parameterID="100" name="Input Gain" min="-24" max="24" unit="linear" value="0"/>
+        \\            </Parameters>
+        \\          </Equalizer>
+        \\          <Limiter deviceID="com.flux.builtin.limiter" deviceName="Limiter" deviceRole="audioFX" loaded="true" id="d2" name="Limiter"/>
+        \\          <NoiseGate deviceID="com.flux.builtin.noise_gate" deviceName="Noise Gate" deviceRole="audioFX" loaded="true" id="d3" name="Noise Gate">
+        \\            <Threshold id="d3_th" name="Threshold" unit="linear" value="0.5"/>
+        \\          </NoiseGate>
+        \\        </Devices>
+        \\      </Channel>
+        \\    </Track>
+        \\  </Structure>
+        \\</Project>
+    ;
+    const parsed = try parse.parseProjectXml(allocator, xml);
+    const ch = parsed.tracks[0].channel.?;
+    try std.testing.expectEqual(@as(usize, 4), ch.devices.len);
+    try std.testing.expect(ch.devices[0].xml_kind == .compressor);
+    try std.testing.expectEqualStrings("com.flux.builtin.compressor", ch.devices[0].device_id);
+    try std.testing.expect(ch.devices[0].parameters.len >= 2);
+    try std.testing.expect(ch.devices[1].xml_kind == .equalizer);
+    try std.testing.expect(ch.devices[2].xml_kind == .limiter);
+    try std.testing.expect(ch.devices[3].xml_kind == .noise_gate);
+}
+
+test "portable builtin writer follows XSD child order" {
+    const allocator = std.testing.allocator;
+    const proj = Project{
+        .application = .{ .name = "Flux", .version = "1" },
+        .tracks = &.{.{
+            .id = "t",
+            .name = "Track",
+            .channel = .{
+                .id = "c",
+                .devices = &.{.{
+                    .id = "gate",
+                    .name = "Gate",
+                    .device_id = "com.flux.builtin.noise_gate",
+                    .device_name = "Gate",
+                    .device_role = .audioFX,
+                    .xml_kind = .noise_gate,
+                    .parameters = &.{.{ .id = "p", .name = "P", .value = 0, .unit = .linear }},
+                    .enabled = .{ .id = "en", .name = "On", .value = true },
+                    .attack = .{ .id = "a", .name = "Attack", .value = 0.01, .unit = .seconds },
+                    .range = .{ .id = "r", .name = "Range", .value = -60, .unit = .decibel },
+                    .ratio = .{ .id = "ra", .name = "Ratio", .value = 10, .unit = .linear },
+                    .release = .{ .id = "rel", .name = "Release", .value = 0.1, .unit = .seconds },
+                    .threshold = .{ .id = "th", .name = "Threshold", .value = -40, .unit = .decibel },
+                }},
+            },
+        }},
+    };
+
+    const xml = try toXml(allocator, &proj);
+    defer allocator.free(xml);
+    const tags = [_][]const u8{ "<Parameters>", "<Enabled", "<Attack", "<Range", "<Ratio", "<Release", "<Threshold" };
+    var previous: usize = 0;
+    for (tags) |tag| {
+        const found = std.mem.indexOf(u8, xml, tag);
+        try std.testing.expect(found != null);
+        const position = found.?;
+        try std.testing.expect(position >= previous);
+        previous = position;
+    }
+}
+
+test "bitwig midi clip playStart loop and clap plugin" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    // Subset of LOAD DIVA.dawproject: instrument + session MIDI punch/loop region.
+    const xml =
+        \\<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        \\<Project version="1.0">
+        \\  <Application name="Bitwig Studio" version="6.0"/>
+        \\  <Transport>
+        \\    <Tempo max="666" min="20" unit="bpm" value="110" id="id0" name="Tempo"/>
+        \\    <TimeSignature denominator="4" numerator="4" id="id1" name="Time Signature"/>
+        \\  </Transport>
+        \\  <Structure>
+        \\    <Track contentType="notes" loaded="true" id="id2" name="Diva" color="#ff5706">
+        \\      <Channel audioChannels="2" destination="id20" role="regular" solo="false" id="id3">
+        \\        <Devices>
+        \\          <ClapPlugin deviceID="com.u-he.Diva" deviceName="Diva" deviceRole="instrument" loaded="true" id="id7" name="Diva">
+        \\            <Parameters/>
+        \\            <Enabled value="true" id="id8" name="On/Off"/>
+        \\            <State path="plugins/0d8762f7-b4ee-4fb2-98c1-381f17999991.clap-preset"/>
+        \\          </ClapPlugin>
+        \\        </Devices>
+        \\        <Mute value="false" id="id6" name="Mute"/>
+        \\        <Pan max="1" min="0" unit="normalized" value="0.5" id="id5" name="Pan"/>
+        \\        <Volume max="2" min="0" unit="linear" value="0.316228" id="id4" name="Volume"/>
+        \\      </Channel>
+        \\    </Track>
+        \\  </Structure>
+        \\  <Scenes>
+        \\    <Scene id="id43" name="Scene 1">
+        \\      <Lanes id="id44">
+        \\        <ClipSlot hasStop="true" track="id2" id="id45">
+        \\          <Clip time="0.0" duration="24.0" playStart="8.0" loopStart="6.0" loopEnd="22.0" enable="true">
+        \\            <Notes id="id46">
+        \\              <Note time="7.598730" duration="2.745760" channel="0" key="29" vel="0.700000" rel="0.500000"/>
+        \\              <Note time="10.557340" duration="2.554195" channel="0" key="33" vel="0.700000" rel="0.500000"/>
+        \\            </Notes>
+        \\          </Clip>
+        \\        </ClipSlot>
+        \\      </Lanes>
+        \\    </Scene>
+        \\  </Scenes>
+        \\</Project>
+    ;
+
+    const parsed = try parse.parseProjectXml(allocator, xml);
+    try std.testing.expectEqual(@as(usize, 1), parsed.tracks.len);
+    const track = parsed.tracks[0];
+    try std.testing.expectEqualStrings("Diva", track.name);
+    try std.testing.expect(track.channel != null);
+    const ch = track.channel.?;
+    try std.testing.expect(ch.volume != null);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.316228), ch.volume.?.value, 1e-6);
+    try std.testing.expect(ch.pan != null);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.5), ch.pan.?.value, 1e-6);
+    try std.testing.expect(ch.mute != null);
+    try std.testing.expect(!ch.mute.?.value);
+    try std.testing.expectEqual(@as(usize, 1), ch.devices.len);
+    try std.testing.expectEqualStrings("com.u-he.Diva", ch.devices[0].device_id);
+    try std.testing.expectEqualStrings("plugins/0d8762f7-b4ee-4fb2-98c1-381f17999991.clap-preset", ch.devices[0].state.?.path);
+
+    try std.testing.expectEqual(@as(usize, 1), parsed.scenes.len);
+    const slot = parsed.scenes[0].clip_slots[0];
+    try std.testing.expect(slot.clip != null);
+    const clip = slot.clip.?;
+    try std.testing.expectApproxEqAbs(@as(f64, 24.0), clip.duration, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 8.0), clip.play_start, 1e-9);
+    try std.testing.expect(clip.loop_start != null);
+    try std.testing.expectApproxEqAbs(@as(f64, 6.0), clip.loop_start.?, 1e-9);
+    try std.testing.expect(clip.loop_end != null);
+    try std.testing.expectApproxEqAbs(@as(f64, 22.0), clip.loop_end.?, 1e-9);
+    try std.testing.expect(clip.notes != null);
+    try std.testing.expectEqual(@as(usize, 2), clip.notes.?.notes.len);
+}
+
 test "session clip slot audio round trip" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
