@@ -538,9 +538,17 @@ pub const Graph = struct {
             const gain = if (muted) 0.0 else track.volume;
             if (gain == 0.0 or !self.hasActiveInput(gain_node.inputs)) {
                 self.zeroBufferOnce(gain_node.out, ctx.frame_count);
+                ctx.shared.setTrackPeak(gain_node.track_index, 0, 0);
                 continue;
             }
-            _ = self.sumInputsScaled(gain_node.inputs, gain_node.out, ctx.frame_count, gain, true);
+            if (!self.sumInputsScaled(gain_node.inputs, gain_node.out, ctx.frame_count, gain, true)) continue;
+            const pan = std.math.clamp(track.pan, -1.0, 1.0);
+            const left_gain = if (pan > 0) 1.0 - pan else 1.0;
+            const right_gain = if (pan < 0) 1.0 + pan else 1.0;
+            const out = &self.buffers.items[gain_node.out];
+            const frames: usize = @intCast(ctx.frame_count);
+            const peak = audio_mix.applyStereoGainsAndPeak(out.left, out.right, frames, left_gain, right_gain);
+            ctx.shared.setTrackPeak(gain_node.track_index, peak[0], peak[1]);
         }
     }
 

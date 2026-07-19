@@ -2,6 +2,8 @@ const std = @import("std");
 const ui_state = @import("../ui/state.zig");
 const session_constants = @import("../session/constants.zig");
 const session_view = @import("../session/types.zig");
+const arr_timeline = @import("../arrangement/timeline.zig");
+const arr_clip_mod = @import("../arrangement/clip.zig");
 const track_count = session_constants.max_tracks;
 const master_track_index = session_view.master_track_index;
 const plugins = @import("../plugin/plugins.zig");
@@ -125,9 +127,12 @@ pub fn fromFluxProject(
         else
             .notes;
 
+        const track_color = arrangementTrackColor(state, t);
+
         try tracks_list.append(allocator, .{
             .id = track_id,
             .name = try allocator.dupe(u8, track_data.getName()),
+            .color = if (track_color) |c| try colorToHex(allocator, c) else null,
             .content_type = content_type,
             .content_types_attr = content_attr,
             .channel = .{
@@ -151,7 +156,7 @@ pub fn fromFluxProject(
                 .pan = .{
                     .id = pan_id,
                     .name = "Pan",
-                    .value = 0.5,
+                    .value = (@as(f64, track_data.pan) + 1.0) * 0.5,
                     .min = 0.0,
                     .max = 1.0,
                     .unit = .normalized,
@@ -160,15 +165,16 @@ pub fn fromFluxProject(
             },
         });
 
-        // Build empty clips container for arrangement (clips go in ClipSlots in Scenes)
+        // Arrangement lane: clips from ArrangementView for this session track
         const clips_id = try ids.next();
         const lane_id = try ids.next();
+        const arr_clips = try buildArrangementClipsForTrack(allocator, state, t, &ids, media_mode);
         try track_lanes.append(allocator, .{
             .id = lane_id,
             .track = track_id,
             .clips = .{
                 .id = clips_id,
-                .clips = &.{}, // Empty - clips are in Scenes/ClipSlots
+                .clips = arr_clips,
             },
         });
     }
@@ -227,7 +233,7 @@ pub fn fromFluxProject(
             .pan = .{
                 .id = master_pan_id,
                 .name = "Pan",
-                .value = 0.5,
+                .value = (@as(f64, state.session.tracks[master_track_index].pan) + 1.0) * 0.5,
                 .min = 0.0,
                 .max = 1.0,
                 .unit = .normalized,
@@ -432,6 +438,149 @@ pub fn fromFluxProject(
         },
         .scenes = try scenes.toOwnedSlice(allocator),
     };
+}
+
+fn arrangementTrackColor(state: *const ui_state.State, session_track: usize) ?[4]f32 {
+    for (state.arrangement.tracks.items) |track| {
+        if (track.session_track_index == session_track) return track.color;
+    }
+    return null;
+}
+
+fn buildArrangementClipsForTrack(
+    allocator: std.mem.Allocator,
+    state: *const ui_state.State,
+    session_track: usize,
+    ids: *IdGenerator,
+    media_mode: MediaMode,
+) ![]const Clip {
+    var out = std.ArrayList(Clip).empty;
+    for (state.arrangement.tracks.items) |arr_track| {
+        if (arr_track.session_track_index != session_track) continue;
+        for (arr_track.clips.items) |*arr_clip| {
+            try out.append(allocator, try buildArrangementClip(allocator, state, arr_clip, ids, media_mode));
+        }
+    }
+    return try out.toOwnedSlice(allocator);
+}
+
+fn buildArrangementClip(
+    allocator: std.mem.Allocator,
+    state: *const ui_state.State,
+    arr_clip: *const arr_clip_mod.ArrangementClip,
+    ids: *IdGenerator,
+    media_mode: MediaMode,
+) !Clip {
+    const time = ticksToBeats(arr_clip.start_tick);
+    const duration = ticksToBeats(arr_clip.duration_ticks);
+    const name: ?[]const u8 = blk: {
+        const n = arr_clip.name.get();
+        if (n.len == 0) break :blk null;
+        break :blk try allocator.dupe(u8, n);
+    };
+    const color = try colorToHex(allocator, arr_clip.color);
+
+    var clip = Clip{
+        .time = time,
+        .duration = duration,
+        .play_start = 0,
+        .loop_start = 0,
+        .loop_end = duration,
+        .enable = arr_clip.enabled,
+        .name = name,
+        .color = color,
+    };
+
+    if (arr_clip.kind == .audio) {
+        if (try buildArrangementAudio(allocator, state, arr_clip, duration, ids, media_mode)) |warps| {
+            clip.warps = warps;
+        }
+    } else {
+        // MIDI: prefer embedded notes; fall back to session piano clip reference.
+        const piano = if (arr_clip.midi) |*m|
+            m
+        else if (arr_clip.midi_session_track < track_count and arr_clip.midi_session_scene < session_constants.max_scenes)
+            &state.piano_clips[arr_clip.midi_session_track][arr_clip.midi_session_scene]
+        else
+            null;
+
+        if (piano) |p| {
+            var daw_notes = std.ArrayList(Note).empty;
+            for (p.notes.items) |note| {
+                try daw_notes.append(allocator, .{
+                    .time = note.start,
+                    .duration = note.duration,
+                    .key = note.pitch,
+                    .vel = note.velocity,
+                    .rel = note.release_velocity,
+                });
+            }
+            clip.notes = .{
+                .id = try ids.next(),
+                .notes = try daw_notes.toOwnedSlice(allocator),
+            };
+            clip.play_start = p.play_start_beats;
+            clip.loop_start = p.loop_start_beats;
+            clip.loop_end = if (p.loop_end_beats > 0) p.loop_end_beats else duration;
+        }
+    }
+    return clip;
+}
+
+fn buildArrangementAudio(
+    allocator: std.mem.Allocator,
+    state: *const ui_state.State,
+    arr_clip: *const arr_clip_mod.ArrangementClip,
+    clip_duration_beats: f64,
+    ids: *IdGenerator,
+    media_mode: MediaMode,
+) !?types.Warps {
+    const path = arr_clip.audio_path orelse return null;
+    if (path.len == 0) return null;
+
+    // Prefer sample_store (pack remaps path_in_project); fall back to raw path.
+    var file_path = path;
+    var duration_sec: f64 = clip_duration_beats * 60.0 / @as(f64, @floatCast(state.bpm));
+    var sample_rate: i32 = 44100;
+    var channels: i32 = 2;
+    if (state.sample_store.path_to_id.get(path)) |sid| {
+        if (state.sample_store.get(sid)) |asset| {
+            file_path = asset.path_in_project;
+            duration_sec = asset.duration_seconds;
+            sample_rate = asset.original_sample_rate;
+            channels = asset.original_channels;
+        }
+    }
+
+    const warp_points = try allocator.alloc(WarpPoint, 2);
+    warp_points[0] = .{ .time = 0.0, .content_time = 0.0 };
+    warp_points[1] = .{ .time = clip_duration_beats, .content_time = duration_sec };
+
+    return .{
+        .id = try ids.next(),
+        .time_unit = .beats,
+        .content_time_unit = .seconds,
+        .audio = .{
+            .id = try ids.next(),
+            .file = .{ .path = try allocator.dupe(u8, file_path), .external = media_mode == .external },
+            .duration = duration_sec,
+            .sample_rate = sample_rate,
+            .channels = channels,
+            .algorithm = try allocator.dupe(u8, "stretch"),
+        },
+        .warps = warp_points,
+    };
+}
+
+fn ticksToBeats(ticks: i64) f64 {
+    return @as(f64, @floatFromInt(ticks)) / @as(f64, @floatFromInt(arr_timeline.ppq));
+}
+
+fn colorToHex(allocator: std.mem.Allocator, color: [4]f32) ![]const u8 {
+    const r: u8 = @intFromFloat(@min(255.0, @max(0.0, color[0] * 255.0)));
+    const g: u8 = @intFromFloat(@min(255.0, @max(0.0, color[1] * 255.0)));
+    const b: u8 = @intFromFloat(@min(255.0, @max(0.0, color[2] * 255.0)));
+    return try std.fmt.allocPrint(allocator, "#{x:0>2}{x:0>2}{x:0>2}", .{ r, g, b });
 }
 
 /// DAWproject `contentType` list: notes | audio | "audio notes" (hybrid).

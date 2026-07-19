@@ -42,6 +42,9 @@ pub const SceneAddCmd = command.SceneAddCmd;
 pub const SceneDeleteCmd = command.SceneDeleteCmd;
 pub const SceneRenameCmd = command.SceneRenameCmd;
 pub const BpmChangeCmd = command.BpmChangeCmd;
+pub const ArrangementEditCmd = command.ArrangementEditCmd;
+pub const ArrangementTrackAddCmd = command.ArrangementTrackAddCmd;
+pub const ArrangementClipChange = command.ArrangementClipChange;
 
 // Data types
 pub const TrackData = command.TrackData;

@@ -184,6 +184,13 @@ pub fn applyDawprojectToState(
         }
     }
 
+    // Always restore Flux ArrangementView from Arrangement XML (session is independent).
+    if (proj.arrangement) |arr| {
+        try apply_arrangement.applyArrangement(state, loaded, io, &arr, proj.tracks);
+    } else {
+        state.arrangement.clearTracks();
+    }
+
     // Sync track plugins after state update
     try plugin_runtime.syncTrackPlugins(allocator, host, track_plugins, track_fx, state, catalog, shared, io, state.buffer_frames, true);
     try plugin_runtime.syncFxPlugins(allocator, host, track_plugins, track_fx, state, catalog, shared, io, state.buffer_frames, true);

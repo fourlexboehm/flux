@@ -155,10 +155,27 @@ pub fn pack(
     var used_names = std.StringHashMap(void).init(aa);
     var originals: std.ArrayList(struct { id: u32, path: []const u8 }) = .empty;
 
+    // Session audio clips
     for (0..state.session.track_count) |t| {
         for (0..state.session.scene_count) |s| {
             const clip = &state.audio_clips[t][s];
             const sample_id = clip.sample_id orelse continue;
+            if (pack_path_by_id.contains(sample_id)) continue;
+            const asset = state.sample_store.get(sample_id) orelse continue;
+            const base = std.fs.path.basename(asset.path_in_project);
+            const member = try uniquePackMember(aa, &used_names, base);
+            try pack_path_by_id.put(sample_id, member);
+            try originals.append(aa, .{
+                .id = sample_id,
+                .path = try aa.dupe(u8, asset.path_in_project),
+            });
+        }
+    }
+    // Arrangement clip audio (by sample_store path key)
+    for (state.arrangement.tracks.items) |arr_track| {
+        for (arr_track.clips.items) |arr_clip| {
+            const sample_path = arr_clip.audio_path orelse continue;
+            const sample_id = state.sample_store.path_to_id.get(sample_path) orelse continue;
             if (pack_path_by_id.contains(sample_id)) continue;
             const asset = state.sample_store.get(sample_id) orelse continue;
             const base = std.fs.path.basename(asset.path_in_project);
@@ -199,16 +216,50 @@ pub fn pack(
         }
     }
 
-    // Temporarily set pack paths for XML, then restore.
+    // Temporarily set pack paths for XML, then restore sample_store + arrangement audio_path.
+    var arr_path_originals: std.ArrayList(struct { track: usize, clip: usize, path: []const u8 }) = .empty;
+    defer {
+        for (originals.items) |item| {
+            state.sample_store.setPathInProject(item.id, item.path) catch {};
+        }
+        for (arr_path_originals.items) |item| {
+            if (item.track >= state.arrangement.tracks.items.len) continue;
+            const track = &state.arrangement.tracks.items[item.track];
+            if (item.clip >= track.clips.items.len) continue;
+            const clip = &track.clips.items[item.clip];
+            const restored = state.allocator.dupe(u8, item.path) catch continue;
+            if (clip.audio_path) |p| state.allocator.free(p);
+            clip.audio_path = restored;
+        }
+    }
     {
         var it = pack_path_by_id.iterator();
         while (it.next()) |entry| {
             try state.sample_store.setPathInProject(entry.key_ptr.*, entry.value_ptr.*);
         }
-    }
-    defer {
-        for (originals.items) |item| {
-            state.sample_store.setPathInProject(item.id, item.path) catch {};
+        // Rewrite arrangement clip paths so convert resolves remapped sample_store keys.
+        for (state.arrangement.tracks.items, 0..) |*arr_track, ti| {
+            for (arr_track.clips.items, 0..) |*arr_clip, ci| {
+                const old_path = arr_clip.audio_path orelse continue;
+                const sid = state.sample_store.path_to_id.get(old_path) orelse blk: {
+                    // path_to_id already uses new path after setPathInProject; match via originals.
+                    for (originals.items) |orig| {
+                        if (std.mem.eql(u8, orig.path, old_path)) {
+                            break :blk orig.id;
+                        }
+                    }
+                    break :blk null;
+                } orelse continue;
+                const member = pack_path_by_id.get(sid) orelse continue;
+                try arr_path_originals.append(aa, .{
+                    .track = ti,
+                    .clip = ci,
+                    .path = try aa.dupe(u8, old_path),
+                });
+                const new_owned = try state.allocator.dupe(u8, member);
+                state.allocator.free(old_path);
+                arr_clip.audio_path = new_owned;
+            }
         }
     }
 
@@ -415,6 +466,16 @@ fn flushReferencedSamples(
     for (0..state.session.track_count) |t| {
         for (0..state.session.scene_count) |s| {
             const sample_id = state.audio_clips[t][s].sample_id orelse continue;
+            if (seen.contains(sample_id)) continue;
+            try seen.put(sample_id, {});
+            try media_flush.flushOneSample(allocator, io, project_dir, prev_project_dir, &state.sample_store, sample_id);
+        }
+    }
+    // Arrangement audio clips (may reference samples not used in session)
+    for (state.arrangement.tracks.items) |arr_track| {
+        for (arr_track.clips.items) |arr_clip| {
+            const path = arr_clip.audio_path orelse continue;
+            const sample_id = state.sample_store.path_to_id.get(path) orelse continue;
             if (seen.contains(sample_id)) continue;
             try seen.put(sample_id, {});
             try media_flush.flushOneSample(allocator, io, project_dir, prev_project_dir, &state.sample_store, sample_id);

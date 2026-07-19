@@ -77,6 +77,11 @@ fn tickFrame(
     controller_mapping.applyMidiEvents(state, midi_events[0..midi_event_count]);
     if (time_utils.nsSince(dsp_last_update.*, now) >= 250 * std.time.ns_per_ms) {
         state.dsp_load_pct = engine.dsp_load_pct.load(.acquire);
+        for (0..track_count) |track| {
+            const peak = engine.shared.getTrackPeak(track);
+            state.track_levels[track][0] = @max(peak[0], state.track_levels[track][0] * 0.72);
+            state.track_levels[track][1] = @max(peak[1], state.track_levels[track][1] * 0.72);
+        }
         dsp_last_update.* = now;
     }
     const wants_keyboard = zgui.io.getWantCaptureKeyboard();

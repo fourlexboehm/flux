@@ -161,6 +161,7 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
                     current_track = .{
                         .id = try allocator.dupe(u8, getAttr(reader, "id") orelse ""),
                         .name = try allocator.dupe(u8, getAttr(reader, "name") orelse ""),
+                        .color = if (getAttr(reader, "color")) |c| try allocator.dupe(u8, c) else null,
                         .content_type = parseContentType(getAttr(reader, "contentType")),
                     };
                 } else if (std.mem.eql(u8, elem_name, "Channel") and state == .track) {
@@ -735,6 +736,7 @@ fn parseClipAttrs(allocator: std.mem.Allocator, reader: anytype) !Clip {
         .fade_out_time = parseFloatAttr(getAttr(reader, "fadeOutTime")),
         .enable = if (getAttr(reader, "enable")) |e| parseBool(e) else true,
         .name = if (getAttr(reader, "name")) |n| try allocator.dupe(u8, n) else null,
+        .color = if (getAttr(reader, "color")) |c| try allocator.dupe(u8, c) else null,
     };
 }
 

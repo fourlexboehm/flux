@@ -346,6 +346,7 @@ pub fn deleteTrack(self: *session_view.SessionView, track: usize) bool {
         .track_data = .{
             .name = self.tracks[track].name,
             .volume = self.tracks[track].volume,
+            .pan = self.tracks[track].pan,
             .mute = self.tracks[track].mute,
             .solo = self.tracks[track].solo,
         },

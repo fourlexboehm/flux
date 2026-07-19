@@ -6,6 +6,7 @@ const session_view = @import("../session/types.zig");
 const session_view_constants = @import("../session/constants.zig");
 const piano_roll_types = @import("../session/notes.zig");
 const audio_clip_types = @import("../session/audio_clip.zig");
+const arrangement_clip = @import("../arrangement/clip.zig");
 
 pub const Note = piano_roll_types.Note;
 pub const AudioClipSnapshot = audio_clip_types.AudioClipSnapshot;
@@ -48,6 +49,10 @@ pub const CommandKind = enum {
 
     // Plugin state
     plugin_state,
+
+    // Arrangement
+    arrangement_edit,
+    arrangement_track_add,
 };
 
 /// Create clip command - stores track/scene position
@@ -170,6 +175,7 @@ pub const TrackDeleteCmd = struct {
 pub const TrackData = struct {
     name: session_view.NameField,
     volume: f32,
+    pan: f32,
     mute: bool,
     solo: bool,
 };
@@ -257,6 +263,43 @@ pub const PluginStateCmd = struct {
     new_state: []const u8, // State after the change
 };
 
+pub const ArrangementClipData = struct {
+    kind: arrangement_clip.ClipKind,
+    start_tick: i64,
+    duration_ticks: i64,
+    color: [4]f32,
+    name: session_view.NameField,
+    enabled: bool,
+    audio_path: []const u8,
+    midi_session_track: usize,
+    midi_session_scene: usize,
+    midi_length_beats: f32,
+    midi_notes: []const Note,
+};
+
+pub const ArrangementClipAt = struct {
+    track: usize,
+    index: usize,
+    clip: ArrangementClipData,
+};
+
+/// One atomic arrangement edit. A missing side represents create/delete.
+pub const ArrangementClipChange = struct {
+    before: ?ArrangementClipAt = null,
+    after: ?ArrangementClipAt = null,
+};
+
+pub const ArrangementEditCmd = struct {
+    changes: []const ArrangementClipChange,
+};
+
+pub const ArrangementTrackAddCmd = struct {
+    index: usize,
+    session_track_index: usize,
+    name: session_view.NameField,
+    color: [4]f32,
+};
+
 /// Unified command union
 pub const Command = union(CommandKind) {
     clip_create: ClipCreateCmd,
@@ -282,6 +325,8 @@ pub const Command = union(CommandKind) {
     bpm_change: BpmChangeCmd,
     quantize_change: QuantizeChangeCmd,
     plugin_state: PluginStateCmd,
+    arrangement_edit: ArrangementEditCmd,
+    arrangement_track_add: ArrangementTrackAddCmd,
 
     /// Check if this command can be merged with another (for coalescing)
     pub fn canMerge(self: *const Command, other: *const Command) bool {
@@ -358,6 +403,8 @@ pub const Command = union(CommandKind) {
             .bpm_change => "Change BPM",
             .quantize_change => "Change Quantize",
             .plugin_state => "Change Plugin",
+            .arrangement_edit => "Edit Arrangement",
+            .arrangement_track_add => "Add Arrangement Track",
         };
     }
 
@@ -420,7 +467,19 @@ pub const Command = union(CommandKind) {
                     allocator.free(cmd.new_state);
                 }
             },
+            .arrangement_edit => |*cmd| {
+                for (cmd.changes) |change| {
+                    if (change.before) |before| deinitArrangementClipData(allocator, before.clip);
+                    if (change.after) |after| deinitArrangementClipData(allocator, after.clip);
+                }
+                if (cmd.changes.len > 0) allocator.free(cmd.changes);
+            },
             else => {},
         }
     }
 };
+
+fn deinitArrangementClipData(allocator: std.mem.Allocator, data: ArrangementClipData) void {
+    if (data.audio_path.len > 0) allocator.free(data.audio_path);
+    if (data.midi_notes.len > 0) allocator.free(data.midi_notes);
+}

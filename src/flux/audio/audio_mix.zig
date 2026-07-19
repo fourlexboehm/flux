@@ -86,6 +86,30 @@ pub inline fn mulStereo(out_left: []f32, out_right: []f32, frame_count: usize, g
     }
 }
 
+pub inline fn applyStereoGainsAndPeak(left: []f32, right: []f32, frame_count: usize, left_gain: f32, right_gain: f32) [2]f32 {
+    var left_peak: f32 = 0;
+    var right_peak: f32 = 0;
+    var i: usize = 0;
+    const left_gain_vec: F32xN = @splat(left_gain);
+    const right_gain_vec: F32xN = @splat(right_gain);
+    const vec_end = frame_count - (frame_count % simd_lanes);
+    while (i < vec_end) : (i += simd_lanes) {
+        const left_vec = @as(F32xN, left[i..][0..simd_lanes].*) * left_gain_vec;
+        const right_vec = @as(F32xN, right[i..][0..simd_lanes].*) * right_gain_vec;
+        left[i..][0..simd_lanes].* = @as([simd_lanes]f32, left_vec);
+        right[i..][0..simd_lanes].* = @as([simd_lanes]f32, right_vec);
+        left_peak = @max(left_peak, @reduce(.Max, @abs(left_vec)));
+        right_peak = @max(right_peak, @reduce(.Max, @abs(right_vec)));
+    }
+    while (i < frame_count) : (i += 1) {
+        left[i] *= left_gain;
+        right[i] *= right_gain;
+        left_peak = @max(left_peak, @abs(left[i]));
+        right_peak = @max(right_peak, @abs(right[i]));
+    }
+    return .{ left_peak, right_peak };
+}
+
 pub inline fn copyScaledStereo(
     out_left: []f32,
     out_right: []f32,
@@ -132,4 +156,13 @@ pub inline fn addScaledStereo(
         out_left[i] += src_left[i] * gain;
         out_right[i] += src_right[i] * gain;
     }
+}
+
+test "stereo gains and peak are calculated in one pass" {
+    var left = [_]f32{ 1, -0.5, 0.25, 0 };
+    var right = [_]f32{ 0.75, 1, -1, 0.5 };
+    const peak = applyStereoGainsAndPeak(&left, &right, left.len, 0.25, 1.0);
+    try @import("std").testing.expectEqualSlices(f32, &.{ 0.25, -0.125, 0.0625, 0 }, &left);
+    try @import("std").testing.expectEqualSlices(f32, &.{ 0.75, 1, -1, 0.5 }, &right);
+    try @import("std").testing.expectEqual([2]f32{ 0.25, 1.0 }, peak);
 }
