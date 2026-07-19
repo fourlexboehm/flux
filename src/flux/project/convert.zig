@@ -8,6 +8,8 @@ const plugins = @import("../plugin/plugins.zig");
 const types = @import("format/types.zig");
 const io_types = @import("io_types.zig");
 const parse = @import("format/parse.zig");
+const param_table = @import("flux_param_table");
+const BuiltinKind = param_table.Kind;
 
 const RealParameter = types.RealParameter;
 const Note = types.Note;
@@ -537,13 +539,17 @@ fn buildClapPlugin(
     const enabled_id = try ids.next();
     const clap_plugin_id = info.plugin_id orelse entry.id orelse "";
     const xml_kind = builtinXmlKind(clap_plugin_id);
+    const builtin_kind = BuiltinKind.fromId(clap_plugin_id);
 
     var params = std.ArrayList(RealParameter).empty;
     if (info.params.len > 0) {
         for (info.params) |param| {
             const param_id = try std.fmt.allocPrint(allocator, "{s}_p{d}", .{ device_id, param.id });
             // Prefer schema element names for builtins (InputGain not "Input Gain")
-            const schema_name = schemaParamName(param.name, param.id);
+            const schema_name = if (builtin_kind != null)
+                param_table.schemaNameForId(param.id) orelse param.name
+            else
+                param.name;
             try params.append(allocator, .{
                 .id = param_id,
                 .parameter_id = @bitCast(param.id),
@@ -551,7 +557,7 @@ fn buildClapPlugin(
                 .value = param.value,
                 .min = param.min,
                 .max = param.max,
-                .unit = unitForSchemaName(schema_name),
+                .unit = unitFromTable(param_table.unitForSchema(schema_name)),
             });
         }
     }
@@ -559,7 +565,7 @@ fn buildClapPlugin(
     // Portable builtins: params live in schema XML elements, no clap-preset.
     const use_state = xml_kind == .clap;
 
-    // Map DAWproject typed children from collected params
+    // Map DAWproject typed children from collected params (schema names from param_table)
     const threshold = try namedParam(allocator, params.items, "Threshold");
     const ratio = try namedParam(allocator, params.items, "Ratio");
     const attack = try namedParam(allocator, params.items, "Attack");
@@ -617,44 +623,22 @@ fn buildClapPlugin(
 }
 
 fn builtinXmlKind(plugin_id: []const u8) types.DeviceXmlKind {
-    if (std.mem.eql(u8, plugin_id, "com.flux.builtin.equalizer")) return .equalizer;
-    if (std.mem.eql(u8, plugin_id, "com.flux.builtin.compressor")) return .compressor;
-    if (std.mem.eql(u8, plugin_id, "com.flux.builtin.noise_gate")) return .noise_gate;
-    if (std.mem.eql(u8, plugin_id, "com.flux.builtin.limiter")) return .limiter;
-    return .clap;
-}
-
-/// Map CLAP param names / ids → DAWproject schema names.
-fn schemaParamName(name: []const u8, id: u32) []const u8 {
-    // Builtin ids from builtins/params.zig
-    return switch (id) {
-        1 => "Attack",
-        2 => "Release",
-        3 => "Threshold",
-        4 => "Ratio",
-        5 => "InputGain",
-        6 => "OutputGain",
-        7 => "AutoMakeup",
-        8 => "Range",
-        100 => "InputGain",
-        101 => "OutputGain",
-        else => name,
+    const kind = BuiltinKind.fromId(plugin_id) orelse return .clap;
+    return switch (kind) {
+        .equalizer => .equalizer,
+        .compressor => .compressor,
+        .noise_gate => .noise_gate,
+        .limiter => .limiter,
     };
 }
 
-fn unitForSchemaName(name: []const u8) types.Unit {
-    if (std.mem.eql(u8, name, "Threshold") or
-        std.mem.eql(u8, name, "InputGain") or
-        std.mem.eql(u8, name, "OutputGain") or
-        std.mem.eql(u8, name, "Range") or
-        std.mem.eql(u8, name, "Gain") or
-        std.mem.endsWith(u8, name, "Gain"))
-        return .decibel;
-    if (std.mem.eql(u8, name, "Attack") or std.mem.eql(u8, name, "Release"))
-        return .seconds;
-    if (std.mem.eql(u8, name, "Freq") or std.mem.endsWith(u8, name, "Freq"))
-        return .hertz;
-    return .linear;
+fn unitFromTable(u: param_table.Unit) types.Unit {
+    return switch (u) {
+        .linear => .linear,
+        .decibel => .decibel,
+        .seconds => .seconds,
+        .hertz => .hertz,
+    };
 }
 
 fn namedParam(allocator: std.mem.Allocator, items: []const RealParameter, name: []const u8) !?RealParameter {
@@ -675,12 +659,11 @@ fn namedParam(allocator: std.mem.Allocator, items: []const RealParameter, name: 
 }
 
 fn buildEqBands(allocator: std.mem.Allocator, device_id: []const u8, items: []const RealParameter) ![]const types.EqBand {
-    // Band param ids: 200 + b*10 + {0 type, 1 freq, 2 gain, 3 q, 4 enabled}
     var bands = std.ArrayList(types.EqBand).empty;
     const type_names = [_][]const u8{ "highPass", "lowPass", "bandPass", "highShelf", "lowShelf", "bell", "notch" };
     var b: usize = 0;
     while (b < 6) : (b += 1) {
-        const base: u32 = 200 + @as(u32, @intCast(b)) * 10;
+        const base = param_table.eqBandBase(b);
         const type_p = findParamById(items, base + 0) orelse continue;
         const freq_p = findParamById(items, base + 1) orelse continue;
         const gain_p = findParamById(items, base + 2);
@@ -699,7 +682,7 @@ fn buildEqBands(allocator: std.mem.Allocator, device_id: []const u8, items: []co
                 .value = freq_p.value,
                 .min = freq_p.min,
                 .max = freq_p.max,
-                .unit = .hertz,
+                .unit = unitFromTable(param_table.unitForSchema("Freq")),
                 .parameter_id = freq_p.parameter_id,
             },
             .gain = if (gain_p) |g| .{
@@ -708,7 +691,7 @@ fn buildEqBands(allocator: std.mem.Allocator, device_id: []const u8, items: []co
                 .value = g.value,
                 .min = g.min,
                 .max = g.max,
-                .unit = .decibel,
+                .unit = unitFromTable(param_table.unitForSchema("Gain")),
                 .parameter_id = g.parameter_id,
             } else null,
             .q = if (q_p) |q| .{
@@ -717,7 +700,7 @@ fn buildEqBands(allocator: std.mem.Allocator, device_id: []const u8, items: []co
                 .value = q.value,
                 .min = q.min,
                 .max = q.max,
-                .unit = .linear,
+                .unit = unitFromTable(param_table.unitForSchema("Q")),
                 .parameter_id = q.parameter_id,
             } else null,
             .enabled = if (en_p) |e| .{

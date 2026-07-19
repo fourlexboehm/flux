@@ -1,5 +1,7 @@
 const std = @import("std");
 const types = @import("types.zig");
+const param_table = @import("flux_param_table");
+const BuiltinKind = param_table.Kind;
 
 const Unit = types.Unit;
 const TimeUnit = types.TimeUnit;
@@ -322,36 +324,11 @@ pub const XmlWriter = struct {
             try self.buffer.appendSlice(self.allocator, "/>\n");
         }
 
-        switch (device.xml_kind) {
-            .clap => {},
-            .equalizer => {
-                for (device.eq_bands) |band| try self.writeEqBand(&band);
-                if (device.input_gain) |p| try self.writeRealParameter("InputGain", &p);
-                if (device.output_gain) |p| try self.writeRealParameter("OutputGain", &p);
-            },
-            .compressor => {
-                if (device.attack) |p| try self.writeRealParameter("Attack", &p);
-                if (device.auto_makeup) |b| try self.writeBoolParameter("AutoMakeup", &b);
-                if (device.input_gain) |p| try self.writeRealParameter("InputGain", &p);
-                if (device.output_gain) |p| try self.writeRealParameter("OutputGain", &p);
-                if (device.ratio) |p| try self.writeRealParameter("Ratio", &p);
-                if (device.release) |p| try self.writeRealParameter("Release", &p);
-                if (device.threshold) |p| try self.writeRealParameter("Threshold", &p);
-            },
-            .noise_gate => {
-                if (device.attack) |p| try self.writeRealParameter("Attack", &p);
-                if (device.range) |p| try self.writeRealParameter("Range", &p);
-                if (device.ratio) |p| try self.writeRealParameter("Ratio", &p);
-                if (device.release) |p| try self.writeRealParameter("Release", &p);
-                if (device.threshold) |p| try self.writeRealParameter("Threshold", &p);
-            },
-            .limiter => {
-                if (device.attack) |p| try self.writeRealParameter("Attack", &p);
-                if (device.input_gain) |p| try self.writeRealParameter("InputGain", &p);
-                if (device.output_gain) |p| try self.writeRealParameter("OutputGain", &p);
-                if (device.release) |p| try self.writeRealParameter("Release", &p);
-                if (device.threshold) |p| try self.writeRealParameter("Threshold", &p);
-            },
+        if (device.xml_kind == .equalizer) {
+            for (device.eq_bands) |band| try self.writeEqBand(&band);
+        }
+        if (kindFromXml(device.xml_kind)) |kind| {
+            try self.writeBuiltinSchemaChildren(device, kind);
         }
 
         self.indent_level -= 1;
@@ -360,6 +337,46 @@ pub const XmlWriter = struct {
         try self.buffer.append(self.allocator, '/');
         try self.buffer.appendSlice(self.allocator, tag);
         try self.buffer.appendSlice(self.allocator, ">\n");
+    }
+
+    fn kindFromXml(xml_kind: types.DeviceXmlKind) ?BuiltinKind {
+        return switch (xml_kind) {
+            .clap => null,
+            .equalizer => .equalizer,
+            .compressor => .compressor,
+            .noise_gate => .noise_gate,
+            .limiter => .limiter,
+        };
+    }
+
+    /// Write device-level schema children in param_table order (XSD sequence).
+    fn writeBuiltinSchemaChildren(self: *Self, device: *const ClapPlugin, kind: BuiltinKind) !void {
+        for (param_table.params) |row| {
+            if (!param_table.kindHas(row, kind)) continue;
+            if (row.is_bool) {
+                if (boolParamForSchema(device, row.schema)) |b| {
+                    try self.writeBoolParameter(row.schema, &b);
+                }
+            } else if (realParamForSchema(device, row.schema)) |p| {
+                try self.writeRealParameter(row.schema, &p);
+            }
+        }
+    }
+
+    fn realParamForSchema(device: *const ClapPlugin, schema: []const u8) ?RealParameter {
+        if (std.mem.eql(u8, schema, "Attack")) return device.attack;
+        if (std.mem.eql(u8, schema, "Release")) return device.release;
+        if (std.mem.eql(u8, schema, "Threshold")) return device.threshold;
+        if (std.mem.eql(u8, schema, "Ratio")) return device.ratio;
+        if (std.mem.eql(u8, schema, "InputGain")) return device.input_gain;
+        if (std.mem.eql(u8, schema, "OutputGain")) return device.output_gain;
+        if (std.mem.eql(u8, schema, "Range")) return device.range;
+        return null;
+    }
+
+    fn boolParamForSchema(device: *const ClapPlugin, schema: []const u8) ?BoolParameter {
+        if (std.mem.eql(u8, schema, "AutoMakeup")) return device.auto_makeup;
+        return null;
     }
 
     fn writeEqBand(self: *Self, band: *const types.EqBand) !void {
