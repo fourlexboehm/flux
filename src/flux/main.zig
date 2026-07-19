@@ -255,6 +255,22 @@ pub fn main(init: std.process.Init) !void {
                     objc.app_kit.NSDefaultRunLoopMode,
                     true,
                 )) |event| {
+                    const event_type = event.type();
+                    if (event_type == objc.app_kit.EventTypeKeyDown or event_type == objc.app_kit.EventTypeKeyUp) {
+                        const event_window: ?*objc.app_kit.Window = objc.objc.msgSend(
+                            event,
+                            "window",
+                            ?*objc.app_kit.Window,
+                            .{},
+                        );
+                        if (event_window != null and event_window.? != app.window) {
+                            ui_keyboard.forwardMacosPluginKey(
+                                event.keyCode(),
+                                event_type == objc.app_kit.EventTypeKeyDown,
+                            );
+                            continue;
+                        }
+                    }
                     app.app.sendEvent(event);
                 }
                 const window_focused = objc.objc.msgSend(app.window, "isKeyWindow", bool, .{});

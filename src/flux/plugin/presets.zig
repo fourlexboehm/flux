@@ -1,5 +1,6 @@
 const std = @import("std");
 const clap = @import("clap-bindings");
+const preset_db = @import("preset_db.zig");
 const plugins = @import("plugins.zig");
 
 const Dir = std.Io.Dir;
@@ -17,348 +18,15 @@ pub const PresetEntry = struct {
 };
 
 pub const PresetCatalog = struct {
-    allocator: std.mem.Allocator,
+    arena: std.heap.ArenaAllocator,
     entries: std.ArrayListUnmanaged(PresetEntry) = .empty,
 
     pub fn deinit(self: *PresetCatalog) void {
-        for (self.entries.items) |entry| {
-            self.allocator.free(@constCast(entry.name));
-            self.allocator.free(@constCast(entry.plugin_id));
-            self.allocator.free(@constCast(entry.plugin_name));
-            self.allocator.free(@constCast(entry.provider_id));
-            self.allocator.free(@constCast(entry.location_z));
-            if (entry.load_key_z) |key| {
-                self.allocator.free(@constCast(key));
-            }
-        }
-        self.entries.deinit(self.allocator);
+        self.arena.deinit();
     }
 };
 
-const CachedPreset = struct {
-    name: []const u8,
-    plugin_id: []const u8,
-    plugin_name: []const u8,
-    provider_id: []const u8,
-    location_kind: clap.preset_discovery.Location.Kind,
-    location: []const u8,
-    load_key: ?[]const u8,
-};
-
-const CachedBinary = struct {
-    mtime_ns: i64,
-    presets: []CachedPreset,
-};
-
-const PresetCache = struct {
-    allocator: std.mem.Allocator,
-    bins: std.StringHashMapUnmanaged(CachedBinary) = .{},
-    dirty: bool = false,
-    loaded: bool = false,
-
-    pub fn deinit(self: *PresetCache) void {
-        var it = self.bins.iterator();
-        while (it.next()) |entry| {
-            self.allocator.free(entry.key_ptr.*);
-            const bin = entry.value_ptr.*;
-            for (bin.presets) |preset| {
-                self.allocator.free(preset.name);
-                self.allocator.free(preset.plugin_id);
-                self.allocator.free(preset.plugin_name);
-                self.allocator.free(preset.provider_id);
-                self.allocator.free(preset.location);
-                if (preset.load_key) |key| {
-                    self.allocator.free(key);
-                }
-            }
-            self.allocator.free(bin.presets);
-        }
-        self.bins.deinit(self.allocator);
-    }
-
-    pub fn get(self: *PresetCache, path: []const u8, mtime_ns: i64) ?[]CachedPreset {
-        const bin = self.bins.get(path) orelse return null;
-        if (bin.mtime_ns != mtime_ns) return null;
-        return bin.presets;
-    }
-
-    pub fn set(self: *PresetCache, path: []const u8, mtime_ns: i64, presets: []CachedPreset) !void {
-        const path_copy = try self.allocator.dupe(u8, path);
-        const gop = try self.bins.getOrPut(self.allocator, path_copy);
-        if (gop.found_existing) {
-            self.allocator.free(path_copy);
-            const old = gop.value_ptr.*;
-            for (old.presets) |preset| {
-                self.allocator.free(preset.name);
-                self.allocator.free(preset.plugin_id);
-                self.allocator.free(preset.plugin_name);
-                self.allocator.free(preset.provider_id);
-                self.allocator.free(preset.location);
-                if (preset.load_key) |key| {
-                    self.allocator.free(key);
-                }
-            }
-            self.allocator.free(old.presets);
-        }
-        gop.value_ptr.* = .{
-            .mtime_ns = mtime_ns,
-            .presets = presets,
-        };
-        self.dirty = true;
-    }
-
-    pub fn hasPath(self: *PresetCache, path: []const u8) bool {
-        return self.bins.contains(path);
-    }
-};
-
-fn parseLocationKind(value: std.json.Value) ?clap.preset_discovery.Location.Kind {
-    const raw = switch (value) {
-        .integer => |val| val,
-        .number_string => |val| std.fmt.parseInt(i64, val, 10) catch return null,
-        .float => |val| @as(i64, @intFromFloat(val)),
-        else => return null,
-    };
-    if (raw < 0) return null;
-    const kind_val: u32 = @intCast(raw);
-    if (kind_val > 1) return null;
-    return @enumFromInt(kind_val);
-}
-
-fn parseCachedPresets(allocator: std.mem.Allocator, value: std.json.Value) ![]CachedPreset {
-    if (value != .array) return &[_]CachedPreset{};
-
-    var presets: std.ArrayList(CachedPreset) = .empty;
-    defer presets.deinit(allocator);
-
-    for (value.array.items) |item| {
-        if (item != .object) continue;
-
-        var name: ?[]const u8 = null;
-        var plugin_id: ?[]const u8 = null;
-        var plugin_name: ?[]const u8 = null;
-        var provider_id: ?[]const u8 = null;
-        var location_kind: ?clap.preset_discovery.Location.Kind = null;
-        var location: ?[]const u8 = null;
-        var load_key: ?[]const u8 = null;
-
-        var it = item.object.iterator();
-        while (it.next()) |field| {
-            const key = field.key_ptr.*;
-            if (std.mem.eql(u8, key, "name")) {
-                if (field.value_ptr.* == .string) name = field.value_ptr.*.string;
-                continue;
-            }
-            if (std.mem.eql(u8, key, "plugin_id")) {
-                if (field.value_ptr.* == .string) plugin_id = field.value_ptr.*.string;
-                continue;
-            }
-            if (std.mem.eql(u8, key, "plugin_name")) {
-                if (field.value_ptr.* == .string) plugin_name = field.value_ptr.*.string;
-                continue;
-            }
-            if (std.mem.eql(u8, key, "provider_id")) {
-                if (field.value_ptr.* == .string) provider_id = field.value_ptr.*.string;
-                continue;
-            }
-            if (std.mem.eql(u8, key, "location_kind")) {
-                location_kind = parseLocationKind(field.value_ptr.*);
-                continue;
-            }
-            if (std.mem.eql(u8, key, "location")) {
-                if (field.value_ptr.* == .string) location = field.value_ptr.*.string;
-                continue;
-            }
-            if (std.mem.eql(u8, key, "load_key")) {
-                if (field.value_ptr.* == .string) load_key = field.value_ptr.*.string;
-                continue;
-            }
-        }
-
-        if (name == null or plugin_id == null or plugin_name == null or provider_id == null or location_kind == null or location == null) {
-            continue;
-        }
-
-        try presets.append(allocator, .{
-            .name = try allocator.dupe(u8, name.?),
-            .plugin_id = try allocator.dupe(u8, plugin_id.?),
-            .plugin_name = try allocator.dupe(u8, plugin_name.?),
-            .provider_id = try allocator.dupe(u8, provider_id.?),
-            .location_kind = location_kind.?,
-            .location = try allocator.dupe(u8, location.?),
-            .load_key = if (load_key) |key| try allocator.dupe(u8, key) else null,
-        });
-    }
-
-    return try presets.toOwnedSlice(allocator);
-}
-
-fn loadPresetCache(allocator: std.mem.Allocator, io: Io) !PresetCache {
-    var cache = PresetCache{ .allocator = allocator };
-
-    const cache_path = plugins.cacheFilePath(allocator, "presets.json") catch return cache;
-    defer allocator.free(cache_path);
-
-    const file = Dir.cwd().openFile(io, cache_path, .{}) catch |err| switch (err) {
-        error.FileNotFound => return cache,
-        else => return err,
-    };
-    defer file.close(io);
-
-    const stat = try file.stat(io);
-    const max_size: u64 = 64 * 1024 * 1024;
-    const size = @min(stat.size, max_size);
-    const data = try allocator.alloc(u8, @intCast(size));
-    defer allocator.free(data);
-    const read_len = try file.readPositionalAll(io, data, 0);
-
-    const parsed = std.json.parseFromSlice(std.json.Value, allocator, data[0..read_len], .{
-        .ignore_unknown_fields = true,
-        .allocate = .alloc_always,
-        .parse_numbers = true,
-    }) catch return cache;
-    defer parsed.deinit();
-
-    if (parsed.value != .object) return cache;
-    const bins_val = parsed.value.object.get("bins") orelse return cache;
-    if (bins_val != .array) return cache;
-    cache.loaded = true;
-
-    for (bins_val.array.items) |item| {
-        if (item != .object) continue;
-        var path: ?[]const u8 = null;
-        var mtime: ?i64 = null;
-        var presets_val: ?std.json.Value = null;
-
-        var it = item.object.iterator();
-        while (it.next()) |field| {
-            const key = field.key_ptr.*;
-            if (std.mem.eql(u8, key, "path")) {
-                if (field.value_ptr.* == .string) path = field.value_ptr.*.string;
-                continue;
-            }
-            if (std.mem.eql(u8, key, "mtime")) {
-                switch (field.value_ptr.*) {
-                    .integer => |val| mtime = val,
-                    .number_string => |val| mtime = std.fmt.parseInt(i64, val, 10) catch null,
-                    .float => |val| mtime = @as(i64, @intFromFloat(val)),
-                    else => {},
-                }
-                continue;
-            }
-            if (std.mem.eql(u8, key, "presets")) {
-                presets_val = field.value_ptr.*;
-                continue;
-            }
-        }
-
-        if (path == null or mtime == null or presets_val == null) continue;
-        const presets = try parseCachedPresets(allocator, presets_val.?);
-        try cache.set(path.?, mtime.?, presets);
-    }
-
-    cache.dirty = false;
-    return cache;
-}
-
-fn writePresetCache(cache: *PresetCache, io: Io) !void {
-    if (!cache.dirty) return;
-
-    const cache_path = try plugins.cacheFilePath(cache.allocator, "presets.json");
-    defer cache.allocator.free(cache_path);
-
-    const cache_dir = try plugins.cacheDirPath(cache.allocator);
-    defer cache.allocator.free(cache_dir);
-    Dir.cwd().createDirPath(io, cache_dir) catch {};
-
-    var root: std.json.ObjectMap = .empty;
-    var bins_array = std.json.Array.init(cache.allocator);
-
-    var it = cache.bins.iterator();
-    while (it.next()) |entry| {
-        const bin = entry.value_ptr.*;
-        var bin_obj: std.json.ObjectMap = .empty;
-        try bin_obj.put(cache.allocator, "path", .{ .string = entry.key_ptr.* });
-        try bin_obj.put(cache.allocator, "mtime", .{ .integer = bin.mtime_ns });
-
-        var presets_array = std.json.Array.init(cache.allocator);
-        for (bin.presets) |preset| {
-            var preset_obj: std.json.ObjectMap = .empty;
-            try preset_obj.put(cache.allocator, "name", .{ .string = preset.name });
-            try preset_obj.put(cache.allocator, "plugin_id", .{ .string = preset.plugin_id });
-            try preset_obj.put(cache.allocator, "plugin_name", .{ .string = preset.plugin_name });
-            try preset_obj.put(cache.allocator, "provider_id", .{ .string = preset.provider_id });
-            try preset_obj.put(cache.allocator, "location_kind", .{ .integer = @intFromEnum(preset.location_kind) });
-            try preset_obj.put(cache.allocator, "location", .{ .string = preset.location });
-            if (preset.load_key) |key| {
-                try preset_obj.put(cache.allocator, "load_key", .{ .string = key });
-            }
-            try presets_array.append(.{ .object = preset_obj });
-        }
-        try bin_obj.put(cache.allocator, "presets", .{ .array = presets_array });
-        try bins_array.append(.{ .object = bin_obj });
-    }
-
-    try root.put(cache.allocator, "version", .{ .integer = 1 });
-    try root.put(cache.allocator, "bins", .{ .array = bins_array });
-
-    const json_value = std.json.Value{ .object = root };
-    const json = try std.json.Stringify.valueAlloc(cache.allocator, json_value, .{ .whitespace = .indent_2 });
-    defer cache.allocator.free(json);
-
-    var file = try Dir.cwd().createFile(io, cache_path, .{ .truncate = true });
-    defer file.close(io);
-    try file.writeStreamingAll(io, json);
-    cache.dirty = false;
-
-    for (bins_array.items) |*bin_val| {
-        if (bin_val.* != .object) continue;
-        if (bin_val.object.get("presets")) |presets_val| {
-            if (presets_val == .array) {
-                for (presets_val.array.items) |*preset_val| {
-                    if (preset_val.* == .object) {
-                        preset_val.object.deinit(cache.allocator);
-                    }
-                }
-                presets_val.array.deinit();
-            }
-        }
-        bin_val.object.deinit(cache.allocator);
-    }
-    bins_array.deinit();
-    root.deinit(cache.allocator);
-}
-
-fn ensurePresetCacheFile(cache: *PresetCache, io: Io) void {
-    const cache_path = plugins.cacheFilePath(cache.allocator, "presets.json") catch return;
-    defer cache.allocator.free(cache_path);
-
-    if (Dir.cwd().openFile(io, cache_path, .{})) |file| {
-        file.close(io);
-        return;
-    } else |_| {}
-
-    var root: std.json.ObjectMap = .empty;
-    defer root.deinit(cache.allocator);
-    var bins_array = std.json.Array.init(cache.allocator);
-    defer bins_array.deinit();
-
-    root.put(cache.allocator, "version", .{ .integer = 1 }) catch return;
-    root.put(cache.allocator, "bins", .{ .array = bins_array }) catch return;
-
-    const json_value = std.json.Value{ .object = root };
-    const json = std.json.Stringify.valueAlloc(cache.allocator, json_value, .{ .whitespace = .indent_2 }) catch return;
-    defer cache.allocator.free(json);
-
-    const cache_dir = plugins.cacheDirPath(cache.allocator) catch return;
-    defer cache.allocator.free(cache_dir);
-    Dir.cwd().createDirPath(io, cache_dir) catch {};
-
-    if (Dir.cwd().createFile(io, cache_path, .{ .truncate = true })) |file| {
-        defer file.close(io);
-        file.writeStreamingAll(io, json) catch {};
-    } else |_| {}
-}
+const CachedPreset = preset_db.Record;
 
 fn catalogInfoForPluginId(catalog: *const plugins.PluginCatalog, plugin_id: []const u8) ?struct { name: []const u8, index: i32 } {
     for (catalog.entries.items, 0..) |entry, idx| {
@@ -379,21 +47,14 @@ fn appendCachedPresets(
 ) !void {
     for (presets) |preset| {
         const info = catalogInfoForPluginId(catalog, preset.plugin_id);
-        const plugin_name = if (info) |val| val.name else preset.plugin_name;
-        const name_copy = try allocator.dupe(u8, preset.name);
-        const plugin_id_copy = try allocator.dupe(u8, preset.plugin_id);
-        const plugin_name_copy = try allocator.dupe(u8, plugin_name);
-        const provider_id_copy = try allocator.dupe(u8, preset.provider_id);
-        const location_z = try allocator.dupeSentinel(u8, preset.location, 0);
-        const load_key_z = if (preset.load_key) |key| try allocator.dupeSentinel(u8, key, 0) else null;
         try entries.append(allocator, .{
-            .name = name_copy,
-            .plugin_id = plugin_id_copy,
-            .plugin_name = plugin_name_copy,
-            .provider_id = provider_id_copy,
-            .location_kind = preset.location_kind,
-            .location_z = location_z,
-            .load_key_z = load_key_z,
+            .name = preset.name,
+            .plugin_id = preset.plugin_id,
+            .plugin_name = preset.plugin_name,
+            .provider_id = preset.provider_id,
+            .location_kind = @enumFromInt(preset.location_kind),
+            .location_z = preset.location,
+            .load_key_z = preset.load_key,
             .catalog_index = if (info) |val| val.index else -1,
         });
     }
@@ -685,14 +346,14 @@ fn scanPresetsForBinary(
         const plugin_id_copy = try allocator.dupe(u8, preset.plugin_id);
         const plugin_name_copy = try allocator.dupe(u8, preset.plugin_name);
         const provider_id_copy = try allocator.dupe(u8, preset.provider_id);
-        const location_copy = try allocator.dupe(u8, preset.location_z[0..]);
-        const load_key_copy = if (preset.load_key_z) |key| try allocator.dupe(u8, key[0..]) else null;
+        const location_copy = try allocator.dupeSentinel(u8, preset.location_z[0..], 0);
+        const load_key_copy = if (preset.load_key_z) |key| try allocator.dupeSentinel(u8, key[0..], 0) else null;
         try cached.append(allocator, .{
             .name = name_copy,
             .plugin_id = plugin_id_copy,
             .plugin_name = plugin_name_copy,
             .provider_id = provider_id_copy,
-            .location_kind = preset.location_kind,
+            .location_kind = @intFromEnum(preset.location_kind),
             .location = location_copy,
             .load_key = load_key_copy,
         });
@@ -769,10 +430,12 @@ pub fn build(
     catalog: *const plugins.PluginCatalog,
     environ_map: *std.process.Environ.Map,
 ) !PresetCatalog {
-    var preset_catalog = PresetCatalog{ .allocator = allocator };
+    var preset_catalog = PresetCatalog{ .arena = std.heap.ArenaAllocator.init(allocator) };
+    errdefer preset_catalog.deinit();
+    const catalog_allocator = preset_catalog.arena.allocator();
 
-    var cache = try loadPresetCache(allocator, io);
-    defer cache.deinit();
+    var db = try preset_db.Db.open(allocator, io);
+    defer db.deinit();
     const debug = if (environ_map.get("FLUX_PRESET_DEBUG")) |env| env.len > 0 and env[0] == '1' else false;
     const rescan_all = if (environ_map.get("FLUX_PRESET_RESCAN")) |env| env.len > 0 and env[0] == '1' else false;
     var total_presets: usize = 0;
@@ -802,8 +465,9 @@ pub fn build(
 
         const mtime_ns = plugins.statMtimeNs(io, scan_path) orelse continue;
         if (!rescan_all) {
-            if (cache.get(scan_path, mtime_ns)) |cached_presets| {
-                try appendCachedPresets(allocator, catalog, &preset_catalog.entries, cached_presets);
+            if (try db.matches(scan_path, mtime_ns)) {
+                const cached_presets = try db.load(catalog_allocator, scan_path);
+                try appendCachedPresets(catalog_allocator, catalog, &preset_catalog.entries, cached_presets);
                 if (debug) {
                     std.log.info("Preset cache hit: {s} ({d} presets)", .{ scan_path, cached_presets.len });
                 }
@@ -811,21 +475,19 @@ pub fn build(
             }
         }
 
-        const presets = try scanPresetsForBinary(allocator, io, catalog, &preset_catalog.entries, scan_path);
+        const presets = try scanPresetsForBinary(catalog_allocator, io, catalog, &preset_catalog.entries, scan_path);
         total_providers += 1;
         total_presets += presets.len;
         if (debug) {
             std.log.info("Preset scan: {s} ({d} presets)", .{ scan_path, presets.len });
         }
-        try cache.set(scan_path, mtime_ns, presets);
+        try db.replace(scan_path, mtime_ns, presets);
     }
 
     if (preset_catalog.entries.items.len > 0) {
         std.mem.sort(PresetEntry, preset_catalog.entries.items, {}, presetEntryLessThan);
     }
 
-    writePresetCache(&cache, io) catch {};
-    ensurePresetCacheFile(&cache, io);
     if (debug) {
         std.log.info("Preset scan summary: {d} presets across {d} providers", .{ total_presets, total_providers });
     }

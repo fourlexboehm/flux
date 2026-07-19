@@ -168,7 +168,7 @@ fn drawVerticalThreshold(plugin: *Plugin, height: f32) void {
 /// Shared compressor / gate / limiter layout: vertical threshold + side params.
 fn drawDynamics(plugin: *Plugin) void {
     const avail = zgui.getContentRegionAvail();
-    const fader_h = @max(@min(avail[1] - 48, 180.0), 120.0);
+    const fader_h = @max(@min(avail[1] - 48, 300.0), 120.0);
     const right_w = @max(avail[0] - thr_col_w - 12, 160.0);
 
     if (zgui.beginChild("##dyn_thr", .{ .w = thr_col_w, .h = fader_h + 56, .child_flags = .{ .border = false } })) {
@@ -280,7 +280,7 @@ fn drawEqGraph(plugin: *Plugin, body_w: f32) void {
     }
 
     // Cap height by width so wide panes don't get a tall empty graph.
-    const plot_h = std.math.clamp(body_w * 0.42, 150.0, 210.0);
+    const plot_h = std.math.clamp(body_w * 0.42, 150.0, 300.0);
 
     if (zgui.plot.beginPlot("##eq_curve", .{
         .w = -1,

@@ -31,6 +31,19 @@ pub fn openFile(
     }
 }
 
+/// Show a native "Open Folder" dialog
+pub fn openFolder(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    title: []const u8,
+) FileDialogError!?[]const u8 {
+    switch (builtin.os.tag) {
+        .macos => return openFolderMacOS(allocator, title),
+        .linux => return openFolderLinux(allocator, io, title),
+        else => return FileDialogError.Unsupported,
+    }
+}
+
 /// Show a native "Save File" dialog
 /// Returns the selected file path or null if cancelled
 pub fn saveFile(
@@ -89,6 +102,43 @@ fn openFileMacOS(
     const path_slice = std.mem.span(path_ptr);
 
     return allocator.dupe(u8, path_slice) catch return FileDialogError.OutOfMemory;
+}
+
+fn openFolderMacOS(
+    allocator: std.mem.Allocator,
+    title: []const u8,
+) FileDialogError!?[]const u8 {
+    if (builtin.os.tag != .macos) return FileDialogError.Unsupported;
+
+    const objc = @import("objc");
+
+    const panel = OpenPanel.openPanel();
+
+    const title_z = allocator.dupeSentinel(u8, title, 0) catch return FileDialogError.OutOfMemory;
+    defer allocator.free(title_z);
+    const title_str = objc.foundation.String.stringWithUTF8String(title_z.ptr);
+    panel.setTitle(title_str);
+
+    panel.setCanChooseDirectories(true);
+    panel.setCanChooseFiles(false);
+
+    const result = panel.runModal();
+    if (result != 1) return null;
+
+    const url = panel.URL() orelse return null;
+    const path_ns = url.path() orelse return null;
+    const path_ptr = path_ns.UTF8String();
+    const path_slice = std.mem.span(path_ptr);
+
+    return allocator.dupe(u8, path_slice) catch return FileDialogError.OutOfMemory;
+}
+
+fn openFolderLinux(
+    _: std.mem.Allocator,
+    _: std.Io,
+    _: []const u8,
+) FileDialogError!?[]const u8 {
+    return null;
 }
 
 fn saveFileMacOS(
@@ -245,6 +295,14 @@ const OpenPanel = opaque {
 
     pub fn setAllowedFileTypes(self: *@This(), types: *NSArray) void {
         return objc.msgSend(self, "setAllowedFileTypes:", void, .{types});
+    }
+
+    pub fn setCanChooseDirectories(self: *@This(), v: bool) void {
+        return objc.msgSend(self, "setCanChooseDirectories:", void, .{v});
+    }
+
+    pub fn setCanChooseFiles(self: *@This(), v: bool) void {
+        return objc.msgSend(self, "setCanChooseFiles:", void, .{v});
     }
 
     pub fn runModal(self: *@This()) c_long {

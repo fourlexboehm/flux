@@ -93,6 +93,10 @@
             .url = "git+https://github.com/digital-sound-antiques/emu2413#11676f6c43af7a53a0a940f8faea57eed73a22ba",
             .hash = "N-V-__8AAFnsAABcT3bEtgv_kZ5BW4noQmjXriXUC8qQxPBu",
         },
+        .sqlite3 = .{
+            .url = "https://www.sqlite.org/2026/sqlite-amalgamation-3530000.zip",
+            .hash = "N-V-__8AAAzxrQBNeXdRXqDQlfE8r_r9PGiSWKATj50chaqM",
+        },
     },
 
     .paths = .{

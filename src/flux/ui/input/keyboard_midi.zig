@@ -5,6 +5,33 @@ const State = @import("../state.zig").State;
 const max_tracks = session_constants.max_tracks;
 const keyboard_base_pitch: u8 = 60; // Middle C (C4)
 
+/// Mirror piano keys received by a native macOS plugin window into ImGui's
+/// input queue. Plugin windows remain the event target, so their controls keep
+/// working too.
+pub fn forwardMacosPluginKey(key_code: u16, down: bool) void {
+    const key: zgui.Key = switch (key_code) {
+        0 => .a,
+        1 => .s,
+        2 => .d,
+        3 => .f,
+        4 => .h,
+        5 => .g,
+        6 => .z,
+        7 => .x,
+        13 => .w,
+        14 => .e,
+        16 => .y,
+        17 => .t,
+        32 => .u,
+        38 => .j,
+        40 => .k,
+        41 => .semicolon,
+        37 => .l,
+        else => return,
+    };
+    zgui.io.addKeyEvent(key, down);
+}
+
 pub fn updateKeyboardMidi(state: *State) void {
     // Skip keyboard MIDI when text input is active (e.g., renaming tracks/scenes)
     // This prevents piano keys from triggering while typing
