@@ -520,6 +520,7 @@ pub const XmlWriter = struct {
         if (clip.fade_out_time) |v| try self.writeAttrFloat("fadeOutTime", v);
         if (!clip.enable) try self.writeAttrBool("enable", false);
         if (clip.name) |name| try self.writeAttr("name", name);
+        if (clip.color) |color| try self.writeAttr("color", color);
     }
 
     fn clipHasBody(clip: *const Clip) bool {

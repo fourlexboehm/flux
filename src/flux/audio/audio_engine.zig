@@ -37,6 +37,20 @@ pub const SharedState = struct {
         @splat(@splat(std.atomic.Value(bool).init(false))),
     plugins_started_fx: [max_tracks][ui_state.max_fx_slots]std.atomic.Value(bool) =
         @splat(@splat(std.atomic.Value(bool).init(false))),
+    track_peak_left: [max_tracks]std.atomic.Value(u32) = @splat(std.atomic.Value(u32).init(0)),
+    track_peak_right: [max_tracks]std.atomic.Value(u32) = @splat(std.atomic.Value(u32).init(0)),
+
+    pub fn setTrackPeak(self: *SharedState, track: usize, left: f32, right: f32) void {
+        self.track_peak_left[track].store(@bitCast(left), .release);
+        self.track_peak_right[track].store(@bitCast(right), .release);
+    }
+
+    pub fn getTrackPeak(self: *const SharedState, track: usize) [2]f32 {
+        return .{
+            @bitCast(self.track_peak_left[track].load(.acquire)),
+            @bitCast(self.track_peak_right[track].load(.acquire)),
+        };
+    }
 
     pub fn init(allocator: std.mem.Allocator) !SharedState {
         var snapshots = try allocator.alloc(audio_graph.StateSnapshot, 2);

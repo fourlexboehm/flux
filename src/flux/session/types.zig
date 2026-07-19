@@ -47,6 +47,8 @@ pub const RenameKind = enum {
 pub const Track = struct {
     name: NameField = .{},
     volume: f32 = 0.8,
+    /// Stereo balance, -1 = left, 0 = center, 1 = right.
+    pan: f32 = 0,
     mute: bool = false,
     solo: bool = false,
     is_master: bool = false,
@@ -120,6 +122,7 @@ pub const ClipSnapshot = struct {
 pub const TrackSnapshot = struct {
     name: NameField = .{},
     volume: f32 = 0,
+    pan: f32 = 0,
     mute: bool = false,
     solo: bool = false,
 };

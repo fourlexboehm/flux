@@ -12,6 +12,7 @@ const session_ops = @import("../session/ops.zig");
 const session_draw = @import("views/session/draw.zig");
 const piano_roll_draw = @import("views/piano_roll/draw.zig");
 const audio_clip_viewer = @import("views/audio_clip/draw_viewer.zig");
+const arr_draw = @import("views/arrangement/draw.zig");
 const widgets = @import("theme/widgets.zig");
 const tokens = @import("theme/tokens.zig");
 
@@ -19,6 +20,7 @@ const Colors = colors.Colors;
 const State = state_mod.State;
 
 const max_tracks = session_constants.max_tracks;
+const max_scenes = session_constants.max_scenes;
 
 const quantize_items: [:0]const u8 = "1/4\x001/2\x001\x002\x004\x00";
 const buffer_items = "64\x00128\x00256\x00512\x001024\x00\x00";
@@ -48,12 +50,28 @@ pub fn draw(state: *State, ui_scale: f32) void {
         .no_scrollbar = true,
         .no_scroll_with_mouse = true,
     } })) {
-        // Tab key toggles between Device and Clip views
-        if (zgui.isKeyPressed(.tab, false)) {
-            state.bottom_mode = switch (state.bottom_mode) {
-                .device => .sequencer,
-                .sequencer => .device,
-            };
+        // Tab is reserved for switching views. Prevent ImGui's default tabbing
+        // from also focusing an input widget in the newly displayed view.
+        zgui.pushItemFlag(.no_tab_stop, true);
+        defer zgui.popItemFlag();
+
+        // Keep the two view axes independent: Tab changes the main view,
+        // Shift+Tab changes the lower detail view.
+        const editing_text = zgui.io.getWantTextInput() and zgui.isAnyItemActive();
+        if (!editing_text and zgui.isKeyPressed(.tab, false)) {
+            if (selection.isShiftDown()) {
+                state.bottom_mode = switch (state.bottom_mode) {
+                    .device => .sequencer,
+                    .sequencer => .device,
+                };
+                state.focused_pane = .bottom;
+            } else {
+                state.view_mode = switch (state.view_mode) {
+                    .session => .arrangement,
+                    .arrangement => .session,
+                };
+                state.focused_pane = .session;
+            }
         }
 
         drawTransport(state, ui_scale);
@@ -363,6 +381,18 @@ fn drawTransport(state: *State, ui_scale: f32) void {
     const dsp_label = std.fmt.bufPrint(&dsp_buf, "DSP {d}%", .{state.dsp_load_pct}) catch "DSP";
     widgets.dimLabel(dsp_label);
 
+    // View mode toggle: Session / Arrangement
+    widgets.toolbarSeparator(ui_scale, control_h);
+    zgui.setCursorPosY(row_y);
+    const in_arr = state.view_mode == .arrangement;
+    if (widgets.segmentedTab("##view_session", .clip, "Session", ui_scale, !in_arr)) {
+        state.view_mode = .session;
+    }
+    zgui.sameLine(.{ .spacing = tokens.s(4, ui_scale) });
+    if (widgets.segmentedTab("##view_arr", .device, "Arrange", ui_scale, in_arr)) {
+        state.view_mode = .arrangement;
+    }
+
     // --- File actions: same row height, right-aligned on the bar ---
     const file_gap = tight;
     const file_btn_count: f32 = 4.0;
@@ -400,6 +430,24 @@ fn drawTransport(state: *State, ui_scale: f32) void {
 }
 
 fn drawClipGrid(state: *State, ui_scale: f32) void {
+    if (state.view_mode == .arrangement) {
+        const is_focused = state.focused_pane == .session;
+        arr_draw.draw(
+            &state.arrangement,
+            &state.arrangement_scroll,
+            &state.session,
+            &state.sample_store,
+            &state.track_levels,
+            &state.undo_history,
+            state.bpm,
+            &state.playhead_beat,
+            state.playing,
+            ui_scale,
+            is_focused,
+        );
+        return;
+    }
+
     // Draw session view
     const is_focused = state.focused_pane == .session;
     session_draw.draw(
@@ -467,7 +515,10 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
     zgui.sameLine(.{ .spacing = tokens.gapGroup(ui_scale) });
     {
         var track_buf: [64]u8 = undefined;
-        const track_info = if (state.session.mixer_target == .master)
+        const arrangement_selection = selectedArrangementClip(state);
+        const track_info = if (state.view_mode == .arrangement and arrangement_selection != null)
+            std.fmt.bufPrint(&track_buf, "Arrangement · Track {d}", .{arrangement_selection.?[0] + 1}) catch "Arrangement"
+        else if (state.session.mixer_target == .master)
             std.fmt.bufPrint(&track_buf, "Master", .{}) catch "Master"
         else
             std.fmt.bufPrint(&track_buf, "Track {d} · Scene {d}", .{ state.selectedTrack() + 1, state.selectedScene() + 1 }) catch "";
@@ -481,6 +532,12 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
             device_panel.drawDevicePanel(state, ui_scale);
         },
         .sequencer => {
+            if (state.view_mode == .arrangement) {
+                if (selectedArrangementClip(state)) |selected| {
+                    drawArrangementClipPanel(state, selected, ui_scale);
+                    return;
+                }
+            }
             const track_idx = state.selectedTrack();
             const scene_idx = state.selectedScene();
             const clip_slot = state.session.clips[track_idx][scene_idx];
@@ -531,4 +588,70 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
             }
         },
     }
+}
+
+fn selectedArrangementClip(state: *State) ?[2]usize {
+    for (state.arrangement.tracks.items, 0..) |track, track_index| {
+        for (track.clips.items, 0..) |clip, clip_index| {
+            if (clip.selected) return .{ track_index, clip_index };
+        }
+    }
+    return null;
+}
+
+fn drawArrangementClipPanel(state: *State, selected: [2]usize, ui_scale: f32) void {
+    const clip = &state.arrangement.tracks.items[selected[0]].clips.items[selected[1]];
+    if (clip.kind == .midi) {
+        const track = clip.midi_session_track;
+        const scene = clip.midi_session_scene;
+        if (track >= max_tracks or scene >= max_scenes or clip.midi == null) {
+            widgets.dimLabel("MIDI clip source is unavailable");
+            return;
+        }
+
+        const instrument_plugin = state.track_plugin_ptrs[track];
+        const fx_plugins = state.track_fx_plugin_ptrs[track][0..state.track_fx_slot_count[track]];
+        const label = if (clip.name.get().len > 0) clip.name.get() else "MIDI clip";
+        piano_roll_draw.drawSequencer(
+            &state.piano_state,
+            &clip.midi.?,
+            label,
+            state.playhead_beat - @as(f32, @floatFromInt(clip.start_tick)) / 960.0,
+            state.playing,
+            state.quantize_index,
+            state.beatsPerBar(),
+            ui_scale,
+            state.focused_pane == .bottom,
+            track,
+            scene,
+            &state.live_key_states[track],
+            instrument_plugin,
+            fx_plugins,
+        );
+        if (state.piano_state.preview_pitch) |pitch| {
+            if (state.piano_state.preview_track) |preview_track| {
+                if (preview_track < max_tracks) {
+                    state.live_key_states[preview_track][pitch] = true;
+                    state.live_key_velocities[preview_track][pitch] = 0.8;
+                }
+            }
+        }
+        return;
+    }
+
+    const kind = switch (clip.kind) {
+        .audio => "Audio clip",
+        .midi => "MIDI clip",
+    };
+    const beats = @as(f32, @floatFromInt(clip.duration_ticks)) / 960.0;
+    const bars = beats / @as(f32, @floatFromInt(state.arrangement.beats_per_bar));
+    const name = if (clip.name.get().len > 0) clip.name.get() else kind;
+
+    zgui.text("{s}", .{name});
+    zgui.sameLine(.{ .spacing = tokens.gapGroup(ui_scale) });
+    widgets.statusPill(kind, ui_scale);
+    zgui.sameLine(.{ .spacing = tokens.gapGroup(ui_scale) });
+    var duration_buf: [48]u8 = undefined;
+    const duration = std.fmt.bufPrint(&duration_buf, "{d:.2} bars · {d:.2} beats", .{ bars, beats }) catch "";
+    widgets.dimLabel(duration);
 }

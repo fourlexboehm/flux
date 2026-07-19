@@ -599,6 +599,39 @@ pub fn build(b: *std.Build) void {
     const run_media_roundtrip_tests = b.addRunArtifact(media_roundtrip_tests);
     run_media_roundtrip_tests.setCwd(b.path("."));
 
+    const arrangement_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/flux/run_arrangement_tests.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .use_llvm = use_llvm,
+    });
+    const run_arrangement_tests = b.addRunArtifact(arrangement_tests);
+
+    // Integration: load every installed system CLAP (discover → create → activate → destroy).
+    // Standalone exe (not addTest): third-party plugins flood stderr and deadlock zig's
+    // listen-mode test runner over pipe buffers.
+    const clap_load_module = b.createModule(.{
+        .root_source_file = b.path("src/flux/run_clap_load_tests.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    clap_load_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
+    const clap_load_exe = b.addExecutable(.{
+        .name = "clap-load-test",
+        .root_module = clap_load_module,
+        .use_llvm = use_llvm,
+    });
+    const run_clap_load = b.addRunArtifact(clap_load_exe);
+    run_clap_load.setCwd(b.path("."));
+    run_clap_load.setEnvironmentVariable("FLUX_CLAP_FULL_SCAN", "1");
+    // Expect failure status when any plugin fails to load.
+    run_clap_load.expectExitCode(0);
+
+    const test_clap_load_step = b.step("test-clap-load", "Load all installed system CLAP plugins");
+    test_clap_load_step.dependOn(&run_clap_load.step);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_filter_tests.step);
     test_step.dependOn(&run_dsp_tests.step);
@@ -607,6 +640,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_builtin_dsp_tests.step);
     test_step.dependOn(&run_audio_clip_tests.step);
     test_step.dependOn(&run_media_roundtrip_tests.step);
+    test_step.dependOn(&run_arrangement_tests.step);
+    // CLAP load is opt-in (test-clap-load): system plugins are slow/noisy and not on CI.
 }
 
 fn createClapPluginStep(

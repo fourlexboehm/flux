@@ -284,6 +284,8 @@ pub const Clip = struct {
     fade_out_time: ?f64 = null,
     enable: bool = true,
     name: ?[]const u8 = null,
+    /// DAWproject Nameable color (#rrggbb)
+    color: ?[]const u8 = null,
     lanes: ?Lanes = null,
     notes: ?Notes = null,
     points: []const Points = &.{},

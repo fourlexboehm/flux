@@ -412,6 +412,10 @@ pub fn draw(
             if (self.clips[self.primary_track][self.primary_scene].state == .empty) {
                 ops.createClip(self, self.primary_track, self.primary_scene, beats_per_bar_in);
             }
+            self.open_clip_request = .{
+                .track = self.primary_track,
+                .scene = self.primary_scene,
+            };
         }
 
         // F2 renames primary clip when filled, otherwise the primary scene
@@ -434,7 +438,8 @@ pub fn draw(
             0.2,
         };
         const border = colors.Colors.current.selected;
-        selection.drawDragSelectClipped(&self.drag_select, 
+        selection.drawDragSelectClipped(
+            &self.drag_select,
             dl,
             grid_pos,
             .{ grid_pos[0] + grid_width, grid_pos[1] + grid_height },

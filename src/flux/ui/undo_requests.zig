@@ -122,6 +122,7 @@ pub fn processUndoRequests(state: *State) void {
                             .track_data = .{
                                 .name = req.track_data.name,
                                 .volume = req.track_data.volume,
+                                .pan = req.track_data.pan,
                                 .mute = req.track_data.mute,
                                 .solo = req.track_data.solo,
                             },

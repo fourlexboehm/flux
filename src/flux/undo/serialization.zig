@@ -291,6 +291,7 @@ pub const MetadataWriter = struct {
                 try self.xml.writeAttrInt("newStateLen", c.new_state.len);
                 try self.xml.buffer.appendSlice(self.xml.allocator, "/>\n");
             },
+            .arrangement_edit, .arrangement_track_add => unreachable,
         }
     }
 
@@ -603,6 +604,7 @@ fn finishCommand(
             .new_index = b.new_index,
         } },
         .plugin_state => return error.IncompleteSerializedCommand,
+        .arrangement_edit, .arrangement_track_add => return error.IncompleteSerializedCommand,
     };
 
     return .{
@@ -621,6 +623,8 @@ fn isLosslesslySerialized(cmd: Command) bool {
         .track_delete,
         .scene_delete,
         .plugin_state,
+        .arrangement_edit,
+        .arrangement_track_add,
         => false,
         else => true,
     };

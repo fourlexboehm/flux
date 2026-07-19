@@ -9,6 +9,9 @@ const session_ops = @import("../session/ops.zig");
 const piano_roll_types = @import("../session/notes.zig");
 const audio_clip_types = @import("../session/audio_clip.zig");
 const sample_store_mod = @import("../audio/sample_store.zig");
+const arr_types = @import("../arrangement/types.zig");
+const arr_undo = @import("../arrangement/undo.zig");
+const arr_draw = @import("views/arrangement/draw.zig");
 
 const SessionView = session_view.SessionView;
 const max_tracks = session_constants.max_tracks;
@@ -27,6 +30,11 @@ pub const max_controller_smart_params = 256;
 pub const BottomMode = enum {
     device,
     sequencer,
+};
+
+pub const ViewMode = enum {
+    session,
+    arrangement,
 };
 
 pub const FocusedPane = enum {
@@ -127,9 +135,14 @@ pub const State = struct {
     buffer_frames: u32,
     buffer_frames_requested: bool,
     dsp_load_pct: u32,
+    track_levels: [max_tracks][2]f32,
     bottom_mode: BottomMode,
     bottom_panel_height: f32,
     splitter_drag_start: f32,
+    // View mode: session grid vs arrangement timeline
+    view_mode: ViewMode,
+    arrangement: arr_types.ArrangementView,
+    arrangement_scroll: arr_draw.ArrangementScroll,
     // Device state - unified for builtin and external CLAP plugins
     device_kind: DeviceKind,
     device_clap_plugin: ?*const clap.Plugin, // Current plugin (builtin or external)
@@ -268,9 +281,13 @@ pub const State = struct {
             .buffer_frames = default_buffer_frames,
             .buffer_frames_requested = false,
             .dsp_load_pct = 0,
+            .track_levels = @splat(.{ 0, 0 }),
             .bottom_mode = .device,
             .bottom_panel_height = 300.0,
             .splitter_drag_start = 0.0,
+            .view_mode = .session,
+            .arrangement = arr_types.ArrangementView.init(allocator),
+            .arrangement_scroll = .{},
             .device_kind = .none,
             .device_clap_plugin = null,
             .device_clap_name = "",
@@ -356,6 +373,7 @@ pub const State = struct {
         self.sample_store.deinit();
         session_ops.deinit(&self.session);
         self.piano_state.deinit();
+        self.arrangement.deinit();
     }
 
     pub fn clearAllAudioClips(self: *State) void {
@@ -678,6 +696,12 @@ pub const State = struct {
                     .state_data = if (direction == .undo) c.old_state else c.new_state,
                 };
             },
+            .arrangement_edit => |*c| {
+                arr_undo.execute(&self.arrangement, c, if (direction == .undo) .undo else .redo);
+            },
+            .arrangement_track_add => |c| {
+                arr_undo.executeTrackAdd(&self.arrangement, c, if (direction == .undo) .undo else .redo);
+            },
             .track_delete => |c| {
                 if (direction == .undo) {
                     self.insertTrackInState(&c);
@@ -825,6 +849,7 @@ pub const State = struct {
         self.session.tracks[cmd.track_index] = .{
             .name = cmd.track_data.name,
             .volume = cmd.track_data.volume,
+            .pan = cmd.track_data.pan,
             .mute = cmd.track_data.mute,
             .solo = cmd.track_data.solo,
         };

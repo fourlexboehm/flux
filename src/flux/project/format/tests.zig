@@ -643,6 +643,103 @@ test "external audio file attribute round trip" {
     try std.testing.expect(file.external);
 }
 
+test "arrangement tracks clips colors positions and media round trip" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    const warp_points = [_]WarpPoint{
+        .{ .time = 0.0, .content_time = 0.0 },
+        .{ .time = 3.5, .content_time = 1.75 },
+    };
+    const notes = [_]types.Note{.{
+        .time = 0.25,
+        .duration = 0.5,
+        .key = 64,
+        .vel = 0.75,
+        .rel = 0.6,
+    }};
+    const lanes = [_]types.Lanes{
+        .{
+            .id = "audio-lane",
+            .track = "audio-track",
+            .clips = .{
+                .id = "audio-clips",
+                .clips = &.{.{
+                    .time = 1.25,
+                    .duration = 3.5,
+                    .enable = false,
+                    .name = "Take 1",
+                    .color = "#336699",
+                    .warps = .{
+                        .id = "audio-warps",
+                        .time_unit = .beats,
+                        .content_time_unit = .seconds,
+                        .audio = .{
+                            .id = "audio-source",
+                            .file = .{ .path = "samples/take-1.wav", .external = true },
+                            .duration = 1.75,
+                            .sample_rate = 48000,
+                            .channels = 2,
+                        },
+                        .warps = &warp_points,
+                    },
+                }},
+            },
+        },
+        .{
+            .id = "midi-lane",
+            .track = "midi-track",
+            .clips = .{
+                .id = "midi-clips",
+                .clips = &.{.{
+                    .time = 8.0,
+                    .duration = 4.0,
+                    .name = "Lead",
+                    .color = "#cc8844",
+                    .notes = .{ .id = "lead-notes", .notes = &notes },
+                }},
+            },
+        },
+    };
+    const proj = Project{
+        .application = .{ .name = "Flux", .version = "1.0" },
+        .tracks = &.{
+            .{ .id = "audio-track", .name = "Audio", .color = "#224466" },
+            .{ .id = "midi-track", .name = "MIDI", .color = "#88aa44" },
+        },
+        .arrangement = .{
+            .id = "arrangement",
+            .lanes = .{ .id = "root-lanes", .time_unit = .beats, .children = &lanes },
+        },
+    };
+
+    const xml = try toXml(allocator, &proj);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "<Arrangement") != null);
+    try std.testing.expect(std.mem.indexOf(u8, xml, "external=\"true\"") != null);
+
+    const parsed = try parse.parseProjectXml(allocator, xml);
+    try std.testing.expectEqualStrings("#224466", parsed.tracks[0].color.?);
+    try std.testing.expectEqualStrings("#88aa44", parsed.tracks[1].color.?);
+
+    const children = parsed.arrangement.?.lanes.?.children;
+    try std.testing.expectEqual(@as(usize, 2), children.len);
+    const audio_clip = children[0].clips.?.clips[0];
+    try std.testing.expectApproxEqAbs(@as(f64, 1.25), audio_clip.time, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.5), audio_clip.duration, 1e-6);
+    try std.testing.expect(!audio_clip.enable);
+    try std.testing.expectEqualStrings("Take 1", audio_clip.name.?);
+    try std.testing.expectEqualStrings("#336699", audio_clip.color.?);
+    try std.testing.expectEqualStrings("samples/take-1.wav", audio_clip.warps.?.audio.?.file.path);
+    try std.testing.expect(audio_clip.warps.?.audio.?.file.external);
+
+    const midi_clip = children[1].clips.?.clips[0];
+    try std.testing.expectApproxEqAbs(@as(f64, 8.0), midi_clip.time, 1e-6);
+    try std.testing.expectEqualStrings("#cc8844", midi_clip.color.?);
+    try std.testing.expectEqual(@as(usize, 1), midi_clip.notes.?.notes.len);
+    try std.testing.expectEqual(@as(i32, 64), midi_clip.notes.?.notes[0].key);
+}
+
 test "media_layout path safety and sanitize" {
     const allocator = std.testing.allocator;
     try std.testing.expect(media_layout.isSafeRelativePath("samples/kick.wav"));
@@ -671,4 +768,16 @@ test "thin zip has no wav members" {
     try std.testing.expect(std.mem.indexOf(u8, data, "project.xml") != null);
     try std.testing.expect(std.mem.indexOf(u8, data, "samples/") == null);
     try std.testing.expect(std.mem.indexOf(u8, data, ".wav") == null);
+}
+
+test "packed zip includes arrangement audio member" {
+    const allocator = std.testing.allocator;
+    var zip = zip_writer.ZipWriter.init(allocator);
+    defer zip.deinit();
+    try zip.addFile("project.xml", "<Project><Arrangement/></Project>");
+    try zip.addFile("audio/take-1.wav", "RIFF arrangement audio");
+
+    const data = try zip.finish();
+    try std.testing.expect(std.mem.indexOf(u8, data, "audio/take-1.wav") != null);
+    try std.testing.expect(std.mem.indexOf(u8, data, "RIFF arrangement audio") != null);
 }
