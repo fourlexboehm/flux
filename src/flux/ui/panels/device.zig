@@ -295,21 +295,22 @@ fn drawInstrumentInspector(state: *State, track_idx: usize, ui_scale: f32) void 
             if (filters.presetIndexFromList(state.preset_filter_indices, preset_list_index)) |preset_index| {
                 if (state.preset_catalog) |catalog| {
                     if (preset_index < catalog.entries.items.len) {
-                        const entry = catalog.entries.items[preset_index];
-                        track_plugin.preset_choice_index = preset_index;
-                        if (entry.catalog_index >= 0 and entry.catalog_index != track_plugin.choice_index) {
-                            state.clearMissingTrackPlugin(track_idx);
-                            track_plugin.choice_index = entry.catalog_index;
-                            track_plugin.gui_open = false;
-                            selectDevice(state, track_idx, .instrument, 0, false);
+                        if (catalog.resolve(preset_index) catch null) |entry| {
+                            track_plugin.preset_choice_index = preset_index;
+                            if (entry.catalog_index >= 0 and entry.catalog_index != track_plugin.choice_index) {
+                                state.clearMissingTrackPlugin(track_idx);
+                                track_plugin.choice_index = entry.catalog_index;
+                                track_plugin.gui_open = false;
+                                selectDevice(state, track_idx, .instrument, 0, false);
+                            }
+                            state.preset_load_request = .{
+                                .track_index = track_idx,
+                                .plugin_id = entry.plugin_id,
+                                .location_kind = entry.location_kind,
+                                .location = entry.location_z,
+                                .load_key = entry.load_key_z,
+                            };
                         }
-                        state.preset_load_request = .{
-                            .track_index = track_idx,
-                            .plugin_id = entry.plugin_id,
-                            .location_kind = entry.location_kind,
-                            .location = entry.location_z,
-                            .load_key = entry.load_key_z,
-                        };
                     }
                 }
             }

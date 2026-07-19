@@ -109,6 +109,7 @@ pub const Icon = enum {
     play,
     stop,
     plus,
+    sidebar_toggle,
 };
 
 /// Square icon button. Returns true when clicked.
@@ -321,6 +322,28 @@ fn drawIcon(kind: Icon, pos: [2]f32, size: f32, ui_scale: f32, col4: [4]f32) voi
         .plus => {
             draw_list.addLine(.{ .p1 = .{ cx, y0 + size * 0.08 }, .p2 = .{ cx, y1 - size * 0.08 }, .col = col, .thickness = t * 1.2 });
             draw_list.addLine(.{ .p1 = .{ x0 + size * 0.08, cy }, .p2 = .{ x1 - size * 0.08, cy }, .col = col, .thickness = t * 1.2 });
+        },
+        .sidebar_toggle => {
+            draw_list.addRect(.{
+                .pmin = .{ x0, y0 },
+                .pmax = .{ x1, y1 },
+                .col = col,
+                .thickness = t,
+                .rounding = tokens.s(2, ui_scale),
+            });
+            const divider_x = x0 + (x1 - x0) * 0.35;
+            draw_list.addLine(.{
+                .p1 = .{ divider_x, y0 + size * 0.12 },
+                .p2 = .{ divider_x, y1 - size * 0.12 },
+                .col = col,
+                .thickness = t,
+            });
+            draw_list.addRectFilled(.{
+                .pmin = .{ x0 + size * 0.06, y0 + size * 0.06 },
+                .pmax = .{ divider_x - size * 0.06, y1 - size * 0.06 },
+                .col = col,
+                .rounding = tokens.s(1, ui_scale),
+            });
         },
     }
 }

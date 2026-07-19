@@ -7,6 +7,7 @@ const Dir = std.Io.Dir;
 const Io = std.Io;
 
 pub const PresetEntry = struct {
+    db_id: i64 = 0,
     name: []const u8,
     plugin_id: []const u8,
     plugin_name: []const u8,
@@ -15,20 +16,50 @@ pub const PresetEntry = struct {
     location_z: [:0]const u8,
     load_key_z: ?[:0]const u8,
     catalog_index: i32,
+    category: []const u8 = "sounds",
 };
 
 pub const PresetCatalog = struct {
     arena: std.heap.ArenaAllocator,
+    db: preset_db.Db,
+    plugins: *const plugins.PluginCatalog,
     entries: std.ArrayListUnmanaged(PresetEntry) = .empty,
+    query_key: [192]u8 = @splat(0),
+    query_key_len: usize = 0,
 
     pub fn deinit(self: *PresetCatalog) void {
+        self.db.deinit();
         self.arena.deinit();
+    }
+
+    pub fn query(self: *PresetCatalog, text: []const u8, category: []const u8, ascending: bool) !void {
+        var key_buf: [192]u8 = undefined;
+        const key = std.fmt.bufPrint(&key_buf, "{s}\x00{s}\x00{}", .{ category, text, ascending }) catch return error.QueryTooLong;
+        if (std.mem.eql(u8, self.query_key[0..self.query_key_len], key)) return;
+        self.arena.deinit();
+        self.arena = std.heap.ArenaAllocator.init(self.db.allocator);
+        self.entries = .empty;
+        const allocator = self.arena.allocator();
+        const records = try self.db.searchTitles(allocator, text, category, ascending);
+        try appendCachedPresets(allocator, self.plugins, &self.entries, records);
+        @memcpy(self.query_key[0..key.len], key);
+        self.query_key_len = key.len;
+    }
+
+    pub fn resolve(self: *PresetCatalog, index: usize) !?PresetEntry {
+        if (index >= self.entries.items.len) return null;
+        if (self.entries.items[index].plugin_id.len != 0) return self.entries.items[index];
+        const record = try self.db.loadById(self.arena.allocator(), self.entries.items[index].db_id) orelse return null;
+        const info = catalogInfoForPluginId(self.plugins, record.plugin_id);
+        self.entries.items[index] = entryFromRecord(record, info);
+        return self.entries.items[index];
     }
 };
 
 const CachedPreset = preset_db.Record;
+const CatalogInfo = struct { name: []const u8, index: i32 };
 
-fn catalogInfoForPluginId(catalog: *const plugins.PluginCatalog, plugin_id: []const u8) ?struct { name: []const u8, index: i32 } {
+fn catalogInfoForPluginId(catalog: *const plugins.PluginCatalog, plugin_id: []const u8) ?CatalogInfo {
     for (catalog.entries.items, 0..) |entry, idx| {
         if (entry.id) |id| {
             if (std.mem.eql(u8, id, plugin_id)) {
@@ -47,7 +78,13 @@ fn appendCachedPresets(
 ) !void {
     for (presets) |preset| {
         const info = catalogInfoForPluginId(catalog, preset.plugin_id);
-        try entries.append(allocator, .{
+        try entries.append(allocator, entryFromRecord(preset, info));
+    }
+}
+
+fn entryFromRecord(preset: CachedPreset, info: ?CatalogInfo) PresetEntry {
+    return .{
+            .db_id = preset.db_id,
             .name = preset.name,
             .plugin_id = preset.plugin_id,
             .plugin_name = preset.plugin_name,
@@ -56,8 +93,8 @@ fn appendCachedPresets(
             .location_z = preset.location,
             .load_key_z = preset.load_key,
             .catalog_index = if (info) |val| val.index else -1,
-        });
-    }
+            .category = preset.category,
+        };
 }
 
 const PresetLocation = struct {
@@ -128,6 +165,7 @@ const PresetMetadataCollector = struct {
     current_name: ?[]const u8 = null,
     current_load_key: ?[]const u8 = null,
     current_plugin_ids: std.ArrayListUnmanaged([]const u8) = .empty,
+    current_category: []const u8 = "sounds",
 
     fn reset(self: *PresetMetadataCollector) void {
         for (self.current_plugin_ids.items) |pid| {
@@ -147,6 +185,7 @@ const PresetMetadataCollector = struct {
         self.current_name = null;
         self.current_load_key = null;
         self.default_name = null;
+        self.current_category = "sounds";
     }
 
     fn setDefaultName(self: *PresetMetadataCollector, name: []const u8) void {
@@ -193,6 +232,7 @@ const PresetMetadataCollector = struct {
                 .location_z = location_copy,
                 .load_key_z = load_key_copy,
                 .catalog_index = info.?.index,
+                .category = self.current_category,
             }) catch {};
         }
     }
@@ -229,7 +269,16 @@ const PresetMetadataCollector = struct {
     fn addCreator(_: *const clap.preset_discovery.MetadataReceiver, _: [*:0]const u8) callconv(.c) void {}
     fn setDescription(_: *const clap.preset_discovery.MetadataReceiver, _: [*:0]const u8) callconv(.c) void {}
     fn setTimestamps(_: *const clap.preset_discovery.MetadataReceiver, _: clap.Timestamp, _: clap.Timestamp) callconv(.c) void {}
-    fn addFeature(_: *const clap.preset_discovery.MetadataReceiver, _: [*:0]const u8) callconv(.c) void {}
+    fn addFeature(receiver: *const clap.preset_discovery.MetadataReceiver, feature: [*:0]const u8) callconv(.c) void {
+        const self: *PresetMetadataCollector = @ptrCast(@alignCast(receiver.receiver_data));
+        const value = std.mem.span(feature);
+        if (std.ascii.indexOfIgnoreCase(value, "drum") != null or std.ascii.indexOfIgnoreCase(value, "percussion") != null) self.current_category = "drums"
+        else if (std.ascii.indexOfIgnoreCase(value, "bass") != null) self.current_category = "bass"
+        else if (std.ascii.indexOfIgnoreCase(value, "pad") != null) self.current_category = "pad"
+        else if (std.ascii.indexOfIgnoreCase(value, "lead") != null) self.current_category = "lead"
+        else if (std.ascii.indexOfIgnoreCase(value, "piano") != null or std.ascii.indexOfIgnoreCase(value, "keyboard") != null) self.current_category = "keys"
+        else if (std.ascii.indexOfIgnoreCase(value, "noise") != null) self.current_category = "noise";
+    }
     fn addExtraInfo(_: *const clap.preset_discovery.MetadataReceiver, _: [*:0]const u8, _: [*:0]const u8) callconv(.c) void {}
 };
 
@@ -356,6 +405,7 @@ fn scanPresetsForBinary(
             .location_kind = @intFromEnum(preset.location_kind),
             .location = location_copy,
             .load_key = load_key_copy,
+            .category = presetCategory(preset.name, preset.location, preset.category),
         });
     }
 
@@ -430,66 +480,30 @@ pub fn build(
     catalog: *const plugins.PluginCatalog,
     environ_map: *std.process.Environ.Map,
 ) !PresetCatalog {
-    var preset_catalog = PresetCatalog{ .arena = std.heap.ArenaAllocator.init(allocator) };
-    errdefer preset_catalog.deinit();
-    const catalog_allocator = preset_catalog.arena.allocator();
-
+    _ = environ_map;
     var db = try preset_db.Db.open(allocator, io);
-    defer db.deinit();
-    const debug = if (environ_map.get("FLUX_PRESET_DEBUG")) |env| env.len > 0 and env[0] == '1' else false;
-    const rescan_all = if (environ_map.get("FLUX_PRESET_RESCAN")) |env| env.len > 0 and env[0] == '1' else false;
-    var total_presets: usize = 0;
-    var total_providers: usize = 0;
-
-    var seen_paths: std.StringHashMapUnmanaged(void) = .{};
-    defer {
-        var it = seen_paths.iterator();
-        while (it.next()) |entry| {
-            allocator.free(entry.key_ptr.*);
-        }
-        seen_paths.deinit(allocator);
-    }
-
+    errdefer db.deinit();
+    try db.classifyLegacyRows();
     for (catalog.entries.items) |entry| {
-        if (entry.kind != .clap and entry.kind != .builtin) continue;
-        const path = entry.path orelse continue;
-        var resolved_path: ?[]const u8 = null;
-        const scan_path = if (entry.kind == .clap) blk: {
-            resolved_path = plugins.resolveClapBinaryPath(allocator, io, path) catch break :blk path;
-            break :blk resolved_path.?;
-        } else path;
-        defer if (resolved_path) |value| allocator.free(value);
+        if (entry.is_audio_effect) if (entry.id) |id| try db.markEffectPlugin(id);
+    }
+    return .{ .arena = std.heap.ArenaAllocator.init(allocator), .db = db, .plugins = catalog };
+}
 
-        if (seen_paths.contains(scan_path)) continue;
-        try seen_paths.put(allocator, try allocator.dupe(u8, scan_path), {});
-
-        const mtime_ns = plugins.statMtimeNs(io, scan_path) orelse continue;
-        if (!rescan_all) {
-            if (try db.matches(scan_path, mtime_ns)) {
-                const cached_presets = try db.load(catalog_allocator, scan_path);
-                try appendCachedPresets(catalog_allocator, catalog, &preset_catalog.entries, cached_presets);
-                if (debug) {
-                    std.log.info("Preset cache hit: {s} ({d} presets)", .{ scan_path, cached_presets.len });
-                }
-                continue;
-            }
+fn presetCategory(name: []const u8, location: []const u8, metadata_category: []const u8) []const u8 {
+    if (!std.mem.eql(u8, metadata_category, "sounds")) return metadata_category;
+    const categories = [_]struct { name: []const u8, terms: []const []const u8 }{
+        .{ .name = "drums", .terms = &.{ "drum", "kick", "snare", "hi-hat", "hihat", "percussion" } },
+        .{ .name = "bass", .terms = &.{"bass"} },
+        .{ .name = "pad", .terms = &.{"pad"} },
+        .{ .name = "lead", .terms = &.{"lead"} },
+        .{ .name = "keys", .terms = &.{ "piano", "organ", "rhodes", "keyboard", "clav" } },
+        .{ .name = "noise", .terms = &.{ "noise", "texture" } },
+    };
+    for (categories) |category| {
+        for (category.terms) |term| {
+            if (std.ascii.indexOfIgnoreCase(name, term) != null or std.ascii.indexOfIgnoreCase(location, term) != null) return category.name;
         }
-
-        const presets = try scanPresetsForBinary(catalog_allocator, io, catalog, &preset_catalog.entries, scan_path);
-        total_providers += 1;
-        total_presets += presets.len;
-        if (debug) {
-            std.log.info("Preset scan: {s} ({d} presets)", .{ scan_path, presets.len });
-        }
-        try db.replace(scan_path, mtime_ns, presets);
     }
-
-    if (preset_catalog.entries.items.len > 0) {
-        std.mem.sort(PresetEntry, preset_catalog.entries.items, {}, presetEntryLessThan);
-    }
-
-    if (debug) {
-        std.log.info("Preset scan summary: {d} presets across {d} providers", .{ total_presets, total_providers });
-    }
-    return preset_catalog;
+    return "sounds";
 }

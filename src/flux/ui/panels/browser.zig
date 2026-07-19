@@ -8,7 +8,7 @@ const presets = @import("../../plugin/presets.zig");
 const Colors = colors.Colors;
 const ui_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 
-pub const BrowserTab = enum { sounds, drums, instruments, audio_effects, plugins };
+pub const BrowserTab = enum { sounds, drums, bass, pad, lead, keys, noise, instruments, audio_effects };
 
 pub const PluginSelection = struct {
     catalog_index: i32,
@@ -29,13 +29,12 @@ pub fn draw(
     preset_entries: []const presets.PresetEntry,
     preset_selected: *?usize,
     plugin_selected: *?PluginSelection,
+    file_selected_buf: []u8,
+    file_selected_len: *usize,
     alloc: std.mem.Allocator,
     ui_scale: f32,
 ) void {
-    if (!open.*) {
-        if (zgui.button(">", .{ .w = tokens.s(32, ui_scale), .h = tokens.s(25, ui_scale) })) open.* = true;
-        return;
-    }
+    if (!open.*) return;
 
     const available_w = zgui.getContentRegionAvail()[0];
     const max_w = available_w * 0.6;
@@ -52,8 +51,6 @@ pub fn draw(
             zgui.endChild();
             width.* = std.math.clamp(zgui.getItemRectSize()[0], min_w, max_w);
         }
-
-        if (zgui.button("<", .{ .w = tokens.s(32, ui_scale), .h = zgui.getFrameHeight() })) open.* = false;
 
         zgui.sameLine(.{ .spacing = tokens.s(5, ui_scale) });
         zgui.setNextItemWidth(zgui.getContentRegionAvail()[0]);
@@ -75,7 +72,7 @@ pub fn draw(
         _ = zgui.tableNextColumn();
         sideLeft(active_tab, folders, alloc, ui_scale);
         _ = zgui.tableNextColumn();
-        sideRight(active_tab, sort_asc, folders, plugin_instrument_items, plugin_instrument_indices, plugin_fx_items, plugin_fx_indices, preset_entries, preset_selected, plugin_selected, search_buf);
+        sideRight(active_tab, sort_asc, folders, plugin_instrument_items, plugin_instrument_indices, plugin_fx_items, plugin_fx_indices, preset_entries, preset_selected, plugin_selected, search_buf, file_selected_buf, file_selected_len);
     }
 }
 
@@ -100,9 +97,13 @@ fn sideLeft(active_tab: *BrowserTab, folders: *std.ArrayListUnmanaged([]u8), all
     const cats = [_]struct { name: [:0]const u8, tab: BrowserTab }{
         .{ .name = "Sounds", .tab = .sounds },
         .{ .name = "Drums", .tab = .drums },
+        .{ .name = "Bass", .tab = .bass },
+        .{ .name = "Pads", .tab = .pad },
+        .{ .name = "Leads", .tab = .lead },
+        .{ .name = "Keys", .tab = .keys },
+        .{ .name = "Noise", .tab = .noise },
         .{ .name = "Instruments", .tab = .instruments },
         .{ .name = "Audio Effects", .tab = .audio_effects },
-        .{ .name = "Plug-Ins", .tab = .plugins },
     };
     for (cats) |cat| {
         const sel = active_tab.* == cat.tab;
@@ -140,6 +141,8 @@ fn sideRight(
     preset_selected: *?usize,
     plugin_selected: *?PluginSelection,
     search_buf: [:0]const u8,
+    file_selected_buf: []u8,
+    file_selected_len: *usize,
 ) void {
     if (zgui.beginChild("sidebar_right", .{ .w = 0, .h = 0, .window_flags = .{ .menu_bar = true } })) {
         _ = zgui.beginMenuBar();
@@ -148,23 +151,21 @@ fn sideRight(
         zgui.endMenuBar();
 
         switch (active_tab.*) {
-            .sounds, .drums => placehold("Not implemented"),
+            .sounds, .drums, .bass, .pad, .lead, .keys, .noise => drawPresets(preset_entries, preset_selected, ""),
             .instruments => {
-                sectionLabel("Presets");
-                drawPresets(preset_entries, preset_selected, search_buf);
-                zgui.separator();
                 sectionLabel("Plugins");
                 drawPluginList(plugin_instrument_items, plugin_instrument_indices, false, plugin_selected, search_buf);
             },
-            .audio_effects => drawPluginList(plugin_fx_items, plugin_fx_indices, true, plugin_selected, search_buf),
-            .plugins => {
-                drawPluginList(plugin_instrument_items, plugin_instrument_indices, false, plugin_selected, search_buf);
+            .audio_effects => {
+                sectionLabel("Presets");
+                drawPresets(preset_entries, preset_selected, "");
                 zgui.separator();
+                sectionLabel("Plugins");
                 drawPluginList(plugin_fx_items, plugin_fx_indices, true, plugin_selected, search_buf);
             },
         }
 
-        for (folders.items) |f_path| listDir(f_path) catch {};
+        for (folders.items) |f_path| listDir(f_path, file_selected_buf, file_selected_len) catch {};
     }
     zgui.endChild();
 }
@@ -233,15 +234,31 @@ fn sectionLabel(text: []const u8) void {
     zgui.popStyleColor(.{ .count = 1 });
 }
 
-fn listDir(dir_path: []const u8) !void {
+fn listDir(dir_path: []const u8, file_selected_buf: []u8, file_selected_len: *usize) !void {
     var dir = try std.Io.Dir.openDirAbsolute(ui_io, dir_path, .{ .iterate = true });
     defer dir.close(ui_io);
     var iter = dir.iterateAssumeFirstIteration();
     var buf: [512]u8 = undefined;
+    var path_buf: [1024]u8 = undefined;
     while (try iter.next(ui_io)) |entry| {
         if (entry.kind != .file or !hasAudioMidiExt(entry.name)) continue;
         const label = std.fmt.bufPrintSentinel(&buf, "{s}##dir", .{entry.name}, 0) catch continue;
-        _ = zgui.selectable(label, .{});
+        const clicked = zgui.selectable(label, .{});
+        if (clicked) {
+            const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
+            const len = @min(full_path.len, file_selected_buf.len);
+            @memcpy(file_selected_buf[0..len], full_path[0..len]);
+            file_selected_len.* = len;
+        }
+        if (zgui.beginDragDropSource(.{ .source_no_preview_tooltip = true })) {
+            const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, entry.name }) catch {
+                zgui.endDragDropSource();
+                continue;
+            };
+            _ = zgui.setDragDropPayload("AUDIO_FILE", full_path, .always);
+            zgui.textUnformatted(entry.name);
+            zgui.endDragDropSource();
+        }
     }
 }
 

@@ -11,6 +11,7 @@ const recording_impl = @import("../../../session/recording.zig");
 const tokens = @import("../../theme/tokens.zig");
 const widgets = @import("../../theme/widgets.zig");
 const draw_clip_slot = @import("draw_clip_slot.zig");
+const session_constants = @import("../../../session/constants.zig");
 
 pub const ClipAudioCtx = draw_clip_slot.ClipAudioCtx;
 
@@ -22,6 +23,7 @@ pub fn draw(
     playhead_beat: f32,
     beats_per_bar_in: f32,
     audio_ctx: ?ClipAudioCtx,
+    track_levels: *const [session_constants.max_tracks][2]f32,
 ) void {
     const row_height = tokens.sessionRowH(ui_scale);
     const header_height = tokens.sessionHeaderH(ui_scale);
@@ -476,19 +478,19 @@ pub fn draw(
 
         for (0..self.track_count) |t| {
             _ = zgui.tableNextColumn();
-            drawTrackMixer(self, t, track_col_w, mixer_height - 8.0 * ui_scale, ui_scale, allow_mouse);
+            drawTrackMixer(self, t, track_levels[t], track_col_w, mixer_height - 8.0 * ui_scale, ui_scale, allow_mouse);
         }
         _ = zgui.tableNextColumn(); // Empty add column
         _ = zgui.tableNextColumn(); // Stretch spacer
         _ = zgui.tableNextColumn();
-        drawTrackMixer(self, session_view.master_track_index, track_col_w, mixer_height - 8.0 * ui_scale, ui_scale, allow_mouse);
+        drawTrackMixer(self, session_view.master_track_index, .{ 0, 0 }, track_col_w, mixer_height - 8.0 * ui_scale, ui_scale, allow_mouse);
 
         zgui.endTable();
     }
     zgui.popStyleColor(.{ .count = 1 });
 }
 
-fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, height: f32, ui_scale: f32, allow_select: bool) void {
+fn drawTrackMixer(self: *session_view.SessionView, track: usize, levels: [2]f32, width: f32, height: f32, ui_scale: f32, allow_select: bool) void {
     const padding = tokens.s(4, ui_scale);
     const spacing = tokens.s(3, ui_scale);
     const usable_width = width - padding * 2;
@@ -496,8 +498,10 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
     const btn_height = tokens.controlH(.lg, ui_scale);
     const btn_width = if (is_master) usable_width else (usable_width - spacing * 2) / 3.0;
     const slider_width = tokens.s(26, ui_scale);
+    const pan_width = tokens.s(52, ui_scale);
+    const pan_height = tokens.controlH(.sm, ui_scale);
     const label_height = tokens.s(20, ui_scale);
-    const slider_height = height - btn_height - spacing * 2 - label_height - tokens.s(4, ui_scale);
+    const slider_height = height - btn_height - pan_height - spacing * 3 - label_height - tokens.s(4, ui_scale);
     const frame_padding = zgui.getStyle().frame_padding;
     const text_height = zgui.getFontSize();
     const centered_pad_y = @max(0.0, (btn_height - text_height) / 2.0);
@@ -595,19 +599,39 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
     }
     zgui.popStyleVar(.{ .count = 1 });
 
-    // Row 2: Volume slider (centered, wider)
-    zgui.setCursorPosY(base_y + btn_height + spacing);
+    // Row 2: pan, centered above the volume fader.
+    const pan_label_width = tokens.s(10, ui_scale);
+    const pan_row_width = pan_width + pan_label_width * 2 + spacing * 2;
+    zgui.setCursorPos(.{ base_x + (width - pan_row_width) / 2.0, base_y + btn_height + spacing });
+    zgui.textUnformatted("L");
+    zgui.sameLine(.{ .spacing = spacing });
+    var pan_buf: [32]u8 = undefined;
+    const pan_id = std.fmt.bufPrintSentinel(&pan_buf, "##pan{d}", .{track}, 0) catch "##pan";
+    zgui.setNextItemWidth(pan_width);
+    _ = zgui.sliderFloat(pan_id, .{ .v = &self.tracks[track].pan, .min = -1, .max = 1, .cfmt = "" });
+    widgets.itemTooltip("Pan");
+    if (allow_select and zgui.isItemActivated()) {
+        if (!is_master) self.primary_track = track;
+        self.mixer_target = if (is_master) .master else .track;
+    }
+    zgui.sameLine(.{ .spacing = spacing });
+    zgui.textUnformatted("R");
+
+    // Row 3: volume fader with the stereo meter behind it.
+    zgui.setCursorPosY(base_y + btn_height + spacing * 2 + pan_height);
     const slider_x = base_x + (width - slider_width) / 2.0;
     zgui.setCursorPosX(slider_x);
 
     const slider_screen_pos = zgui.getCursorScreenPos();
+    const draw_list = zgui.getWindowDrawList();
+    drawMeter(draw_list, slider_screen_pos[0], slider_screen_pos[1], slider_width, slider_height, levels);
 
     var vol_buf: [32]u8 = undefined;
     const vol_id = std.fmt.bufPrintSentinel(&vol_buf, "##vol{d}", .{track}, 0) catch "##vol";
 
-    zgui.pushStyleColor4f(.{ .idx = .frame_bg, .c = colors.Colors.current.bg_cell });
-    zgui.pushStyleColor4f(.{ .idx = .frame_bg_hovered, .c = colors.Colors.current.bg_cell_hover });
-    zgui.pushStyleColor4f(.{ .idx = .frame_bg_active, .c = colors.Colors.current.bg_cell_active });
+    zgui.pushStyleColor4f(.{ .idx = .frame_bg, .c = .{ 0, 0, 0, 0 } });
+    zgui.pushStyleColor4f(.{ .idx = .frame_bg_hovered, .c = .{ 1, 1, 1, 0.06 } });
+    zgui.pushStyleColor4f(.{ .idx = .frame_bg_active, .c = .{ 1, 1, 1, 0.1 } });
     zgui.pushStyleColor4f(.{ .idx = .slider_grab, .c = colors.Colors.current.accent });
     zgui.pushStyleColor4f(.{ .idx = .slider_grab_active, .c = colors.Colors.current.accent_dim });
 
@@ -646,29 +670,20 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
     }
 
     zgui.popStyleColor(.{ .count = 5 });
-
-    // Draw 0dB tick marks on the sides AFTER the slider (so they're visible)
+    // Draw the 0dB tick after the slider so it remains visible.
     // Volume = 1.0 is at 1.0/1.5 = 0.667 from bottom
-    const draw_list = zgui.getWindowDrawList();
     const zero_db_ratio = 1.0 / 1.5; // 0dB = volume 1.0
     const zero_db_y = slider_screen_pos[1] + slider_height * (1.0 - zero_db_ratio);
     const tick_width = 6.0 * ui_scale;
     const tick_height = 3.0 * ui_scale;
-    // Left tick mark
     draw_list.addRectFilled(.{
         .pmin = .{ slider_screen_pos[0] - tick_width - 2.0, zero_db_y - tick_height / 2.0 },
         .pmax = .{ slider_screen_pos[0] - 2.0, zero_db_y + tick_height / 2.0 },
         .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright),
     });
-    // Right tick mark
-    draw_list.addRectFilled(.{
-        .pmin = .{ slider_screen_pos[0] + slider_width + 2.0, zero_db_y - tick_height / 2.0 },
-        .pmax = .{ slider_screen_pos[0] + slider_width + tick_width + 2.0, zero_db_y + tick_height / 2.0 },
-        .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright),
-    });
 
-    // Row 3: dB label (centered)
-    zgui.setCursorPosY(base_y + btn_height + spacing + slider_height + spacing);
+    // Row 4: dB label (centered)
+    zgui.setCursorPosY(base_y + btn_height + pan_height + spacing * 2 + slider_height + spacing);
     zgui.setCursorPosX(base_x + padding);
 
     const db = if (self.tracks[track].volume > 0.0001)
@@ -681,4 +696,23 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, width: f32, hei
     else
         std.fmt.bufPrintSentinel(&label_buf, "{d:.0}dB", .{db}, 0) catch "";
     zgui.textColored(colors.Colors.current.text_dim, "{s}", .{label});
+}
+
+fn drawMeter(dl: zgui.DrawList, x: f32, y: f32, width: f32, height: f32, levels: [2]f32) void {
+    const gap: f32 = 2;
+    const channel_width = (width - gap) * 0.5;
+    for (levels, 0..) |level, channel| {
+        const x0 = x + @as(f32, @floatFromInt(channel)) * (channel_width + gap);
+        dl.addRectFilled(.{
+            .pmin = .{ x0, y },
+            .pmax = .{ x0 + channel_width, y + height },
+            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.bg_cell_active),
+        });
+        const amount = std.math.clamp(level, 0, 1);
+        dl.addRectFilled(.{
+            .pmin = .{ x0, y + height * (1 - amount) },
+            .pmax = .{ x0 + channel_width, y + height },
+            .col = zgui.colorConvertFloat4ToU32(if (amount > 0.9) colors.Colors.current.arm_on else colors.Colors.current.solo_on),
+        });
+    }
 }
