@@ -171,6 +171,24 @@ pub fn updateUiPluginPointers(
     }
 }
 
+fn invalidateInstrumentUiPointers(state: *ui_state.State, track: *const TrackPlugin, track_index: usize) void {
+    const plugin = track.getPlugin() orelse return;
+    state.track_plugin_ptrs[track_index] = null;
+    if (state.device_clap_plugin == plugin) {
+        state.device_clap_plugin = null;
+        state.device_kind = .none;
+    }
+}
+
+fn invalidateFxUiPointers(state: *ui_state.State, track: *const TrackPlugin, track_index: usize, fx_index: usize) void {
+    const plugin = track.getPlugin() orelse return;
+    state.track_fx_plugin_ptrs[track_index][fx_index] = null;
+    if (state.device_clap_plugin == plugin) {
+        state.device_clap_plugin = null;
+        state.device_kind = .none;
+    }
+}
+
 pub fn syncTrackPlugins(
     allocator: std.mem.Allocator,
     host: *const clap.Host,
@@ -209,6 +227,7 @@ pub fn syncTrackPlugins(
             if (track.handle != null or track.builtin != null) {
                 closePluginGui(track);
                 prepareUnload(shared, t, io);
+                invalidateInstrumentUiPointers(state, track, t);
                 unloadPlugin(track, allocator, shared, t);
             }
             track.choice_index = choice;
@@ -220,6 +239,7 @@ pub fn syncTrackPlugins(
             if (track.handle != null or track.builtin != null) {
                 closePluginGui(track);
                 prepareUnload(shared, t, io);
+                invalidateInstrumentUiPointers(state, track, t);
                 unloadPlugin(track, allocator, shared, t);
             }
             track.choice_index = choice;
@@ -306,6 +326,7 @@ pub fn syncFxPlugins(
                 if (slot.handle != null or slot.builtin != null) {
                     closePluginGui(slot);
                     prepareUnload(shared, t, fx_index, io);
+                    invalidateFxUiPointers(state, slot, t, fx_index);
                     unloadFxPlugin(slot, allocator, shared, t, fx_index);
                 }
                 slot.choice_index = choice;
@@ -321,6 +342,7 @@ pub fn syncFxPlugins(
                 if (slot.handle != null or slot.builtin != null) {
                     closePluginGui(slot);
                     prepareUnload(shared, t, fx_index, io);
+                    invalidateFxUiPointers(state, slot, t, fx_index);
                     unloadFxPlugin(slot, allocator, shared, t, fx_index);
                 }
                 slot.choice_index = choice;
@@ -352,6 +374,7 @@ pub fn syncFxPlugins(
                     std.log.warn("FX plugin has no audio input: {s}", .{entry.?.name});
                     closePluginGui(slot);
                     prepareUnload(shared, t, fx_index, io);
+                    invalidateFxUiPointers(state, slot, t, fx_index);
                     unloadFxPlugin(slot, allocator, shared, t, fx_index);
                     state.track_fx[t][fx_index].gui_open = false;
                     const fallback = if (state.track_fx[t][fx_index].last_valid_choice != choice)
