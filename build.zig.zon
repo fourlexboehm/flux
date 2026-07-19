@@ -44,8 +44,8 @@
         },
         // kcbanner c_translate (zig-gamedev#53) is not enough: still uses std.meta.fields
         .zglfw = .{
-            .url = "git+https://github.com/fourlexboehm/zglfw#ff491fd4af4c2a47f0f74c806d095ef21fc7cc72",
-            .hash = "zglfw-0.10.0-dev-zgVDNOq5IQAk4c5z2ECJ3W9K9bHs4_RzmJGbPmKTx6qY",
+            .url = "git+https://github.com/fourlexboehm/zglfw#7bffbdb979d2510043a222c98eaccbd5831665dc",
+            .hash = "zglfw-0.10.0-dev-zgVDNGO6IQB0255Zpm26_egB39T8E4n_Gt7IsL9eHIEp",
         },
         // kcbanner 0.17.x — zig-gamedev/ztracy#17 (complete)
         .ztracy = .{
@@ -54,8 +54,8 @@
         },
         // fork of zig-gamedev/zgui @ zig-0.17 = kcbanner 0.17.x + field_names Style colors
         .zgui = .{
-            .url = "git+https://github.com/fourlexboehm/zgui#b6ae29152fd8399f826e2b9e4458d6fa3242f57e",
-            .hash = "zgui-0.6.0-dev--L6sZFJJbgDPcvWZ9qBvUzx9WGcm3gHrCkizCRXp47zi",
+            .url = "git+https://github.com/fourlexboehm/zgui#f29f3135f4ccb0df0ff899b36754b9ac78a0c22d",
+            .hash = "zgui-0.6.0-dev--L6sZDRJbgCNHGDzW13u8EjVpsn5Y0UR4NNQTnV8Wn5w",
         },
         .zaudio = .{
             .url = "git+https://github.com/zig-gamedev/zaudio#b9997fc34640d9c80e25b7829b9ad53db8bcf7f2",
