@@ -105,6 +105,9 @@ pub fn rebuildInstrumentFilter(state: *State) void {
 
 pub fn rebuildPresetFilter(state: *State) void {
     const filter = std.mem.sliceTo(&state.preset_search_buf, 0);
+    if (state.preset_catalog) |catalog| catalog.query(filter, "", true) catch |err| {
+        std.log.warn("Preset query failed: {}", .{err});
+    };
     var buffer: std.ArrayList(u8) = .empty;
     defer buffer.deinit(state.allocator);
     var indices: std.ArrayList(i32) = .empty;

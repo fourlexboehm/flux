@@ -2,6 +2,7 @@ const std = @import("std");
 const c = @import("sqlite3");
 
 pub const Record = struct {
+    db_id: i64 = 0,
     name: []const u8,
     plugin_id: []const u8,
     plugin_name: []const u8,
@@ -9,6 +10,7 @@ pub const Record = struct {
     location_kind: u32,
     location: [:0]const u8,
     load_key: ?[:0]const u8,
+    category: []const u8 = "sounds",
 };
 
 pub const Db = struct {
@@ -51,11 +53,21 @@ pub const Db = struct {
             \\  location_kind integer not null,
             \\  location text not null,
             \\  load_key text,
+            \\  category text not null default 'sounds',
             \\  primary key (binary_path, ordinal)
             \\);
             \\create index if not exists presets_plugin_id on presets(plugin_id);
             \\create index if not exists presets_name on presets(name collate nocase);
         );
+        if (try ensureColumn(conn.?, "presets", "category", "text not null default 'sounds'")) {
+            // One-time backfill for indexes which predate CLAP feature capture.
+            try exec(conn.?,
+                \\update presets set category = 'drums' where
+                \\  lower(name) like '%drum%' or lower(name) like '%kick%' or lower(name) like '%snare%'
+                \\  or lower(name) like '%hihat%' or lower(name) like '%hi-hat%' or lower(name) like '%percussion%'
+                \\  or lower(location) like '%drum%' or lower(location) like '%percussion%';
+            );
+        }
         return .{ .conn = conn.?, .allocator = allocator, .path = path_z };
     }
 
@@ -81,7 +93,7 @@ pub const Db = struct {
 
     pub fn load(self: *const Db, allocator: std.mem.Allocator, path: []const u8) ![]Record {
         const stmt = try prepare(self.conn,
-            \\select name, plugin_id, plugin_name, provider_id, location_kind, location, load_key
+            \\select name, plugin_id, plugin_name, provider_id, location_kind, location, load_key, category
             \\from presets where binary_path = ?1 order by ordinal
         );
         defer _ = c.sqlite3_finalize(stmt);
@@ -99,11 +111,92 @@ pub const Db = struct {
                     null
                 else
                     try allocator.dupeSentinel(u8, columnText(stmt, 6), 0),
+                .category = try allocator.dupe(u8, columnText(stmt, 7)),
             }),
             c.SQLITE_DONE => break,
             else => |rc| try check(rc),
         };
         return records.toOwnedSlice(allocator);
+    }
+
+    pub fn searchTitles(self: *const Db, allocator: std.mem.Allocator, text: []const u8, category: []const u8, ascending: bool) ![]Record {
+        const sql = if (ascending)
+            \\select rowid, name, plugin_name from presets
+            \\where (?1 = '' or category = ?1) and (?2 = '' or name like '%' || ?2 || '%' collate nocase
+            \\  or plugin_name like '%' || ?2 || '%' collate nocase)
+            \\order by name collate nocase asc
+        else
+            \\select rowid, name, plugin_name from presets
+            \\where (?1 = '' or category = ?1) and (?2 = '' or name like '%' || ?2 || '%' collate nocase
+            \\  or plugin_name like '%' || ?2 || '%' collate nocase)
+            \\order by name collate nocase desc
+        ;
+        const stmt = try prepare(self.conn, sql);
+        defer _ = c.sqlite3_finalize(stmt);
+        try bindText(stmt, 1, category);
+        try bindText(stmt, 2, text);
+        var records: std.ArrayList(Record) = .empty;
+        while (true) switch (c.sqlite3_step(stmt)) {
+            c.SQLITE_ROW => try records.append(allocator, .{
+                .db_id = c.sqlite3_column_int64(stmt, 0),
+                .name = try allocator.dupe(u8, columnText(stmt, 1)),
+                .plugin_id = "",
+                .plugin_name = try allocator.dupe(u8, columnText(stmt, 2)),
+                .provider_id = "",
+                .location_kind = 0,
+                .location = "",
+                .load_key = null,
+                .category = category,
+            }),
+            c.SQLITE_DONE => break,
+            else => |rc| try check(rc),
+        };
+        return records.toOwnedSlice(allocator);
+    }
+
+    pub fn loadById(self: *const Db, allocator: std.mem.Allocator, id: i64) !?Record {
+        const stmt = try prepare(self.conn,
+            \\select rowid, name, plugin_id, plugin_name, provider_id, location_kind, location, load_key, category
+            \\from presets where rowid = ?1
+        );
+        defer _ = c.sqlite3_finalize(stmt);
+        try check(c.sqlite3_bind_int64(stmt, 1, id));
+        if (c.sqlite3_step(stmt) != c.SQLITE_ROW) return null;
+        return .{
+            .db_id = c.sqlite3_column_int64(stmt, 0),
+            .name = try allocator.dupe(u8, columnText(stmt, 1)),
+            .plugin_id = try allocator.dupe(u8, columnText(stmt, 2)),
+            .plugin_name = try allocator.dupe(u8, columnText(stmt, 3)),
+            .provider_id = try allocator.dupe(u8, columnText(stmt, 4)),
+            .location_kind = @intCast(c.sqlite3_column_int64(stmt, 5)),
+            .location = try allocator.dupeSentinel(u8, columnText(stmt, 6), 0),
+            .load_key = if (c.sqlite3_column_type(stmt, 7) == c.SQLITE_NULL) null else try allocator.dupeSentinel(u8, columnText(stmt, 7), 0),
+            .category = try allocator.dupe(u8, columnText(stmt, 8)),
+        };
+    }
+
+    pub fn markEffectPlugin(self: *Db, plugin_id: []const u8) !void {
+        const stmt = try prepare(self.conn, "update presets set category = 'effects' where plugin_id = ?1");
+        defer _ = c.sqlite3_finalize(stmt);
+        try bindText(stmt, 1, plugin_id);
+        try stepDone(stmt);
+    }
+
+    pub fn classifyLegacyRows(self: *Db) !void {
+        try exec(self.conn,
+            \\update presets set category = 'bass' where category = 'sounds' and
+            \\  (lower(name) like '%bass%' or lower(location) like '%bass%');
+            \\update presets set category = 'pad' where category = 'sounds' and
+            \\  (lower(name) like '%pad%' or lower(location) like '%pad%');
+            \\update presets set category = 'lead' where category = 'sounds' and
+            \\  (lower(name) like '%lead%' or lower(location) like '%lead%');
+            \\update presets set category = 'keys' where category = 'sounds' and (
+            \\  lower(name) like '%piano%' or lower(name) like '%organ%' or lower(name) like '%rhodes%'
+            \\  or lower(name) like '%keyboard%' or lower(name) like '%clav%'
+            \\  or lower(location) like '%piano%' or lower(location) like '%keys%');
+            \\update presets set category = 'noise' where category = 'sounds' and
+            \\  (lower(name) like '%noise%' or lower(name) like '%texture%' or lower(location) like '%noise%');
+        );
     }
 
     pub fn replace(self: *Db, path: []const u8, mtime_ns: i64, records: []const Record) !void {
@@ -123,8 +216,8 @@ pub const Db = struct {
         stmt = try prepare(self.conn,
             \\insert into presets(
             \\  binary_path, ordinal, name, plugin_id, plugin_name, provider_id,
-            \\  location_kind, location, load_key
-            \\) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            \\  location_kind, location, load_key, category
+            \\) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
         );
         defer _ = c.sqlite3_finalize(stmt);
         for (records, 0..) |record, ordinal| {
@@ -137,6 +230,7 @@ pub const Db = struct {
             try check(c.sqlite3_bind_int64(stmt, 7, record.location_kind));
             try bindText(stmt, 8, record.location);
             if (record.load_key) |key| try bindText(stmt, 9, key) else try check(c.sqlite3_bind_null(stmt, 9));
+            try bindText(stmt, 10, record.category);
             try stepDone(stmt);
             try check(c.sqlite3_reset(stmt));
             try check(c.sqlite3_clear_bindings(stmt));
@@ -144,6 +238,19 @@ pub const Db = struct {
         try exec(self.conn, "commit");
     }
 };
+
+fn ensureColumn(conn: *c.sqlite3, table: []const u8, column: []const u8, declaration: []const u8) !bool {
+    var sql_buf: [256]u8 = undefined;
+    const pragma = try std.fmt.bufPrint(&sql_buf, "pragma table_info({s})", .{table});
+    const stmt = try prepare(conn, pragma);
+    defer _ = c.sqlite3_finalize(stmt);
+    while (c.sqlite3_step(stmt) == c.SQLITE_ROW) {
+        if (std.mem.eql(u8, columnText(stmt, 1), column)) return false;
+    }
+    const alter = try std.fmt.bufPrintSentinel(&sql_buf, "alter table {s} add column {s} {s}", .{ table, column, declaration }, 0);
+    try exec(conn, alter);
+    return true;
+}
 
 fn cacheDirPath(allocator: std.mem.Allocator) ![]const u8 {
     const home_c = std.c.getenv("HOME") orelse return error.MissingHome;

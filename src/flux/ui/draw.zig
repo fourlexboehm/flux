@@ -96,6 +96,24 @@ pub fn draw(state: *State, ui_scale: f32) void {
             // Sidebar + clip grid side by side (shared across both views)
             var preset_selected: ?usize = null;
             var plugin_selected: ?browser.PluginSelection = null;
+            if (state.browser_open) if (state.preset_catalog) |preset_catalog| {
+                const category: ?[]const u8 = switch (state.browser_active_tab) {
+                    .sounds => "",
+                    .drums => "drums",
+                    .bass => "bass",
+                    .pad => "pad",
+                    .lead => "lead",
+                    .keys => "keys",
+                    .noise => "noise",
+                    .audio_effects => "effects",
+                    else => null,
+                };
+                if (category) |value| {
+                    preset_catalog.query(std.mem.sliceTo(&state.browser_search, 0), value, state.browser_sort_asc) catch |err| {
+                        std.log.warn("Preset query failed: {}", .{err});
+                    };
+                }
+            };
             browser.draw(
                 &state.browser_open,
                 &state.browser_width,
@@ -110,6 +128,8 @@ pub fn draw(state: *State, ui_scale: f32) void {
                 state.preset_catalog.?.entries.items,
                 &preset_selected,
                 &plugin_selected,
+                &state.browser_file_selected_buf,
+                &state.browser_file_selected_len,
                 state.allocator,
                 ui_scale,
             );
@@ -119,9 +139,15 @@ pub fn draw(state: *State, ui_scale: f32) void {
             if (plugin_selected) |sel| {
                 loadPluginFromBrowser(state, sel);
             }
+            if (state.browser_file_selected_len > 0) {
+                const file_path = state.browser_file_selected_buf[0..state.browser_file_selected_len];
+                loadAudioFileFromBrowser(state, file_path);
+                state.browser_file_selected_len = 0;
+            }
             zgui.sameLine(.{ .spacing = 0 });
             if (zgui.beginChild("##clip_grid_side", .{ .w = 0, .h = 0, .window_flags = .{ .no_scrollbar = true, .no_scroll_with_mouse = true } })) {
                 drawClipGrid(state, ui_scale);
+                acceptClipAreaDrop(state);
             }
             zgui.endChild();
         }
@@ -299,6 +325,13 @@ fn drawTransport(state: *State, ui_scale: f32) void {
     }
     zgui.popStyleColor(.{ .count = 3 });
 
+    // --- Browser sidebar toggle ---
+    widgets.toolbarSeparator(ui_scale, control_h);
+    zgui.setCursorPosY(row_y);
+    if (widgets.iconToggle("##sidebar_toggle", .sidebar_toggle, ui_scale, "Browser", state.browser_open, false)) {
+        state.browser_open = !state.browser_open;
+    }
+
     // --- Time / tempo group ---
     widgets.toolbarSeparator(ui_scale, control_h);
     zgui.setCursorPosY(row_y);
@@ -408,7 +441,7 @@ fn drawTransport(state: *State, ui_scale: f32) void {
     zgui.setCursorPosY(row_y);
     zgui.alignTextToFramePadding();
     var dsp_buf: [16]u8 = undefined;
-    const dsp_label = std.fmt.bufPrint(&dsp_buf, "DSP {d}%", .{state.dsp_load_pct}) catch "DSP";
+    const dsp_label = std.fmt.bufPrint(&dsp_buf, "DSP {d:2}%", .{state.dsp_load_pct}) catch "DSP";
     widgets.dimLabel(dsp_label);
 
     // View mode toggle: Session / Arrangement
@@ -491,6 +524,7 @@ fn drawClipGrid(state: *State, ui_scale: f32) void {
             .audio_clips = &state.audio_clips,
             .sample_store = &state.sample_store,
         },
+        &state.track_levels,
     );
     // Lock selection to the active recording clip to avoid cross-clip input confusion.
     if (state.session.recording.isRecording()) {
@@ -686,10 +720,85 @@ fn drawArrangementClipPanel(state: *State, selected: [2]usize, ui_scale: f32) vo
     widgets.dimLabel(duration);
 }
 
+fn loadAudioFileFromBrowser(state: *State, abs_path: []const u8) void {
+    const track_idx = state.selectedTrack();
+    if (track_idx >= max_tracks) return;
+
+    if (state.view_mode == .arrangement) {
+        loadAudioFileIntoArrangement(state, abs_path);
+        return;
+    }
+
+    const scene_idx = state.selectedScene();
+    if (scene_idx >= max_scenes) return;
+
+    loadAudioFileIntoSessionClip(state, track_idx, scene_idx, abs_path);
+}
+
+fn loadAudioFileIntoSessionClip(state: *State, track: usize, scene: usize, abs_path: []const u8) void {
+    const basename = std.fs.path.basename(abs_path);
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const sample_id = state.sample_store.loadFromPath(basename, abs_path, io) catch return;
+
+    const clip_slot = &state.session.clips[track][scene];
+    if (clip_slot.state == .empty) {
+        clip_slot.state = .stopped;
+        clip_slot.length_beats = state.beatsPerBar() * 4.0;
+    }
+    clip_slot.name.set(basename);
+
+    state.claimSlotForAudio(track, scene);
+    state.audio_clips[track][scene].setSample(&state.sample_store, sample_id);
+    state.audio_clips[track][scene].name.set(basename);
+    state.audio_clips[track][scene].length_beats = clip_slot.length_beats;
+
+    state.session.primary_track = track;
+    state.session.primary_scene = scene;
+    state.session.mixer_target = .track;
+    state.markProjectDirty();
+}
+
+fn loadAudioFileIntoArrangement(state: *State, abs_path: []const u8) void {
+    const basename = std.fs.path.basename(abs_path);
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const sample_id = state.sample_store.loadFromPath(basename, abs_path, io) catch return;
+
+    const track_count = state.arrangement.tracks.items.len;
+    if (track_count == 0) return;
+
+    const selected_track = state.selectedTrack();
+    var ti: usize = 0;
+    for (state.arrangement.tracks.items, 0..) |*arr_track, i| {
+        if (arr_track.session_track_index == selected_track) {
+            ti = i;
+            break;
+        }
+    }
+
+    const playhead_tick: i64 = @intFromFloat(state.playhead_beat * 960.0);
+    const snapped = if (state.arrangement.snap_division_ticks > 0)
+        @import("../arrangement/timeline.zig").snapToGrid(playhead_tick, state.arrangement.snap_division_ticks)
+    else
+        playhead_tick;
+
+    const sample = state.sample_store.get(sample_id) orelse return;
+    const sample_duration_seconds = @as(f64, @floatFromInt(sample.frame_count)) / @as(f64, @floatFromInt(sample.sample_rate));
+    const duration_ticks: i64 = @intFromFloat(sample_duration_seconds * state.bpm / 60.0 * 960.0);
+
+    const clip_index = @import("../arrangement/ops.zig").createClip(&state.arrangement, ti, .audio, snapped, @max(1, duration_ticks), basename) catch return;
+    @import("../arrangement/ops.zig").setClipAudioPath(&state.arrangement.tracks.items[ti].clips.items[clip_index], state.allocator, basename) catch {
+        @import("../arrangement/ops.zig").deleteClip(&state.arrangement, ti, clip_index);
+        return;
+    };
+    state.arrangement.tracks.items[ti].clips.items[clip_index].selected = true;
+
+    state.markProjectDirty();
+}
+
 fn loadPresetFromBrowser(state: *State, preset_idx: usize) void {
     const catalog = state.preset_catalog.?;
     if (preset_idx >= catalog.entries.items.len) return;
-    const entry = catalog.entries.items[preset_idx];
+    const entry = catalog.resolve(preset_idx) catch return orelse return;
 
     const track_idx = state.selectedTrack();
     if (track_idx >= max_tracks) return;
@@ -741,4 +850,23 @@ fn loadPluginFromBrowser(state: *State, sel: browser.PluginSelection) void {
             state.track_plugins[new_track].choice_index = sel.catalog_index;
         }
     }
+}
+
+fn acceptClipAreaDrop(state: *State) void {
+    if (zgui.beginDragDropTarget()) {
+        if (zgui.acceptDragDropPayload("AUDIO_FILE", .{})) |payload| {
+            if (payload.data) |data| {
+                const path_slice: []const u8 = @as([*]const u8, @ptrCast(data))[0..@intCast(payload.data_size)];
+                loadAudioFileFromBrowser(state, path_slice);
+            }
+        }
+        zgui.endDragDropTarget();
+    }
+
+    var i: usize = 0;
+    while (i < state.dropped_file_count) : (i += 1) {
+        const path = state.dropped_files[i][0..state.dropped_file_lens[i]];
+        loadAudioFileFromBrowser(state, path);
+    }
+    state.dropped_file_count = 0;
 }
