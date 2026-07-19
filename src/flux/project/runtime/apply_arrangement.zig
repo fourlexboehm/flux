@@ -73,6 +73,7 @@ fn applyClipsToTrack(
         );
         var arr_clip = &state.arrangement.tracks.items[arr_track_idx].clips.items[clip_idx];
         arr_clip.enabled = clip.enable;
+        arr_clip.source_offset_ticks = beatsToTicks(clip.play_start);
         if (clip.color) |hex| {
             arr_clip.color = parseHexColor(hex);
         }

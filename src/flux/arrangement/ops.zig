@@ -34,8 +34,9 @@ pub fn createClip(
 }
 
 pub fn setClipAudioPath(clip: *ArrangementClip, allocator: std.mem.Allocator, path: []const u8) !void {
+    const replacement = try allocator.dupe(u8, path);
     if (clip.audio_path) |old| allocator.free(old);
-    clip.audio_path = try allocator.dupe(u8, path);
+    clip.audio_path = replacement;
     clip.kind = .audio;
 }
 
@@ -63,22 +64,11 @@ pub fn moveClipToTrack(
     if (from_track >= view.tracks.items.len or to_track >= view.tracks.items.len) return error.InvalidTrack;
     if (clip_index >= view.tracks.items[from_track].clips.items.len) return error.InvalidClip;
     if (from_track == to_track) return clip_index;
-    const src = view.tracks.items[from_track].clips.items[clip_index];
-    var dst = ArrangementClip.init(view.allocator, src.kind, src.start_tick, src.duration_ticks);
-    dst.color = src.color;
-    dst.name = src.name;
-    dst.enabled = src.enabled;
-    dst.midi_session_track = src.midi_session_track;
-    dst.midi_session_scene = src.midi_session_scene;
-    dst.selected = src.selected;
-    if (src.midi) |*midi| dst.midi.?.copyFrom(midi);
-    if (src.audio_path) |path| {
-        dst.audio_path = try view.allocator.dupe(u8, path);
-    }
-    var from_clip = &view.tracks.items[from_track].clips.items[clip_index];
-    from_clip.deinit(view.allocator);
-    _ = view.tracks.items[from_track].clips.orderedRemove(clip_index);
+    var dst = try cloneClip(view.allocator, &view.tracks.items[from_track].clips.items[clip_index]);
+    errdefer dst.deinit(view.allocator);
     try view.tracks.items[to_track].clips.append(view.allocator, dst);
+    var removed = view.tracks.items[from_track].clips.orderedRemove(clip_index);
+    removed.deinit(view.allocator);
     return view.tracks.items[to_track].clips.items.len - 1;
 }
 
@@ -127,19 +117,25 @@ pub fn duplicateClip(
 ) !usize {
     if (track_index >= view.tracks.items.len) return error.InvalidTrack;
     if (clip_index >= view.tracks.items[track_index].clips.items.len) return error.InvalidClip;
-    const src = view.tracks.items[track_index].clips.items[clip_index];
-    var dst = ArrangementClip.init(view.allocator, src.kind, src.start_tick, src.duration_ticks);
+    var dst = try cloneClip(view.allocator, &view.tracks.items[track_index].clips.items[clip_index]);
+    errdefer dst.deinit(view.allocator);
+    try view.tracks.items[track_index].clips.append(view.allocator, dst);
+    return view.tracks.items[track_index].clips.items.len - 1;
+}
+
+fn cloneClip(allocator: std.mem.Allocator, src: *const ArrangementClip) !ArrangementClip {
+    var dst = ArrangementClip.init(allocator, src.kind, src.start_tick, src.duration_ticks);
+    errdefer dst.deinit(allocator);
     dst.color = src.color;
+    dst.source_offset_ticks = src.source_offset_ticks;
     dst.name = src.name;
     dst.enabled = src.enabled;
     dst.midi_session_track = src.midi_session_track;
     dst.midi_session_scene = src.midi_session_scene;
-    if (src.midi) |*midi| dst.midi.?.copyFrom(midi);
-    if (src.audio_path) |path| {
-        dst.audio_path = try view.allocator.dupe(u8, path);
-    }
-    try view.tracks.items[track_index].clips.append(view.allocator, dst);
-    return view.tracks.items[track_index].clips.items.len - 1;
+    dst.selected = src.selected;
+    if (src.midi) |*midi| try dst.midi.?.copyFromFallible(midi);
+    if (src.audio_path) |path| dst.audio_path = try allocator.dupe(u8, path);
+    return dst;
 }
 
 pub fn splitClip(
@@ -157,13 +153,51 @@ pub fn splitClip(
 
     const right_start = snapped;
     const right_duration = clip.endTick() - snapped;
-    clip.duration_ticks = snapped - clip.start_tick;
-
     const new_idx = try duplicateClip(view, track_index, clip_index);
+    const left_clip = &view.tracks.items[track_index].clips.items[clip_index];
+    left_clip.duration_ticks = snapped - left_clip.start_tick;
+    if (left_clip.midi) |*midi| midi.length_beats = @as(f32, @floatFromInt(left_clip.duration_ticks)) / @as(f32, @floatFromInt(timeline.ppq));
     const right_clip = &view.tracks.items[track_index].clips.items[new_idx];
     right_clip.start_tick = right_start;
     right_clip.duration_ticks = right_duration;
+    if (left_clip.midi != null) {
+        splitMidiNotes(left_clip, right_clip, snapped - left_clip.start_tick);
+    } else {
+        right_clip.source_offset_ticks += snapped - left_clip.start_tick;
+    }
     return new_idx;
+}
+
+fn splitMidiNotes(left: *ArrangementClip, right: *ArrangementClip, split_ticks: i64) void {
+    const split_beats = @as(f32, @floatFromInt(split_ticks)) / @as(f32, @floatFromInt(timeline.ppq));
+    const left_midi = &(left.midi orelse return);
+    const right_midi = &(right.midi orelse return);
+    var i = left_midi.notes.items.len;
+    while (i > 0) {
+        i -= 1;
+        const note = &left_midi.notes.items[i];
+        if (note.start >= split_beats) {
+            _ = left_midi.notes.orderedRemove(i);
+        } else if (note.start + note.duration > split_beats) {
+            note.duration = split_beats - note.start;
+        }
+    }
+    i = right_midi.notes.items.len;
+    while (i > 0) {
+        i -= 1;
+        const note = &right_midi.notes.items[i];
+        const note_end = note.start + note.duration;
+        if (note_end <= split_beats) {
+            _ = right_midi.notes.orderedRemove(i);
+        } else if (note.start < split_beats) {
+            note.start = 0;
+            note.duration = note_end - split_beats;
+        } else {
+            note.start -= split_beats;
+        }
+    }
+    left_midi.length_beats = split_beats;
+    right_midi.length_beats = @as(f32, @floatFromInt(right.duration_ticks)) / @as(f32, @floatFromInt(timeline.ppq));
 }
 
 pub fn deleteTrack(
@@ -229,4 +263,37 @@ pub fn forEachSelected(
             }
         }
     }
+}
+
+test "split MIDI clip crops and rebases notes" {
+    const allocator = std.testing.allocator;
+    var view = ArrangementView.init(allocator);
+    defer view.deinit();
+    view.clearTracks();
+    try createTrack(&view, 0, "Track", .{ 1, 1, 1, 1 });
+    const clip_index = try createClip(&view, 0, .midi, 0, timeline.ppq * 4, "MIDI");
+    const midi = &view.tracks.items[0].clips.items[clip_index].midi.?;
+    try midi.notes.append(allocator, .{ .pitch = 60, .start = 0.5, .duration = 1.0 });
+    try midi.notes.append(allocator, .{ .pitch = 64, .start = 2.5, .duration = 0.5 });
+
+    const right_index = (try splitClip(&view, 0, clip_index, timeline.ppq, 0)).?;
+    const left = view.tracks.items[0].clips.items[clip_index].midi.?;
+    const right = view.tracks.items[0].clips.items[right_index].midi.?;
+    try std.testing.expectEqual(@as(usize, 1), left.notes.items.len);
+    try std.testing.expectEqual(@as(f32, 0.5), left.notes.items[0].duration);
+    try std.testing.expectEqual(@as(usize, 2), right.notes.items.len);
+    try std.testing.expectEqual(@as(f32, 0), right.notes.items[0].start);
+    try std.testing.expectEqual(@as(f32, 0.5), right.notes.items[0].duration);
+    try std.testing.expectEqual(@as(f32, 1.5), right.notes.items[1].start);
+}
+
+test "split audio clip advances source offset" {
+    const allocator = std.testing.allocator;
+    var view = ArrangementView.init(allocator);
+    defer view.deinit();
+    view.clearTracks();
+    try createTrack(&view, 0, "Track", .{ 1, 1, 1, 1 });
+    const clip_index = try createClip(&view, 0, .audio, 0, timeline.ppq * 4, "Audio");
+    const right_index = (try splitClip(&view, 0, clip_index, timeline.ppq, 0)).?;
+    try std.testing.expectEqual(timeline.ppq, view.tracks.items[0].clips.items[right_index].source_offset_ticks);
 }

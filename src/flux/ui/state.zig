@@ -11,6 +11,7 @@ const audio_clip_types = @import("../session/audio_clip.zig");
 const sample_store_mod = @import("../audio/sample_store.zig");
 const arr_types = @import("../arrangement/types.zig");
 const arr_undo = @import("../arrangement/undo.zig");
+const arr_ops = @import("../arrangement/ops.zig");
 const arr_draw = @import("views/arrangement/draw.zig");
 
 const SessionView = session_view.SessionView;
@@ -701,6 +702,13 @@ pub const State = struct {
             },
             .arrangement_track_add => |c| {
                 arr_undo.executeTrackAdd(&self.arrangement, c, if (direction == .undo) .undo else .redo);
+            },
+            .arrangement_track_reorder => |c| {
+                if (direction == .undo) {
+                    arr_ops.reorderTrack(&self.arrangement, c.to, c.from);
+                } else {
+                    arr_ops.reorderTrack(&self.arrangement, c.from, c.to);
+                }
             },
             .track_delete => |c| {
                 if (direction == .undo) {

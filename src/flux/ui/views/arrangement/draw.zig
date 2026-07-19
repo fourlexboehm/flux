@@ -4,6 +4,7 @@ const colors = @import("../../theme/colors.zig");
 const tokens = @import("../../theme/tokens.zig");
 const widgets = @import("../../theme/widgets.zig");
 const selection = @import("../../input/selection.zig");
+const edit_actions = @import("../../input/edit_actions.zig");
 
 const arr_types = @import("../../../arrangement/types.zig");
 const arr_ops = @import("../../../arrangement/ops.zig");
@@ -67,6 +68,21 @@ const DragState = struct {
 
 pub var drag: DragState = .{};
 pub var area_select: selection.DragSelectState = .{};
+var context_tick: i64 = 0;
+var context_track: ?usize = null;
+
+const EditContext = struct {
+    view: *arr_types.ArrangementView,
+    history: *undo.UndoHistory,
+};
+
+fn deleteAction(ctx: *EditContext) void {
+    deleteSelectedWithTrackShift(ctx.view, ctx.history);
+}
+
+fn selectAllAction(ctx: *EditContext) void {
+    ctx.view.selectAllClips();
+}
 
 pub fn draw(
     view: *arr_types.ArrangementView,
@@ -91,7 +107,7 @@ pub fn draw(
     const draw_list = zgui.getWindowDrawList();
     const mouse = zgui.getMousePos();
 
-    drawToolbar(view, history, ui_scale);
+    drawToolbar(view, mixer, history, ui_scale);
 
     const avail = zgui.getContentRegionAvail();
     const canvas_w = avail[0];
@@ -318,14 +334,19 @@ pub fn draw(
     // ── Keyboard shortcuts ──
     if (is_focused and !zgui.isAnyItemActive()) {
         const mod_down = selection.isModifierDown();
-        if (zgui.isKeyPressed(.delete, false) or zgui.isKeyPressed(.back_space, false)) {
-            deleteSelectedWithTrackShift(view, history);
-        }
+        var edit_ctx = EditContext{ .view = view, .history = history };
+        edit_actions.handleShortcuts(&edit_ctx, mod_down, .{
+            .has_selection = view.hasSelection(),
+            .can_paste = false,
+        }, .{
+            .delete = deleteAction,
+            .select_all = selectAllAction,
+        });
         if (mod_down and zgui.isKeyPressed(.d, false)) {
             duplicateSelectedClips(view, history);
         }
         if (mod_down and zgui.isKeyPressed(.t, false)) {
-            addTrack(view, history);
+            addTrack(view, mixer, history);
         }
     }
 
@@ -334,20 +355,40 @@ pub fn draw(
         const in_lanes = mouse[0] >= lanes_pos[0] and mouse[0] <= lanes_pos[0] + timeline_w and
             mouse[1] >= lanes_pos[1] and mouse[1] <= lanes_pos[1] + track_area_visible_h;
         if (is_focused and in_lanes and zgui.isMouseClicked(.right) and !zgui.isAnyItemActive()) {
+            context_tick = arr_timeline.pixelToTick(mouse[0] - lanes_pos[0] + scroll.scroll_x, view.zoom, pixels_per_beat);
+            const track_y = (mouse[1] - lanes_pos[1] + scroll.scroll_y) / lane_h;
+            context_track = if (track_y >= 0 and track_y < @as(f32, @floatFromInt(view.tracks.items.len)))
+                @intFromFloat(@floor(track_y))
+            else
+                null;
             zgui.openPopup("arr_ctx", .{});
         }
         if (zgui.beginPopup("arr_ctx", .{})) {
+            var edit_ctx = EditContext{ .view = view, .history = history };
+            _ = edit_actions.drawMenu(&edit_ctx, .{
+                .has_selection = view.hasSelection(),
+                .can_paste = false,
+            }, .{
+                .delete = deleteAction,
+                .select_all = selectAllAction,
+            });
             if (view.hasSelection()) {
-                if (zgui.menuItem("Delete", .{ .shortcut = "Del" })) {
-                    deleteSelectedWithTrackShift(view, history);
-                }
                 if (zgui.menuItem("Duplicate", .{ .shortcut = "Ctrl+D" })) {
                     duplicateSelectedClips(view, history);
                 }
+                if (zgui.menuItem("Split at Cursor", .{})) splitSelectedAt(view, history, context_tick);
                 zgui.separator();
             }
+            const selected_track = context_track orelse firstSelectedTrack(view);
+            if (zgui.menuItem("Move Track Up", .{ .enabled = selected_track != null and selected_track.? > 0 })) {
+                reorderSelectedTrack(view, history, selected_track.?, selected_track.? - 1);
+            }
+            if (zgui.menuItem("Move Track Down", .{ .enabled = selected_track != null and selected_track.? + 1 < view.tracks.items.len })) {
+                reorderSelectedTrack(view, history, selected_track.?, selected_track.? + 1);
+            }
+            zgui.separator();
             if (zgui.menuItem("Add Track", .{ .shortcut = "Ctrl+T" })) {
-                addTrack(view, history);
+                addTrack(view, mixer, history);
             }
             zgui.endPopup();
         }
@@ -377,6 +418,8 @@ fn processLaneEvent(
             if (!view.tracks.items[evt.track].clips.items[evt.clip_index].selected) {
                 arr_ops.selectClip(view, evt.track, evt.clip_index, false);
             }
+            context_tick = arr_timeline.pixelToTick(zgui.getMousePos()[0] - lanes_pos[0] + scroll.scroll_x, view.zoom, pixels_per_beat);
+            context_track = evt.track;
             zgui.openPopup("arr_ctx", .{});
         },
         .start_drag => {
@@ -437,9 +480,6 @@ fn processLaneEvent(
         },
         else => {},
     }
-    _ = scroll;
-    _ = pixels_per_beat;
-    _ = lanes_pos;
 }
 
 fn updateDrag(
@@ -610,21 +650,88 @@ fn pushCreatedClip(history: *undo.UndoHistory, view: *arr_types.ArrangementView,
     history.push(.{ .arrangement_edit = .{ .changes = changes } });
 }
 
-fn addTrack(view: *arr_types.ArrangementView, history: *undo.UndoHistory) void {
+fn firstSelectedTrack(view: *const arr_types.ArrangementView) ?usize {
+    for (view.tracks.items, 0..) |track, ti| {
+        for (track.clips.items) |clip| if (clip.selected) return ti;
+    }
+    return null;
+}
+
+fn reorderSelectedTrack(view: *arr_types.ArrangementView, history: *undo.UndoHistory, from: usize, to: usize) void {
+    arr_ops.reorderTrack(view, from, to);
+    history.push(.{ .arrangement_track_reorder = .{ .from = from, .to = to } });
+}
+
+fn splitSelectedAt(view: *arr_types.ArrangementView, history: *undo.UndoHistory, tick: i64) void {
+    for (view.tracks.items, 0..) |track, ti| {
+        for (track.clips.items, 0..) |clip, ci| {
+            if (!clip.selected or tick <= clip.start_tick or tick >= clip.endTick()) continue;
+            const before = arr_undo.captureClip(history.allocator, ti, ci, &clip) catch return;
+            const new_idx = (arr_ops.splitClip(view, ti, ci, tick, view.snap_division_ticks) catch {
+                arr_undo.deinitCaptured(history.allocator, before);
+                return;
+            }) orelse {
+                arr_undo.deinitCaptured(history.allocator, before);
+                return;
+            };
+            const after_left = arr_undo.captureClip(history.allocator, ti, ci, &view.tracks.items[ti].clips.items[ci]) catch {
+                rollbackSplit(view, ti, ci, new_idx, before.clip.duration_ticks);
+                arr_undo.deinitCaptured(history.allocator, before);
+                return;
+            };
+            const after_right = arr_undo.captureClip(history.allocator, ti, new_idx, &view.tracks.items[ti].clips.items[new_idx]) catch {
+                rollbackSplit(view, ti, ci, new_idx, before.clip.duration_ticks);
+                arr_undo.deinitCaptured(history.allocator, after_left);
+                arr_undo.deinitCaptured(history.allocator, before);
+                return;
+            };
+            const changes = history.allocator.alloc(undo.ArrangementClipChange, 2) catch {
+                rollbackSplit(view, ti, ci, new_idx, before.clip.duration_ticks);
+                arr_undo.deinitCaptured(history.allocator, after_right);
+                arr_undo.deinitCaptured(history.allocator, after_left);
+                arr_undo.deinitCaptured(history.allocator, before);
+                return;
+            };
+            changes[0] = .{ .before = before, .after = after_left };
+            changes[1] = .{ .after = after_right };
+            history.push(.{ .arrangement_edit = .{ .changes = changes } });
+            return;
+        }
+    }
+}
+
+fn rollbackSplit(view: *arr_types.ArrangementView, track: usize, left: usize, right: usize, duration_ticks: i64) void {
+    arr_ops.deleteClip(view, track, right);
+    const clip = &view.tracks.items[track].clips.items[left];
+    clip.duration_ticks = duration_ticks;
+    if (clip.midi) |*midi| midi.length_beats = @as(f32, @floatFromInt(duration_ticks)) / @as(f32, @floatFromInt(arr_timeline.ppq));
+}
+
+fn addTrack(view: *arr_types.ArrangementView, mixer: *session_view.SessionView, history: *undo.UndoHistory) void {
+    const session_track_index = firstUnmappedSessionTrack(view, mixer.track_count) orelse return;
     const index = view.tracks.items.len;
     const color = colors.Colors.trackColor(index);
-    arr_ops.createTrack(view, index, "Track", color) catch return;
+    arr_ops.createTrack(view, session_track_index, "Track", color) catch return;
     history.push(.{ .arrangement_track_add = .{
         .index = index,
-        .session_track_index = index,
+        .session_track_index = session_track_index,
         .name = view.tracks.items[index].name,
         .color = color,
     } });
 }
 
+fn firstUnmappedSessionTrack(view: *const arr_types.ArrangementView, session_track_count: usize) ?usize {
+    var mapped: [@import("../../../session/constants.zig").max_tracks]bool = @splat(false);
+    for (view.tracks.items) |track| {
+        if (track.session_track_index < mapped.len) mapped[track.session_track_index] = true;
+    }
+    for (mapped[0..session_track_count], 0..) |used, index| if (!used) return index;
+    return null;
+}
+
 // ── Toolbar ──
 
-fn drawToolbar(view: *arr_types.ArrangementView, history: *undo.UndoHistory, ui_scale: f32) void {
+fn drawToolbar(view: *arr_types.ArrangementView, mixer: *session_view.SessionView, history: *undo.UndoHistory, ui_scale: f32) void {
     const control_h = zgui.getFrameHeight();
     const gap = tokens.gapTight(ui_scale);
     const row_y = zgui.getCursorPosY() + (tokens.controlH(.md, ui_scale) + 8 - control_h) * 0.5;
@@ -633,7 +740,7 @@ fn drawToolbar(view: *arr_types.ArrangementView, history: *undo.UndoHistory, ui_
     zgui.setCursorPosY(row_y);
 
     if (widgets.iconButton("##arr_add_track", .plus, ui_scale, "Add Track")) {
-        addTrack(view, history);
+        addTrack(view, mixer, history);
     }
     zgui.sameLine(.{ .spacing = gap });
     zgui.setCursorPosY(row_y);

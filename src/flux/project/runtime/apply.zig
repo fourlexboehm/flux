@@ -12,6 +12,7 @@ const ui_state = @import("../../ui/state.zig");
 const types = @import("../format/types.zig");
 const project_io = @import("../io.zig");
 const apply_clips = @import("apply_clips.zig");
+const apply_arrangement = @import("apply_arrangement.zig");
 const plugin_state = @import("plugin_state.zig");
 
 const track_count = session_constants.max_tracks;
@@ -91,6 +92,9 @@ pub fn applyDawprojectToState(
             if (channel.mute) |mute| {
                 state.session.tracks[t].mute = mute.value;
             }
+            if (channel.pan) |pan| {
+                state.session.tracks[t].pan = @floatCast(pan.value * 2.0 - 1.0);
+            }
             state.session.tracks[t].solo = channel.solo;
 
             // Handle CLAP plugins
@@ -132,6 +136,9 @@ pub fn applyDawprojectToState(
             }
             if (channel.mute) |mute| {
                 state.session.tracks[master_track_index].mute = mute.value;
+            }
+            if (channel.pan) |pan| {
+                state.session.tracks[master_track_index].pan = @floatCast(pan.value * 2.0 - 1.0);
             }
             if (channel.devices.len > 0) {
                 var fx_slot: usize = 0;

@@ -174,38 +174,45 @@ pub const PianoRollClip = struct {
     }
 
     pub fn copyFrom(self: *PianoRollClip, src: *const PianoRollClip) void {
+        self.copyFromFallible(src) catch self.clear();
+    }
+
+    pub fn copyFromFallible(self: *PianoRollClip, src: *const PianoRollClip) !void {
         self.clear();
+        errdefer self.clear();
         self.length_beats = src.length_beats;
         self.play_start_beats = src.play_start_beats;
         self.loop_start_beats = src.loop_start_beats;
         self.loop_end_beats = src.loop_end_beats;
         if (src.notes.items.len > 0) {
-            self.notes.appendSlice(self.allocator, src.notes.items) catch {};
+            try self.notes.appendSlice(self.allocator, src.notes.items);
         }
         for (src.automation.lanes.items) |lane| {
-            var lane_copy = AutomationLane{
-                .target_kind = lane.target_kind,
-                .target_id = "",
-                .param_id = null,
-                .unit = null,
-                .points = .empty,
+            var lane_copy = try cloneAutomationLane(self.allocator, lane);
+            self.automation.lanes.append(self.allocator, lane_copy) catch |err| {
+                deinitAutomationLane(self.allocator, &lane_copy);
+                return err;
             };
-            if (lane.target_id.len > 0) {
-                lane_copy.target_id = self.allocator.dupe(u8, lane.target_id) catch "";
-            }
-            if (lane.param_id) |param_id| {
-                lane_copy.param_id = self.allocator.dupe(u8, param_id) catch null;
-            }
-            if (lane.unit) |unit| {
-                lane_copy.unit = self.allocator.dupe(u8, unit) catch null;
-            }
-            if (lane.points.items.len > 0) {
-                lane_copy.points.appendSlice(self.allocator, lane.points.items) catch {};
-            }
-            self.automation.lanes.append(self.allocator, lane_copy) catch {};
         }
     }
 };
+
+fn cloneAutomationLane(allocator: std.mem.Allocator, src: AutomationLane) !AutomationLane {
+    var dst = AutomationLane{ .target_kind = src.target_kind };
+    errdefer deinitAutomationLane(allocator, &dst);
+    if (src.target_id.len > 0) dst.target_id = try allocator.dupe(u8, src.target_id);
+    if (src.param_id) |value| dst.param_id = try allocator.dupe(u8, value);
+    if (src.unit) |value| dst.unit = try allocator.dupe(u8, value);
+    try dst.points.appendSlice(allocator, src.points.items);
+    return dst;
+}
+
+fn deinitAutomationLane(allocator: std.mem.Allocator, lane: *AutomationLane) void {
+    if (lane.target_id.len > 0) allocator.free(lane.target_id);
+    if (lane.param_id) |value| allocator.free(value);
+    if (lane.unit) |value| allocator.free(value);
+    lane.points.deinit(allocator);
+}
 
 pub const DragMode = enum {
     none,
