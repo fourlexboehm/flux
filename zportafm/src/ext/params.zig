@@ -1,14 +1,8 @@
-const Params = @This();
-
 const std = @import("std");
 const clap = @import("clap-bindings");
-const tracy = @import("tracy");
-const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.io();
-
+const shared_params = @import("shared").ext.params;
 const Plugin = @import("../plugin.zig");
 const bridge = @import("../bridge.zig");
-
-const Info = clap.ext.params.Info;
 
 pub const mode_names = [_][]const u8{
     "Custom Patch",
@@ -23,7 +17,6 @@ pub const Parameter = enum {
     PitchWheelRange,
     FineTune,
     OutputLevel,
-
     ModAttack,
     CarAttack,
     ModDecay,
@@ -55,15 +48,12 @@ pub const ParameterValue = union(enum) {
     }
 };
 
-pub const ParameterArray = std.EnumArray(Parameter, ParameterValue);
-
 pub const param_defaults = std.enums.EnumFieldStruct(Parameter, ParameterValue, null){
     .VoiceMode = .{ .Float = 1.0 },
     .Instrument = .{ .Float = 3.0 },
     .PitchWheelRange = .{ .Float = 3.0 },
     .FineTune = .{ .Float = 0.0 },
     .OutputLevel = .{ .Float = 0.8 },
-
     .ModAttack = .{ .Float = 0.0 },
     .CarAttack = .{ .Float = 0.0 },
     .ModDecay = .{ .Float = 0.0 },
@@ -85,95 +75,16 @@ pub const param_defaults = std.enums.EnumFieldStruct(Parameter, ParameterValue, 
     .Bank = .{ .Float = 0.0 },
 };
 
-pub const param_count = std.meta.fieldNames(Parameter).len;
+pub const Store = shared_params.EnumStore(Parameter, ParameterValue, param_defaults);
+pub const ParameterArray = Store.ParameterArray;
+pub const param_count = Store.param_count;
+pub const defaults = param_defaults;
 
-values: ParameterArray = .init(param_defaults),
-mutex: std.Io.Mutex,
-events: std.ArrayList(clap.events.ParamValue),
-allocator: std.mem.Allocator,
+const wave_names = [_][]const u8{ "Std", "Alt" };
+const toggle_names = [_][]const u8{ "Off", "On" };
 
-pub fn init(allocator: std.mem.Allocator) Params {
-    return .{
-        .events = .empty,
-        .mutex = .init,
-        .allocator = allocator,
-    };
-}
-
-pub fn deinit(self: *Params) void {
-    self.events.deinit(self.allocator);
-}
-
-pub fn get(self: *Params, param: Parameter) ParameterValue {
-    self.mutex.lockUncancelable(mutex_io);
-    defer self.mutex.unlock(mutex_io);
-    return self.values.get(param);
-}
-
-const ParamSetFlags = struct {
-    should_notify_host: bool = false,
-};
-
-pub fn set(self: *Params, param: Parameter, val: ParameterValue, flags: ParamSetFlags) !void {
-    self.mutex.lockUncancelable(mutex_io);
-    defer self.mutex.unlock(mutex_io);
-    self.values.set(param, val);
-
-    if (flags.should_notify_host) {
-        const param_index: usize = @intFromEnum(param);
-        const event = clap.events.ParamValue{
-            .header = .{
-                .type = .param_value,
-                .size = @sizeOf(clap.events.ParamValue),
-                .space_id = clap.events.core_space_id,
-                .sample_offset = 0,
-                .flags = .{},
-            },
-            .note_id = .unspecified,
-            .channel = .unspecified,
-            .key = .unspecified,
-            .port_index = .unspecified,
-            .param_id = @enumFromInt(param_index),
-            .value = val.asFloat(),
-            .cookie = null,
-        };
-        try self.events.append(self.allocator, event);
-    }
-}
-
-pub inline fn create() clap.ext.params.Plugin {
-    return .{
-        .count = _count,
-        .getInfo = _getInfo,
-        .getValue = _getValue,
-        .valueToText = _valueToText,
-        .textToValue = _textToValue,
-        .flush = _flush,
-    };
-}
-
-fn _count(_: *const clap.Plugin) callconv(.c) u32 {
-    return @intCast(param_count);
-}
-
-fn copyString(dest: anytype, src: []const u8) void {
-    std.mem.copyForwards(u8, dest, src);
-}
-
-fn baseInfo(param: Parameter) Info {
-    return .{
-        .id = @enumFromInt(@intFromEnum(param)),
-        .flags = .{
-            .is_automatable = true,
-            .requires_process = true,
-        },
-        .cookie = null,
-        .name = @splat(0),
-        .module = @splat(0),
-        .min_value = 0.0,
-        .max_value = 1.0,
-        .default_value = 0.0,
-    };
+fn id(p: Parameter) u32 {
+    return @intFromEnum(p);
 }
 
 fn patchParamFor(param: Parameter) ?bridge.PatchParam {
@@ -200,28 +111,6 @@ fn patchParamFor(param: Parameter) ?bridge.PatchParam {
     };
 }
 
-fn toggleName(value: f64) []const u8 {
-    return if (value >= 0.5) "On" else "Off";
-}
-
-fn waveName(value: f64) []const u8 {
-    return if (value >= 0.5) "Alt" else "Std";
-}
-
-fn modeName(value: f64) []const u8 {
-    const index: usize = @intFromFloat(std.math.clamp(@round(value), 0.0, 1.0));
-    return mode_names[index];
-}
-
-fn bankName(value: f64) []const u8 {
-    const index: usize = @intFromFloat(std.math.clamp(
-        @round(value),
-        0.0,
-        @as(f64, @floatFromInt(bank_names.len - 1)),
-    ));
-    return bank_names[index];
-}
-
 fn bankFromValue(value: f64) bridge.ToneBank {
     const clamped = std.math.clamp(
         @round(value),
@@ -231,252 +120,59 @@ fn bankFromValue(value: f64) bridge.ToneBank {
     return bridge.toneBankFromInt(@intFromFloat(clamped));
 }
 
-fn currentBank(clap_plugin: *const clap.Plugin) bridge.ToneBank {
-    const plugin = Plugin.fromClapPlugin(clap_plugin);
-    return bankFromValue(plugin.params.get(.Bank).Float);
-}
-
 pub fn instrumentNames(plugin: *Plugin) []const []const u8 {
     return bridge.presetProgramNames(bankFromValue(plugin.params.get(.Bank).Float));
 }
 
-fn instrumentName(bank: bridge.ToneBank, value: f64) []const u8 {
-    const clamped = std.math.clamp(@round(value), 1.0, 15.0);
-    const index: usize = @as(usize, @intFromFloat(clamped)) - 1;
-    return bridge.presetProgramNames(bank)[index];
+pub fn meta(param: Parameter) shared_params.ParamDef {
+    const d = param_defaults;
+    const bank_max: f64 = @floatFromInt(bank_names.len - 1);
+    var def: shared_params.ParamDef = switch (param) {
+        .VoiceMode => .{ .id = id(param), .name = "Mode", .module = "Voice", .min = 0, .max = 1, .default = d.VoiceMode.Float, .stepped = true, .is_enum = true, .display = .labels, .labels = &mode_names },
+        .Instrument => .{ .id = id(param), .name = "Instrument", .module = "Voice", .min = 1, .max = 15, .default = d.Instrument.Float, .stepped = true, .is_enum = true },
+        .Bank => .{ .id = id(param), .name = "Bank", .module = "Voice", .min = 0, .max = bank_max, .default = d.Bank.Float, .stepped = true, .is_enum = true, .display = .labels, .labels = &bank_names },
+        .PitchWheelRange => .{ .id = id(param), .name = "Pitch Wheel", .module = "Performance", .min = 0, .max = 12, .default = d.PitchWheelRange.Float, .stepped = true, .display = .semitones },
+        .FineTune => .{ .id = id(param), .name = "Fine Tune", .module = "Performance", .min = -50, .max = 50, .default = d.FineTune.Float, .display = .cents },
+        .OutputLevel => .{ .id = id(param), .name = "Output", .module = "Output", .min = 0, .max = 1, .default = d.OutputLevel.Float, .display = .percent },
+        .ModAttack => .{ .id = id(param), .name = "Mod Attack", .module = "Patch/Modulator", .default = d.ModAttack.Float, .stepped = true },
+        .CarAttack => .{ .id = id(param), .name = "Car Attack", .module = "Patch/Carrier", .default = d.CarAttack.Float, .stepped = true },
+        .ModDecay => .{ .id = id(param), .name = "Mod Decay", .module = "Patch/Modulator", .default = d.ModDecay.Float, .stepped = true },
+        .CarDecay => .{ .id = id(param), .name = "Car Decay", .module = "Patch/Carrier", .default = d.CarDecay.Float, .stepped = true },
+        .ModSustain => .{ .id = id(param), .name = "Mod Sustain", .module = "Patch/Modulator", .default = d.ModSustain.Float, .stepped = true },
+        .CarSustain => .{ .id = id(param), .name = "Car Sustain", .module = "Patch/Carrier", .default = d.CarSustain.Float, .stepped = true },
+        .ModRelease => .{ .id = id(param), .name = "Mod Release", .module = "Patch/Modulator", .default = d.ModRelease.Float, .stepped = true },
+        .CarRelease => .{ .id = id(param), .name = "Car Release", .module = "Patch/Carrier", .default = d.CarRelease.Float, .stepped = true },
+        .ModMultiplier => .{ .id = id(param), .name = "Mod Mult", .module = "Patch/Modulator", .default = d.ModMultiplier.Float, .stepped = true },
+        .CarMultiplier => .{ .id = id(param), .name = "Car Mult", .module = "Patch/Carrier", .default = d.CarMultiplier.Float, .stepped = true },
+        .Feedback => .{ .id = id(param), .name = "Feedback", .module = "Patch/Global", .default = d.Feedback.Float, .stepped = true },
+        .ModLevel => .{ .id = id(param), .name = "Mod Level", .module = "Patch/Global", .default = d.ModLevel.Float, .stepped = true },
+        .ModWave => .{ .id = id(param), .name = "Mod Wave", .module = "Patch/Modulator", .default = d.ModWave.Float, .stepped = true, .is_enum = true, .display = .labels, .labels = &wave_names },
+        .CarWave => .{ .id = id(param), .name = "Car Wave", .module = "Patch/Carrier", .default = d.CarWave.Float, .stepped = true, .is_enum = true, .display = .labels, .labels = &wave_names },
+        .ModTremolo => .{ .id = id(param), .name = "Mod Tremolo", .module = "Patch/Modulator", .default = d.ModTremolo.Float, .stepped = true, .is_enum = true, .display = .labels, .labels = &toggle_names },
+        .CarTremolo => .{ .id = id(param), .name = "Car Tremolo", .module = "Patch/Carrier", .default = d.CarTremolo.Float, .stepped = true, .is_enum = true, .display = .labels, .labels = &toggle_names },
+        .ModVibrato => .{ .id = id(param), .name = "Mod Vibrato", .module = "Patch/Modulator", .default = d.ModVibrato.Float, .stepped = true, .is_enum = true, .display = .labels, .labels = &toggle_names },
+        .CarVibrato => .{ .id = id(param), .name = "Car Vibrato", .module = "Patch/Carrier", .default = d.CarVibrato.Float, .stepped = true, .is_enum = true, .display = .labels, .labels = &toggle_names },
+    };
+    def.requires_process = true;
+    return def;
 }
 
-fn getParamInfo(param: Parameter) Info {
-    var info = baseInfo(param);
-
-    switch (param) {
-        .VoiceMode => {
-            info.default_value = param_defaults.VoiceMode.Float;
-            info.max_value = 1.0;
-            info.flags.is_stepped = true;
-            info.flags.is_enum = true;
-            copyString(&info.name, "Mode");
-            copyString(&info.module, "Voice");
-        },
-        .Instrument => {
-            info.default_value = param_defaults.Instrument.Float;
-            info.min_value = 1.0;
-            info.max_value = 15.0;
-            info.flags.is_stepped = true;
-            info.flags.is_enum = true;
-            copyString(&info.name, "Instrument");
-            copyString(&info.module, "Voice");
-        },
-        .Bank => {
-            info.default_value = param_defaults.Bank.Float;
-            info.min_value = 0.0;
-            info.max_value = @floatFromInt(bank_names.len - 1);
-            info.flags.is_stepped = true;
-            info.flags.is_enum = true;
-            copyString(&info.name, "Bank");
-            copyString(&info.module, "Voice");
-        },
-        .PitchWheelRange => {
-            info.default_value = param_defaults.PitchWheelRange.Float;
-            info.min_value = 0.0;
-            info.max_value = 12.0;
-            info.flags.is_stepped = true;
-            copyString(&info.name, "Pitch Wheel");
-            copyString(&info.module, "Performance");
-        },
-        .FineTune => {
-            info.default_value = param_defaults.FineTune.Float;
-            info.min_value = -50.0;
-            info.max_value = 50.0;
-            copyString(&info.name, "Fine Tune");
-            copyString(&info.module, "Performance");
-        },
-        .OutputLevel => {
-            info.default_value = param_defaults.OutputLevel.Float;
-            info.min_value = 0.0;
-            info.max_value = 1.0;
-            copyString(&info.name, "Output");
-            copyString(&info.module, "Output");
-        },
-        .ModAttack => {
-            info.default_value = param_defaults.ModAttack.Float;
-            info.flags.is_stepped = true;
-            copyString(&info.name, "Mod Attack");
-            copyString(&info.module, "Patch/Modulator");
-        },
-        .CarAttack => {
-            info.default_value = param_defaults.CarAttack.Float;
-            info.flags.is_stepped = true;
-            copyString(&info.name, "Car Attack");
-            copyString(&info.module, "Patch/Carrier");
-        },
-        .ModDecay => {
-            info.default_value = param_defaults.ModDecay.Float;
-            info.flags.is_stepped = true;
-            copyString(&info.name, "Mod Decay");
-            copyString(&info.module, "Patch/Modulator");
-        },
-        .CarDecay => {
-            info.default_value = param_defaults.CarDecay.Float;
-            info.flags.is_stepped = true;
-            copyString(&info.name, "Car Decay");
-            copyString(&info.module, "Patch/Carrier");
-        },
-        .ModSustain => {
-            info.default_value = param_defaults.ModSustain.Float;
-            info.flags.is_stepped = true;
-            copyString(&info.name, "Mod Sustain");
-            copyString(&info.module, "Patch/Modulator");
-        },
-        .CarSustain => {
-            info.default_value = param_defaults.CarSustain.Float;
-            info.flags.is_stepped = true;
-            copyString(&info.name, "Car Sustain");
-            copyString(&info.module, "Patch/Carrier");
-        },
-        .ModRelease => {
-            info.default_value = param_defaults.ModRelease.Float;
-            info.flags.is_stepped = true;
-            copyString(&info.name, "Mod Release");
-            copyString(&info.module, "Patch/Modulator");
-        },
-        .CarRelease => {
-            info.default_value = param_defaults.CarRelease.Float;
-            info.flags.is_stepped = true;
-            copyString(&info.name, "Car Release");
-            copyString(&info.module, "Patch/Carrier");
-        },
-        .ModMultiplier => {
-            info.default_value = param_defaults.ModMultiplier.Float;
-            info.flags.is_stepped = true;
-            copyString(&info.name, "Mod Mult");
-            copyString(&info.module, "Patch/Modulator");
-        },
-        .CarMultiplier => {
-            info.default_value = param_defaults.CarMultiplier.Float;
-            info.flags.is_stepped = true;
-            copyString(&info.name, "Car Mult");
-            copyString(&info.module, "Patch/Carrier");
-        },
-        .Feedback => {
-            info.default_value = param_defaults.Feedback.Float;
-            info.flags.is_stepped = true;
-            copyString(&info.name, "Feedback");
-            copyString(&info.module, "Patch/Global");
-        },
-        .ModLevel => {
-            info.default_value = param_defaults.ModLevel.Float;
-            info.flags.is_stepped = true;
-            copyString(&info.name, "Mod Level");
-            copyString(&info.module, "Patch/Global");
-        },
-        .ModWave => {
-            info.default_value = param_defaults.ModWave.Float;
-            info.flags.is_stepped = true;
-            info.flags.is_enum = true;
-            copyString(&info.name, "Mod Wave");
-            copyString(&info.module, "Patch/Modulator");
-        },
-        .CarWave => {
-            info.default_value = param_defaults.CarWave.Float;
-            info.flags.is_stepped = true;
-            info.flags.is_enum = true;
-            copyString(&info.name, "Car Wave");
-            copyString(&info.module, "Patch/Carrier");
-        },
-        .ModTremolo => {
-            info.default_value = param_defaults.ModTremolo.Float;
-            info.flags.is_stepped = true;
-            info.flags.is_enum = true;
-            copyString(&info.name, "Mod Tremolo");
-            copyString(&info.module, "Patch/Modulator");
-        },
-        .CarTremolo => {
-            info.default_value = param_defaults.CarTremolo.Float;
-            info.flags.is_stepped = true;
-            info.flags.is_enum = true;
-            copyString(&info.name, "Car Tremolo");
-            copyString(&info.module, "Patch/Carrier");
-        },
-        .ModVibrato => {
-            info.default_value = param_defaults.ModVibrato.Float;
-            info.flags.is_stepped = true;
-            info.flags.is_enum = true;
-            copyString(&info.name, "Mod Vibrato");
-            copyString(&info.module, "Patch/Modulator");
-        },
-        .CarVibrato => {
-            info.default_value = param_defaults.CarVibrato.Float;
-            info.flags.is_stepped = true;
-            info.flags.is_enum = true;
-            copyString(&info.name, "Car Vibrato");
-            copyString(&info.module, "Patch/Carrier");
-        },
-    }
-
-    return info;
-}
-
-pub fn _getInfo(_: *const clap.Plugin, index: u32, info: *Info) callconv(.c) bool {
-    if (index >= param_count) return false;
-    const param: Parameter = @enumFromInt(index);
-    info.* = getParamInfo(param);
-    return true;
-}
-
-fn _getValue(clap_plugin: *const clap.Plugin, param_id: clap.Id, value: *f64) callconv(.c) bool {
-    const plugin = Plugin.fromClapPlugin(clap_plugin);
-    const index = @intFromEnum(param_id);
-    if (index >= param_count) return false;
-    const param: Parameter = @enumFromInt(index);
-    value.* = plugin.params.get(param).Float;
-    return true;
-}
-
-pub fn _valueToText(
+fn valueToText(
     clap_plugin: *const clap.Plugin,
-    param_id: clap.Id,
+    param: Parameter,
     value: f64,
     buffer: [*]u8,
     size: u32,
-) callconv(.c) bool {
-    const index = @intFromEnum(param_id);
-    if (index >= param_count) return false;
-
+) bool {
     const out = buffer[0..@intCast(size)];
-    const param: Parameter = @enumFromInt(index);
-
     switch (param) {
-        .VoiceMode => {
-            _ = std.fmt.bufPrintSentinel(out, "{s}", .{modeName(value)}, 0) catch return false;
-            return true;
-        },
-        .Bank => {
-            _ = std.fmt.bufPrintSentinel(out, "{s}", .{bankName(value)}, 0) catch return false;
-            return true;
-        },
         .Instrument => {
-            _ = std.fmt.bufPrintSentinel(out, "{s}", .{instrumentName(currentBank(clap_plugin), value)}, 0) catch return false;
-            return true;
-        },
-        .PitchWheelRange => {
-            _ = std.fmt.bufPrintSentinel(out, "{d:.0} st", .{value}, 0) catch return false;
-            return true;
-        },
-        .FineTune => {
-            _ = std.fmt.bufPrintSentinel(out, "{d:.1} ct", .{value}, 0) catch return false;
-            return true;
-        },
-        .OutputLevel => {
-            _ = std.fmt.bufPrintSentinel(out, "{d:.0}%", .{value * 100.0}, 0) catch return false;
-            return true;
-        },
-        .ModWave, .CarWave => {
-            _ = std.fmt.bufPrintSentinel(out, "{s}", .{waveName(value)}, 0) catch return false;
-            return true;
-        },
-        .ModTremolo, .CarTremolo, .ModVibrato, .CarVibrato => {
-            _ = std.fmt.bufPrintSentinel(out, "{s}", .{toggleName(value)}, 0) catch return false;
+            const plugin = Plugin.fromClapPlugin(clap_plugin);
+            const bank = bankFromValue(plugin.params.get(.Bank).Float);
+            const clamped = std.math.clamp(@round(value), 1.0, 15.0);
+            const index: usize = @as(usize, @intFromFloat(clamped)) - 1;
+            const name = bridge.presetProgramNames(bank)[index];
+            _ = std.fmt.bufPrintSentinel(out, "{s}", .{name}, 0) catch return false;
             return true;
         },
         else => {
@@ -488,27 +184,23 @@ pub fn _valueToText(
     }
 }
 
-fn parseFloatWithOptionalSuffix(text: []const u8, suffix: []const u8) ?f64 {
-    var parse_slice = text;
-    if (suffix.len > 0 and std.mem.endsWith(u8, text, suffix)) {
-        parse_slice = text[0 .. text.len - suffix.len];
-    }
-    return std.fmt.parseFloat(f64, std.mem.trim(u8, parse_slice, " \t")) catch null;
-}
-
-fn _textToValue(
+fn textToValue(
     clap_plugin: *const clap.Plugin,
-    param_id: clap.Id,
-    text: [*:0]const u8,
+    param: Parameter,
+    slice: []const u8,
     value: *f64,
-) callconv(.c) bool {
-    const index = @intFromEnum(param_id);
-    if (index >= param_count) return false;
-
-    const param: Parameter = @enumFromInt(index);
-    const slice = std.mem.trim(u8, std.mem.span(text), " \t");
-
+) bool {
     switch (param) {
+        .Instrument => {
+            const plugin = Plugin.fromClapPlugin(clap_plugin);
+            for (bridge.presetProgramNames(bankFromValue(plugin.params.get(.Bank).Float)), 0..) |name, i| {
+                if (std.ascii.eqlIgnoreCase(slice, name)) {
+                    value.* = @floatFromInt(i + 1);
+                    return true;
+                }
+            }
+            return false;
+        },
         .VoiceMode => {
             if (std.ascii.eqlIgnoreCase(slice, "custom") or std.ascii.eqlIgnoreCase(slice, "custom patch")) {
                 value.* = 0.0;
@@ -518,113 +210,26 @@ fn _textToValue(
                 value.* = 1.0;
                 return true;
             }
+            return false;
         },
-        .Bank => {
-            for (bank_names, 0..) |name, i| {
-                if (std.ascii.eqlIgnoreCase(slice, name)) {
-                    value.* = @floatFromInt(i);
-                    return true;
-                }
-            }
-        },
-        .Instrument => {
-            for (bridge.presetProgramNames(currentBank(clap_plugin)), 0..) |name, i| {
-                if (std.ascii.eqlIgnoreCase(slice, name)) {
-                    value.* = @floatFromInt(i + 1);
-                    return true;
-                }
-            }
-        },
-        .ModWave, .CarWave => {
-            if (std.ascii.eqlIgnoreCase(slice, "std")) {
-                value.* = 0.0;
-                return true;
-            }
-            if (std.ascii.eqlIgnoreCase(slice, "alt")) {
-                value.* = 1.0;
-                return true;
-            }
-        },
-        .ModTremolo, .CarTremolo, .ModVibrato, .CarVibrato => {
-            if (std.ascii.eqlIgnoreCase(slice, "off")) {
-                value.* = 0.0;
-                return true;
-            }
-            if (std.ascii.eqlIgnoreCase(slice, "on")) {
-                value.* = 1.0;
-                return true;
-            }
-        },
-        else => {},
-    }
-
-    const parsed = switch (param) {
-        .PitchWheelRange => parseFloatWithOptionalSuffix(slice, "st"),
-        .FineTune => parseFloatWithOptionalSuffix(slice, "ct"),
-        .OutputLevel => blk: {
-            if (std.mem.endsWith(u8, slice, "%")) {
-                if (parseFloatWithOptionalSuffix(slice, "%")) |percent| {
-                    break :blk percent / 100.0;
-                }
-            }
-            break :blk parseFloatWithOptionalSuffix(slice, "");
-        },
-        else => parseFloatWithOptionalSuffix(slice, ""),
-    } orelse return false;
-
-    value.* = parsed;
-    return true;
-}
-
-fn processEvent(plugin: *Plugin, event: *const clap.events.Header) bool {
-    if (event.space_id != clap.events.core_space_id) {
-        return false;
-    }
-    if (event.type == .param_value) {
-        const param_event: *align(1) const clap.events.ParamValue = @ptrCast(event);
-        const index = @intFromEnum(param_event.param_id);
-        if (index >= param_count) return false;
-
-        const param: Parameter = @enumFromInt(index);
-        plugin.params.set(param, .{ .Float = param_event.value }, .{}) catch unreachable;
-        return true;
-    }
-    return false;
-}
-
-pub fn _flush(
-    clap_plugin: *const clap.Plugin,
-    input_events: *const clap.events.InputEvents,
-    output_events: *const clap.events.OutputEvents,
-) callconv(.c) void {
-    const zone = tracy.ZoneN(@src(), "Flush parameters");
-    defer zone.End();
-
-    const plugin = Plugin.fromClapPlugin(clap_plugin);
-    var params_did_change = false;
-
-    for (0..input_events.size(input_events)) |i| {
-        const event = input_events.get(input_events, @intCast(i));
-        if (processEvent(plugin, event)) {
-            params_did_change = true;
-        }
-    }
-
-    if (plugin.params.mutex.tryLock()) {
-        defer plugin.params.mutex.unlock(mutex_io);
-
-        if (plugin.params.events.items.len > 0) {
-            params_did_change = true;
-        }
-        while (plugin.params.events.pop()) |event_value| {
-            var event = event_value;
-            if (!output_events.tryPush(output_events, &event.header)) {
-                std.debug.panic("Unable to push parameter event to host", .{});
-            }
-        }
-    }
-
-    if (params_did_change) {
-        plugin.applyParamChanges(true);
+        else => return false,
     }
 }
+
+const clap_ext = shared_params.enumCreate(
+    Plugin,
+    Parameter,
+    ParameterValue,
+    meta,
+    shared_params.fromFloatOnly(Parameter, ParameterValue),
+    valueToText,
+    textToValue,
+);
+
+pub fn create() clap.ext.params.Plugin {
+    return clap_ext;
+}
+
+pub const _flush = clap_ext.flush;
+pub const _getInfo = clap_ext.getInfo;
+pub const _valueToText = clap_ext.valueToText;

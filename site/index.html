@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Flux — A fast, native music production studio</title>
+  <meta name="description" content="Flux is a free and open-source digital audio workstation. Native performance, ultra-low latency, CLAP plugins, and an open project format. For macOS and Linux." />
+
+  <!-- Open Graph / social -->
+  <meta property="og:title" content="Flux — Make music, natively" />
+  <meta property="og:description" content="A free, open-source DAW built for speed. Ultra-low latency, CLAP plugins, built-in instruments and effects. macOS & Linux." />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="og.svg" />
+  <meta name="theme-color" content="#0a0a12" />
+
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="preconnect" href="https://codeberg.org" />
+</head>
+<body>
+  <!-- Ambient background -->
+  <div class="bg-aurora" aria-hidden="true"></div>
+  <div class="bg-grid" aria-hidden="true"></div>
+
+  <!-- ─────────────  NAV  ───────────── -->
+  <header class="nav">
+    <a class="brand" href="#top" aria-label="Flux home">
+      <svg class="brand-mark" viewBox="0 0 32 32" width="30" height="30" aria-hidden="true">
+        <use href="#logo" />
+      </svg>
+      <span class="brand-name">Flux</span>
+    </a>
+    <nav class="nav-links">
+      <a href="#features">Features</a>
+      <a href="#instruments">Sound</a>
+      <a href="#open">Open</a>
+      <a href="#download">Download</a>
+      <a class="ghost" href="https://codeberg.org/fellowtraveler/flux" rel="noopener">Source ↗</a>
+    </nav>
+  </header>
+
+  <!-- ─────────────  HERO  ───────────── -->
+  <main id="top">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Free &amp; open source · macOS &amp; Linux</p>
+        <h1>Your studio,<br /><span class="grad">running at native speed.</span></h1>
+        <p class="lede">
+          Flux is a modern digital audio workstation built from the metal up for
+          low-latency performance. Record, sequence, and mix with built-in
+          instruments, real CLAP plugins, and a project format that isn&rsquo;t
+          locked to one vendor.
+        </p>
+        <div class="hero-cta">
+          <a class="btn btn-primary" id="hero-download" href="#download">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 3v11m0 0l-4-4m4 4l4-4M5 20h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span id="hero-download-label">Download Flux</span>
+          </a>
+          <a class="btn btn-ghost" href="https://codeberg.org/fellowtraveler/flux" rel="noopener">View the code</a>
+        </div>
+        <p class="hero-meta">No account. No subscription. No telemetry.</p>
+      </div>
+
+      <!-- Real Flux screenshot in a window frame -->
+      <div class="hero-visual">
+        <figure class="daw-card">
+          <div class="daw-top">
+            <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+            <span class="daw-title">flux — untitled.dawproject</span>
+          </div>
+          <img class="daw-shot" src="screenshot.jpg" width="2554" height="1442"
+               alt="The Flux clip-launcher session view: four instrument tracks, a mixer with mute/solo/record and faders, and the device panel showing a Surge XT preset." />
+        </figure>
+      </div>
+    </section>
+
+    <!-- ─────────────  TRUST STRIP  ───────────── -->
+    <section class="strip">
+      <div class="strip-item"><b>&lt; 5&nbsp;ms</b><span>round-trip latency</span></div>
+      <div class="strip-item"><b>CLAP</b><span>native plugin host</span></div>
+      <div class="strip-item"><b>.dawproject</b><span>open, portable format</span></div>
+      <div class="strip-item"><b>0</b><span>subscriptions</span></div>
+    </section>
+
+    <!-- ─────────────  FEATURES  ───────────── -->
+    <section id="features" class="section">
+      <h2 class="section-title">Everything you need to finish a track</h2>
+      <p class="section-sub">A complete workstation — not a demo. Built in Zig for speed you can feel.</p>
+
+      <div class="grid">
+        <article class="feature">
+          <div class="ficon">⚡</div>
+          <h3>Ridiculously low latency</h3>
+          <p>A lock-free, allocation-free audio engine keeps the signal path tight so playing feels immediate — even on modest hardware.</p>
+        </article>
+        <article class="feature">
+          <div class="ficon">🎛️</div>
+          <h3>Real CLAP plugins</h3>
+          <p>Host the modern, open CLAP plugin standard. Load your favourite synths and effects with sample-accurate automation.</p>
+        </article>
+        <article class="feature">
+          <div class="ficon">🎹</div>
+          <h3>MIDI recording &amp; sequencing</h3>
+          <p>Capture performances with a built-in metronome and tight clip recording, then arrange them on a clean timeline.</p>
+        </article>
+        <article class="feature">
+          <div class="ficon">🎚️</div>
+          <h3>Built-in mixing chain</h3>
+          <p>Ship-ready EQ, compressor, limiter and noise gate are included — mix and master without hunting for a single plugin.</p>
+        </article>
+        <article class="feature">
+          <div class="ficon">🔓</div>
+          <h3>No lock-in</h3>
+          <p>Projects are saved as <code>.dawproject</code> — an open interchange format. Move your work to Bitwig and back without conversion.</p>
+        </article>
+        <article class="feature">
+          <div class="ficon">🛡️</div>
+          <h3>Yours to keep</h3>
+          <p>Fully open source. No accounts, no cloud requirement, no telemetry, no rug-pull. What you download is what you run.</p>
+        </article>
+      </div>
+    </section>
+
+    <!-- ─────────────  SOUND / INSTRUMENTS  ───────────── -->
+    <section id="instruments" class="section split">
+      <div class="split-copy">
+        <p class="eyebrow">Sound on board</p>
+        <h2 class="section-title left">Instruments &amp; effects, included.</h2>
+        <p class="section-sub left">
+          Open a fresh project and start making noise. Flux ships with a
+          built-in synthesizer and a full processing chain, so your first idea
+          never has to wait on a download.
+        </p>
+        <ul class="check-list">
+          <li>Built-in polyphonic synthesizer</li>
+          <li>Parametric equalizer with multiple bands</li>
+          <li>Compressor with auto make-up gain</li>
+          <li>Brick-wall limiter &amp; noise gate</li>
+          <li>Sample import with clean external-media storage</li>
+        </ul>
+      </div>
+      <div class="split-visual" aria-hidden="true">
+        <div class="rack">
+          <div class="rack-unit"><span>EQ</span><div class="eq"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div>
+          <div class="rack-unit"><span>COMP</span><div class="meter"><div class="fill"></div></div></div>
+          <div class="rack-unit"><span>LIMIT</span><div class="meter"><div class="fill f2"></div></div></div>
+          <div class="rack-unit knobs"><span>SYNTH</span><div class="knob"></div><div class="knob"></div><div class="knob"></div><div class="knob"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─────────────  OPEN FORMAT  ───────────── -->
+    <section id="open" class="section banner">
+      <div class="banner-inner">
+        <h2 class="section-title">Built on an open format</h2>
+        <p class="section-sub">
+          Flux saves to <code>.dawproject</code> with audio stored as portable,
+          relative files beside your project — and a one-click <b>Pack</b> to
+          bundle everything into a single shareable file. Your music stays yours,
+          readable by other tools, forever.
+        </p>
+        <div class="format-row">
+          <div class="fmt"><b>Save</b><span>Thin project, external audio</span></div>
+          <div class="fmt-arrow">→</div>
+          <div class="fmt"><b>Pack</b><span>One self-contained file</span></div>
+          <div class="fmt-arrow">→</div>
+          <div class="fmt"><b>Share</b><span>Opens in Bitwig &amp; more</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ─────────────  DOWNLOAD  ───────────── -->
+    <section id="download" class="section download">
+      <h2 class="section-title">Download Flux</h2>
+      <p class="section-sub">Free, forever. Pick your platform and start making music.</p>
+
+      <div class="dl-grid">
+        <a class="dl-card" id="dl-macos" href="https://codeberg.org/fellowtraveler/flux/releases/latest" rel="noopener">
+          <svg viewBox="0 0 24 24" width="40" height="40" aria-hidden="true"><path fill="currentColor" d="M16.4 12.9c0-2.3 1.9-3.4 2-3.5-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.8-3.5.8s-1.8-.8-3-.8c-1.5 0-3 .9-3.8 2.3-1.6 2.8-.4 7 1.2 9.3.8 1.1 1.7 2.4 3 2.3 1.2-.1 1.6-.8 3-.8s1.8.8 3 .8c1.2 0 2-1.1 2.8-2.2.9-1.3 1.2-2.5 1.3-2.6-.1 0-2.4-1-2.4-3.8zM14.2 6.3c.6-.8 1-1.9.9-3-.9 0-2 .6-2.7 1.4-.6.7-1.1 1.8-.9 2.9 1 .1 2-.5 2.7-1.3z"/></svg>
+          <h3>macOS</h3>
+          <p>Apple Silicon (M1–M4)</p>
+          <span class="dl-action">Download →</span>
+        </a>
+
+        <a class="dl-card" id="dl-linux" href="https://codeberg.org/fellowtraveler/flux/releases/latest" rel="noopener">
+          <svg viewBox="0 0 24 24" width="40" height="40" aria-hidden="true"><path fill="currentColor" d="M12 2c-2 0-3 1.7-3 3.6 0 1.3.1 2.2-.5 3.2C7.6 10.3 6 11.8 6 14c0 1 .4 1.7.2 2.4-.2.7-1 1.2-1 2 0 .9.9 1.3 1.9 1.6 1 .3 2 .8 2.6 1.4.5.5 1.3.6 2.3.6s1.8-.1 2.3-.6c.6-.6 1.6-1.1 2.6-1.4 1-.3 1.9-.7 1.9-1.6 0-.8-.8-1.3-1-2-.2-.7.2-1.4.2-2.4 0-2.2-1.6-3.7-2.5-5.2-.6-1-.5-1.9-.5-3.2C15 3.7 14 2 12 2zm-1.6 4.2c.4 0 .7.4.7.9s-.3.9-.7.9-.7-.4-.7-.9.3-.9.7-.9zm3.2 0c.4 0 .7.4.7.9s-.3.9-.7.9-.7-.4-.7-.9.3-.9.7-.9zM12 9.3c.9 0 1.9.6 1.9 1.1 0 .3-.6.6-1.1.9-.3.2-.5.4-.8.4s-.5-.2-.8-.4c-.5-.3-1.1-.6-1.1-.9 0-.5 1-1.1 1.9-1.1z"/></svg>
+          <h3>Linux</h3>
+          <p>x86_64 · CLAP + standalone</p>
+          <span class="dl-action">Download →</span>
+        </a>
+
+        <a class="dl-card build" id="dl-source" href="https://codeberg.org/fellowtraveler/flux#building" rel="noopener">
+          <svg viewBox="0 0 24 24" width="40" height="40" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M8 6l-5 6 5 6m8-12l5 6-5 6"/></svg>
+          <h3>Build from source</h3>
+          <p>Windows &amp; everything else</p>
+          <span class="dl-action">zig build →</span>
+        </a>
+      </div>
+
+      <p class="dl-foot">
+        Looking for a specific version? Browse
+        <a href="https://codeberg.org/fellowtraveler/flux/releases" rel="noopener">all releases</a>.
+        Every build is produced automatically from source on Codeberg CI.
+      </p>
+    </section>
+  </main>
+
+  <!-- ─────────────  FOOTER  ───────────── -->
+  <footer class="footer">
+    <div class="footer-brand">
+      <svg viewBox="0 0 32 32" width="24" height="24" aria-hidden="true"><use href="#logo" /></svg>
+      <span>Flux</span>
+    </div>
+    <nav class="footer-links">
+      <a href="https://codeberg.org/fellowtraveler/flux" rel="noopener">Source</a>
+      <a href="https://codeberg.org/fellowtraveler/flux/releases" rel="noopener">Releases</a>
+      <a href="https://codeberg.org/fellowtraveler/flux/issues" rel="noopener">Report a bug</a>
+    </nav>
+    <p class="footer-note">Free &amp; open source. Made with Zig. Hosted on Codeberg Pages.</p>
+  </footer>
+
+  <!-- Shared SVG symbols -->
+  <svg width="0" height="0" style="position:absolute" aria-hidden="true">
+    <defs>
+      <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#7c5cff" />
+        <stop offset="0.5" stop-color="#2ee6c8" />
+        <stop offset="1" stop-color="#ff5c8a" />
+      </linearGradient>
+      <symbol id="logo" viewBox="0 0 32 32">
+        <rect x="3"  y="13" width="3.4" height="6"  rx="1.7" fill="url(#lg)"/>
+        <rect x="8.6" y="8"  width="3.4" height="16" rx="1.7" fill="url(#lg)"/>
+        <rect x="14.3" y="3"  width="3.4" height="26" rx="1.7" fill="url(#lg)"/>
+        <rect x="20"  y="9"  width="3.4" height="14" rx="1.7" fill="url(#lg)"/>
+        <rect x="25.6" y="13" width="3.4" height="6"  rx="1.7" fill="url(#lg)"/>
+      </symbol>
+    </defs>
+  </svg>
+
+  <script src="app.js" defer></script>
+</body>
+</html>

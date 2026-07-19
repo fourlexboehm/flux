@@ -1,27 +1,17 @@
-const Params = @This();
-
-const builtin = @import("builtin");
 const std = @import("std");
 const clap = @import("clap-bindings");
 const regex = @import("regex");
-const tracy = @import("tracy");
-const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.io();
+const shared_params = @import("shared").ext.params;
 
 const Plugin = @import("../plugin.zig");
 const Wave = @import("../audio/waves.zig").Wave;
-
 const FilterType = @import("../audio/filter.zig").FilterType;
 
-const Info = clap.ext.params.Info;
-
 pub const Parameter = enum {
-    // ADSR
     Attack,
     Decay,
     Sustain,
     Release,
-
-    // Oscillator
     WaveShape1,
     WaveShape2,
     Octave1,
@@ -30,14 +20,10 @@ pub const Parameter = enum {
     Pitch2,
     Mix,
     ScaleVoices,
-
-    // Filter
     FilterEnable,
     FilterType,
     FilterFreq,
     FilterQ,
-
-    // Debug params
     DebugBool1,
     DebugBool2,
 };
@@ -49,35 +35,20 @@ pub const ParameterValue = union(enum) {
     Bool: bool,
 
     pub fn asFloat(parameterValue: ParameterValue) f64 {
-        switch (parameterValue) {
-            .Float => {
-                return parameterValue.Float;
-            },
-            .Wave => {
-                return @floatFromInt(@intFromEnum(parameterValue.Wave));
-            },
-            .Filter => {
-                return @floatFromInt(@intFromEnum(parameterValue.Filter));
-            },
-            .Bool => {
-                if (parameterValue.Bool) {
-                    return 1.0;
-                } else {
-                    return 0.0;
-                }
-            },
-        }
+        return switch (parameterValue) {
+            .Float => |v| v,
+            .Wave => |w| @floatFromInt(@intFromEnum(w)),
+            .Filter => |f| @floatFromInt(@intFromEnum(f)),
+            .Bool => |b| if (b) 1.0 else 0.0,
+        };
     }
 };
-
-pub const ParameterArray = std.EnumArray(Parameter, ParameterValue);
 
 pub const param_defaults = std.enums.EnumFieldStruct(Parameter, ParameterValue, null){
     .Attack = .{ .Float = 5.0 },
     .Decay = .{ .Float = 5.0 },
     .Sustain = .{ .Float = 0.5 },
     .Release = .{ .Float = 200.0 },
-
     .WaveShape1 = .{ .Wave = Wave.Saw },
     .WaveShape2 = .{ .Wave = Wave.Sine },
     .Pitch1 = .{ .Float = 0.0 },
@@ -85,687 +56,182 @@ pub const param_defaults = std.enums.EnumFieldStruct(Parameter, ParameterValue, 
     .Octave1 = .{ .Float = 0.0 },
     .Octave2 = .{ .Float = -1.0 },
     .Mix = .{ .Float = 0.0 },
-
     .FilterEnable = .{ .Bool = false },
     .FilterType = .{ .Filter = FilterType.LowPass },
     .FilterFreq = .{ .Float = 20000 },
     .FilterQ = .{ .Float = 1.0 },
-
     .ScaleVoices = .{ .Bool = false },
-
     .DebugBool1 = .{ .Bool = false },
     .DebugBool2 = .{ .Bool = false },
 };
 
-pub const param_count = std.meta.fieldNames(Parameter).len;
-const max_queued_param_events = 128;
+pub const Store = shared_params.EnumStore(Parameter, ParameterValue, param_defaults);
+pub const ParameterArray = Store.ParameterArray;
+pub const param_count = Store.param_count;
+pub const defaults = param_defaults;
 
-values: ParameterArray = .init(param_defaults),
-mutex: std.Io.Mutex,
-events: std.ArrayList(clap.events.ParamValue),
-allocator: std.mem.Allocator,
+fn id(p: Parameter) u32 {
+    return @intFromEnum(p);
+}
 
-pub fn init(allocator: std.mem.Allocator) Params {
-    return .{
-        .events = .empty,
-        .mutex = .init,
-        .allocator = allocator,
+pub fn meta(param: Parameter) shared_params.ParamDef {
+    const d = param_defaults;
+    return switch (param) {
+        .Attack => .{ .id = id(param), .name = "Attack", .module = "Envelope", .min = 0, .max = 20000, .default = d.Attack.Float, .stepped = true },
+        .Decay => .{ .id = id(param), .name = "Decay", .module = "Envelope", .min = 0, .max = 20000, .default = d.Decay.Float, .stepped = true },
+        .Sustain => .{ .id = id(param), .name = "Sustain", .module = "Envelope", .min = 0, .max = 1, .default = d.Sustain.Float },
+        .Release => .{ .id = id(param), .name = "Release", .module = "Envelope", .min = 0, .max = 20000, .default = d.Release.Float, .stepped = true },
+        .WaveShape1 => .{ .id = id(param), .name = "Wave 1", .module = "Oscillator/1", .min = 0, .max = @floatFromInt(std.meta.fieldNames(Wave).len - 1), .default = d.WaveShape1.asFloat(), .stepped = true, .is_enum = true },
+        .WaveShape2 => .{ .id = id(param), .name = "Wave 2", .module = "Oscillator/2", .min = 0, .max = @floatFromInt(std.meta.fieldNames(Wave).len - 1), .default = d.WaveShape2.asFloat(), .stepped = true, .is_enum = true },
+        .Octave1 => .{ .id = id(param), .name = "Octave 1", .module = "Oscillator/1", .min = -3, .max = 3, .default = d.Octave1.Float, .stepped = true },
+        .Octave2 => .{ .id = id(param), .name = "Octave 2", .module = "Oscillator/2", .min = -3, .max = 3, .default = d.Octave2.Float, .stepped = true },
+        .Pitch1 => .{ .id = id(param), .name = "Pitch 1", .module = "Oscillator/1", .min = -12, .max = 12, .default = d.Pitch1.Float, .display = .semitones },
+        .Pitch2 => .{ .id = id(param), .name = "Pitch 2", .module = "Oscillator/2", .min = -12, .max = 12, .default = d.Pitch2.Float, .display = .semitones },
+        .Mix => .{ .id = id(param), .name = "Mix", .module = "Oscillator", .min = 0, .max = 1, .default = d.Mix.Float, .display = .percent },
+        .ScaleVoices => .{ .id = id(param), .name = "Scale Voices", .module = "Voices", .min = 0, .max = 1, .default = d.ScaleVoices.asFloat(), .stepped = true, .is_bool = true, .display = .bool_on_off },
+        .FilterEnable => .{ .id = id(param), .name = "Enable", .module = "Filter", .min = 0, .max = 1, .default = d.FilterEnable.asFloat(), .stepped = true, .is_bool = true, .display = .bool_on_off },
+        .FilterType => .{ .id = id(param), .name = "Type", .module = "Filter", .min = 0, .max = @floatFromInt(std.meta.fieldNames(FilterType).len - 1), .default = d.FilterType.asFloat(), .stepped = true, .is_enum = true },
+        .FilterFreq => .{ .id = id(param), .name = "Frequency", .module = "Filter", .min = 20, .max = 20000, .default = d.FilterFreq.Float, .display = .hz },
+        .FilterQ => .{ .id = id(param), .name = "Q", .module = "Filter", .min = 0.1, .max = 20, .default = d.FilterQ.Float },
+        .DebugBool1 => .{ .id = id(param), .name = "Bool1", .module = "Debug/Bool1", .min = 0, .max = 1, .default = d.DebugBool1.asFloat(), .stepped = true, .is_bool = true },
+        .DebugBool2 => .{ .id = id(param), .name = "Bool2", .module = "Debug/Bool2", .min = 0, .max = 1, .default = d.DebugBool2.asFloat(), .stepped = true, .is_bool = true },
     };
 }
 
-pub fn deinit(self: *Params) void {
-    self.events.deinit(self.allocator);
-}
-
-pub fn prepare(self: *Params) !void {
-    try self.events.ensureTotalCapacity(self.allocator, max_queued_param_events);
-}
-
-/// Thread-safe getter for parameter values
-pub fn get(self: *Params, param: Parameter) ParameterValue {
-    self.mutex.lockUncancelable(mutex_io);
-    defer self.mutex.unlock(mutex_io);
-    return self.values.get(param);
-}
-
-/// Thread-safe setter for params that also optionally notifies the host
-const ParamSetFlags = struct {
-    should_notify_host: bool = false,
-};
-
-pub fn set(self: *Params, param: Parameter, val: ParameterValue, flags: ParamSetFlags) !void {
-    self.mutex.lockUncancelable(mutex_io);
-    defer self.mutex.unlock(mutex_io);
-    self.values.set(param, val);
-    if (flags.should_notify_host) {
-        // Add to the event queue to notify the DAW on the audio thread
-        const param_index: usize = @intFromEnum(param);
-        const event = clap.events.ParamValue{
-            .header = .{
-                .type = .param_value,
-                .size = @sizeOf(clap.events.ParamValue),
-                .space_id = clap.events.core_space_id,
-                .sample_offset = 0, // This will be set by the _process function when telling the DAW
-                .flags = .{},
-            },
-            .note_id = .unspecified,
-            .channel = .unspecified,
-            .key = .unspecified,
-            .port_index = .unspecified,
-            .param_id = @enumFromInt(param_index),
-            .value = val.asFloat(),
-            .cookie = null,
-        };
-
-        if (self.events.items.len < self.events.capacity) {
-            self.events.appendAssumeCapacity(event);
-        }
-    }
-}
-
-pub inline fn create() clap.ext.params.Plugin {
-    return .{
-        .count = _count,
-        .getInfo = _getInfo,
-        .getValue = _getValue,
-        .valueToText = _valueToText,
-        .textToValue = _textToValue,
-        .flush = _flush,
+pub fn fromFloat(param: Parameter, value: f64) ParameterValue {
+    return switch (param) {
+        .Attack, .Decay, .Release, .Sustain, .Octave1, .Octave2, .Pitch1, .Pitch2, .Mix, .FilterFreq, .FilterQ => .{ .Float = value },
+        .WaveShape1, .WaveShape2 => .{ .Wave = @enumFromInt(@as(usize, @intFromFloat(value))) },
+        .FilterType => .{ .Filter = @enumFromInt(@as(usize, @intFromFloat(value))) },
+        .FilterEnable, .ScaleVoices, .DebugBool1, .DebugBool2 => .{ .Bool = value == 1.0 },
     };
 }
 
-fn _count(_: *const clap.Plugin) callconv(.c) u32 {
-    return @intCast(param_count);
-}
-
-pub fn _getInfo(clap_plugin: *const clap.Plugin, index: u32, info: *Info) callconv(.c) bool {
-    if (index > _count(clap_plugin)) {
-        return false;
-    }
-
-    const param_type: Parameter = @enumFromInt(index);
-    switch (param_type) {
-        Parameter.Attack => {
-            info.* = .{
-                .cookie = null,
-                .default_value = param_defaults.Attack.Float,
-                .min_value = 0,
-                .max_value = 20000,
-                .name = @splat(0),
-                .flags = .{
-                    .is_stepped = true,
-                    .is_automatable = true,
-                },
-                .id = @enumFromInt(@intFromEnum(Parameter.Attack)),
-                .module = @splat(0),
-            };
-            std.mem.copyForwards(u8, &info.name, "Attack");
-            std.mem.copyForwards(u8, &info.module, "Envelope/Attack");
-        },
-        Parameter.Decay => {
-            info.* = .{
-                .cookie = null,
-                .default_value = param_defaults.Decay.Float,
-                .min_value = 0,
-                .max_value = 20000,
-                .name = @splat(0),
-                .flags = .{
-                    .is_stepped = true,
-                    .is_automatable = true,
-                },
-                .id = @enumFromInt(@intFromEnum(Parameter.Decay)),
-                .module = @splat(0),
-            };
-            std.mem.copyForwards(u8, &info.name, "Decay");
-            std.mem.copyForwards(u8, &info.module, "Envelope/Decay");
-        },
-        Parameter.Sustain => {
-            info.* = .{
-                .cookie = null,
-                .default_value = param_defaults.Sustain.Float,
-                .min_value = 0.0,
-                .max_value = 1.0,
-                .name = @splat(0),
-                .flags = .{
-                    .is_automatable = true,
-                },
-                .id = @enumFromInt(@intFromEnum(Parameter.Sustain)),
-                .module = undefined,
-            };
-            std.mem.copyForwards(u8, &info.name, "Sustain");
-            std.mem.copyForwards(u8, &info.module, "Envelope/Sustain");
-        },
-        Parameter.Release => {
-            info.* = .{
-                .cookie = null,
-                .default_value = param_defaults.Release.Float,
-                .min_value = 0,
-                .max_value = 20000,
-                .name = @splat(0),
-
-                .flags = .{
-                    .is_stepped = true,
-                    .is_automatable = true,
-                },
-                .id = @enumFromInt(@intFromEnum(Parameter.Release)),
-                .module = @splat(0),
-            };
-            std.mem.copyForwards(u8, &info.name, "Release");
-            std.mem.copyForwards(u8, &info.module, "Envelope/Release");
-        },
-        Parameter.WaveShape1 => {
-            info.* = .{
-                .cookie = null,
-                .default_value = param_defaults.WaveShape1.asFloat(),
-                .min_value = 0,
-                .max_value = @floatFromInt(std.meta.fieldNames(Wave).len),
-                .name = @splat(0),
-                .flags = .{
-                    .is_stepped = true,
-                    .is_automatable = true,
-                    .is_enum = true,
-                },
-                .id = @enumFromInt(@intFromEnum(Parameter.WaveShape1)),
-                .module = @splat(0),
-            };
-            std.mem.copyForwards(u8, &info.name, "Wave Shape 1");
-            std.mem.copyForwards(u8, &info.module, "Oscillator/WaveShape1");
-        },
-        Parameter.WaveShape2 => {
-            info.* = .{
-                .cookie = null,
-                .default_value = param_defaults.WaveShape2.asFloat(),
-                .min_value = 0,
-                .max_value = @floatFromInt(std.meta.fieldNames(Wave).len),
-                .name = @splat(0),
-                .flags = .{
-                    .is_stepped = true,
-                    .is_automatable = true,
-                    .is_enum = true,
-                },
-                .id = @enumFromInt(@intFromEnum(Parameter.WaveShape2)),
-                .module = @splat(0),
-            };
-            std.mem.copyForwards(u8, &info.name, "Wave Shape 2");
-            std.mem.copyForwards(u8, &info.module, "Oscillator/WaveShape2");
-        },
-        Parameter.Octave1 => {
-            info.* = .{
-                .cookie = null,
-                .default_value = param_defaults.Octave1.Float,
-                .min_value = -2,
-                .max_value = 3,
-                .name = @splat(0),
-
-                .flags = .{
-                    .is_stepped = true,
-                    .is_automatable = true,
-                },
-                .id = @enumFromInt(@intFromEnum(Parameter.Octave1)),
-                .module = @splat(0),
-            };
-            std.mem.copyForwards(u8, &info.name, "Octave 1");
-            std.mem.copyForwards(u8, &info.module, "Oscillator/Octave1");
-        },
-        Parameter.Octave2 => {
-            info.* = .{
-                .cookie = null,
-                .default_value = param_defaults.Octave2.Float,
-                .min_value = -2,
-                .max_value = 3,
-                .name = @splat(0),
-
-                .flags = .{
-                    .is_stepped = true,
-                    .is_automatable = true,
-                },
-                .id = @enumFromInt(@intFromEnum(Parameter.Octave2)),
-                .module = @splat(0),
-            };
-            std.mem.copyForwards(u8, &info.name, "Octave 2");
-            std.mem.copyForwards(u8, &info.module, "Oscillator/Octave2");
-        },
-        Parameter.Pitch1 => {
-            info.* = .{
-                .cookie = null,
-                .default_value = param_defaults.Pitch1.Float,
-                .min_value = -7.0,
-                .max_value = 7.0,
-                .name = @splat(0),
-
-                .flags = .{
-                    .is_automatable = true,
-                },
-                .id = @enumFromInt(@intFromEnum(Parameter.Pitch1)),
-                .module = @splat(0),
-            };
-            std.mem.copyForwards(u8, &info.name, "Pitch 1");
-            std.mem.copyForwards(u8, &info.module, "Oscillator/Pitch1");
-        },
-        Parameter.Pitch2 => {
-            info.* = .{
-                .cookie = null,
-                .default_value = param_defaults.Pitch2.Float,
-                .min_value = -7.0,
-                .max_value = 7.0,
-                .name = @splat(0),
-
-                .flags = .{
-                    .is_automatable = true,
-                },
-                .id = @enumFromInt(@intFromEnum(Parameter.Pitch2)),
-                .module = @splat(0),
-            };
-            std.mem.copyForwards(u8, &info.name, "Pitch 2");
-            std.mem.copyForwards(u8, &info.module, "Oscillator/Pitch2");
-        },
-        Parameter.Mix => {
-            info.* = .{
-                .cookie = null,
-                .default_value = param_defaults.Mix.Float,
-                .min_value = 0,
-                .max_value = 1,
-                .name = @splat(0),
-
-                .flags = .{
-                    .is_automatable = true,
-                },
-                .id = @enumFromInt(@intFromEnum(Parameter.Mix)),
-                .module = @splat(0),
-            };
-            std.mem.copyForwards(u8, &info.name, "Mix");
-            std.mem.copyForwards(u8, &info.module, "Oscillator/Mix");
-        },
-        Parameter.FilterEnable => {
-            info.* = .{
-                .cookie = null,
-                .default_value = param_defaults.FilterEnable.asFloat(),
-                .min_value = 0,
-                .max_value = 1,
-                .name = @splat(0),
-                .flags = .{
-                    .is_stepped = true,
-                    .is_automatable = true,
-                },
-                .id = @enumFromInt(@intFromEnum(Parameter.FilterEnable)),
-                .module = @splat(0),
-            };
-            std.mem.copyForwards(u8, &info.name, "Enable Filter");
-            std.mem.copyForwards(u8, &info.module, "Filter/Enable");
-        },
-        Parameter.FilterType => {
-            info.* = .{
-                .cookie = null,
-                .default_value = param_defaults.FilterType.asFloat(),
-                .min_value = 0,
-                .max_value = @floatFromInt(std.meta.fieldNames(FilterType).len),
-                .name = @splat(0),
-
-                .flags = .{
-                    .is_stepped = true,
-                    .is_automatable = true,
-                    .is_enum = true,
-                },
-                .id = @enumFromInt(@intFromEnum(Parameter.FilterType)),
-                .module = @splat(0),
-            };
-            std.mem.copyForwards(u8, &info.name, "Filter Type");
-            std.mem.copyForwards(u8, &info.module, "Filter/Type");
-        },
-        Parameter.FilterFreq => {
-            info.* = .{
-                .cookie = null,
-                .default_value = param_defaults.FilterFreq.Float,
-                .min_value = 20,
-                .max_value = 20000,
-                .name = @splat(0),
-                .flags = .{
-                    .is_stepped = true,
-                    .is_automatable = true,
-                },
-                .id = @enumFromInt(@intFromEnum(Parameter.FilterFreq)),
-                .module = @splat(0),
-            };
-            std.mem.copyForwards(u8, &info.name, "Frequency Cutoff");
-            std.mem.copyForwards(u8, &info.module, "Filter/Frequency");
-        },
-        Parameter.FilterQ => {
-            info.* = .{
-                .cookie = null,
-                .default_value = param_defaults.FilterQ.Float,
-                .min_value = 1,
-                .max_value = 100,
-                .name = @splat(0),
-                .flags = .{
-                    .is_stepped = true,
-                    .is_automatable = true,
-                },
-                .id = @enumFromInt(@intFromEnum(Parameter.FilterQ)),
-                .module = @splat(0),
-            };
-            std.mem.copyForwards(u8, &info.name, "Filter Q Factor");
-            std.mem.copyForwards(u8, &info.module, "Filter/Q");
-        },
-        Parameter.ScaleVoices => {
-            info.* = .{
-                .cookie = null,
-                .default_value = param_defaults.ScaleVoices.asFloat(),
-                .min_value = 0,
-                .max_value = 1,
-                .name = @splat(0),
-                .flags = .{
-                    .is_stepped = true,
-                    .is_automatable = true,
-                },
-                .id = @enumFromInt(@intFromEnum(Parameter.ScaleVoices)),
-                .module = @splat(0),
-            };
-            std.mem.copyForwards(u8, &info.name, "ScaleVoices");
-            std.mem.copyForwards(u8, &info.module, "Oscillator/ScaleVoices");
-        },
-        // DEBUG PARAMS
-        Parameter.DebugBool1 => {
-            info.* = .{
-                .cookie = null,
-                .default_value = param_defaults.DebugBool1.asFloat(),
-                .min_value = 0,
-                .max_value = 1,
-                .name = @splat(0),
-                .flags = .{
-                    .is_stepped = true,
-                    .is_automatable = builtin.mode == .Debug,
-                    .is_hidden = builtin.mode != .Debug,
-                },
-                .id = @enumFromInt(@intFromEnum(Parameter.DebugBool1)),
-                .module = @splat(0),
-            };
-            std.mem.copyForwards(u8, &info.name, "Use Thread Pool");
-            std.mem.copyForwards(u8, &info.module, "Debug/Bool1");
-        },
-        Parameter.DebugBool2 => {
-            info.* = .{
-                .cookie = null,
-                .default_value = param_defaults.DebugBool2.asFloat(),
-                .min_value = 0,
-                .max_value = 1,
-                .name = @splat(0),
-                .flags = .{
-                    .is_stepped = true,
-                    .is_automatable = builtin.mode == .Debug,
-                    .is_hidden = builtin.mode != .Debug,
-                },
-                .id = @enumFromInt(@intFromEnum(Parameter.DebugBool2)),
-                .module = @splat(0),
-            };
-            std.mem.copyForwards(u8, &info.name, "Bool2");
-            std.mem.copyForwards(u8, &info.module, "Debug/Bool2");
-        },
-    }
-
-    return true;
-}
-
-fn _getValue(clap_plugin: *const clap.Plugin, id: clap.Id, out_value: *f64) callconv(.c) bool {
-    const plugin = Plugin.fromClapPlugin(clap_plugin);
-    const index: usize = @intFromEnum(id);
-    if (index > _count(clap_plugin)) {
-        return false;
-    }
-
-    out_value.* = plugin.params.get(@enumFromInt(index)).asFloat();
-    return true;
-}
-
-pub fn _valueToText(
+fn valueToText(
     _: *const clap.Plugin,
-    id: clap.Id,
+    param: Parameter,
     value: f64,
-    out_buffer: [*]u8,
-    out_buffer_capacity: u32,
-) callconv(.c) bool {
-    const zone = tracy.ZoneN(@src(), "Value to Text");
-    defer zone.End();
-
-    const out_buf = out_buffer[0..out_buffer_capacity];
-
-    const index: usize = @intFromEnum(id);
-    const param_type: Parameter = @enumFromInt(index);
-    var bufSlice: []u8 = undefined;
-    switch (param_type) {
-        // Seconds and millisecond parameters
-        Parameter.Attack, Parameter.Decay, Parameter.Release => {
+    buffer: [*]u8,
+    size: u32,
+) bool {
+    const out_buf = buffer[0..size];
+    var buf_slice: []u8 = undefined;
+    switch (param) {
+        .Attack, .Decay, .Release => {
             if (value >= 1000) {
-                bufSlice = std.fmt.bufPrint(out_buf, "{d:.3} s", .{value / 1000}) catch return false;
+                buf_slice = std.fmt.bufPrint(out_buf, "{d:.3} s", .{value / 1000}) catch return false;
             } else {
-                bufSlice = std.fmt.bufPrint(out_buf, "{d:.0} ms", .{value}) catch return false;
+                buf_slice = std.fmt.bufPrint(out_buf, "{d:.0} ms", .{value}) catch return false;
             }
         },
-        // Hz-based parameters
-        Parameter.FilterFreq => {
-            bufSlice = std.fmt.bufPrint(out_buf, "{d:.2} Hz", .{value}) catch return false;
+        .FilterFreq => buf_slice = std.fmt.bufPrint(out_buf, "{d:.2} Hz", .{value}) catch return false,
+        .Sustain, .Mix => buf_slice = std.fmt.bufPrint(out_buf, "{d:.2}%", .{value * 100}) catch return false,
+        .Pitch1, .Pitch2 => buf_slice = std.fmt.bufPrint(out_buf, "{d:.2} st", .{value}) catch return false,
+        .Octave1, .Octave2 => buf_slice = std.fmt.bufPrint(out_buf, "{d:.0}'", .{std.math.pow(f64, 2, 3 - value)}) catch return false,
+        .FilterQ => buf_slice = std.fmt.bufPrint(out_buf, "{d:.0}", .{value}) catch return false,
+        .WaveShape1, .WaveShape2 => {
+            const wave = std.enums.fromInt(Wave, @as(u32, @intFromFloat(value))) orelse return false;
+            buf_slice = std.fmt.bufPrint(out_buf, "{s}", .{@tagName(wave)}) catch return false;
         },
-        // Percentage-based parameters
-        Parameter.Sustain, Parameter.Mix => {
-            bufSlice = std.fmt.bufPrint(out_buf, "{d:.2}%", .{value * 100}) catch return false;
+        .FilterType => {
+            const filter = std.enums.fromInt(FilterType, @as(u32, @intFromFloat(value))) orelse return false;
+            buf_slice = std.fmt.bufPrint(out_buf, "{s}", .{@tagName(filter)}) catch return false;
         },
-        // Step parameters
-        Parameter.Pitch1, Parameter.Pitch2 => {
-            bufSlice = std.fmt.bufPrint(out_buf, "{d:.2} st", .{value}) catch return false;
-        },
-        // Octaves parameters
-        Parameter.Octave1, Parameter.Octave2 => {
-            bufSlice = std.fmt.bufPrint(out_buf, "{d:.0}\'", .{std.math.pow(f64, 2, 3 - value)}) catch return false;
-        },
-        // No-unit params
-        Parameter.FilterQ => {
-            bufSlice = std.fmt.bufPrint(out_buf, "{d:.0}", .{value}) catch return false;
-        },
-        // Wave shapes
-        Parameter.WaveShape1, Parameter.WaveShape2 => {
-            const intValue: u32 = @intFromFloat(value);
-            const wave = std.enums.fromInt(Wave, intValue) orelse return false;
-            bufSlice = std.fmt.bufPrint(out_buf, "{s}", .{@tagName(wave)}) catch return false;
-        },
-        // Filter
-        Parameter.FilterType => {
-            const intValue: u32 = @intFromFloat(value);
-            const filter = std.enums.fromInt(FilterType, intValue) orelse return false;
-            bufSlice = std.fmt.bufPrint(out_buf, "{s}", .{@tagName(filter)}) catch return false;
-        },
-        // Boolean parameters
-        Parameter.FilterEnable, Parameter.ScaleVoices, Parameter.DebugBool1, Parameter.DebugBool2 => {
-            const bool_value: bool = if (value != 0.0) true else false;
-            bufSlice = std.fmt.bufPrint(out_buf, "{s}", .{if (bool_value) "true" else "false"}) catch return false;
+        .FilterEnable, .ScaleVoices, .DebugBool1, .DebugBool2 => {
+            buf_slice = std.fmt.bufPrint(out_buf, "{s}", .{if (value != 0.0) "true" else "false"}) catch return false;
         },
     }
-    // Null terminate the buffer
-    if (bufSlice.len < out_buffer_capacity) {
-        out_buf[bufSlice.len] = 0;
-    }
+    if (buf_slice.len < size) out_buf[buf_slice.len] = 0;
     return true;
 }
 
 fn anyUnitEql(unit: []const u8, cmps: []const []const u8) bool {
     for (cmps) |cmp| {
-        if (std.mem.startsWith(u8, unit, cmp)) {
-            return true;
-        }
+        if (std.mem.startsWith(u8, unit, cmp)) return true;
     }
     return false;
 }
 
-fn _textToValue(
+fn textToValue(
     clap_plugin: *const clap.Plugin,
-    id: clap.Id,
-    value_text: [*:0]const u8,
+    param: Parameter,
+    value: []const u8,
     out_value: *f64,
-) callconv(.c) bool {
-    const zone = tracy.ZoneN(@src(), "Text To Value");
-    defer zone.End();
-
-    const plugin = Plugin.fromClapPlugin(clap_plugin);
-    const index: usize = @intFromEnum(id);
-    const param_type: Parameter = @enumFromInt(index);
-    const value = std.mem.span(value_text);
-
-    // Handle special case param types that don't fit the numerical value regex
-    switch (param_type) {
-        // Wave parameters
+) bool {
+    switch (param) {
         .WaveShape1, .WaveShape2 => {
-            if (std.mem.startsWith(u8, value, @tagName(Wave.Sine))) {
-                out_value.* = @intFromEnum(Wave.Sine);
-                return true;
-            } else if (std.mem.startsWith(u8, value, @tagName(Wave.Saw))) {
-                out_value.* = @intFromEnum(Wave.Saw);
-                return true;
-            } else if (std.mem.startsWith(u8, value, @tagName(Wave.Triangle))) {
-                out_value.* = @intFromEnum(Wave.Triangle);
-                return true;
-            } else if (std.mem.startsWith(u8, value, @tagName(Wave.Square))) {
-                out_value.* = @intFromEnum(Wave.Square);
-                return true;
+            for (std.meta.fieldNames(Wave), 0..) |name, i| {
+                if (std.mem.startsWith(u8, value, name)) {
+                    out_value.* = @floatFromInt(i);
+                    return true;
+                }
             }
             return false;
         },
-        // Filter parameters
         .FilterType => {
-            if (std.mem.startsWith(u8, value, @tagName(FilterType.BandPass))) {
-                out_value.* = @intFromEnum(FilterType.BandPass);
-                return true;
-            } else if (std.mem.startsWith(u8, value, @tagName(FilterType.LowPass))) {
-                out_value.* = @intFromEnum(FilterType.LowPass);
-                return true;
-            } else if (std.mem.startsWith(u8, value, @tagName(FilterType.HighPass))) {
-                out_value.* = @intFromEnum(FilterType.HighPass);
-                return true;
+            for (std.meta.fieldNames(FilterType), 0..) |name, i| {
+                if (std.mem.startsWith(u8, value, name)) {
+                    out_value.* = @floatFromInt(i);
+                    return true;
+                }
             }
             return false;
         },
-        // Bool parameters
         .FilterEnable, .ScaleVoices, .DebugBool1, .DebugBool2 => {
-            if (std.mem.startsWith(u8, value, "t")) {
-                out_value.* = 1.0;
-            } else {
-                out_value.* = 0.0;
-            }
+            out_value.* = if (std.mem.startsWith(u8, value, "t")) 1.0 else 0.0;
             return true;
         },
-        // The rest will be handled below
         else => {},
     }
 
+    const plugin = Plugin.fromClapPlugin(clap_plugin);
     var unit_string: [64]u8 = undefined;
-    var val_float: f64 = 0;
+    @memset(&unit_string, 0);
     const pattern = "\\s*(\\d+\\.?\\d*)\\s*(S|s|seconds|MS|Ms|ms|millis|milliseconds|%|st|Hz|hz|HZ)?\\s*";
     var re = regex.Regex.compile(plugin.allocator, pattern) catch return false;
     defer re.deinit();
 
-    // If we had no matches, the input is invalid
     var caps = re.captures(value) catch return false;
     if (caps == null) return false;
     defer caps.?.deinit();
     const value_string = caps.?.sliceAt(1).?;
     var unit_slice: ?[]const u8 = null;
+    if (caps.?.len() == 3) unit_slice = caps.?.sliceAt(2);
+    if (unit_slice) |u| std.mem.copyForwards(u8, &unit_string, u);
 
-    // If we didn't have a unit afterward, don't try to assign it; depending on the param we will choose a default
-    if (caps.?.len() == 3) {
-        unit_slice = caps.?.sliceAt(2);
-    }
-    if (unit_slice != null) {
-        std.mem.copyForwards(u8, &unit_string, unit_slice.?);
-    }
+    const val_float = std.fmt.parseFloat(f64, value_string) catch return false;
 
-    val_float = std.fmt.parseFloat(f64, value_string) catch return false;
-
-    switch (param_type) {
-        // Second and millisecond params
-        Parameter.Attack, Parameter.Decay, Parameter.Release => {
+    switch (param) {
+        .Attack, .Decay, .Release => {
             if (anyUnitEql(&unit_string, &.{ "S", "s", "seconds" })) {
                 out_value.* = val_float * 1000;
             } else if (unit_slice == null or anyUnitEql(&unit_string, &.{ "MS", "Ms", "ms", "millis", "milliseconds" })) {
                 out_value.* = val_float;
-            } else {
-                return false;
-            }
+            } else return false;
         },
-        // Percentage-based parameters
-        Parameter.Sustain, Parameter.Mix => {
-            if (std.mem.startsWith(u8, &unit_string, "%")) {
-                out_value.* = val_float / 100;
-            } else {
-                out_value.* = val_float;
-            }
+        .Sustain, .Mix => {
+            out_value.* = if (std.mem.startsWith(u8, &unit_string, "%")) val_float / 100 else val_float;
         },
-        // Parameters whose units don't influence value
-        Parameter.Pitch1, Parameter.Pitch2, Parameter.Octave1, Parameter.Octave2, Parameter.FilterFreq, Parameter.FilterQ => {
-            out_value.* = val_float;
-        },
-        else => {
-            return false;
-        },
+        .Pitch1, .Pitch2, .Octave1, .Octave2, .FilterFreq, .FilterQ => out_value.* = val_float,
+        else => return false,
     }
     return true;
 }
 
-fn processEvent(plugin: *Plugin, event: *const clap.events.Header) bool {
-    if (event.space_id != clap.events.core_space_id) {
-        return false;
-    }
-    if (event.type == .param_value) {
-        const param_event: *align(1) const clap.events.ParamValue = @ptrCast(event);
-        const index = @intFromEnum(param_event.param_id);
-        if (index >= param_count) {
-            return false;
-        }
+const clap_ext = shared_params.enumCreate(
+    Plugin,
+    Parameter,
+    ParameterValue,
+    meta,
+    fromFloat,
+    valueToText,
+    textToValue,
+);
 
-        const param: Parameter = @enumFromInt(index);
-        const value: ParameterValue = switch (param) {
-            // There is perhaps a better way of doing this, but I don't know what that is.
-            .Attack, .Decay, .Release, .Sustain, .Octave1, .Octave2, .Pitch1, .Pitch2, .Mix, .FilterFreq, .FilterQ => .{ .Float = param_event.value },
-            // Cast the float as an int first, then cast as an enum
-            .WaveShape1, .WaveShape2 => .{ .Wave = @as(Wave, @enumFromInt(@as(usize, @intFromFloat(param_event.value)))) },
-            .FilterType => .{ .Filter = @as(FilterType, @enumFromInt(@as(usize, @intFromFloat(param_event.value)))) },
-            .FilterEnable, .ScaleVoices, .DebugBool1, .DebugBool2 => .{ .Bool = if (param_event.value == 1.0) true else false },
-        };
-
-        plugin.params.set(param, value, .{}) catch unreachable;
-        return true;
-    }
-    return false;
+pub fn create() clap.ext.params.Plugin {
+    return clap_ext;
 }
 
-// Handle parameter changes
-pub fn _flush(
-    clap_plugin: *const clap.Plugin,
-    input_events: *const clap.events.InputEvents,
-    output_events: *const clap.events.OutputEvents,
-) callconv(.c) void {
-    const zone = tracy.ZoneN(@src(), "Flush parameters");
-    defer zone.End();
-
-    const plugin = Plugin.fromClapPlugin(clap_plugin);
-    var params_did_change = false;
-    for (0..input_events.size(input_events)) |i| {
-        const event = input_events.get(input_events, @intCast(i));
-        if (processEvent(plugin, event)) {
-            params_did_change = true;
-        }
-    }
-
-    // Process GUI parameter event changes
-    if (plugin.params.mutex.tryLock()) {
-        defer plugin.params.mutex.unlock(mutex_io);
-
-        if (plugin.params.events.items.len > 0) {
-            params_did_change = true;
-        }
-        while (plugin.params.events.pop()) |event_value| {
-            var event = event_value;
-            _ = output_events.tryPush(output_events, &event.header);
-        }
-    }
-
-    if (params_did_change) {
-        plugin.applyParamChanges(true);
-    }
-}
+pub const _flush = clap_ext.flush;
+pub const _getInfo = clap_ext.getInfo;
+pub const _valueToText = clap_ext.valueToText;

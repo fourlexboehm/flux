@@ -400,6 +400,15 @@ pub fn main(init: std.process.Init) !void {
             defer window.destroy();
             window.setSizeLimits(320, 240, -1, -1);
 
+            // Window/taskbar icon (RGBA8, embedded at build time). No-op on macOS.
+            const icon_size: c_int = @intCast(static_data.icon_size);
+            const icon = zglfw.Image{
+                .width = icon_size,
+                .height = icon_size,
+                .pixels = @constCast(static_data.icon_rgba.ptr),
+            };
+            window.setIcon(&.{icon});
+
             zglfw.makeContextCurrent(window);
             zglfw.swapInterval(1);
             try zopengl.loadCoreProfile(zglfw.getProcAddress, gl_major, gl_minor);

@@ -4,24 +4,62 @@ on: [push]
 
 jobs:
   build:
-    runs-on: codeberg-tiny
+    runs-on: codeberg-small
+    env:
+      # Keep packages out of the home cache so actions/cache can pin the path.
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/.zig-global-cache
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v4
 
       - name: Install Linux dependencies
         run: |
           apt-get update
-          apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libx11-dev libgl1-mesa-dev
+          apt-get install -y libwayland-dev libxkbcommon-dev libasound2-dev libx11-dev libgl1-mesa-dev \
+            zip jq curl
+
+      - name: Read Zig version
+        id: zig-version
+        run: |
+          ZIG_VERSION=$(grep -oP '\.minimum_zig_version\s*=\s*"\K[^"]+' build.zig.zon)
+          echo "version=${ZIG_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "dir=zig-x86_64-linux-${ZIG_VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Zig toolchain
+        id: cache-zig
+        uses: https://data.forgejo.org/actions/cache@v4
+        with:
+          path: ${{ steps.zig-version.outputs.dir }}
+          key: zig-linux-x86_64-${{ steps.zig-version.outputs.version }}
 
       - name: Setup Zig
+        if: steps.cache-zig.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
-          ZIG_VERSION=$(grep -oP '\.minimum_zig_version\s*=\s*"\K[^"]+' build.zig.zon)
-          ZIG_DIR="zig-x86_64-linux-${ZIG_VERSION}"
+          ZIG_DIR="${{ steps.zig-version.outputs.dir }}"
           ZIG_URL="https://ziglang.org/builds/${ZIG_DIR}.tar.xz"
           curl -fL "${ZIG_URL}" -o zig.tar.xz
           tar -xf zig.tar.xz
-          echo "$PWD/${ZIG_DIR}" >> "$GITHUB_PATH"
+          rm -f zig.tar.xz
+
+      - name: Add Zig to PATH
+        run: echo "$PWD/${{ steps.zig-version.outputs.dir }}" >> "$GITHUB_PATH"
+
+      - name: Cache Zig packages
+        uses: https://data.forgejo.org/actions/cache@v4
+        with:
+          path: .zig-global-cache
+          key: zig-pkgs-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            zig-pkgs-
+
+      - name: Cache Zig local build cache
+        uses: https://data.forgejo.org/actions/cache@v4
+        with:
+          path: .zig-cache
+          key: zig-local-${{ hashFiles('build.zig', 'build.zig.zon') }}-${{ hashFiles('src/**/*.zig', 'shared/**/*.zig', 'zsynth/**/*.zig', 'zminimoog/**/*.zig') }}
+          restore-keys: |
+            zig-local-${{ hashFiles('build.zig', 'build.zig.zon') }}-
+            zig-local-
 
       - name: Test and build Linux x86_64
         run: |
@@ -31,20 +69,29 @@ jobs:
           cp zig-out/lib/*.so artifacts/linux-x86_64/ 2>/dev/null || true
           cp zig-out/bin/* artifacts/linux-x86_64/ 2>/dev/null || true
 
+      - name: Cache macOS SDK
+        id: cache-macos-sdk
+        uses: https://data.forgejo.org/actions/cache@v4
+        with:
+          path: MacOSX26.1.sdk
+          key: macos-sdk-26.1
+
       - name: Download macOS SDK
+        if: steps.cache-macos-sdk.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           curl -fL "https://github.com/joseluisq/macosx-sdks/releases/download/26.1/MacOSX26.1.sdk.tar.xz" -o macos-sdk.tar.xz
           tar -xf macos-sdk.tar.xz
-          echo "MACOS_SDK=$PWD/MacOSX26.1.sdk" >> "$GITHUB_ENV"
+          rm -f macos-sdk.tar.xz
 
       - name: Build for macOS aarch64
         run: |
-          zig build -Dtarget=aarch64-macos -Doptimize=ReleaseFast -Ddisable_profiling=true -Dgui-backend=osx_metal --sysroot "$MACOS_SDK" --summary all
+          # bundle-flux-app builds Flux.app (with icon) and, via the install
+          # step it depends on, the CLAP plugin.
+          zig build bundle-flux-app -Dtarget=aarch64-macos -Doptimize=ReleaseFast -Ddisable_profiling=true -Dgui-backend=osx_metal --sysroot "$PWD/MacOSX26.1.sdk" --summary all
           mkdir -p artifacts/macos-aarch64
+          cp -R zig-out/Flux.app artifacts/macos-aarch64/ 2>/dev/null || true
           cp -r zig-out/lib/*.clap artifacts/macos-aarch64/ 2>/dev/null || true
-          cp zig-out/lib/*.dylib artifacts/macos-aarch64/ 2>/dev/null || true
-          cp zig-out/bin/* artifacts/macos-aarch64/ 2>/dev/null || true
 
       - name: Upload Linux artifacts
         uses: https://data.forgejo.org/actions/upload-artifact@v4
@@ -57,3 +104,50 @@ jobs:
         with:
           name: zsynth-macos-aarch64
           path: artifacts/macos-aarch64/
+
+      # ── Release: only when a version tag (v*) is pushed ──
+      # Reuses the artifacts already built above — no second build.
+      - name: Package release archives
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          (cd artifacts/linux-x86_64  && zip -r "../../dist/flux-${GITHUB_REF_NAME}-linux-x86_64.zip" .)
+          (cd artifacts/macos-aarch64 && zip -r "../../dist/flux-${GITHUB_REF_NAME}-macos-aarch64.zip" .)
+
+      - name: Publish Codeberg release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          # Prefers a RELEASE_TOKEN secret (repo/user token with write:repository);
+          # falls back to the automatic Actions token.
+          RELEASE_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          AUTO_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          REPO="fellowtraveler/flux"
+          TAG="${GITHUB_REF_NAME}"
+          API="https://codeberg.org/api/v1/repos/${REPO}"
+          auth=(-H "Authorization: token ${RELEASE_TOKEN:-$AUTO_TOKEN}")
+
+          echo "Creating release ${TAG}..."
+          body=$(jq -n --arg tag "$TAG" \
+            '{tag_name:$tag, name:$tag, body:("Automated release " + $tag), draft:false, prerelease:false}')
+          resp=$(curl -sS "${auth[@]}" -H "Content-Type: application/json" -X POST "${API}/releases" -d "$body")
+          id=$(echo "$resp" | jq -r '.id // empty')
+          if [ -z "$id" ]; then
+            echo "Create failed or release exists; fetching existing release for ${TAG}..."
+            id=$(curl -sS "${auth[@]}" "${API}/releases/tags/${TAG}" | jq -r '.id // empty')
+          fi
+          if [ -z "$id" ]; then
+            echo "Could not create or find release ${TAG}. Response was:"; echo "$resp"; exit 1
+          fi
+          echo "Release id: ${id}"
+
+          for f in dist/*.zip; do
+            name=$(basename "$f")
+            echo "Uploading ${name}..."
+            curl -sS "${auth[@]}" -X POST \
+              "${API}/releases/${id}/assets?name=${name}" \
+              -F "attachment=@${f};type=application/zip" >/dev/null
+          done
+          echo "Published: https://codeberg.org/${REPO}/releases/tag/${TAG}"

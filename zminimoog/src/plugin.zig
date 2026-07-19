@@ -7,12 +7,14 @@ const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 
 const shared = @import("shared");
 
-const Params = @import("ext/params.zig");
+const params_mod = @import("ext/params.zig");
 const ViewType = @import("ext/gui/view.zig");
-const VoiceInfo = @import("ext/voice_info.zig");
-const ThreadPool = @import("ext/thread_pool.zig");
-const Undo = @import("ext/undo.zig");
-const extensions = shared.plugin_extensions.Extensions(Plugin, ViewType, Params, VoiceInfo, ThreadPool, Undo);
+const audio = @import("audio/audio.zig");
+const extensions = shared.plugin_extensions.InstrumentExtensions(Plugin, ViewType, params_mod, struct {
+    pub fn create() clap.ext.thread_pool.Plugin {
+        return shared.ext.thread_pool.create(Plugin, audio.processVoice);
+    }
+});
 const GUI = extensions.GUI;
 pub const View = ViewType;
 pub const font = shared.core.Core(Plugin, ViewType).font;
@@ -21,9 +23,7 @@ const dsp = @import("dsp/dsp.zig");
 const Voices = @import("audio/voices.zig");
 const Filter = @import("audio/filter.zig");
 
-const audio = @import("audio/audio.zig");
-
-const Parameter = Params.Parameter;
+const Parameter = params_mod.Parameter;
 const Voice = Voices.Voice;
 
 sample_rate: ?f64 = null,
@@ -31,7 +31,7 @@ allocator: std.mem.Allocator,
 plugin: clap.Plugin,
 host: *const clap.Host,
 voices: Voices,
-params: Params,
+params: params_mod.Store,
 filter_left: Filter,
 filter_right: Filter,
 gui: ?*GUI,
@@ -64,7 +64,6 @@ pub fn fromClapPlugin(clap_plugin: *const clap.Plugin) *Plugin {
 pub fn init(allocator: std.mem.Allocator, host: *const clap.Host) !*Plugin {
     const plugin = try allocator.create(Plugin);
     const voices = Voices.init(allocator);
-    const params = Params.init(allocator);
 
     plugin.* = .{
         .allocator = allocator,
@@ -84,7 +83,7 @@ pub fn init(allocator: std.mem.Allocator, host: *const clap.Host) !*Plugin {
         },
         .host = host,
         .voices = voices,
-        .params = params,
+        .params = params_mod.Store.init(allocator),
         .gui = null,
         .job_mutex = .init,
         .filter_left = .{},
@@ -226,8 +225,7 @@ pub fn applyParamChanges(self: *Plugin, notify_host: bool) void {
 }
 
 fn _init(clap_plugin: *const clap.Plugin) callconv(.c) bool {
-    const plugin = fromClapPlugin(clap_plugin);
-    extensions.Undo.init(plugin.host);
+    _ = clap_plugin;
     return true;
 }
 

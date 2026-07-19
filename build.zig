@@ -180,6 +180,9 @@ pub fn build(b: *std.Build) void {
     const font_data = @embedFile("assets/Roboto-Medium.ttf");
     const static_data = b.addOptions();
     static_data.addOption([]const u8, "font", font_data);
+    // Application/window icon as raw RGBA8 pixels (used for the GLFW window icon).
+    static_data.addOption([]const u8, "icon_rgba", @embedFile("assets/icon-64.rgba"));
+    static_data.addOption(u32, "icon_size", 64);
     const static_data_module = static_data.createModule();
 
     const shared = b.createModule(.{
@@ -655,6 +658,10 @@ fn createFluxAppBundleStep(b: *std.Build, flux: *Step.Compile) *Step {
     );
     _ = app_bundle.add("Flux.app/Contents/Info.plist", flux_info_plist);
     _ = app_bundle.add("Flux.app/Contents/PkgInfo", "APPL????\n");
+    _ = app_bundle.addCopyFile(
+        b.path("assets/Flux.icns"),
+        "Flux.app/Contents/Resources/Flux.icns",
+    );
 
     const install_app = b.addInstallDirectory(.{
         .source_dir = app_bundle.getDirectory(),
@@ -683,6 +690,8 @@ const flux_info_plist =
     \\    <string>APPL</string>
     \\    <key>CFBundleExecutable</key>
     \\    <string>flux</string>
+    \\    <key>CFBundleIconFile</key>
+    \\    <string>Flux</string>
     \\    <key>LSMinimumSystemVersion</key>
     \\    <string>13.0</string>
     \\</dict>
