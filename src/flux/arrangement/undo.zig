@@ -22,6 +22,7 @@ pub fn captureClip(
             .kind = clip.kind,
             .start_tick = clip.start_tick,
             .duration_ticks = clip.duration_ticks,
+            .source_offset_ticks = clip.source_offset_ticks,
             .color = clip.color,
             .name = clip.name,
             .enabled = clip.enabled,
@@ -109,6 +110,7 @@ fn insertClip(view: *arr_types.ArrangementView, item: command.ArrangementClipAt)
     var clip = arr_clip.ArrangementClip.init(view.allocator, data.kind, data.start_tick, data.duration_ticks);
     errdefer clip.deinit(view.allocator);
     clip.color = data.color;
+    clip.source_offset_ticks = data.source_offset_ticks;
     clip.name = data.name;
     clip.enabled = data.enabled;
     clip.midi_session_track = data.midi_session_track;

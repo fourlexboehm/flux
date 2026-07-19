@@ -53,6 +53,7 @@ pub const CommandKind = enum {
     // Arrangement
     arrangement_edit,
     arrangement_track_add,
+    arrangement_track_reorder,
 };
 
 /// Create clip command - stores track/scene position
@@ -267,6 +268,7 @@ pub const ArrangementClipData = struct {
     kind: arrangement_clip.ClipKind,
     start_tick: i64,
     duration_ticks: i64,
+    source_offset_ticks: i64,
     color: [4]f32,
     name: session_view.NameField,
     enabled: bool,
@@ -300,6 +302,11 @@ pub const ArrangementTrackAddCmd = struct {
     color: [4]f32,
 };
 
+pub const ArrangementTrackReorderCmd = struct {
+    from: usize,
+    to: usize,
+};
+
 /// Unified command union
 pub const Command = union(CommandKind) {
     clip_create: ClipCreateCmd,
@@ -327,6 +334,7 @@ pub const Command = union(CommandKind) {
     plugin_state: PluginStateCmd,
     arrangement_edit: ArrangementEditCmd,
     arrangement_track_add: ArrangementTrackAddCmd,
+    arrangement_track_reorder: ArrangementTrackReorderCmd,
 
     /// Check if this command can be merged with another (for coalescing)
     pub fn canMerge(self: *const Command, other: *const Command) bool {
@@ -405,6 +413,7 @@ pub const Command = union(CommandKind) {
             .plugin_state => "Change Plugin",
             .arrangement_edit => "Edit Arrangement",
             .arrangement_track_add => "Add Arrangement Track",
+            .arrangement_track_reorder => "Reorder Arrangement Track",
         };
     }
 

@@ -10,6 +10,7 @@ pub const ClipKind = enum {
 pub const ArrangementClip = struct {
     start_tick: i64 = 0,
     duration_ticks: i64 = 960 * 4 * 4, // 4 bars at 4/4 default
+    source_offset_ticks: i64 = 0,
     color: [4]f32 = .{ 0.35, 0.35, 0.45, 1.0 },
     name: session_types.NameField = .{},
     enabled: bool = true,

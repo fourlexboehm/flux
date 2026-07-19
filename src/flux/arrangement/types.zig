@@ -43,6 +43,12 @@ pub const ArrangementView = struct {
         }
     }
 
+    pub fn selectAllClips(self: *ArrangementView) void {
+        for (self.tracks.items) |*track| {
+            for (track.clips.items) |*clip| clip.selected = true;
+        }
+    }
+
     pub fn hasSelection(self: *const ArrangementView) bool {
         for (self.tracks.items) |track| {
             for (track.clips.items) |clip| {

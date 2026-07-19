@@ -483,7 +483,7 @@ fn buildArrangementClip(
     var clip = Clip{
         .time = time,
         .duration = duration,
-        .play_start = 0,
+        .play_start = ticksToBeats(arr_clip.source_offset_ticks),
         .loop_start = 0,
         .loop_end = duration,
         .enable = arr_clip.enabled,
