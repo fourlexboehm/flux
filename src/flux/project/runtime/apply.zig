@@ -303,34 +303,24 @@ pub fn applyBuiltinDevice(plugin: *const clap.Plugin, device: *const types.ClapP
     const id = std.mem.span(plugin.descriptor.id);
     if (!std.mem.startsWith(u8, id, "com.flux.builtin.")) return;
     const flux_builtins = @import("../../builtins/root.zig");
+    const param_table = flux_builtins.param_table;
     const bp = flux_builtins.Plugin.fromClapPlugin(plugin);
     const p = &bp.params;
+    const kind = flux_builtins.Kind.fromId(id) orelse return;
 
-    const setNamed = struct {
-        fn call(params: *@TypeOf(bp.params), name: []const u8, value: f64) void {
-            for (0..params.count) |i| {
-                if (std.mem.eql(u8, params.defs[i].schema_name, name)) {
-                    params.setByIndex(@intCast(i), value);
-                    return;
-                }
-            }
+    // Device-level schema children → CLAP ids from param_table
+    for (param_table.params) |row| {
+        if (!param_table.kindHas(row, kind)) continue;
+        if (schemaValueFromDevice(device, row.schema, row.is_bool)) |v| {
+            p.set(row.id, v);
         }
-    }.call;
+    }
 
-    if (device.threshold) |v| setNamed(p, "Threshold", v.value);
-    if (device.ratio) |v| setNamed(p, "Ratio", v.value);
-    if (device.attack) |v| setNamed(p, "Attack", v.value);
-    if (device.release) |v| setNamed(p, "Release", v.value);
-    if (device.input_gain) |v| setNamed(p, "InputGain", v.value);
-    if (device.output_gain) |v| setNamed(p, "OutputGain", v.value);
-    if (device.range) |v| setNamed(p, "Range", v.value);
-    if (device.auto_makeup) |v| setNamed(p, "AutoMakeup", if (v.value) 1 else 0);
-
-    // EQ bands: order attribute maps to band index
+    // EQ bands: order attribute maps to band index; field offsets from param_table
     for (device.eq_bands) |band| {
         const bi: usize = if (band.order) |o| @intCast(@max(0, o)) else 0;
         if (bi >= bp.eq.band_count) continue;
-        const base = flux_builtins.params.eqBandBase(bi);
+        const base = param_table.eqBandBase(bi);
         if (eq_dsp.BandType.fromDawproject(band.band_type)) |bt| {
             p.set(base + 0, @floatFromInt(@intFromEnum(bt)));
         }
@@ -344,11 +334,38 @@ pub fn applyBuiltinDevice(plugin: *const clap.Plugin, device: *const types.ClapP
     for (device.parameters) |param| {
         if (param.parameter_id) |pid| {
             p.set(@bitCast(pid), param.value);
+        } else if (param_table.findBySchema(kind, param.name)) |row| {
+            p.set(row.id, param.value);
         } else {
-            setNamed(p, param.name, param.value);
+            for (0..p.count) |i| {
+                if (std.mem.eql(u8, p.defs[i].schema_name, param.name) or std.mem.eql(u8, p.defs[i].name, param.name)) {
+                    p.setByIndex(@intCast(i), param.value);
+                    break;
+                }
+            }
         }
     }
     bp.applyParamsToDsp();
+}
+
+fn schemaValueFromDevice(device: *const types.ClapPlugin, schema: []const u8, is_bool: bool) ?f64 {
+    if (is_bool) {
+        if (std.mem.eql(u8, schema, "AutoMakeup")) {
+            if (device.auto_makeup) |v| return if (v.value) 1 else 0;
+        }
+        return null;
+    }
+    const real: ?types.RealParameter =
+        if (std.mem.eql(u8, schema, "Threshold")) device.threshold
+        else if (std.mem.eql(u8, schema, "Ratio")) device.ratio
+        else if (std.mem.eql(u8, schema, "Attack")) device.attack
+        else if (std.mem.eql(u8, schema, "Release")) device.release
+        else if (std.mem.eql(u8, schema, "InputGain")) device.input_gain
+        else if (std.mem.eql(u8, schema, "OutputGain")) device.output_gain
+        else if (std.mem.eql(u8, schema, "Range")) device.range
+        else null;
+    if (real) |v| return v.value;
+    return null;
 }
 
 const eq_dsp = @import("../../builtins/dsp/equalizer.zig");

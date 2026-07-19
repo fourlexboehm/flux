@@ -185,6 +185,13 @@ pub fn build(b: *std.Build) void {
     static_data.addOption(u32, "icon_size", 64);
     const static_data_module = static_data.createModule();
 
+    // Stock FX param definitions (clap-free) — shared by flux app and project format tests.
+    const flux_param_table = b.createModule(.{
+        .root_source_file = b.path("src/flux/builtins/param_table.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const shared = b.createModule(.{
         .root_source_file = b.path("shared/root.zig"),
         .target = target,
@@ -333,6 +340,7 @@ pub fn build(b: *std.Build) void {
     flux.root_module.addImport("shared", shared);
     flux.root_module.addImport("libz_jobs", libz_jobs.module("libz_jobs"));
     flux.root_module.addImport("xml", zig_xml.module("xml"));
+    flux.root_module.addImport("flux_param_table", flux_param_table);
     const portmidi_module = portmidi_zig.module("portmidi");
     portmidi_module.addImport("c", portmidi_c.createModule());
     portmidi_module.addIncludePath(portmidi_zig.path("pm_common"));
@@ -515,6 +523,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     project_test_module.addImport("xml", zig_xml.module("xml"));
+    project_test_module.addImport("flux_param_table", flux_param_table);
     const project_tests = b.addTest(.{
         .root_module = project_test_module,
         .use_llvm = use_llvm,

@@ -3,7 +3,7 @@
 const std = @import("std");
 const clap = @import("clap-bindings");
 
-const Kind = @import("kind.zig").Kind;
+const Kind = @import("flux_param_table").Kind;
 const params_mod = @import("params.zig");
 const Params = params_mod.Params;
 const eq_dsp = @import("dsp/equalizer.zig");
