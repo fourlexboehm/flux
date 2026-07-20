@@ -213,10 +213,17 @@ pub const State = struct {
     browser_sort_asc: bool = true,
     browser_active_tab: browser.BrowserTab = .sounds,
     browser_folders: std.ArrayListUnmanaged([]u8) = .empty,
+    browser_file_selected_buf: [1024]u8 = @splat(0),
+    browser_file_selected_len: usize = 0,
+
+    // Pending OS file drops (populated by native drop handler, consumed each frame)
+    dropped_files: [8][1024]u8 = @splat(@splat(0)),
+    dropped_file_lens: [8]usize = @splat(0),
+    dropped_file_count: usize = 0,
 
     // Undo/redo history
     undo_history: undo.UndoHistory,
-    preset_catalog: ?*const presets.PresetCatalog = null,
+    preset_catalog: ?*presets.PresetCatalog = null,
     instrument_search_buf: [64:0]u8 = @splat(0),
     preset_search_buf: [128:0]u8 = @splat(0),
 

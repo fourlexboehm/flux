@@ -17,9 +17,10 @@ const bench = @import("app/bench.zig");
 const dawproject_runtime = @import("project/runtime.zig");
 const device_state = @import("app/device_state.zig");
 const host_mod = @import("app/host.zig");
-const linux_x11 = if (builtin.os.tag == .linux) @import("plugin/linux_x11.zig") else struct {
-    pub fn initThreads() void {}
-};
+    const linux_x11 = if (builtin.os.tag == .linux) @import("plugin/linux_x11.zig") else struct {
+        pub fn initThreads() void {}
+    };
+    const native_drop = @import("app/native_drop.zig");
 const controller_mapping = @import("midi/controller_mapping.zig");
 const midi_input = @import("midi/input.zig");
 const options = @import("options");
@@ -216,8 +217,6 @@ pub fn main(init: std.process.Init) !void {
     zgui.io.setIniFilename(null);
     zgui.plot.init();
     defer zgui.plot.deinit();
-    ui_filters.rebuildPresetFilter(&state);
-
     colors.Colors.setTheme(theme.resolveTheme());
 
     var midi = midi_input.MidiInput{};
@@ -242,6 +241,9 @@ pub fn main(init: std.process.Init) !void {
             shared_mod.imgui_style.applyScaleFromMemory(static_data.font, app.scale_factor);
             zgui.backend.init(app.view, app.device);
             defer zgui.backend.deinit();
+
+            native_drop.initMac(app.view);
+            defer native_drop.shutdownMac();
 
             while (app.window.isVisible()) {
                 const frame_start = std.Io.Clock.awake.now(io);
@@ -320,6 +322,17 @@ pub fn main(init: std.process.Init) !void {
 
                 zgui.backend.newFrame(fb_width, fb_height, app.view, descriptor);
                 zgui.setNextFrameWantCaptureKeyboard(true);
+                {
+                    var drop_buf: [1024]u8 = undefined;
+                    if (native_drop.pollMac(&drop_buf)) |path| {
+                        if (state.dropped_file_count < state.dropped_files.len) {
+                            const n = @min(path.len, state.dropped_files[0].len);
+                            @memcpy(state.dropped_files[state.dropped_file_count][0..n], path[0..n]);
+                            state.dropped_file_lens[state.dropped_file_count] = n;
+                            state.dropped_file_count += 1;
+                        }
+                    }
+                }
                 ui_keyboard.updateKeyboardMidi(&state);
                 plugin_runtime.updateUiPluginPointers(&state, &track_plugins, &track_fx);
                 ui_draw.draw(&state, 1.0);
@@ -421,6 +434,13 @@ pub fn main(init: std.process.Init) !void {
             defer window.destroy();
             window.setSizeLimits(320, 240, -1, -1);
 
+            _ = window.setDropCallback(null, struct {
+                fn callback(w: *zglfw.Window, path_count: i32, paths: [*][*:0]const u8) callconv(.c) void {
+                    _ = w;
+                    native_drop.onGlfwDrop(path_count, paths);
+                }
+            }.callback);
+
             // Window/taskbar icon (RGBA8, embedded at build time). No-op on macOS.
             const icon_size: c_int = @intCast(static_data.icon_size);
             const icon = zglfw.Image{
@@ -493,6 +513,17 @@ pub fn main(init: std.process.Init) !void {
                 zgui.backend.newFrame(win_width, win_height);
                 zgui.io.setDisplayFramebufferScale(scale_x, scale_y);
                 zgui.setNextFrameWantCaptureKeyboard(true);
+                {
+                    var drop_buf: [1024]u8 = undefined;
+                    if (native_drop.pollLinux(&drop_buf)) |path| {
+                        if (state.dropped_file_count < state.dropped_files.len) {
+                            const n = @min(path.len, state.dropped_files[0].len);
+                            @memcpy(state.dropped_files[state.dropped_file_count][0..n], path[0..n]);
+                            state.dropped_file_lens[state.dropped_file_count] = n;
+                            state.dropped_file_count += 1;
+                        }
+                    }
+                }
                 ui_keyboard.updateKeyboardMidi(&state);
                 plugin_runtime.updateUiPluginPointers(&state, &track_plugins, &track_fx);
                 ui_draw.draw(&state, ui_scale);
