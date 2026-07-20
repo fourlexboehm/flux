@@ -9,18 +9,25 @@ const session_types = @import("../../../session/types.zig");
 const session_constants = @import("../../../session/constants.zig");
 
 pub fn drawHeader(width: f32, height: f32, ui_scale: f32) void {
+    zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ 0, 0 } });
     if (zgui.beginChild("##arr_mixer_header", .{
         .w = width,
         .h = height,
         .child_flags = .{ .border = true },
         .window_flags = .{ .no_scrollbar = true },
     })) {
-        zgui.setCursorPosX(tokens.s(7, ui_scale));
-        zgui.pushStyleColor4f(.{ .idx = .text, .c = colors.Colors.current.text_dim });
-        zgui.textUnformatted("MIXER");
-        zgui.popStyleColor(.{ .count = 1 });
+        const pos = zgui.getCursorScreenPos();
+        const label = "Mixer";
+        const size = zgui.calcTextSize(label, .{});
+        zgui.getWindowDrawList().addText(
+            .{ pos[0] + tokens.s(10, ui_scale), pos[1] + (height - size[1]) * 0.5 },
+            zgui.colorConvertFloat4ToU32(colors.Colors.current.text_dim),
+            "{s}",
+            .{label},
+        );
     }
     zgui.endChild();
+    zgui.popStyleVar(.{ .count = 1 });
 }
 
 pub fn draw(
@@ -34,6 +41,9 @@ pub fn draw(
     ui_scale: f32,
     allow_mouse: bool,
 ) void {
+    // Zero window padding so mixer rows line up exactly with the track lanes
+    // to the left (bordered children otherwise inset content by window_padding).
+    zgui.pushStyleVar2f(.{ .idx = .window_padding, .v = .{ 0, 0 } });
     if (zgui.beginChild("##arr_mixer", .{
         .w = width,
         .h = height,
@@ -49,6 +59,7 @@ pub fn draw(
         }
     }
     zgui.endChild();
+    zgui.popStyleVar(.{ .count = 1 });
 }
 
 fn drawRow(track: *arr_track.ArrangementTrack, index: usize, session: *session_types.SessionView, levels: [2]f32, width: f32, height: f32, ui_scale: f32, enabled: bool) void {
@@ -71,23 +82,23 @@ fn drawRow(track: *arr_track.ArrangementTrack, index: usize, session: *session_t
         .col = zgui.colorConvertFloat4ToU32(track.color),
     });
 
-    const pad = tokens.s(7, ui_scale);
-    const button_w = tokens.s(32, ui_scale);
-    const gap = tokens.s(3, ui_scale);
-    const slider_w = tokens.s(64, ui_scale);
-    const pan_w = tokens.s(58, ui_scale);
-    const meter_w = tokens.s(22, ui_scale);
-    const control_h = @min(tokens.controlH(.sm, ui_scale), height - tokens.s(6, ui_scale));
+    const pad = tokens.s(8, ui_scale);
+    const button_w = tokens.s(26, ui_scale);
+    const gap = tokens.s(4, ui_scale);
+    const slider_w = tokens.s(76, ui_scale);
+    const pan_w = tokens.s(52, ui_scale);
+    const meter_w = tokens.s(16, ui_scale);
+    const control_h = @min(tokens.controlH(.sm, ui_scale), height - tokens.s(10, ui_scale));
     const y = row_cursor[1] + (height - control_h) * 0.5;
-    const name_w = @max(tokens.s(35, ui_scale), width - pad * 2 - button_w * 4 - slider_w - pan_w - meter_w - gap * 7);
+    const name_w = @max(tokens.s(48, ui_scale), width - pad * 2 - button_w * 4 - slider_w - pan_w - meter_w - gap * 7);
     const name = track.name.get();
     const name_size = zgui.calcTextSize(name, .{});
     dl.pushClipRect(.{
         .pmin = .{ row_pos[0] + pad, row_pos[1] },
-        .pmax = .{ row_pos[0] + name_w, row_pos[1] + height },
+        .pmax = .{ row_pos[0] + name_w - gap, row_pos[1] + height },
     });
     dl.addText(
-        .{ row_pos[0] + pad, row_pos[1] + (height - name_size[1]) * 0.5 },
+        .{ row_pos[0] + pad + tokens.s(3, ui_scale), row_pos[1] + (height - name_size[1]) * 0.5 },
         zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright),
         "{s}",
         .{name},
@@ -143,12 +154,12 @@ fn drawRow(track: *arr_track.ArrangementTrack, index: usize, session: *session_t
         const pan_id = std.fmt.bufPrintSentinel(&pan_buf, "##arr_pan{d}", .{index}, 0) catch "##arr_pan";
         zgui.setNextItemWidth(pan_w);
         zgui.beginDisabled(.{ .disabled = !enabled });
-        _ = zgui.sliderFloat(pan_id, .{ .v = &mix_track.pan, .min = -1, .max = 1, .cfmt = "P %.2f" });
+        _ = zgui.sliderFloat(pan_id, .{ .v = &mix_track.pan, .min = -1, .max = 1, .cfmt = "" });
         zgui.endDisabled();
         widgets.itemTooltip("Pan");
 
         const meter_x = row_pos[0] + width - pad - meter_w;
-        drawMeter(dl, meter_x, row_pos[1] + tokens.s(7, ui_scale), meter_w, height - tokens.s(14, ui_scale), levels);
+        drawMeter(dl, meter_x, row_pos[1] + tokens.s(6, ui_scale), meter_w, height - tokens.s(12, ui_scale), levels);
     }
 
     dl.addLine(.{
@@ -160,12 +171,17 @@ fn drawRow(track: *arr_track.ArrangementTrack, index: usize, session: *session_t
 }
 
 fn toggleButton(id: [:0]const u8, value: *bool, width: f32, height: f32, active: [4]f32, enabled: bool) bool {
-    zgui.pushStyleColor4f(.{ .idx = .button, .c = if (value.*) active else colors.Colors.current.bg_cell });
+    const c = colors.Colors.current;
+    const on = value.*;
+    zgui.pushStyleColor4f(.{ .idx = .button, .c = if (on) active else c.bg_cell });
+    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = if (on) colors.Colors.lighten(active, 0.08) else c.bg_cell_hover });
+    zgui.pushStyleColor4f(.{ .idx = .button_active, .c = c.accent_dim });
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = if (on) colors.Colors.textOn(active) else c.text_dim });
     zgui.beginDisabled(.{ .disabled = !enabled });
     const clicked = zgui.button(id, .{ .w = width, .h = height });
     if (clicked) value.* = !value.*;
     zgui.endDisabled();
-    zgui.popStyleColor(.{ .count = 1 });
+    zgui.popStyleColor(.{ .count = 4 });
     return clicked;
 }
 

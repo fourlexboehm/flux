@@ -207,7 +207,7 @@ pub fn draw(
         {
             const hdr_pos = zgui.getCursorScreenPos();
             zgui.getWindowDrawList().addRectFilled(.{
-                .pmin = .{ hdr_pos[0], hdr_pos[1] + header_height - tokens.s(2, ui_scale) },
+                .pmin = .{ hdr_pos[0], hdr_pos[1] + header_height - tokens.s(3, ui_scale) },
                 .pmax = .{ hdr_pos[0] + track_col_w - tokens.s(4, ui_scale), hdr_pos[1] + header_height },
                 .col = zgui.colorConvertFloat4ToU32(colors.Colors.trackColor(t)),
             });
@@ -495,7 +495,7 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, levels: [2]f32,
     const spacing = tokens.s(3, ui_scale);
     const usable_width = width - padding * 2;
     const is_master = self.tracks[track].is_master;
-    const btn_height = tokens.controlH(.lg, ui_scale);
+    const btn_height = tokens.controlH(.sm, ui_scale);
     const btn_width = if (is_master) usable_width else (usable_width - spacing * 2) / 3.0;
     const slider_width = tokens.s(26, ui_scale);
     const pan_width = tokens.s(52, ui_scale);
@@ -603,7 +603,9 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, levels: [2]f32,
     const pan_label_width = tokens.s(10, ui_scale);
     const pan_row_width = pan_width + pan_label_width * 2 + spacing * 2;
     zgui.setCursorPos(.{ base_x + (width - pan_row_width) / 2.0, base_y + btn_height + spacing });
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = colors.Colors.current.text_soft });
     zgui.textUnformatted("L");
+    zgui.popStyleColor(.{ .count = 1 });
     zgui.sameLine(.{ .spacing = spacing });
     var pan_buf: [32]u8 = undefined;
     const pan_id = std.fmt.bufPrintSentinel(&pan_buf, "##pan{d}", .{track}, 0) catch "##pan";
@@ -615,7 +617,9 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, levels: [2]f32,
         self.mixer_target = if (is_master) .master else .track;
     }
     zgui.sameLine(.{ .spacing = spacing });
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = colors.Colors.current.text_soft });
     zgui.textUnformatted("R");
+    zgui.popStyleColor(.{ .count = 1 });
 
     // Row 3: volume fader with the stereo meter behind it.
     zgui.setCursorPosY(base_y + btn_height + spacing * 2 + pan_height);
@@ -683,9 +687,6 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, levels: [2]f32,
     });
 
     // Row 4: dB label (centered)
-    zgui.setCursorPosY(base_y + btn_height + pan_height + spacing * 2 + slider_height + spacing);
-    zgui.setCursorPosX(base_x + padding);
-
     const db = if (self.tracks[track].volume > 0.0001)
         20.0 * @log10(self.tracks[track].volume)
     else
@@ -695,6 +696,9 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, levels: [2]f32,
         std.fmt.bufPrintSentinel(&label_buf, "Master {d:.0}dB", .{db}, 0) catch "Master"
     else
         std.fmt.bufPrintSentinel(&label_buf, "{d:.0}dB", .{db}, 0) catch "";
+    const label_size = zgui.calcTextSize(label, .{});
+    zgui.setCursorPosY(base_y + btn_height + pan_height + spacing * 2 + slider_height + spacing);
+    zgui.setCursorPosX(base_x + @max(padding, (width - label_size[0]) / 2.0));
     zgui.textColored(colors.Colors.current.text_dim, "{s}", .{label});
 }
 

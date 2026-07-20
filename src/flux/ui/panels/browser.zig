@@ -79,9 +79,9 @@ pub fn draw(
 fn sideLeft(active_tab: *BrowserTab, folders: *std.ArrayListUnmanaged([]u8), alloc: std.mem.Allocator, ui_scale: f32) void {
     sectionLabel("Collections");
     const clrs = [_][4]f32{
-        .{ 1, 0.02, 0.02, 1 },    .{ 1, 0.65, 0.16, 1 },    .{ 1, 0.94, 0.20, 1 },
-        .{ 0.15, 1, 0.66, 1 },    .{ 0.06, 0.64, 0.93, 1 }, .{ 0.72, 0.55, 1, 1 },
-        .{ 0.66, 0.66, 0.66, 1 },
+        .{ 0.86, 0.36, 0.36, 1 }, .{ 0.90, 0.62, 0.30, 1 }, .{ 0.88, 0.78, 0.32, 1 },
+        .{ 0.42, 0.74, 0.52, 1 }, .{ 0.38, 0.62, 0.86, 1 }, .{ 0.66, 0.52, 0.86, 1 },
+        .{ 0.58, 0.58, 0.58, 1 },
     };
     const coll_names = [_][:0]const u8{ "Favorites", "Orange", "Yellow", "Green", "Blue", "Purple", "Gray" };
     for (clrs, 0..) |c, i| {
@@ -229,7 +229,7 @@ fn placehold(msg: []const u8) void {
 }
 
 fn sectionLabel(text: []const u8) void {
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = .{ 0.8, 0.8, 0.8, 1 } });
+    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_soft });
     zgui.textUnformatted(text);
     zgui.popStyleColor(.{ .count = 1 });
 }

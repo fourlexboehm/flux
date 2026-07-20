@@ -24,14 +24,14 @@ pub fn controlH(size: ControlSize, ui_scale: f32) f32 {
 
 pub fn radius(size: ControlSize, ui_scale: f32) f32 {
     return switch (size) {
-        .sm => s(2, ui_scale),
-        .md => s(4, ui_scale),
-        .lg => s(6, ui_scale),
+        .sm => s(3, ui_scale),
+        .md => s(6, ui_scale),
+        .lg => s(10, ui_scale),
     };
 }
 
 pub fn transportH(ui_scale: f32) f32 {
-    return s(44, ui_scale);
+    return s(52, ui_scale);
 }
 
 pub fn sessionRowH(ui_scale: f32) f32 {

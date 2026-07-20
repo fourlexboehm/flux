@@ -4,7 +4,7 @@ const tokens = @import("tokens.zig");
 const Colors = colors.Colors;
 
 /// Number of colors pushed by pushAbletonStyle — keep in sync.
-pub const ableton_style_color_count: i32 = 38;
+pub const ableton_style_color_count: i32 = 39;
 
 pub fn pushAbletonStyle() void {
     const c = Colors.current;
@@ -14,9 +14,12 @@ pub fn pushAbletonStyle() void {
     zgui.pushStyleColor4f(.{ .idx = .frame_bg, .c = c.bg_cell });
     zgui.pushStyleColor4f(.{ .idx = .frame_bg_hovered, .c = c.bg_cell_hover });
     zgui.pushStyleColor4f(.{ .idx = .frame_bg_active, .c = c.bg_cell_active });
-    zgui.pushStyleColor4f(.{ .idx = .header, .c = c.bg_header });
-    zgui.pushStyleColor4f(.{ .idx = .header_hovered, .c = c.bg_cell_hover });
-    zgui.pushStyleColor4f(.{ .idx = .header_active, .c = c.accent_dim });
+    // Selected rows/headers get a visible accent tint (bg_header is nearly
+    // indistinguishable from the panel bg, which made selection invisible).
+    zgui.pushStyleColor4f(.{ .idx = .header, .c = .{ c.selected[0], c.selected[1], c.selected[2], 0.32 } });
+    zgui.pushStyleColor4f(.{ .idx = .header_hovered, .c = .{ c.selected[0], c.selected[1], c.selected[2], 0.16 } });
+    zgui.pushStyleColor4f(.{ .idx = .header_active, .c = .{ c.selected[0], c.selected[1], c.selected[2], 0.45 } });
+    zgui.pushStyleColor4f(.{ .idx = .menu_bar_bg, .c = c.bg_header });
     zgui.pushStyleColor4f(.{ .idx = .button, .c = c.bg_cell });
     zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = c.bg_cell_hover });
     zgui.pushStyleColor4f(.{ .idx = .button_active, .c = c.accent_dim });
@@ -55,23 +58,24 @@ pub fn popAbletonStyle() void {
 pub fn applyMinimalStyle(ui_scale: f32) void {
     const style = zgui.getStyle();
     const scale = if (ui_scale > 0) ui_scale else 1.0;
-    style.window_rounding = tokens.radius(.lg, scale);
-    style.child_rounding = tokens.radius(.lg, scale);
-    style.popup_rounding = tokens.radius(.lg, scale);
-    style.frame_rounding = tokens.radius(.md, scale);
-    style.scrollbar_rounding = tokens.radius(.lg, scale);
-    style.grab_rounding = tokens.radius(.md, scale);
-    style.tab_rounding = tokens.radius(.md, scale);
+    // Flat, near-square chrome — Ableton-style panels, softly rounded controls.
+    style.window_rounding = tokens.radius(.md, scale);
+    style.child_rounding = tokens.radius(.md, scale);
+    style.popup_rounding = tokens.radius(.md, scale);
+    style.frame_rounding = tokens.radius(.sm, scale);
+    style.scrollbar_rounding = tokens.radius(.md, scale);
+    style.grab_rounding = tokens.radius(.sm, scale);
+    style.tab_rounding = tokens.radius(.sm, scale);
     style.window_border_size = tokens.s(1, scale);
     style.child_border_size = tokens.s(1, scale);
     style.popup_border_size = tokens.s(1, scale);
     style.frame_border_size = tokens.s(1, scale);
-    style.item_spacing = .{ tokens.s(9, scale), tokens.s(7, scale) };
+    style.item_spacing = .{ tokens.s(8, scale), tokens.s(6, scale) };
     style.item_inner_spacing = .{ tokens.s(6, scale), tokens.s(4, scale) };
-    style.frame_padding = .{ tokens.s(9, scale), tokens.s(6, scale) };
-    style.window_padding = .{ tokens.s(12, scale), tokens.s(10, scale) };
-    style.cell_padding = .{ tokens.s(6, scale), tokens.s(4, scale) };
+    style.frame_padding = .{ tokens.s(8, scale), tokens.s(5, scale) };
+    style.window_padding = .{ tokens.s(10, scale), tokens.s(8, scale) };
+    style.cell_padding = .{ tokens.s(6, scale), tokens.s(3, scale) };
     style.indent_spacing = tokens.s(16, scale);
-    style.scrollbar_size = tokens.s(12, scale);
+    style.scrollbar_size = tokens.s(11, scale);
     style.grab_min_size = tokens.s(10, scale);
 }
