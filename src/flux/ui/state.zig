@@ -192,6 +192,7 @@ pub const State = struct {
     instrument_filter_indices: []i32,
     preset_filter_items_z: [:0]const u8,
     preset_filter_indices: []i32,
+    preset_filter_choice_index: i32 = -1,
     preset_combo_width: f32 = 260.0,
     plugin_divider_index: ?i32,
     track_plugin_ptrs: [max_tracks]?*const clap.Plugin,

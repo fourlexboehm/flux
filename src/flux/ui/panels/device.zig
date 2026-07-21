@@ -28,7 +28,18 @@ const FxDragPayload = extern struct {
     fx: u32,
 };
 
-const header_h_logical: f32 = 26.0;
+const header_h_logical: f32 = 34.0;
+
+const card_width = struct {
+    const empty: f32 = 280;
+    const external: f32 = 480;
+    const zsynth: f32 = 1600;
+    const zminimoog: f32 = 1300;
+    const zportafm: f32 = 1150;
+    const equalizer: f32 = 870;
+    const dynamics: f32 = 850;
+    const embedded_fallback: f32 = 1100;
+};
 
 // Middle-mouse panning bookkeeping.
 var pan_active: bool = false;
@@ -277,7 +288,7 @@ fn cardHeader(
     const text_col = if (on_fill) Colors.textOn(header_bg) else Colors.current.text_dim;
 
     // Enable LED
-    const led_btn = tokens.s(18, ui_scale);
+    const led_btn = tokens.s(26, ui_scale);
     const led_pos = zgui.getCursorScreenPos();
     if (zgui.invisibleButton("##led", .{ .w = led_btn, .h = header_h - tokens.s(4, ui_scale) })) {
         action.toggle_enable = true;
@@ -286,7 +297,7 @@ fn cardHeader(
     {
         const cx = led_pos[0] + led_btn * 0.5;
         const cy = led_pos[1] + (header_h - tokens.s(4, ui_scale)) * 0.5;
-        const r = tokens.s(4.5, ui_scale);
+        const r = led_btn * 0.25;
         if (enabled) {
             const led_col = if (zgui.isItemHovered(.{})) Colors.current.accent else Colors.current.accent_dim;
             draw_list.addCircleFilled(.{ .p = .{ cx, cy }, .r = r, .col = zgui.colorConvertFloat4ToU32(led_col) });
@@ -301,7 +312,7 @@ fn cardHeader(
     }
 
     // Right-side header buttons
-    const btn = header_h - tokens.s(6, ui_scale);
+    const btn = header_h - tokens.s(8, ui_scale);
     var right_btns: f32 = 1;
     if (show_window_btn) right_btns += 1;
     const right_w = right_btns * (btn + tokens.s(2, ui_scale));
@@ -312,9 +323,6 @@ fn cardHeader(
     const name_pos = zgui.getCursorScreenPos();
     if (zgui.invisibleButton("##card_grab", .{ .w = name_w, .h = header_h - tokens.s(4, ui_scale) })) {
         action.select = true;
-    }
-    if (show_window_btn and zgui.isItemHovered(.{}) and zgui.isMouseDoubleClicked(.left)) {
-        action.open_window = true;
     }
     if (fx_drag) |payload| {
         if (zgui.beginDragDropSource(.{})) {
@@ -403,12 +411,23 @@ fn cardHeader(
 /// Card width by device: built-ins get room for their inline UI, external
 /// CLAP plugins a compact info card.
 fn cardWidthFor(plugin: ?*const clap.Plugin, ui_scale: f32) f32 {
-    const p = plugin orelse return tokens.s(230, ui_scale);
+    const p = plugin orelse return tokens.s(card_width.external, ui_scale);
     const id = std.mem.sliceTo(p.descriptor.id, 0);
-    if (std.mem.eql(u8, id, "com.flux.builtin.equalizer")) return tokens.s(540, ui_scale);
-    if (std.mem.startsWith(u8, id, "com.flux.builtin.")) return tokens.s(400, ui_scale);
-    if (embedded_views.getEmbeddedView(p) != null) return tokens.s(640, ui_scale);
-    return tokens.s(230, ui_scale);
+    const logical_width: f32 = if (std.mem.eql(u8, id, "com.juge.zsynth"))
+        card_width.zsynth
+    else if (std.mem.eql(u8, id, "com.fourlex.zminimoog"))
+        card_width.zminimoog
+    else if (std.mem.eql(u8, id, "com.fourlex.zportafm"))
+        card_width.zportafm
+    else if (std.mem.eql(u8, id, "com.flux.builtin.equalizer"))
+        card_width.equalizer
+    else if (std.mem.startsWith(u8, id, "com.flux.builtin."))
+        card_width.dynamics
+    else if (embedded_views.getEmbeddedView(p) != null)
+        card_width.embedded_fallback
+    else
+        card_width.external;
+    return tokens.s(logical_width, ui_scale);
 }
 
 fn drawInstrumentCard(state: *State, track_idx: usize, card_h: f32, ui_scale: f32) void {
@@ -419,9 +438,9 @@ fn drawInstrumentCard(state: *State, track_idx: usize, card_h: f32, ui_scale: f3
     const selected = state.device_target_kind == .instrument;
 
     const card_w = if (!has_device)
-        tokens.s(280, ui_scale)
+        tokens.s(card_width.empty, ui_scale)
     else if (missing != null)
-        tokens.s(230, ui_scale)
+        tokens.s(card_width.external, ui_scale)
     else
         cardWidthFor(plugin, ui_scale);
 
@@ -483,8 +502,10 @@ fn drawInstrumentCard(state: *State, track_idx: usize, card_h: f32, ui_scale: f3
             break :inst_body;
         }
 
-        drawPresetRow(state, track_idx, ui_scale);
-        zgui.separator();
+        if (selected) {
+            drawPresetRow(state, track_idx, ui_scale);
+            zgui.separator();
+        }
 
         if (plugin) |p| {
             if (embedded_views.getEmbeddedView(p)) |draw_fn| {
@@ -521,7 +542,7 @@ fn drawFxCard(state: *State, track_idx: usize, is_master: bool, fx_index: usize,
     const plugin = state.track_fx_plugin_ptrs[track_idx][fx_index];
     const selected = state.device_target_kind == .fx and state.device_target_fx == fx_index;
 
-    const card_w = if (missing != null) tokens.s(230, ui_scale) else cardWidthFor(plugin, ui_scale);
+    const card_w = if (missing != null) tokens.s(card_width.external, ui_scale) else cardWidthFor(plugin, ui_scale);
 
     var id_buf: [32]u8 = undefined;
     const id = std.fmt.bufPrintSentinel(&id_buf, "##fx_card{d}", .{fx_index}, 0) catch "##fx_card";
@@ -607,13 +628,11 @@ fn drawExternalBody(plugin: *const clap.Plugin, ui_scale: f32) void {
         zgui.text("{d} parameters", .{params.count(plugin)});
         zgui.popStyleColor(.{ .count = 1 });
     }
-    zgui.spacing();
-    widgets.dimLabel("Double-click the title to open");
 }
 
 fn drawAddCard(state: *State, track_idx: usize, is_master: bool, card_h: f32, ui_scale: f32) void {
     _ = is_master;
-    const card_w = tokens.s(64, ui_scale);
+    const card_w = tokens.s(80, ui_scale);
     if (!zgui.beginChild("##add_device_card", .{
         .w = card_w,
         .h = card_h,
@@ -623,14 +642,34 @@ fn drawAddCard(state: *State, track_idx: usize, is_master: bool, card_h: f32, ui
         return;
     }
 
+    const content_origin = zgui.getCursorPos();
     const avail = zgui.getContentRegionAvail();
-    const btn = tokens.s(28, ui_scale);
-    zgui.setCursorPos(.{ (avail[0] - btn) * 0.5, (avail[1] - btn) * 0.5 });
-    zgui.pushStyleColor4f(.{ .idx = .button, .c = Colors.current.bg_cell });
-    zgui.pushStyleColor4f(.{ .idx = .button_hovered, .c = Colors.current.bg_cell_hover });
-    zgui.pushStyleColor4f(.{ .idx = .button_active, .c = Colors.current.accent_dim });
-    const clicked = zgui.button("+##add_device", .{ .w = btn, .h = btn });
-    zgui.popStyleColor(.{ .count = 3 });
+    const btn = tokens.s(42, ui_scale);
+    zgui.setCursorPos(.{
+        content_origin[0] + (avail[0] - btn) * 0.5,
+        content_origin[1] + (avail[1] - btn) * 0.5,
+    });
+    const button_pos = zgui.getCursorScreenPos();
+    const clicked = zgui.invisibleButton("##add_device", .{ .w = btn, .h = btn });
+    const button_bg = if (zgui.isItemActive())
+        Colors.current.accent_dim
+    else if (zgui.isItemHovered(.{}))
+        Colors.current.bg_cell_hover
+    else
+        Colors.current.bg_cell;
+    const draw_list = zgui.getWindowDrawList();
+    draw_list.addRectFilled(.{
+        .pmin = button_pos,
+        .pmax = .{ button_pos[0] + btn, button_pos[1] + btn },
+        .col = zgui.colorConvertFloat4ToU32(button_bg),
+        .rounding = tokens.radius(.sm, ui_scale),
+    });
+    const center = [2]f32{ button_pos[0] + btn * 0.5, button_pos[1] + btn * 0.5 };
+    const arm = tokens.s(7, ui_scale);
+    const thickness = @max(tokens.s(1.5, ui_scale), 1.0);
+    const plus_col = zgui.colorConvertFloat4ToU32(Colors.current.text_bright);
+    draw_list.addLine(.{ .p1 = .{ center[0] - arm, center[1] }, .p2 = .{ center[0] + arm, center[1] }, .col = plus_col, .thickness = thickness });
+    draw_list.addLine(.{ .p1 = .{ center[0], center[1] - arm }, .p2 = .{ center[0], center[1] + arm }, .col = plus_col, .thickness = thickness });
     widgets.itemTooltip("Add audio effect");
     if (clicked) {
         state.fx_search_buf[0] = 0;
@@ -860,8 +899,11 @@ fn drawInstrumentPicker(state: *State, track_idx: usize, ui_scale: f32) void {
 
 fn drawPresetRow(state: *State, track_idx: usize, ui_scale: f32) void {
     const track_plugin = &state.track_plugins[track_idx];
-    if (state.preset_filter_items_z.len == 0) {
-        filters.rebuildPresetFilter(state);
+    const plugin = state.track_plugin_ptrs[track_idx] orelse return;
+    const plugin_id = std.mem.span(plugin.descriptor.id);
+    if (state.preset_filter_items_z.len == 0 or state.preset_filter_choice_index != track_plugin.choice_index) {
+        state.preset_filter_choice_index = track_plugin.choice_index;
+        filters.rebuildPresetFilter(state, plugin_id);
     }
 
     zgui.alignTextToFramePadding();
@@ -872,7 +914,7 @@ fn drawPresetRow(state: *State, track_idx: usize, ui_scale: f32) void {
         .hint = "Search…",
         .buf = state.preset_search_buf[0..],
     })) {
-        filters.rebuildPresetFilter(state);
+        filters.rebuildPresetFilter(state, plugin_id);
     }
     zgui.sameLine(.{ .spacing = tokens.gapTight(ui_scale) });
     zgui.setNextItemWidth(-1);

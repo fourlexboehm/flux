@@ -423,6 +423,10 @@ pub fn build(b: *std.Build) void {
             },
             .flags = &.{},
         });
+        flux.root_module.addCSourceFile(.{
+            .file = b.path("src/flux/app/native_drop.m"),
+            .flags = &.{"-fobjc-arc"},
+        });
     }
     if (target_os == .linux) {
         flux.root_module.linkSystemLibrary("asound", .{});

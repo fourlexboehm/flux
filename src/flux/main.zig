@@ -209,6 +209,11 @@ pub fn main(init: std.process.Init) !void {
         for (&track_plugins, 0..) |*track, t| {
             plugin_runtime.unloadPlugin(track, allocator, &engine.shared, t);
         }
+        for (&track_fx, 0..) |*track_slots, t| {
+            for (track_slots, 0..) |*slot, fx_index| {
+                plugin_runtime.unloadFxPlugin(slot, allocator, &engine.shared, t, fx_index);
+            }
+        }
         return;
     }
 
@@ -616,7 +621,17 @@ pub fn main(init: std.process.Init) !void {
     for (&track_plugins) |*track| {
         plugin_runtime.closePluginGui(track);
     }
+    for (&track_fx) |*track_slots| {
+        for (track_slots) |*slot| {
+            plugin_runtime.closePluginGui(slot);
+        }
+    }
     for (&track_plugins, 0..) |*track, t| {
         plugin_runtime.unloadPlugin(track, allocator, &engine.shared, t);
+    }
+    for (&track_fx, 0..) |*track_slots, t| {
+        for (track_slots, 0..) |*slot, fx_index| {
+            plugin_runtime.unloadFxPlugin(slot, allocator, &engine.shared, t, fx_index);
+        }
     }
 }

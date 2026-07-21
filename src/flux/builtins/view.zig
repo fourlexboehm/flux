@@ -169,28 +169,41 @@ fn drawVerticalThreshold(plugin: *Plugin, height: f32) void {
 fn drawDynamics(plugin: *Plugin) void {
     const avail = zgui.getContentRegionAvail();
     const fader_h = @max(@min(avail[1] - 48, 300.0), 120.0);
-    const right_w = @max(avail[0] - thr_col_w - 12, 160.0);
+    const side_w = @max(avail[0] - thr_col_w - 12, 1.0);
 
-    if (zgui.beginChild("##dyn_thr", .{ .w = thr_col_w, .h = fader_h + 56, .child_flags = .{ .border = false } })) {
+    if (zgui.beginChild("##dyn_thr", .{ .w = thr_col_w, .h = fader_h + 56, .child_flags = .{ .border = false }, .window_flags = .{ .no_scrollbar = true, .no_scroll_with_mouse = true } })) {
         drawVerticalThreshold(plugin, fader_h);
     }
     zgui.endChild();
 
     zgui.sameLine(.{ .spacing = 12 });
 
-    if (zgui.beginChild("##dyn_side", .{ .w = right_w, .h = fader_h + 56, .child_flags = .{ .border = false } })) {
+    if (plugin.kind == .compressor) {
+        const col_w = @max((side_w - 12) * 0.5, 1.0);
+        if (zgui.beginChild("##dyn_params", .{ .w = col_w, .h = fader_h + 56, .child_flags = .{ .border = false }, .window_flags = .{ .no_scrollbar = true, .no_scroll_with_mouse = true } })) {
+            const w = @max(zgui.getContentRegionAvail()[0] - 4, 120.0);
+            zgui.separatorText("Dynamics");
+            drawParamRow(plugin, params_mod.id_ratio, w);
+            drawParamRow(plugin, params_mod.id_attack, w);
+            drawParamRow(plugin, params_mod.id_release, w);
+        }
+        zgui.endChild();
+        zgui.sameLine(.{ .spacing = 12 });
+        if (zgui.beginChild("##dyn_gain", .{ .w = col_w, .h = fader_h + 56, .child_flags = .{ .border = false }, .window_flags = .{ .no_scrollbar = true, .no_scroll_with_mouse = true } })) {
+            const w = @max(zgui.getContentRegionAvail()[0] - 4, 120.0);
+            zgui.separatorText("Gain");
+            drawParamRow(plugin, params_mod.id_input_gain, w);
+            drawParamRow(plugin, params_mod.id_output_gain, w);
+            drawParamRow(plugin, params_mod.id_auto_makeup, w);
+        }
+        zgui.endChild();
+        return;
+    }
+
+    if (zgui.beginChild("##dyn_side", .{ .w = side_w, .h = fader_h + 56, .child_flags = .{ .border = false }, .window_flags = .{ .no_scrollbar = true, .no_scroll_with_mouse = true } })) {
         const w = @max(zgui.getContentRegionAvail()[0] - 4, 120.0);
         switch (plugin.kind) {
-            .compressor => {
-                zgui.separatorText("Dynamics");
-                drawParamRow(plugin, params_mod.id_ratio, w);
-                drawParamRow(plugin, params_mod.id_attack, w);
-                drawParamRow(plugin, params_mod.id_release, w);
-                zgui.separatorText("Gain");
-                drawParamRow(plugin, params_mod.id_input_gain, w);
-                drawParamRow(plugin, params_mod.id_output_gain, w);
-                drawParamRow(plugin, params_mod.id_auto_makeup, w);
-            },
+            .compressor => unreachable,
             .limiter => {
                 zgui.separatorText("Timing");
                 drawParamRow(plugin, params_mod.id_attack, w);
@@ -216,7 +229,7 @@ fn beginClampedBody(max_w: f32) f32 {
     const avail = zgui.getContentRegionAvail()[0];
     const body_w = @min(avail, max_w);
     _ = zgui.beginChild("##fx_body", .{ .w = body_w, .h = 0, .child_flags = .{ .border = false } });
-    return body_w;
+    return @min(zgui.getContentRegionAvail()[0], max_w);
 }
 
 fn endClampedBody() void {
@@ -281,9 +294,12 @@ fn drawEqGraph(plugin: *Plugin, body_w: f32) void {
 
     // Cap height by width so wide panes don't get a tall empty graph.
     const plot_h = std.math.clamp(body_w * 0.42, 150.0, 300.0);
+    // ImPlot centers the final tick label on the right edge. Keep a gutter in
+    // the child so "20k" stays inside its content bounds and cannot expand it.
+    const plot_w = @max(body_w - 32.0, 1.0);
 
     if (zgui.plot.beginPlot("##eq_curve", .{
-        .w = -1,
+        .w = plot_w,
         .h = plot_h,
         .flags = .{
             .no_title = true,
@@ -299,8 +315,8 @@ fn drawEqGraph(plugin: *Plugin, body_w: f32) void {
         zgui.plot.setupAxisLimits(.y1, .{ .min = eq_db_min, .max = eq_db_max, .cond = .always });
 
         const tick_vals = [_]f64{
-            @log10(20.0),    @log10(50.0),   @log10(100.0),  @log10(200.0),
-            @log10(500.0),   @log10(1000.0), @log10(2000.0), @log10(5000.0),
+            @log10(20.0),    @log10(50.0),    @log10(100.0),  @log10(200.0),
+            @log10(500.0),   @log10(1000.0),  @log10(2000.0), @log10(5000.0),
             @log10(10000.0), @log10(20000.0),
         };
         const tick_labels = [_][*:0]const u8{
@@ -402,7 +418,8 @@ fn drawEqBandControls(plugin: *Plugin, band: usize, body_w: f32) void {
         }
     }
 
-    const w = @max(body_w - 4, 100.0);
+    const control_gap: f32 = 12;
+    const control_w = @max((body_w - control_gap * 2 - 8) / 3, 120.0);
 
     // Freq
     if (plugin.params.indexOf(base + 1)) |ii| {
@@ -412,7 +429,7 @@ fn drawEqBandControls(plugin: *Plugin, band: usize, body_w: f32) void {
         var v: f32 = @floatCast(plugin.params.values[ii]);
         var id_buf: [16]u8 = undefined;
         const id = std.fmt.bufPrintSentinel(&id_buf, "##freq{d}", .{band}, 0) catch "##f";
-        zgui.setNextItemWidth(@max(w - param_label_w - 8, 80.0));
+        zgui.setNextItemWidth(@max(control_w - param_label_w, 80.0));
         if (zgui.sliderFloat(id, .{ .v = &v, .min = 20, .max = 20000, .cfmt = "%.0f Hz", .flags = .{ .logarithmic = true } })) {
             plugin.params.setByIndex(ii, v);
             plugin.applyParamsToDsp();
@@ -422,6 +439,7 @@ fn drawEqBandControls(plugin: *Plugin, band: usize, body_w: f32) void {
 
     // Band boost/cut (not the global In/Out trim)
     if (plugin.params.indexOf(base + 2)) |ii| {
+        zgui.sameLine(.{ .spacing = control_gap });
         zgui.alignTextToFramePadding();
         zgui.textUnformatted("Boost");
         zgui.sameLine(.{ .spacing = 8 });
@@ -430,7 +448,7 @@ fn drawEqBandControls(plugin: *Plugin, band: usize, body_w: f32) void {
         const id = std.fmt.bufPrintSentinel(&id_buf, "##gain{d}", .{band}, 0) catch "##g";
         const has_gain = eq_dsp.bandHasGain(plugin.eq.bands[band].type);
         if (!has_gain) zgui.beginDisabled(.{});
-        zgui.setNextItemWidth(@max(w - param_label_w - 8, 80.0));
+        zgui.setNextItemWidth(@max(control_w - param_label_w, 80.0));
         if (zgui.sliderFloat(id, .{ .v = &v, .min = -24, .max = 24, .cfmt = "%.1f dB" })) {
             plugin.params.setByIndex(ii, v);
             plugin.applyParamsToDsp();
@@ -441,13 +459,14 @@ fn drawEqBandControls(plugin: *Plugin, band: usize, body_w: f32) void {
 
     // Q
     if (plugin.params.indexOf(base + 3)) |ii| {
+        zgui.sameLine(.{ .spacing = control_gap });
         zgui.alignTextToFramePadding();
         zgui.textUnformatted("Q");
         zgui.sameLine(.{ .spacing = 8 });
         var v: f32 = @floatCast(plugin.params.values[ii]);
         var id_buf: [16]u8 = undefined;
         const id = std.fmt.bufPrintSentinel(&id_buf, "##q{d}", .{band}, 0) catch "##q";
-        zgui.setNextItemWidth(@max(w - param_label_w - 8, 80.0));
+        zgui.setNextItemWidth(@max(control_w - param_label_w, 80.0));
         if (zgui.sliderFloat(id, .{ .v = &v, .min = 0.1, .max = 10, .cfmt = "%.2f", .flags = .{ .logarithmic = true } })) {
             plugin.params.setByIndex(ii, v);
             plugin.applyParamsToDsp();

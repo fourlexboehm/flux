@@ -444,6 +444,10 @@ fn drawTransport(state: *State, ui_scale: f32) void {
     var dsp_buf: [16]u8 = undefined;
     const dsp_label = std.fmt.bufPrint(&dsp_buf, "DSP {d:2}%", .{state.dsp_load_pct}) catch "DSP";
     widgets.dimLabel(dsp_label);
+    const dsp_width = zgui.calcTextSize("DSP 999%", .{})[0];
+    const label_width = zgui.calcTextSize(dsp_label, .{})[0];
+    zgui.sameLine(.{ .spacing = 0 });
+    zgui.dummy(.{ .w = @max(0.0, dsp_width - label_width), .h = 1 });
 
     // View mode toggle: Session / Arrangement
     widgets.toolbarSeparator(ui_scale, control_h);

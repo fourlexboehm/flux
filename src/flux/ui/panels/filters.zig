@@ -103,7 +103,7 @@ pub fn rebuildInstrumentFilter(state: *State) void {
     state.instrument_filter_indices = indices.toOwnedSlice(state.allocator) catch &[_]i32{};
 }
 
-pub fn rebuildPresetFilter(state: *State) void {
+pub fn rebuildPresetFilter(state: *State, plugin_id: []const u8) void {
     const filter = std.mem.sliceTo(&state.preset_search_buf, 0);
     if (state.preset_catalog) |catalog| catalog.query(filter, "", true) catch |err| {
         std.log.warn("Preset query failed: {}", .{err});
@@ -116,8 +116,9 @@ pub fn rebuildPresetFilter(state: *State) void {
     var max_width: f32 = 0.0;
     if (state.preset_catalog) |catalog| {
         const fonts_ready = zgui.io.getFontsTexRef().tex_data != null;
-        // Compute max width from all presets so the combo width is stable.
+        // Compute width only from presets compatible with this instrument.
         for (catalog.entries.items) |entry| {
+            if (!std.mem.eql(u8, entry.plugin_id, plugin_id)) continue;
             const clean_name = sanitizePresetName(entry.name);
             var label_buf: [256]u8 = undefined;
             const label = std.fmt.bufPrint(&label_buf, "{s} - {s}", .{ clean_name, entry.plugin_name }) catch clean_name;
@@ -127,6 +128,7 @@ pub fn rebuildPresetFilter(state: *State) void {
             }
         }
         for (catalog.entries.items, 0..) |entry, idx| {
+            if (!std.mem.eql(u8, entry.plugin_id, plugin_id)) continue;
             const clean_name = sanitizePresetName(entry.name);
             if (!containsIgnoreCase(clean_name, filter) and !containsIgnoreCase(entry.plugin_name, filter)) continue;
             var label_buf: [256]u8 = undefined;
