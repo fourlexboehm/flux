@@ -88,6 +88,9 @@ pub const StateSnapshot = struct {
     sample_table: [max_rt_samples]SampleSlotRt,
     track_plugins: [max_tracks]?*const clap.Plugin,
     track_fx_plugins: [max_tracks][ui_state.max_fx_slots]?*const clap.Plugin,
+    /// Device bypass: disabled instruments render silence, disabled FX pass through.
+    track_instrument_enabled: [max_tracks]bool,
+    track_fx_enabled: [max_tracks][ui_state.max_fx_slots]bool,
     live_key_states: [max_tracks][128]bool,
     live_key_velocities: [max_tracks][128]f32,
     controller_param_writes: [max_controller_param_writes]ui_state.ControllerParamWrite,
@@ -598,7 +601,12 @@ pub const Graph = struct {
 
         const allow_fast_skip = fx.policy == .track_fx_fast_skip;
         const has_active_audio = if (allow_fast_skip) self.hasActiveInput(fx.inputs) else true;
-        const plugin = ctx.snapshot.track_fx_plugins[fx.track_index][fx.fx_index] orelse {
+        // Bypassed FX behaves like an empty slot: audio passes straight through.
+        const slot_plugin = if (ctx.snapshot.track_fx_enabled[fx.track_index][fx.fx_index])
+            ctx.snapshot.track_fx_plugins[fx.track_index][fx.fx_index]
+        else
+            null;
+        const plugin = slot_plugin orelse {
             if (allow_fast_skip and !has_active_audio) {
                 self.zeroBufferOnce(fx.out, ctx.frame_count);
                 fx.sleeping = false;
@@ -696,6 +704,11 @@ pub const Graph = struct {
             ctx.graph.zeroBufferOnce(synth.out, ctx.frame_count);
             return;
         };
+        // Bypassed instrument renders silence (buffers already zeroed above).
+        if (!ctx.snapshot.track_instrument_enabled[synth.track_index]) {
+            ctx.graph.zeroBufferOnce(synth.out, ctx.frame_count);
+            return;
+        }
 
         synth.out_events.context = &synth.out_events_list;
         var channel_ptrs = [2][*]f32{ output.left.ptr, output.right.ptr };

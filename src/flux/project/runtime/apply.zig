@@ -67,17 +67,20 @@ pub fn applyDawprojectToState(
         state.track_plugins[t].choice_index = 0;
         state.track_plugins[t].gui_open = false;
         state.track_plugins[t].last_valid_choice = 0;
+        state.track_plugins[t].enabled = true;
         state.track_fx_slot_count[t] = 1;
         for (0..ui_state.max_fx_slots) |fx_index| {
             state.track_fx[t][fx_index].choice_index = 0;
             state.track_fx[t][fx_index].gui_open = false;
             state.track_fx[t][fx_index].last_valid_choice = 0;
+            state.track_fx[t][fx_index].enabled = true;
         }
     }
     for (0..ui_state.max_fx_slots) |fx_index| {
         state.track_fx[master_track_index][fx_index].choice_index = 0;
         state.track_fx[master_track_index][fx_index].gui_open = false;
         state.track_fx[master_track_index][fx_index].last_valid_choice = 0;
+        state.track_fx[master_track_index][fx_index].enabled = true;
     }
     state.track_fx_slot_count[master_track_index] = 1;
 
@@ -106,6 +109,7 @@ pub fn applyDawprojectToState(
                         const resolved_choice = choice orelse 0;
                         state.track_plugins[t].choice_index = resolved_choice;
                         state.track_plugins[t].last_valid_choice = resolved_choice;
+                        state.track_plugins[t].enabled = if (device.enabled) |e| e.value else true;
                         if (choice == null) {
                             state.missing_track_plugins[t] = try copyMissingPlugin(allocator, loaded, &device);
                         }
@@ -114,6 +118,7 @@ pub fn applyDawprojectToState(
                         const resolved_choice = choice orelse 0;
                         state.track_fx[t][fx_slot].choice_index = resolved_choice;
                         state.track_fx[t][fx_slot].last_valid_choice = resolved_choice;
+                        state.track_fx[t][fx_slot].enabled = if (device.enabled) |e| e.value else true;
                         if (choice == null) {
                             state.missing_track_fx[t][fx_slot] = try copyMissingPlugin(allocator, loaded, &device);
                         }
@@ -148,6 +153,7 @@ pub fn applyDawprojectToState(
                         const resolved_choice = choice orelse 0;
                         state.track_fx[master_track_index][fx_slot].choice_index = resolved_choice;
                         state.track_fx[master_track_index][fx_slot].last_valid_choice = resolved_choice;
+                        state.track_fx[master_track_index][fx_slot].enabled = if (device.enabled) |e| e.value else true;
                         if (choice == null) {
                             state.missing_track_fx[master_track_index][fx_slot] = try copyMissingPlugin(allocator, loaded, &device);
                         }

@@ -241,6 +241,12 @@ pub fn parseProjectXml(allocator: std.mem.Allocator, xml_data: []const u8) !Proj
                                 .name = try allocator.dupe(u8, "AutoMakeup"),
                                 .value = param_value,
                             };
+                        } else if (std.mem.eql(u8, elem_name, "Enabled") or std.mem.eql(u8, param_name, "On/Off")) {
+                            dev.enabled = .{
+                                .id = try allocator.dupe(u8, param_id),
+                                .name = try allocator.dupe(u8, "On/Off"),
+                                .value = param_value,
+                            };
                         }
                     }
                 } else if ((std.mem.eql(u8, elem_name, "RealParameter") or

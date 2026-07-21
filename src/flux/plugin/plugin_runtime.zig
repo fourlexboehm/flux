@@ -17,6 +17,7 @@ const session_constants = @import("../session/constants.zig");
 const session_view = @import("../session/types.zig");
 const ui_state = @import("../ui/state.zig");
 const thread_context = @import("../util/thread_context.zig");
+const plugin_state_capture = @import("../project/runtime/plugin_state.zig");
 const zsynth = @import("zsynth-core");
 const zminimoog = @import("zminimoog-core");
 const zportafm = @import("zportafm-core");
@@ -404,6 +405,224 @@ pub fn syncFxPlugins(
             }
         }
     }
+}
+
+/// Number of leading FX slots occupied by a device (chains are kept packed).
+/// Missing plugins (unresolved on load) hold their slot so order round-trips.
+pub fn loadedFxCount(state: *const ui_state.State, track: usize) usize {
+    var count: usize = 0;
+    for (0..ui_state.max_fx_slots) |i| {
+        if (state.track_fx[track][i].choice_index != 0 or state.missing_track_fx[track][i] != null) count += 1;
+    }
+    return count;
+}
+
+fn recomputeFxSlotCount(state: *ui_state.State, track: usize) void {
+    const loaded = loadedFxCount(state, track);
+    state.track_fx_slot_count[track] = @min(loaded + 1, ui_state.max_fx_slots);
+}
+
+const FxSlotFlags = struct { started: bool, need_start: bool };
+
+fn readFxSlotFlags(shared: *audio_engine.SharedState, track: usize, fx_index: usize) FxSlotFlags {
+    return .{
+        .started = shared.plugins_started_fx[track][fx_index].load(.acquire),
+        .need_start = shared.plugins_need_start_fx[track][fx_index].load(.acquire),
+    };
+}
+
+fn writeFxSlotFlags(shared: *audio_engine.SharedState, track: usize, fx_index: usize, flags: FxSlotFlags) void {
+    shared.plugins_started_fx[track][fx_index].store(flags.started, .release);
+    shared.plugins_need_start_fx[track][fx_index].store(flags.need_start, .release);
+}
+
+/// Detach the audio thread from every FX slot of `track` in [first, last] and
+/// wait until no callback is in flight, so slots can be rearranged safely.
+fn quiesceFxRange(shared: ?*audio_engine.SharedState, track: usize, first: usize, last: usize, io: std.Io) void {
+    const s = shared orelse return;
+    for (first..last + 1) |i| {
+        s.setTrackFxPlugin(track, i, null);
+    }
+    s.waitForIdle(io);
+}
+
+/// Apply a structural chain edit requested by the device UI. Runs on the main
+/// thread before `syncFxPlugins`, and moves live TrackPlugin instances together
+/// with their UI slots so the sync pass sees a consistent chain and reloads
+/// nothing (plugin state survives reorder/remove of neighbours).
+pub fn applyChainOpRequest(
+    allocator: std.mem.Allocator,
+    state: *ui_state.State,
+    track_fx: *[track_count][ui_state.max_fx_slots]TrackPlugin,
+    shared: ?*audio_engine.SharedState,
+    io: std.Io,
+) void {
+    const request = state.chain_op_request orelse return;
+    state.chain_op_request = null;
+
+    switch (request) {
+        .move_fx => |op| moveFx(state, track_fx, shared, io, op.track, op.from, op.to),
+        .remove_fx => |op| removeFx(state, track_fx, shared, io, allocator, op.track, op.fx_index),
+        .duplicate_fx => |op| duplicateFx(state, track_fx, shared, io, allocator, op.track, op.fx_index),
+    }
+}
+
+fn moveFx(
+    state: *ui_state.State,
+    track_fx: *[track_count][ui_state.max_fx_slots]TrackPlugin,
+    shared: ?*audio_engine.SharedState,
+    io: std.Io,
+    track: usize,
+    from: usize,
+    to: usize,
+) void {
+    if (track >= track_count) return;
+    const loaded = loadedFxCount(state, track);
+    if (from == to or from >= loaded or to >= loaded) return;
+
+    const lo = @min(from, to);
+    const hi = @max(from, to);
+    quiesceFxRange(shared, track, lo, hi, io);
+
+    // Rotate [lo..hi] so `from` lands on `to`, keeping everything else in order.
+    const runtime = track_fx[track][from];
+    const ui = state.track_fx[track][from];
+    const missing = state.missing_track_fx[track][from];
+    const flags: FxSlotFlags = if (shared) |s| readFxSlotFlags(s, track, from) else .{ .started = false, .need_start = false };
+
+    if (from < to) {
+        for (from..to) |i| {
+            track_fx[track][i] = track_fx[track][i + 1];
+            state.track_fx[track][i] = state.track_fx[track][i + 1];
+            state.missing_track_fx[track][i] = state.missing_track_fx[track][i + 1];
+            if (shared) |s| writeFxSlotFlags(s, track, i, readFxSlotFlags(s, track, i + 1));
+        }
+    } else {
+        var i = from;
+        while (i > to) : (i -= 1) {
+            track_fx[track][i] = track_fx[track][i - 1];
+            state.track_fx[track][i] = state.track_fx[track][i - 1];
+            state.missing_track_fx[track][i] = state.missing_track_fx[track][i - 1];
+            if (shared) |s| writeFxSlotFlags(s, track, i, readFxSlotFlags(s, track, i - 1));
+        }
+    }
+    track_fx[track][to] = runtime;
+    state.track_fx[track][to] = ui;
+    state.missing_track_fx[track][to] = missing;
+    if (shared) |s| writeFxSlotFlags(s, track, to, flags);
+
+    // Follow the moved device with the selection.
+    if (state.device_target_kind == .fx and state.device_target_track == track) {
+        if (state.device_target_fx == from) {
+            state.device_target_fx = to;
+        } else if (from < to and state.device_target_fx > from and state.device_target_fx <= to) {
+            state.device_target_fx -= 1;
+        } else if (from > to and state.device_target_fx >= to and state.device_target_fx < from) {
+            state.device_target_fx += 1;
+        }
+    }
+    state.markProjectDirty();
+}
+
+fn removeFx(
+    state: *ui_state.State,
+    track_fx: *[track_count][ui_state.max_fx_slots]TrackPlugin,
+    shared: ?*audio_engine.SharedState,
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    track: usize,
+    fx_index: usize,
+) void {
+    if (track >= track_count) return;
+    const loaded = loadedFxCount(state, track);
+    if (fx_index >= loaded) return;
+
+    quiesceFxRange(shared, track, fx_index, ui_state.max_fx_slots - 1, io);
+
+    const slot = &track_fx[track][fx_index];
+    closePluginGui(slot);
+    unloadFxPlugin(slot, allocator, shared, track, fx_index);
+    state.clearMissingTrackFx(track, fx_index);
+
+    // Compact: shift the tail left so the chain stays packed.
+    for (fx_index..ui_state.max_fx_slots - 1) |i| {
+        track_fx[track][i] = track_fx[track][i + 1];
+        state.track_fx[track][i] = state.track_fx[track][i + 1];
+        state.missing_track_fx[track][i] = state.missing_track_fx[track][i + 1];
+        if (shared) |s| writeFxSlotFlags(s, track, i, readFxSlotFlags(s, track, i + 1));
+    }
+    track_fx[track][ui_state.max_fx_slots - 1] = .{ .choice_index = 0 };
+    state.track_fx[track][ui_state.max_fx_slots - 1] = .{
+        .choice_index = 0,
+        .gui_open = false,
+        .last_valid_choice = 0,
+    };
+    state.missing_track_fx[track][ui_state.max_fx_slots - 1] = null;
+    if (shared) |s| writeFxSlotFlags(s, track, ui_state.max_fx_slots - 1, .{ .started = false, .need_start = false });
+
+    recomputeFxSlotCount(state, track);
+    if (state.device_target_kind == .fx and state.device_target_track == track and state.device_target_fx >= fx_index) {
+        state.device_target_fx = if (state.device_target_fx > 0) state.device_target_fx - 1 else 0;
+    }
+    state.markProjectDirty();
+}
+
+fn duplicateFx(
+    state: *ui_state.State,
+    track_fx: *[track_count][ui_state.max_fx_slots]TrackPlugin,
+    shared: ?*audio_engine.SharedState,
+    io: std.Io,
+    allocator: std.mem.Allocator,
+    track: usize,
+    fx_index: usize,
+) void {
+    if (track >= track_count) return;
+    const loaded = loadedFxCount(state, track);
+    if (fx_index >= loaded or loaded >= ui_state.max_fx_slots) return;
+
+    // Capture source state now; it is restored onto the copy next frame,
+    // after syncFxPlugins has instantiated it.
+    const source_state: ?[]u8 = if (track_fx[track][fx_index].getPlugin()) |plugin|
+        plugin_state_capture.capturePluginStateForUndo(allocator, plugin)
+    else
+        null;
+
+    const insert_at = fx_index + 1;
+    quiesceFxRange(shared, track, insert_at, ui_state.max_fx_slots - 1, io);
+
+    // Shift the tail right to open the slot after the source.
+    var i: usize = ui_state.max_fx_slots - 1;
+    while (i > insert_at) : (i -= 1) {
+        track_fx[track][i] = track_fx[track][i - 1];
+        state.track_fx[track][i] = state.track_fx[track][i - 1];
+        state.missing_track_fx[track][i] = state.missing_track_fx[track][i - 1];
+        if (shared) |s| writeFxSlotFlags(s, track, i, readFxSlotFlags(s, track, i - 1));
+    }
+    // Fresh runtime slot: choice mismatch makes syncFxPlugins load the copy.
+    track_fx[track][insert_at] = .{ .choice_index = 0 };
+    state.track_fx[track][insert_at] = .{
+        .choice_index = state.track_fx[track][fx_index].choice_index,
+        .gui_open = false,
+        .last_valid_choice = state.track_fx[track][fx_index].last_valid_choice,
+        .enabled = state.track_fx[track][fx_index].enabled,
+    };
+    state.missing_track_fx[track][insert_at] = null;
+    if (shared) |s| writeFxSlotFlags(s, track, insert_at, .{ .started = false, .need_start = false });
+
+    if (source_state) |data| {
+        state.plugin_state_restore_request = .{
+            .track_index = track,
+            .fx_index = insert_at,
+            .state_data = data,
+            .free_after_use = true,
+        };
+    }
+
+    recomputeFxSlotCount(state, track);
+    if (state.device_target_kind == .fx and state.device_target_track == track) {
+        state.device_target_fx = insert_at;
+    }
+    state.markProjectDirty();
 }
 
 pub fn unloadPlugin(track: *TrackPlugin, allocator: std.mem.Allocator, shared: ?*audio_engine.SharedState, track_index: usize) void {

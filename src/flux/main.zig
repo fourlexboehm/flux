@@ -370,6 +370,7 @@ pub fn main(init: std.process.Init) !void {
                 );
                 engine.updateFromUi(&state);
                 state.clearControllerParamWrites();
+                plugin_runtime.applyChainOpRequest(allocator, &state, &track_fx, &engine.shared, io);
                 try plugin_runtime.syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 try plugin_runtime.syncFxPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 dawproject_runtime.applyPresetLoadRequests(&state, &catalog, &track_plugins);
@@ -561,6 +562,7 @@ pub fn main(init: std.process.Init) !void {
                 );
                 engine.updateFromUi(&state);
                 state.clearControllerParamWrites();
+                plugin_runtime.applyChainOpRequest(allocator, &state, &track_fx, &engine.shared, io);
                 try plugin_runtime.syncTrackPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 try plugin_runtime.syncFxPlugins(allocator, &host.clap_host, &track_plugins, &track_fx, &state, &catalog, &engine.shared, io, buffer_frames, true);
                 dawproject_runtime.applyPresetLoadRequests(&state, &catalog, &track_plugins);

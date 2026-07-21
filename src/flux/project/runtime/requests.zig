@@ -59,7 +59,7 @@ pub fn handleFileRequests(
         };
     }
 
-    // Handle plugin state restore request (for undo/redo)
+    // Handle plugin state restore request (for undo/redo and device duplication)
     if (state.plugin_state_restore_request) |req| {
         state.plugin_state_restore_request = null;
         if (req.track_index < track_count) {
@@ -71,6 +71,7 @@ pub fn handleFileRequests(
                 plugin_state.loadPluginStateFromData(p, req.state_data);
             }
         }
+        if (req.free_after_use) allocator.free(req.state_data);
     }
 }
 

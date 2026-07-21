@@ -17,4 +17,5 @@ pub const TrackPluginInfo = struct {
     plugin_id: ?[]const u8 = null, // CLAP plugin ID, e.g. "com.digital-suburban.dexed"
     state_path: ?[]const u8 = null, // Path in ZIP, e.g. "plugins/track0.clap-preset"
     params: []const PluginParamInfo = &.{},
+    enabled: bool = true, // device bypass state (Enabled/"On/Off" in DAWproject)
 };

@@ -97,6 +97,12 @@ pub const SharedState = struct {
         back.clips = state.session.clips;
         back.track_plugins = self.track_plugins;
         back.track_fx_plugins = self.track_fx_plugins;
+        for (0..max_tracks) |t| {
+            back.track_instrument_enabled[t] = state.track_plugins[t].enabled;
+            for (0..ui_state.max_fx_slots) |fx_index| {
+                back.track_fx_enabled[t][fx_index] = state.track_fx[t][fx_index].enabled;
+            }
+        }
         back.live_key_states = state.live_key_states;
         back.live_key_velocities = state.live_key_velocities;
         back.controller_param_write_count = state.controller_param_write_count;
@@ -534,6 +540,10 @@ fn initSnapshot(snapshot: *audio_graph.StateSnapshot) void {
         snapshot.active_scene_by_track[t] = -1;
         // sample_id 0 is valid; zero-fill would falsely mark audio present.
         snapshot.playing_audio[t].clear();
+        snapshot.track_instrument_enabled[t] = true;
+        for (0..ui_state.max_fx_slots) |fx_index| {
+            snapshot.track_fx_enabled[t][fx_index] = true;
+        }
         for (0..max_scenes) |s| {
             snapshot.clips[t][s].length_beats = default_clip_bars * beats_per_bar;
             snapshot.piano_clips[t][s].length_beats = default_clip_bars * beats_per_bar;

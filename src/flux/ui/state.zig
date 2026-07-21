@@ -59,6 +59,17 @@ pub const TrackPluginUI = struct {
     gui_open: bool,
     last_valid_choice: i32,
     preset_choice_index: ?usize = null,
+    /// Device bypass: audio thread skips processing when false.
+    enabled: bool = true,
+};
+
+/// Structural edit of a track's FX chain. Handled in main.zig by
+/// `plugin_runtime.applyChainOpRequest` so live plugin instances move with
+/// their slots instead of being reloaded (which would drop plugin state).
+pub const ChainOpRequest = union(enum) {
+    move_fx: struct { track: usize, from: usize, to: usize },
+    remove_fx: struct { track: usize, fx_index: usize },
+    duplicate_fx: struct { track: usize, fx_index: usize },
 };
 
 pub const MissingPluginRole = enum {
@@ -226,6 +237,7 @@ pub const State = struct {
     preset_catalog: ?*presets.PresetCatalog = null,
     instrument_search_buf: [64:0]u8 = @splat(0),
     preset_search_buf: [128:0]u8 = @splat(0),
+    fx_search_buf: [64:0]u8 = @splat(0),
 
     // Preset load request (handled by main.zig)
     preset_load_request: ?PresetLoadRequest = null,
@@ -240,11 +252,18 @@ pub const State = struct {
     // Plugin state restore request (processed by main.zig)
     plugin_state_restore_request: ?PluginStateRestoreRequest = null,
 
+    // Device chain structural edit (processed by main.zig)
+    chain_op_request: ?ChainOpRequest = null,
+
     pub const PluginStateRestoreRequest = struct {
         track_index: usize,
         /// null = instrument; Some = FX slot index
         fx_index: ?usize = null,
         state_data: []const u8,
+        /// True when state_data was allocated for this request (e.g. device
+        /// duplication) and must be freed after applying. Undo commands keep
+        /// ownership of their buffers and leave this false.
+        free_after_use: bool = false,
     };
 
     pub const PresetLoadRequest = struct {

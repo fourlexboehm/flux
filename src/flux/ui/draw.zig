@@ -6,6 +6,7 @@ const style = @import("theme/style.zig");
 const selection = @import("input/selection.zig");
 const device_panel = @import("panels/device.zig");
 const browser = @import("panels/browser.zig");
+const controller_mapping = @import("../midi/controller_mapping.zig");
 const presets = @import("../plugin/presets.zig");
 const undo_requests = @import("undo_requests.zig");
 const state_mod = @import("state.zig");
@@ -41,8 +42,8 @@ pub fn draw(state: *State, ui_scale: f32) void {
     zgui.setNextWindowSize(.{ .w = display[0], .h = display[1], .cond = .always });
 
     style.applyMinimalStyle(ui_scale);
-    style.pushAbletonStyle();
-    defer style.popAbletonStyle();
+    style.pushStyle();
+    defer style.popStyle();
 
     if (zgui.begin("flux##root", .{ .flags = .{
         .no_collapse = true,
@@ -589,6 +590,32 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
         widgets.statusPill(track_info, ui_scale);
     }
 
+    // Compact Smart 8 controller status (mapping details on hover).
+    if (state.bottom_mode == .device) {
+        const page_count = controller_mapping.smartPageCount(state);
+        if (page_count > 0) {
+            zgui.sameLine(.{ .spacing = tokens.gapGroup(ui_scale) });
+            zgui.alignTextToFramePadding();
+            var smart_buf: [48]u8 = undefined;
+            const smart_label = std.fmt.bufPrint(&smart_buf, "Smart 8 · {d}/{d}", .{
+                state.controller.smart_page + 1,
+                page_count,
+            }) catch "Smart 8";
+            widgets.dimLabel(smart_label);
+            if (zgui.isItemHovered(.{})) {
+                if (zgui.beginTooltip()) {
+                    for (0..state_mod.controller_smart_slots) |slot_index| {
+                        var row_buf: [160]u8 = undefined;
+                        const label = controller_mapping.smartParamLabel(state, slot_index);
+                        const row = std.fmt.bufPrint(&row_buf, "K{d}: {s}", .{ slot_index + 1, label }) catch "K";
+                        zgui.textUnformatted(row);
+                    }
+                    zgui.endTooltip();
+                }
+            }
+        }
+    }
+
     zgui.separator();
 
     switch (state.bottom_mode) {
@@ -827,16 +854,7 @@ fn loadPluginFromBrowser(state: *State, sel: browser.PluginSelection) void {
     if (sel.is_fx) {
         const track_idx = state.selectedTrack();
         if (track_idx >= max_tracks) return;
-        const fx_slot_count = state.track_fx_slot_count[track_idx];
-        if (fx_slot_count >= state_mod.max_fx_slots) return;
-        const fx_slot = &state.track_fx[track_idx][fx_slot_count - 1];
-        // If last slot is empty, use it; otherwise add a new slot
-        if (fx_slot.choice_index == 0) {
-            fx_slot.choice_index = sel.catalog_index;
-        } else if (fx_slot_count < state_mod.max_fx_slots) {
-            state.track_fx_slot_count[track_idx] += 1;
-            state.track_fx[track_idx][fx_slot_count].choice_index = sel.catalog_index;
-        }
+        _ = device_panel.appendFx(state, track_idx, sel.catalog_index);
     } else {
         const track_idx = state.selectedTrack();
         if (track_idx >= max_tracks) return;

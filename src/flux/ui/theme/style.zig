@@ -3,10 +3,10 @@ const colors = @import("colors.zig");
 const tokens = @import("tokens.zig");
 const Colors = colors.Colors;
 
-/// Number of colors pushed by pushAbletonStyle — keep in sync.
-pub const ableton_style_color_count: i32 = 39;
+/// Number of colors pushed by pushStyle — keep in sync.
+pub const style_color_count: i32 = 39;
 
-pub fn pushAbletonStyle() void {
+pub fn pushStyle() void {
     const c = Colors.current;
     zgui.pushStyleColor4f(.{ .idx = .window_bg, .c = c.bg_dark });
     zgui.pushStyleColor4f(.{ .idx = .child_bg, .c = c.bg_panel });
@@ -51,14 +51,14 @@ pub fn pushAbletonStyle() void {
     zgui.pushStyleColor4f(.{ .idx = .title_bg_active, .c = c.bg_header });
 }
 
-pub fn popAbletonStyle() void {
-    zgui.popStyleColor(.{ .count = ableton_style_color_count });
+pub fn popStyle() void {
+    zgui.popStyleColor(.{ .count = style_color_count });
 }
 
 pub fn applyMinimalStyle(ui_scale: f32) void {
     const style = zgui.getStyle();
     const scale = if (ui_scale > 0) ui_scale else 1.0;
-    // Flat, near-square chrome — Ableton-style panels, softly rounded controls.
+    // Flat, near-square chrome — minimal panels, softly rounded controls.
     style.window_rounding = tokens.radius(.md, scale);
     style.child_rounding = tokens.radius(.md, scale);
     style.popup_rounding = tokens.radius(.md, scale);

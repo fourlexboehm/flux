@@ -753,7 +753,7 @@ fn buildClapPlugin(
         .enabled = .{
             .id = enabled_id,
             .name = "On/Off",
-            .value = true,
+            .value = info.enabled,
         },
         .state = if (use_state) blk: {
             if (info.state_path) |sp| break :blk .{ .path = try allocator.dupe(u8, sp) };
@@ -909,7 +909,7 @@ fn buildMissingPlugin(
         .enabled = .{
             .id = enabled_id,
             .name = "On/Off",
-            .value = true,
+            .value = info.enabled,
         },
         .state = if (info.state_path) |path| .{
             .path = try allocator.dupe(u8, path),

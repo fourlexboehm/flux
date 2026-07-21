@@ -15,6 +15,13 @@ pub const PluginSelection = struct {
     is_fx: bool,
 };
 
+/// Drag payload for plugin entries ("FLUX_PLUGIN"); dropped onto the device
+/// chain to load an instrument or append an effect.
+pub const PluginDragPayload = extern struct {
+    catalog_index: i32,
+    is_fx: u8,
+};
+
 pub fn draw(
     open: *bool,
     width: *f32,
@@ -189,6 +196,17 @@ fn drawPluginList(items: [:0]const u8, indices: []const i32, is_fx: bool, plugin
 
         if (zgui.selectable(buf[0..len :0], .{})) {
             if (idx < indices.len) plugin_selected.* = .{ .catalog_index = indices[idx], .is_fx = is_fx };
+        }
+        if (idx < indices.len and indices[idx] > 0) {
+            if (zgui.beginDragDropSource(.{ .source_no_preview_tooltip = true })) {
+                const payload = PluginDragPayload{
+                    .catalog_index = indices[idx],
+                    .is_fx = @intFromBool(is_fx),
+                };
+                _ = zgui.setDragDropPayload("FLUX_PLUGIN", std.mem.asBytes(&payload), .always);
+                zgui.textUnformatted(name);
+                zgui.endDragDropSource();
+            }
         }
         pos = end;
         idx += 1;

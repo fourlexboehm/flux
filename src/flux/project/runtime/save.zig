@@ -181,6 +181,7 @@ fn writeProjectToPath(
         }
 
         for (track_plugins, 0..) |track, t| {
+            track_plugin_info[t].enabled = state.track_plugins[t].enabled;
             if (track.getPlugin()) |plugin| {
                 track_plugin_info[t].plugin_id = std.mem.span(plugin.descriptor.id);
                 track_plugin_info[t].params = collectPluginParams(param_alloc, plugin);
@@ -199,6 +200,7 @@ fn writeProjectToPath(
         }
         for (track_fx, 0..) |track_slots, t| {
             for (track_slots, 0..) |slot, fx_index| {
+                track_fx_plugin_info[t][fx_index].enabled = state.track_fx[t][fx_index].enabled;
                 if (slot.getPlugin()) |plugin| {
                     const pid = std.mem.span(plugin.descriptor.id);
                     track_fx_plugin_info[t][fx_index].plugin_id = pid;
