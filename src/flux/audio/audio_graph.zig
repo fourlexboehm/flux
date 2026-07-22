@@ -10,6 +10,7 @@ const audio_events = @import("audio_events.zig");
 const audio_mix = @import("audio_mix.zig");
 const note_source = @import("note_source.zig");
 const audio_clip_source = @import("audio_clip_source.zig");
+const latency_compensation = @import("latency_compensation.zig");
 
 const max_tracks = session_constants.max_tracks;
 const max_scenes = session_constants.max_scenes;
@@ -95,6 +96,8 @@ pub const StateSnapshot = struct {
     live_key_velocities: [max_tracks][128]f32,
     controller_param_writes: [max_controller_param_writes]ui_state.ControllerParamWrite,
     controller_param_write_count: usize,
+    track_latency: [max_tracks]u32,
+    max_track_latency: u32,
 };
 
 const NodeKind = enum(u8) {
@@ -167,6 +170,7 @@ const GainRuntime = struct {
     track_index: u8,
     inputs: InputRange = .{},
     out: BufferId,
+    compensation: latency_compensation.StereoDelay = .{},
 };
 
 const MixerRuntime = struct {
@@ -238,6 +242,7 @@ pub const Graph = struct {
 
     pub fn deinit(self: *Graph) void {
         self.freeAudioStorage();
+        for (self.gains.items) |*gain| gain.compensation.deinit(self.allocator);
         self.node_refs.deinit(self.allocator);
         self.connections.deinit(self.allocator);
         self.render_order.deinit(self.allocator);
@@ -338,6 +343,9 @@ pub const Graph = struct {
 
         self.scratch_input_left = try self.allocator.alloc(f32, max_frames);
         self.scratch_input_right = try self.allocator.alloc(f32, max_frames);
+        for (self.gains.items) |*gain| {
+            if (gain.compensation.left.len == 0) gain.compensation = try .init(self.allocator);
+        }
         for (self.buffers.items) |*buffer| {
             buffer.left = try self.allocator.alloc(f32, max_frames);
             buffer.right = try self.allocator.alloc(f32, max_frames);
@@ -541,6 +549,12 @@ pub const Graph = struct {
             const gain = if (muted) 0.0 else track.volume;
             if (gain == 0.0 or !self.hasActiveInput(gain_node.inputs)) {
                 self.zeroBufferOnce(gain_node.out, ctx.frame_count);
+                const silent = &self.buffers.items[gain_node.out];
+                gain_node.compensation.process(
+                    silent.left[0..ctx.frame_count],
+                    silent.right[0..ctx.frame_count],
+                    ctx.snapshot.max_track_latency - ctx.snapshot.track_latency[gain_node.track_index],
+                );
                 ctx.shared.setTrackPeak(gain_node.track_index, 0, 0);
                 continue;
             }
@@ -551,6 +565,11 @@ pub const Graph = struct {
             const out = &self.buffers.items[gain_node.out];
             const frames: usize = @intCast(ctx.frame_count);
             const peak = audio_mix.applyStereoGainsAndPeak(out.left, out.right, frames, left_gain, right_gain);
+            gain_node.compensation.process(
+                out.left[0..frames],
+                out.right[0..frames],
+                ctx.snapshot.max_track_latency - ctx.snapshot.track_latency[gain_node.track_index],
+            );
             ctx.shared.setTrackPeak(gain_node.track_index, peak[0], peak[1]);
         }
     }

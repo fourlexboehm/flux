@@ -75,6 +75,7 @@ fn tickFrame(
     state.midi_note_states = midi.note_states;
     state.midi_note_velocities = midi.note_velocities;
     const midi_event_count = midi.drainEvents(midi_events);
+    ui_recording.processMidiEvents(state, midi_events[0..midi_event_count], now);
     controller_mapping.applyMidiEvents(state, midi_events[0..midi_event_count]);
     if (time_utils.nsSince(dsp_last_update.*, now) >= 250 * std.time.ns_per_ms) {
         state.dsp_load_pct = engine.dsp_load_pct.load(.acquire);
@@ -339,6 +340,7 @@ pub fn main(init: std.process.Init) !void {
                     }
                 }
                 ui_keyboard.updateKeyboardMidi(&state);
+                ui_recording.processKeyboardEvents(&state);
                 plugin_runtime.updateUiPluginPointers(&state, &track_plugins, &track_fx);
                 ui_draw.draw(&state, 1.0);
                 if (state.buffer_frames_requested) {
@@ -531,6 +533,7 @@ pub fn main(init: std.process.Init) !void {
                     }
                 }
                 ui_keyboard.updateKeyboardMidi(&state);
+                ui_recording.processKeyboardEvents(&state);
                 plugin_runtime.updateUiPluginPointers(&state, &track_plugins, &track_fx);
                 ui_draw.draw(&state, ui_scale);
                 if (state.buffer_frames_requested) {

@@ -299,7 +299,12 @@ fn cardHeader(
         const cy = led_pos[1] + (header_h - tokens.s(4, ui_scale)) * 0.5;
         const r = led_btn * 0.25;
         if (enabled) {
-            const led_col = if (zgui.isItemHovered(.{})) Colors.current.accent else Colors.current.accent_dim;
+            const led_col = if (on_fill)
+                Colors.textOn(header_bg)
+            else if (zgui.isItemHovered(.{}))
+                Colors.current.accent
+            else
+                Colors.current.accent_dim;
             draw_list.addCircleFilled(.{ .p = .{ cx, cy }, .r = r, .col = zgui.colorConvertFloat4ToU32(led_col) });
         } else {
             draw_list.addCircle(.{
@@ -502,10 +507,8 @@ fn drawInstrumentCard(state: *State, track_idx: usize, card_h: f32, ui_scale: f3
             break :inst_body;
         }
 
-        if (selected) {
-            drawPresetRow(state, track_idx, ui_scale);
-            zgui.separator();
-        }
+        drawPresetRow(state, track_idx, ui_scale);
+        zgui.separator();
 
         if (plugin) |p| {
             if (embedded_views.getEmbeddedView(p)) |draw_fn| {

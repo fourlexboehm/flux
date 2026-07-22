@@ -8,6 +8,7 @@ const session_view = @import("../session/types.zig");
 const audio_graph = @import("audio_graph.zig");
 const clip_bake = @import("clip_bake.zig");
 const audio_constants = @import("audio_constants.zig");
+const latency_compensation = @import("latency_compensation.zig");
 
 const max_tracks = session_constants.max_tracks;
 const max_scenes = session_constants.max_scenes;
@@ -97,6 +98,7 @@ pub const SharedState = struct {
         back.clips = state.session.clips;
         back.track_plugins = self.track_plugins;
         back.track_fx_plugins = self.track_fx_plugins;
+        back.max_track_latency = 0;
         for (0..max_tracks) |t| {
             back.track_instrument_enabled[t] = state.track_plugins[t].enabled;
             for (0..ui_state.max_fx_slots) |fx_index| {
@@ -177,6 +179,18 @@ pub const SharedState = struct {
                     dst.automation_lane_count += 1;
                 }
             }
+
+            var latency: u32 = if (back.playing_audio[t].hasAudio() or !back.track_instrument_enabled[t])
+                0
+            else
+                latency_compensation.pluginFrames(back.track_plugins[t]);
+            for (0..ui_state.max_fx_slots) |fx_index| {
+                if (back.track_fx_enabled[t][fx_index]) {
+                    latency +|= latency_compensation.pluginFrames(back.track_fx_plugins[t][fx_index]);
+                }
+            }
+            back.track_latency[t] = @min(latency, latency_compensation.max_frames);
+            if (t < back.track_count) back.max_track_latency = @max(back.max_track_latency, back.track_latency[t]);
         }
         self.active_index.store(next, .release);
 

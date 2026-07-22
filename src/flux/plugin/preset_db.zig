@@ -121,12 +121,12 @@ pub const Db = struct {
 
     pub fn searchTitles(self: *const Db, allocator: std.mem.Allocator, text: []const u8, category: []const u8, ascending: bool) ![]Record {
         const sql = if (ascending)
-            \\select rowid, name, plugin_name from presets
+            \\select rowid, name, plugin_id, plugin_name, provider_id, location_kind, location, load_key, category from presets
             \\where (?1 = '' or category = ?1) and (?2 = '' or name like '%' || ?2 || '%' collate nocase
             \\  or plugin_name like '%' || ?2 || '%' collate nocase)
             \\order by name collate nocase asc
         else
-            \\select rowid, name, plugin_name from presets
+            \\select rowid, name, plugin_id, plugin_name, provider_id, location_kind, location, load_key, category from presets
             \\where (?1 = '' or category = ?1) and (?2 = '' or name like '%' || ?2 || '%' collate nocase
             \\  or plugin_name like '%' || ?2 || '%' collate nocase)
             \\order by name collate nocase desc
@@ -140,13 +140,16 @@ pub const Db = struct {
             c.SQLITE_ROW => try records.append(allocator, .{
                 .db_id = c.sqlite3_column_int64(stmt, 0),
                 .name = try allocator.dupe(u8, columnText(stmt, 1)),
-                .plugin_id = "",
-                .plugin_name = try allocator.dupe(u8, columnText(stmt, 2)),
-                .provider_id = "",
-                .location_kind = 0,
-                .location = "",
-                .load_key = null,
-                .category = category,
+                .plugin_id = try allocator.dupe(u8, columnText(stmt, 2)),
+                .plugin_name = try allocator.dupe(u8, columnText(stmt, 3)),
+                .provider_id = try allocator.dupe(u8, columnText(stmt, 4)),
+                .location_kind = @intCast(c.sqlite3_column_int64(stmt, 5)),
+                .location = try allocator.dupeSentinel(u8, columnText(stmt, 6), 0),
+                .load_key = if (c.sqlite3_column_type(stmt, 7) == c.SQLITE_NULL)
+                    null
+                else
+                    try allocator.dupeSentinel(u8, columnText(stmt, 7), 0),
+                .category = try allocator.dupe(u8, columnText(stmt, 8)),
             }),
             c.SQLITE_DONE => break,
             else => |rc| try check(rc),

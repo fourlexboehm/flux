@@ -41,6 +41,11 @@ pub fn drawClipSlot(
     // Store cell position for ghost rendering
     self.cell_positions[track][scene] = pos;
 
+    // Whether the mouse is over this whole cell (clip + play button) this frame —
+    // used to reveal empty-slot affordances only on hover.
+    const cell_hovered = mouse[0] >= pos[0] and mouse[0] < pos[0] + width and
+        mouse[1] >= pos[1] and mouse[1] < pos[1] + height;
+
     const slot = &self.clips[track][scene];
     const is_selected = ops.isSelected(self, track, scene);
 
@@ -106,12 +111,17 @@ pub fn drawClipSlot(
         .flags = zgui.DrawFlags.round_corners_all,
     });
 
-    // Empty slot inset border
+    // Empty slot inset border — near-invisible at rest so empties recede into
+    // quiet wells; brightens on hover to signal the slot is interactive.
     if (slot.state == .empty) {
+        const empty_border = if (cell_hovered)
+            colors.Colors.current.border_light
+        else
+            colors.Colors.current.empty_slot_border;
         draw_list.addRect(.{
             .pmin = .{ pos[0] + 0.5, pos[1] + 0.5 },
             .pmax = .{ pos[0] + clip_w - 0.5, pos[1] + height - 0.5 },
-            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.empty_slot_border),
+            .col = zgui.colorConvertFloat4ToU32(empty_border),
             .rounding = rounding,
             .flags = zgui.DrawFlags.round_corners_all,
             .thickness = 1.0,
@@ -339,11 +349,17 @@ pub fn drawClipSlot(
         colors.Colors.current.clip_queued
     else if (is_armed_track and (is_empty or slot.state == .stopped))
         colors.Colors.current.record_armed
+    else if (is_empty)
+        // Empty non-armed slot: blend the launch button into the recessed well so
+        // the cell reads as one quiet unit at rest (hover still gives feedback).
+        colors.Colors.current.empty_slot_fill
     else
         colors.Colors.current.bg_cell;
 
     const hover_bg = if (is_recording or is_record_queued or is_overdubbing or (is_armed_track and (is_empty or slot.state == .stopped)))
         colors.Colors.current.record_armed_hover
+    else if (is_empty)
+        colors.Colors.current.bg_cell_hover
     else
         colors.Colors.lighten(play_bg, 0.08);
 
@@ -417,12 +433,16 @@ pub fn drawClipSlot(
             .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_bright),
         });
     } else if (is_empty) {
-        // Stop square for empty slot on non-armed track
-        draw_list.addRectFilled(.{
-            .pmin = .{ cx - icon_size / 2.0, cy - icon_size / 2.0 },
-            .pmax = .{ cx + icon_size / 2.0, cy + icon_size / 2.0 },
-            .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_dim),
-        });
+        // Empty slot on a non-armed track: no glyph at rest so the grid stays calm;
+        // reveal a faint play triangle on hover to cue "double-click to create".
+        if (cell_hovered) {
+            draw_list.addTriangleFilled(.{
+                .p1 = .{ cx - icon_size / 2.0, cy - icon_size / 2.0 },
+                .p2 = .{ cx - icon_size / 2.0, cy + icon_size / 2.0 },
+                .p3 = .{ cx + icon_size / 2.0 + 1.0, cy },
+                .col = zgui.colorConvertFloat4ToU32(colors.Colors.current.text_soft),
+            });
+        }
     } else {
         // Play triangle (for stopped clip with content)
         draw_list.addTriangleFilled(.{

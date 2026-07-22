@@ -86,6 +86,10 @@ pub const Host = struct {
         .requestFlush = _paramsRequestFlush,
     };
 
+    const latency_ext = clap.ext.latency.Host{
+        .changed = _latencyChanged,
+    };
+
     const preset_load_ext = clap.ext.preset_load.Host{
         .onError = _presetLoadOnError,
         .loaded = _presetLoadLoaded,
@@ -135,6 +139,9 @@ pub const Host = struct {
         }
         if (std.mem.eql(u8, std.mem.span(id), clap.ext.params.id)) {
             return &params_ext;
+        }
+        if (std.mem.eql(u8, std.mem.span(id), clap.ext.latency.id)) {
+            return &latency_ext;
         }
         if (std.mem.eql(u8, std.mem.span(id), clap.ext.preset_load.id) or
             std.mem.eql(u8, std.mem.span(id), clap_ids.preset_load_compat_id))
@@ -234,6 +241,7 @@ pub const Host = struct {
     }
 
     fn _requestRestart(_: *const clap.Host) callconv(.c) void {}
+    fn _latencyChanged(_: *const clap.Host) callconv(.c) void {}
     fn _requestProcess(host: *const clap.Host) callconv(.c) void {
         const self: *Host = @ptrCast(@alignCast(host.host_data));
         if (self.shared_state) |shared| {

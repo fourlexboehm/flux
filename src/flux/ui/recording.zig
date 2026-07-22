@@ -1,10 +1,59 @@
+const std = @import("std");
 const session_constants = @import("../session/constants.zig");
 const session_playback = @import("../session/playback.zig");
 const session_recording = @import("../session/recording.zig");
 const piano_roll_types = @import("../session/notes.zig");
+const midi_input = @import("../midi/input.zig");
+const time_utils = @import("../util/time_utils.zig");
 const State = @import("state.zig").State;
 
 const default_clip_bars = session_constants.default_clip_bars;
+
+/// Record hardware MIDI at capture time instead of quantizing it to the UI tick.
+pub fn processMidiEvents(state: *State, events: []const midi_input.MidiEvent, now: std.Io.Timestamp) void {
+    if (!session_recording.isActivelyRecording(&state.session)) return;
+    const rec = &state.session.recording;
+    const track = rec.track orelse return;
+    const scene = rec.scene orelse return;
+    const piano_clip = &state.piano_clips[track][scene];
+    const clip_length = state.session.clips[track][scene].length_beats;
+    const beats_per_ns = @as(f64, state.bpm) / (60.0 * std.time.ns_per_s);
+
+    for (events) |event| {
+        const message = event.message();
+        if (message != 0x80 and message != 0x90) continue;
+        const pitch = event.data1;
+        if (pitch >= 128) continue;
+
+        const age_beats = @as(f64, @floatFromInt(time_utils.nsSince(event.timestamp, now))) * beats_per_ns;
+        const event_beat = @as(f64, state.playhead_beat) - age_beats;
+        const relative = event_beat - @as(f64, rec.start_beat);
+        if (relative < 0) continue;
+        const position: f32 = @floatCast(@mod(relative, @as(f64, clip_length)));
+        const is_note_on = message == 0x90 and event.data2 != 0;
+
+        // Prevent the UI key-state fallback from recording this event again next frame.
+        state.previous_key_states[track][pitch] = is_note_on;
+        if (is_note_on) {
+            rec.note_start_beats[pitch] = position;
+            rec.note_start_velocities[pitch] = @as(f32, @floatFromInt(event.data2)) / 127.0;
+        } else if (rec.note_start_beats[pitch]) |start_beat| {
+            var duration = position - start_beat;
+            if (duration < 0) duration += clip_length;
+            if (duration > 0.01) {
+                piano_clip.addNoteWithVelocity(
+                    pitch,
+                    start_beat,
+                    duration,
+                    rec.note_start_velocities[pitch] orelse 0.8,
+                    0.8,
+                ) catch {};
+            }
+            rec.note_start_beats[pitch] = null;
+            rec.note_start_velocities[pitch] = null;
+        }
+    }
+}
 
 pub fn tick(state: *State, dt: f64) void {
     // Handle playhead reset request (for immediate recording start)
@@ -126,7 +175,6 @@ pub fn tick(state: *State, dt: f64) void {
         if (will_loop) {
             finalizeHeldNotesAtPosition(state, loop_length);
         }
-        processRecordingMidi(state);
     }
 
     // Update previous_key_states at end of frame
@@ -183,10 +231,12 @@ fn seedHeldNotesAtRecordingStart(state: *State) void {
             rec.note_start_velocities[pitch] = state.live_key_velocities[track][pitch];
         }
     }
+    state.previous_key_states[track] = state.live_key_states[track];
 }
 
 /// Process MIDI note recording from keyboard input
-fn processRecordingMidi(state: *State) void {
+pub fn processKeyboardEvents(state: *State) void {
+    if (!session_recording.isActivelyRecording(&state.session)) return;
     const rec = &state.session.recording;
     const track = rec.track orelse return;
     const scene = rec.scene orelse return;
@@ -225,6 +275,7 @@ fn processRecordingMidi(state: *State) void {
             }
         }
     }
+    state.previous_key_states[track] = state.live_key_states[track];
 }
 
 /// Finalize held notes at a specific position (used at loop boundary)

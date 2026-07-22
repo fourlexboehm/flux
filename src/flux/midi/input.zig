@@ -7,6 +7,7 @@ pub const MidiEvent = struct {
     status: u8,
     data1: u8,
     data2: u8,
+    timestamp: std.Io.Timestamp,
 
     pub fn message(self: MidiEvent) u8 {
         return self.status & 0xF0;
@@ -141,7 +142,7 @@ const PortMidiInput = struct {
             self.clearInputState(notes, velocities);
         }
         while (self.event_queue.pop()) |event| {
-            self.applyMidiMessage(notes, velocities, event_queue, event.status, event.data1, event.data2);
+            self.applyMidiMessage(notes, velocities, event_queue, event);
         }
 
         self.flushDeferredNoteOffs(notes, velocities);
@@ -179,6 +180,7 @@ const PortMidiInput = struct {
                         .status = pm.messageStatus(msg),
                         .data1 = pm.messageData1(msg),
                         .data2 = pm.messageData2(msg),
+                        .timestamp = std.Io.Clock.awake.now(sleep_io),
                     });
                 }
                 if (need_reopen) break;
@@ -245,10 +247,11 @@ const PortMidiInput = struct {
         notes: *[128]bool,
         velocities: *[128]f32,
         event_queue: *EventQueue,
-        status: u8,
-        data1: u8,
-        data2: u8,
+        event: MidiEvent,
     ) void {
+        const status = event.status;
+        const data1 = event.data1;
+        const data2 = event.data2;
         const msg = status & 0xF0;
         // Keep a raw event feed for controller mapping and transport.
         if (msg == 0x90 or msg == 0x80 or msg == 0xB0 or msg == 0xC0 or msg == 0xE0) {
@@ -256,6 +259,7 @@ const PortMidiInput = struct {
                 .status = status,
                 .data1 = data1,
                 .data2 = data2,
+                .timestamp = event.timestamp,
             });
         }
         if (data1 >= 128) return;
