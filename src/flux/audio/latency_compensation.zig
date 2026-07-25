@@ -1,9 +1,10 @@
 const std = @import("std");
 const clap = @import("clap-bindings");
 
-/// Upper bound keeps all delay storage allocated before audio processing.
-/// About 2.7 seconds at 48 kHz; excessive reports are safely clamped.
+/// Power-of-two ring size so RT indexing is a mask, not integer modulo.
+/// ~2.97s at 44.1 kHz; plugin reports above this are clamped.
 pub const max_frames: u32 = 131_072;
+const ring_mask: u32 = max_frames - 1;
 
 pub fn pluginFrames(plugin: ?*const clap.Plugin) u32 {
     const p = plugin orelse return 0;
@@ -12,19 +13,20 @@ pub fn pluginFrames(plugin: ?*const clap.Plugin) u32 {
     return @min(ext.get(p), max_frames);
 }
 
+/// Per-track PDC delay line.
 pub const StereoDelay = struct {
     left: []f32 = &.{},
     right: []f32 = &.{},
     write_pos: u32 = 0,
     delay: u32 = 0,
-    warmup: u32 = 0,
+    /// Samples written since init (saturates at max_frames). Used only for cold-start fill.
+    history: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator) !StereoDelay {
-        const left = try allocator.alloc(f32, max_frames + 1);
+        // No full-ring memset — cold-start uses `history` to output silence until filled.
+        const left = try allocator.alloc(f32, max_frames);
         errdefer allocator.free(left);
-        const right = try allocator.alloc(f32, max_frames + 1);
-        @memset(left, 0);
-        @memset(right, 0);
+        const right = try allocator.alloc(f32, max_frames);
         return .{ .left = left, .right = right };
     }
 
@@ -35,36 +37,40 @@ pub const StereoDelay = struct {
     }
 
     pub fn process(self: *StereoDelay, left: []f32, right: []f32, requested_delay: u32) void {
-        const new_delay = @min(requested_delay, max_frames);
-        if (new_delay == 0) {
-            self.delay = 0;
-            self.warmup = 0;
-            return;
-        }
-        if (new_delay != self.delay) {
-            self.delay = new_delay;
-            self.write_pos = 0;
-            self.warmup = new_delay;
-        }
+        // Accept new delay immediately without resetting the ring. A reset+warmup
+        // silence was causing buffer-length (or worse) audio holes whenever latency
+        // fluttered or a clip/plugin enabled state changed mid-playback.
+        self.delay = @min(requested_delay, max_frames);
 
-        const capacity: u32 = @intCast(self.left.len);
+        var write = self.write_pos;
+        var history = self.history;
+        const delay = self.delay;
+
         for (left, right) |*l, *r| {
-            const write = self.write_pos;
-            const read = (write + capacity - self.delay) % capacity;
-            const delayed_l = self.left[read];
-            const delayed_r = self.right[read];
-            self.left[write] = l.*;
-            self.right[write] = r.*;
-            if (self.warmup > 0) {
+            const w = write & ring_mask;
+            const in_l = l.*;
+            const in_r = r.*;
+            self.left[w] = in_l;
+            self.right[w] = in_r;
+
+            if (delay == 0) {
+                // Pass-through; ring still advanced so a later non-zero delay is continuous.
+            } else if (history < delay) {
+                // Cold start only — not used on delay *changes* once history is deep enough.
                 l.* = 0;
                 r.* = 0;
-                self.warmup -= 1;
             } else {
-                l.* = delayed_l;
-                r.* = delayed_r;
+                const read = (write -% delay) & ring_mask;
+                l.* = self.left[read];
+                r.* = self.right[read];
             }
-            self.write_pos = (write + 1) % capacity;
+
+            write +%= 1;
+            if (history < max_frames) history += 1;
         }
+
+        self.write_pos = write;
+        self.history = history;
     }
 };
 
@@ -75,4 +81,25 @@ test "stereo delay compensates by exact frame count" {
     var right = left;
     delay.process(&left, &right, 2);
     try std.testing.expectEqualSlices(f32, &.{ 0, 0, 1, 2 }, &left);
+}
+
+test "delay change does not insert silence hole" {
+    var delay = try StereoDelay.init(std.testing.allocator);
+    defer delay.deinit(std.testing.allocator);
+
+    // Prime history at delay 0 (pass-through, ring still fills).
+    var prime = [_]f32{ 10, 11, 12, 13, 14, 15, 16, 17 };
+    var prime_r = prime;
+    delay.process(&prime, &prime_r, 0);
+
+    // Switch to delay 2: must NOT zero the whole block (old bug).
+    var left = [_]f32{ 20, 21, 22, 23 };
+    var right = left;
+    delay.process(&left, &right, 2);
+    // Ring had 10..17 then 20..; read is 2 behind write → 16,17,20,21 after writing 20..23
+    // write positions after prime: 8 samples. Then write 20 at pos 8, read pos 6 → 16
+    try std.testing.expectEqual(@as(f32, 16), left[0]);
+    try std.testing.expectEqual(@as(f32, 17), left[1]);
+    try std.testing.expectEqual(@as(f32, 20), left[2]);
+    try std.testing.expectEqual(@as(f32, 21), left[3]);
 }

@@ -98,7 +98,6 @@ pub const SharedState = struct {
         back.clips = state.session.clips;
         back.track_plugins = self.track_plugins;
         back.track_fx_plugins = self.track_fx_plugins;
-        back.max_track_latency = 0;
         for (0..max_tracks) |t| {
             back.track_instrument_enabled[t] = state.track_plugins[t].enabled;
             for (0..ui_state.max_fx_slots) |fx_index| {
@@ -180,18 +179,25 @@ pub const SharedState = struct {
                 }
             }
 
-            var latency: u32 = if (back.playing_audio[t].hasAudio() or !back.track_instrument_enabled[t])
-                0
-            else
-                latency_compensation.pluginFrames(back.track_plugins[t]);
+        }
+
+        back.max_track_latency = 0;
+        for (0..max_tracks) |t| {
+            var latency: u32 = 0;
+            if (back.track_instrument_enabled[t]) {
+                latency +|= latency_compensation.pluginFrames(self.track_plugins[t]);
+            }
             for (0..ui_state.max_fx_slots) |fx_index| {
                 if (back.track_fx_enabled[t][fx_index]) {
-                    latency +|= latency_compensation.pluginFrames(back.track_fx_plugins[t][fx_index]);
+                    latency +|= latency_compensation.pluginFrames(self.track_fx_plugins[t][fx_index]);
                 }
             }
             back.track_latency[t] = @min(latency, latency_compensation.max_frames);
-            if (t < back.track_count) back.max_track_latency = @max(back.max_track_latency, back.track_latency[t]);
+            if (t < back.track_count) {
+                back.max_track_latency = @max(back.max_track_latency, back.track_latency[t]);
+            }
         }
+
         self.active_index.store(next, .release);
 
         // After publish, wait until any in-flight callback finishes so no reader

@@ -542,18 +542,22 @@ pub const Graph = struct {
     fn processGains(self: *Graph, ctx: *const ProcessContext) void {
         const zone = tracy.ZoneN(@src(), "Gains");
         defer zone.End();
+        const max_latency = ctx.snapshot.max_track_latency;
+        // Always run compensation (even delay 0) so the ring keeps continuous history.
+        // Skipping when max==0 then re-enabling caused cold-start holes / clicks.
         for (self.gain_order.items) |gain_id| {
             const gain_node = &self.gains.items[gain_id];
             const track = ctx.snapshot.tracks[gain_node.track_index];
             const muted = track.mute or (ctx.solo_active and !track.solo);
             const gain = if (muted) 0.0 else track.volume;
+            const comp_delay = max_latency -% ctx.snapshot.track_latency[gain_node.track_index];
             if (gain == 0.0 or !self.hasActiveInput(gain_node.inputs)) {
                 self.zeroBufferOnce(gain_node.out, ctx.frame_count);
                 const silent = &self.buffers.items[gain_node.out];
                 gain_node.compensation.process(
                     silent.left[0..ctx.frame_count],
                     silent.right[0..ctx.frame_count],
-                    ctx.snapshot.max_track_latency - ctx.snapshot.track_latency[gain_node.track_index],
+                    comp_delay,
                 );
                 ctx.shared.setTrackPeak(gain_node.track_index, 0, 0);
                 continue;
@@ -568,7 +572,7 @@ pub const Graph = struct {
             gain_node.compensation.process(
                 out.left[0..frames],
                 out.right[0..frames],
-                ctx.snapshot.max_track_latency - ctx.snapshot.track_latency[gain_node.track_index],
+                comp_delay,
             );
             ctx.shared.setTrackPeak(gain_node.track_index, peak[0], peak[1]);
         }

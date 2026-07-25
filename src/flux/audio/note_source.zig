@@ -82,12 +82,19 @@ pub const NoteSource = struct {
         self.input_events.context = &self.event_list;
         self.processControllerParamWrites(snapshot, 0);
 
+        // FX event ports never emit notes / live keys — skip 128-bool eql/memcpy.
+        // (Profile: mem.eql + NoteSource.process dominated the serial IO thread.)
         const live_should = &snapshot.live_key_states[self.track_index];
         const live_velocities = &snapshot.live_key_velocities[self.track_index];
-        const live_changed = !self.live_cache_valid or !std.mem.eql(bool, self.last_live_should[0..], live_should[0..]);
+        const live_changed = if (self.emit_notes)
+            !self.live_cache_valid or !std.mem.eql(bool, self.last_live_should[0..], live_should[0..])
+        else
+            false;
         defer {
-            @memcpy(self.last_live_should[0..], live_should[0..]);
-            self.live_cache_valid = true;
+            if (self.emit_notes) {
+                @memcpy(self.last_live_should[0..], live_should[0..]);
+                self.live_cache_valid = true;
+            }
             self.last_playing = snapshot.playing;
         }
 
@@ -110,6 +117,11 @@ pub const NoteSource = struct {
 
         const active_scene: usize = @intCast(active_scene_i);
         const clip = &snapshot.piano_clips[self.track_index][active_scene];
+        // FX ports with no automation: controller writes already handled; nothing else to do.
+        if (!self.emit_notes and clip.automation_lane_count == 0) {
+            self.last_scene = active_scene;
+            return &self.input_events;
+        }
         const scene_changed = self.last_scene == null or self.last_scene.? != active_scene;
         if (scene_changed or !self.last_playing) {
             // Punch-in: launch at playStart (content time), matching audio clips.
@@ -276,6 +288,7 @@ pub const NoteSource = struct {
         const loop_len = loop_end - loop_start;
 
         for (clip.notes[0..clip.count]) |note| {
+            if (!note.enabled) continue;
             if (noteActiveAtBeat(note, beat, loop_start, loop_end, loop_len))
                 should_be_active[note.pitch] = true;
         }
@@ -309,6 +322,7 @@ pub const NoteSource = struct {
         if (seg_end <= seg_start) return;
         if (self.emit_notes) {
             for (clip.notes[0..clip.count]) |note| {
+                if (!note.enabled) continue;
                 const note_start = @as(f64, note.start);
                 const note_end = note_start + @as(f64, note.duration);
 
