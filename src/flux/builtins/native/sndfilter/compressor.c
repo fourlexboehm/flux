@@ -9,6 +9,11 @@
 #include <math.h>
 #include <string.h>
 
+// glibc hides M_PI under strict C11 unless feature-test macros are set.
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 // core algorithm extracted from Chromium source, DynamicsCompressorKernel.cpp, here:
 //   https://git.io/v1uSK
 //
