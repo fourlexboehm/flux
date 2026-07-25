@@ -25,6 +25,15 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
     const target_os = target.result.os.tag;
 
+    // Zig 0.17 does not derive framework search paths from --sysroot
+    // ("unable to find framework … searched paths: none"). Cross-compiling to
+    // macOS needs an explicit SDK path via -Dmacos-sdk=… or SDKROOT.
+    const macos_sdk = b.option(
+        []const u8,
+        "macos-sdk",
+        "Path to MacOSX*.sdk (cross-compile framework/include/lib search roots)",
+    ) orelse b.graph.environ_map.get("SDKROOT");
+
     const GuiBackend = enum { osx_metal, win32_dx12, glfw_opengl3 };
     const default_gui_backend: GuiBackend = switch (target_os) {
         .macos => .osx_metal,
@@ -68,6 +77,12 @@ pub fn build(b: *std.Build) void {
         .x11 = use_x11,
         .wayland = use_wayland,
     });
+    // Prefer the full MacOSX.sdk when provided (CI cross-compile); deps also fall
+    // back to their bundled system_sdk for Frameworks on non-mac hosts.
+    if (target_os == .macos) {
+        addMacosSdkPaths(b, zgui.artifact("imgui").root_module, macos_sdk);
+        addMacosSdkPaths(b, zglfw.artifact("glfw").root_module, macos_sdk);
+    }
     const zopengl = b.dependency("zopengl", dep_target);
     const zaudio = b.dependency("zaudio", dep_target);
     const objc = b.dependency("mach-objc", dep_target);
@@ -212,6 +227,7 @@ pub fn build(b: *std.Build) void {
     shared.addImport("zglfw", zglfw.module("root"));
     shared.addImport("zopengl", zopengl.module("root"));
     if (target_os == .macos) {
+        addMacosSdkPaths(b, objc_no_helpers, macos_sdk);
         objc_no_helpers.linkSystemLibrary("objc", .{});
         objc_no_helpers.linkFramework("AppKit", .{});
         objc_no_helpers.linkFramework("CoreVideo", .{});
@@ -244,6 +260,7 @@ pub fn build(b: *std.Build) void {
         pkg.root_module.addImport("static_data", static_data_module);
 
         if (target_os == .macos) {
+            addMacosSdkPaths(b, pkg.root_module, macos_sdk);
             pkg.root_module.addImport("objc", objc_no_helpers);
             pkg.root_module.linkFramework("AppKit", .{});
             pkg.root_module.linkFramework("Cocoa", .{});
@@ -399,6 +416,7 @@ pub fn build(b: *std.Build) void {
         },
     });
     if (target_os == .macos) {
+        addMacosSdkPaths(b, flux.root_module, macos_sdk);
         flux.root_module.addImport("objc", objc_no_helpers);
         flux.root_module.linkFramework("AppKit", .{});
         flux.root_module.linkFramework("Cocoa", .{});
@@ -529,6 +547,7 @@ pub fn build(b: *std.Build) void {
     zsynth_smoke_tests.root_module.linkLibrary(zopengl.artifact("zopengl"));
     zsynth_smoke_tests.root_module.linkLibrary(ztracy.artifact("tracy"));
     if (target_os == .macos) {
+        addMacosSdkPaths(b, zsynth_smoke_tests.root_module, macos_sdk);
         zsynth_smoke_tests.root_module.linkFramework("AppKit", .{});
         zsynth_smoke_tests.root_module.linkFramework("Cocoa", .{});
         zsynth_smoke_tests.root_module.linkFramework("CoreGraphics", .{});
@@ -664,6 +683,23 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_media_roundtrip_tests.step);
     test_step.dependOn(&run_arrangement_tests.step);
     // CLAP load is opt-in (test-clap-load): system plugins are slow/noisy and not on CI.
+}
+
+/// Wire MacOSX.sdk Frameworks + headers into a module for cross-compilation.
+/// Native macOS builds leave `sdk_path` null and rely on host SDK discovery.
+///
+/// Zig 0.17 does not derive framework search paths from `--sysroot`
+/// ("searched paths: none"), and also does not put `$sysroot/usr/include` on
+/// the include path for ObjC/C (e.g. libDER/DERItem.h). Absolute `-L` under
+/// the same tree as `--sysroot` is double-prefixed by Zig, so lib stubs
+/// (libobjc.tbd) come from the bundled system_sdk package instead.
+fn addMacosSdkPaths(b: *std.Build, mod: *std.Build.Module, sdk_path: ?[]const u8) void {
+    const sdk = sdk_path orelse return;
+    mod.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }) });
+    mod.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/include" }) });
+    if (b.lazyDependency("system_sdk", .{})) |system_sdk| {
+        mod.addLibraryPath(system_sdk.path("macos12/usr/lib"));
+    }
 }
 
 fn createClapPluginStep(

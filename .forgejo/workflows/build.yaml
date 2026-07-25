@@ -163,7 +163,17 @@ jobs:
 
       - name: Build macOS aarch64
         run: |
-          zig build bundle-flux-app -Dtarget=aarch64-macos -Doptimize=${{ steps.build-mode.outputs.optimize }} -Ddisable_profiling=true -Dgui-backend=osx_metal --sysroot "$PWD/MacOSX26.1.sdk" --summary all
+          # Zig 0.17 does not populate framework search paths from --sysroot alone
+          # ("searched paths: none"). Pass the SDK both as sysroot and -Dmacos-sdk.
+          SDK="$PWD/MacOSX26.1.sdk"
+          zig build bundle-flux-app \
+            -Dtarget=aarch64-macos \
+            -Doptimize=${{ steps.build-mode.outputs.optimize }} \
+            -Ddisable_profiling=true \
+            -Dgui-backend=osx_metal \
+            -Dmacos-sdk="$SDK" \
+            --sysroot "$SDK" \
+            --summary all
           mkdir -p artifacts/macos-aarch64
           cp -R zig-out/Flux.app artifacts/macos-aarch64/ 2>/dev/null || true
           cp -r zig-out/lib/*.clap artifacts/macos-aarch64/ 2>/dev/null || true
