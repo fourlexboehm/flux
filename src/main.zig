@@ -446,7 +446,8 @@ pub fn main(init: std.process.Init) !void {
             defer window.destroy();
             window.setSizeLimits(320, 240, -1, -1);
 
-            _ = window.setDropCallback(null, struct {
+            // Method form supplies the window; DropFn is the only argument.
+            _ = window.setDropCallback(struct {
                 fn callback(w: *zglfw.Window, path_count: i32, paths: [*][*:0]const u8) callconv(.c) void {
                     _ = w;
                     native_drop.onGlfwDrop(path_count, paths);
