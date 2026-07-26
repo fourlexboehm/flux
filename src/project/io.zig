@@ -322,7 +322,10 @@ fn loadFromFile(
 
     const tmp_extract_path = "/tmp/flux_dawproject_tmp";
     Dir.cwd().deleteTree(io, tmp_extract_path) catch {};
-    var tmp_dir = try Dir.cwd().createDirPathOpen(io, tmp_extract_path, .{});
+    // .iterate required: loadMediaTree / plugins dir walk (Linux BADF without it).
+    var tmp_dir = try Dir.cwd().createDirPathOpen(io, tmp_extract_path, .{
+        .open_options = .{ .iterate = true },
+    });
     defer {
         tmp_dir.close(io);
         Dir.cwd().deleteTree(io, tmp_extract_path) catch {};
@@ -346,7 +349,7 @@ fn loadFromFile(
     if (xml_bytes != xml_stat.size) return error.UnexpectedEof;
 
     var plugin_states = std.StringHashMap([]const u8).init(aa);
-    if (tmp_dir.openDir(io, "plugins", .{})) |*plugins_dir| {
+    if (tmp_dir.openDir(io, "plugins", .{ .iterate = true })) |*plugins_dir| {
         defer plugins_dir.close(io);
         var dir_iter = plugins_dir.iterate();
         while (try dir_iter.next(io)) |entry| {
@@ -539,7 +542,7 @@ fn loadMediaTree(
                 try allocator.dupe(u8, entry.name)
             else
                 try std.fmt.allocPrint(allocator, "{s}/{s}", .{ prefix, entry.name });
-            var child = try dir.openDir(io, entry.name, .{});
+            var child = try dir.openDir(io, entry.name, .{ .iterate = true });
             defer child.close(io);
             try loadMediaTree(allocator, io, child, child_prefix, media_files);
         } else if (entry.kind == .file) {

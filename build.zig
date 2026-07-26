@@ -290,6 +290,7 @@ pub fn build(b: *std.Build) void {
     // Standalone exe (not addTest): third-party plugins flood stderr and deadlock zig's
     // listen-mode test runner over pipe buffers.
     const clap_load_module = rootModule(b, "src/clap_plugin_load_test.zig", target, optimize);
+    clap_load_module.link_libc = true; // std.c.getenv + DynLib
     clap_load_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
     const clap_load_exe = b.addExecutable(.{
         .name = "clap-load-test",
