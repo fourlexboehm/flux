@@ -1,6 +1,10 @@
 const builtin = @import("builtin");
 const std = @import("std");
 
+test {
+    _ = @import("tests.zig");
+}
+
 const zaudio = @import("zaudio");
 const zgui = @import("zgui");
 const zglfw = @import("zglfw");
