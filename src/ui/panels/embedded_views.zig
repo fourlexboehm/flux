@@ -1,8 +1,8 @@
 const std = @import("std");
 const clap = @import("clap-bindings");
-const zsynth = @import("zsynth-core");
-const zminimoog = @import("zminimoog-core");
-const zportafm = @import("zportafm-core");
+const zsynth = @import("../../builtins/instruments/zsynth/core.zig");
+const zminimoog = @import("../../builtins/instruments/zminimoog/core.zig");
+const zportafm = @import("../../builtins/instruments/zportafm/core.zig");
 const flux_builtins = @import("../../builtins/root.zig");
 
 const zsynth_view = zsynth.View;

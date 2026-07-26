@@ -132,32 +132,17 @@ pub fn build(b: *std.Build) void {
     });
 
     const lib_module = b.createModule(.{
-        .root_source_file = b.path("zsynth/src/main.zig"),
+        .root_source_file = b.path("src/builtins/instruments/zsynth/main.zig"),
         .target = target,
         .optimize = optimize,
     });
     const exe_module = b.createModule(.{
-        .root_source_file = b.path("zsynth/src/diag.zig"),
+        .root_source_file = b.path("src/builtins/instruments/zsynth/diag.zig"),
         .target = target,
         .optimize = optimize,
     });
     const flux_module = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const zsynth_core = b.createModule(.{
-        .root_source_file = b.path("zsynth/src/core.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const zminimoog_core = b.createModule(.{
-        .root_source_file = b.path("zminimoog/src/core.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const zportafm_core = b.createModule(.{
-        .root_source_file = b.path("zportafm/src/core.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -275,41 +260,6 @@ pub fn build(b: *std.Build) void {
         }
     }
 
-    zsynth_core.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
-    zsynth_core.addImport("regex", regex.module("regex"));
-    zsynth_core.addImport("zgui", zgui.module("root"));
-    zsynth_core.addImport("zglfw", zglfw.module("root"));
-    zsynth_core.addImport("zopengl", zopengl.module("root"));
-    zsynth_core.addImport("tracy", ztracy.module("root"));
-    zsynth_core.addImport("shared", shared);
-    zsynth_core.addImport("options", options_core_module);
-    zsynth_core.addImport("static_data", static_data_module);
-    if (target_os == .macos) {
-        zsynth_core.addImport("objc", objc_no_helpers);
-    }
-
-    zminimoog_core.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
-    zminimoog_core.addImport("zgui", zgui.module("root"));
-    zminimoog_core.addImport("zglfw", zglfw.module("root"));
-    zminimoog_core.addImport("zopengl", zopengl.module("root"));
-    zminimoog_core.addImport("tracy", ztracy.module("root"));
-    zminimoog_core.addImport("wdf", wdf.module("wdf"));
-    zminimoog_core.addImport("shared", shared);
-    zminimoog_core.addImport("options", options_core_module);
-    zminimoog_core.addImport("static_data", static_data_module);
-    if (target_os == .macos) {
-        zminimoog_core.addImport("objc", objc_no_helpers);
-    }
-
-    zportafm_core.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
-    zportafm_core.addImport("zgui", zgui.module("root"));
-    zportafm_core.addImport("tracy", ztracy.module("root"));
-    zportafm_core.addImport("shared", shared);
-    zportafm_core.addImport("options", options_core_module);
-    zportafm_core.addImport("static_data", static_data_module);
-    zportafm_core.addImport("emu2413_c", emu2413_c.createModule());
-    zportafm_core.addIncludePath(emu2413.path(""));
-
     // Specific steps for different targets
     // Library
     if (!no_lib) {
@@ -327,9 +277,9 @@ pub fn build(b: *std.Build) void {
     }
 
     flux.root_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
-    flux.root_module.addImport("zsynth-core", zsynth_core);
-    flux.root_module.addImport("zminimoog-core", zminimoog_core);
-    flux.root_module.addImport("zportafm-core", zportafm_core);
+    flux.root_module.addImport("regex", regex.module("regex"));
+    flux.root_module.addImport("wdf", wdf.module("wdf"));
+    flux.root_module.addImport("emu2413_c", emu2413_c.createModule());
     flux.root_module.addImport("zaudio", zaudio.module("root"));
     flux.root_module.addImport("sqlite3", sqlite3_c.createModule());
     flux.root_module.addCSourceFile(.{
@@ -473,7 +423,7 @@ pub fn build(b: *std.Build) void {
 
     // Unit tests for complete Minimoog
     const dsp_test_module = b.createModule(.{
-        .root_source_file = b.path("zminimoog/src/dsp/dsp.zig"),
+        .root_source_file = b.path("src/builtins/instruments/zminimoog/dsp/dsp.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -483,7 +433,7 @@ pub fn build(b: *std.Build) void {
     const run_dsp_tests = b.addRunArtifact(dsp_tests);
 
     const zsynth_smoke_test_module = b.createModule(.{
-        .root_source_file = b.path("zsynth/src/plugin_smoke_test.zig"),
+        .root_source_file = b.path("src/builtins/instruments/zsynth/plugin_smoke_test.zig"),
         .target = target,
         .optimize = optimize,
     });

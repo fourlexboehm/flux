@@ -18,9 +18,9 @@ const session_view = @import("../session/types.zig");
 const ui_state = @import("../ui/state.zig");
 const thread_context = @import("../util/thread_context.zig");
 const plugin_state_capture = @import("../project/runtime/plugin_state.zig");
-const zsynth = @import("zsynth-core");
-const zminimoog = @import("zminimoog-core");
-const zportafm = @import("zportafm-core");
+const zsynth = @import("../builtins/instruments/zsynth/core.zig");
+const zminimoog = @import("../builtins/instruments/zminimoog/core.zig");
+const zportafm = @import("../builtins/instruments/zportafm/core.zig");
 const flux_builtins = @import("../builtins/root.zig");
 
 const track_count = session_constants.max_tracks;
