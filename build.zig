@@ -2,6 +2,13 @@ const builtin = @import("builtin");
 const std = @import("std");
 const Step = std.Build.Step;
 
+const macos_gui_frameworks = [_][]const u8{
+    "AppKit", "Cocoa", "CoreGraphics", "Foundation", "GameController", "Metal", "QuartzCore",
+};
+const macos_flux_frameworks = macos_gui_frameworks ++ [_][]const u8{
+    "CoreMIDI", "CoreFoundation", "CoreServices", "CoreAudio",
+};
+
 pub fn build(b: *std.Build) void {
     const wait_for_debugger = b.option(
         bool,
@@ -60,9 +67,8 @@ pub fn build(b: *std.Build) void {
         "enable_segfault_handler",
         "Enable std segfault handler for debug backtraces",
     ) orelse (optimize == .Debug);
-    const dep_target = .{
-        .target = target,
-    };
+
+    const dep_target = .{ .target = target };
     const clap_bindings = b.dependency("clap-bindings", dep_target);
     const regex = b.dependency("regex", dep_target);
     const zgui = b.dependency("zgui", .{
@@ -99,30 +105,10 @@ pub fn build(b: *std.Build) void {
     const portmidi_zig = b.dependency("portmidi-zig", dep_target);
     const wdf = b.dependency("wdf", dep_target);
     const sqlite3 = b.dependency("sqlite3", .{});
-    const sqlite3_c = b.addTranslateC(.{
-        .root_source_file = sqlite3.path("sqlite3.h"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
     // Header-only C++ (MIT): fetched via build.zig.zon, no Zig package build.zig.
     const signalsmith_stretch = b.dependency("signalsmith_stretch", .{});
     const signalsmith_linear = b.dependency("signalsmith_linear", .{});
     const emu2413 = b.dependency("emu2413", .{});
-    const portmidi_c = b.addTranslateC(.{
-        .root_source_file = portmidi_zig.path("pm_common/portmidi.h"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    portmidi_c.addIncludePath(portmidi_zig.path("pm_common"));
-    const emu2413_c = b.addTranslateC(.{
-        .root_source_file = emu2413.path("emu2413.h"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    emu2413_c.addIncludePath(emu2413.path(""));
 
     const ztracy = b.dependency("ztracy", .{
         .target = target,
@@ -131,21 +117,10 @@ pub fn build(b: *std.Build) void {
         .on_demand = true,
     });
 
-    const lib_module = b.createModule(.{
-        .root_source_file = b.path("src/builtins/instruments/zsynth/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const exe_module = b.createModule(.{
-        .root_source_file = b.path("src/builtins/instruments/zsynth/diag.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const flux_module = b.createModule(.{
-        .root_source_file = b.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    const lib_module = rootModule(b, "src/builtins/instruments/zsynth/main.zig", target, optimize);
+    const exe_module = rootModule(b, "src/builtins/instruments/zsynth/diag.zig", target, optimize);
+    const flux_module = rootModule(b, "src/main.zig", target, optimize);
+
     const lib = if (!no_lib) blk: {
         const l = b.addLibrary(.{
             .name = "zsynth",
@@ -171,7 +146,6 @@ pub fn build(b: *std.Build) void {
     flux.bundle_ubsan_rt = true;
     flux.incremental = incremental;
 
-    // Allow options to be passed in to source files
     const options = b.addOptions();
     options.addOption(bool, "wait_for_debugger", wait_for_debugger);
     options.addOption(bool, "enable_gui", true);
@@ -183,232 +157,94 @@ pub fn build(b: *std.Build) void {
     options_core.addOption(bool, "enable_segfault_handler", enable_segfault_handler);
     const options_core_module = options_core.createModule();
 
-    // Font data is shared between all modules via a common options module
-    const font_data = @embedFile("assets/Roboto-Medium.ttf");
     const static_data = b.addOptions();
-    static_data.addOption([]const u8, "font", font_data);
-    // Application/window icon as raw RGBA8 pixels (used for the GLFW window icon).
+    static_data.addOption([]const u8, "font", @embedFile("assets/Roboto-Medium.ttf"));
     static_data.addOption([]const u8, "icon_rgba", @embedFile("assets/icon-64.rgba"));
     static_data.addOption(u32, "icon_size", 64);
     const static_data_module = static_data.createModule();
 
-    // Stock FX param definitions (clap-free) — shared by flux app and project format tests.
-    const flux_param_table = b.createModule(.{
-        .root_source_file = b.path("src/builtins/param_table.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const shared = b.createModule(.{
-        .root_source_file = b.path("shared/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    const flux_param_table = rootModule(b, "src/builtins/param_table.zig", target, optimize);
+    const shared = rootModule(b, "shared/root.zig", target, optimize);
     shared.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
-    shared.addImport("tracy", ztracy.module("root"));
     shared.addImport("options", options_core_module);
     shared.addImport("static_data", static_data_module);
     shared.addImport("zgui", zgui.module("root"));
     shared.addImport("zglfw", zglfw.module("root"));
     shared.addImport("zopengl", zopengl.module("root"));
+    shared.addImport("tracy", ztracy.module("root"));
     if (target_os == .macos) {
         addMacosSdkPaths(b, objc_no_helpers, macos_sdk);
         objc_no_helpers.linkSystemLibrary("objc", .{});
         linkFrameworks(objc_no_helpers, &.{ "AppKit", "CoreVideo", "QuartzCore" });
-
         shared.addImport("objc", objc_no_helpers);
     }
 
+    const gui = GuiCtx{
+        .b = b,
+        .zgui = zgui,
+        .zglfw = zglfw,
+        .zopengl = zopengl,
+        .ztracy = ztracy,
+        .static_data = static_data_module,
+        .objc = objc_no_helpers,
+        .target_os = target_os,
+        .macos_sdk = macos_sdk,
+        .use_wayland = use_wayland,
+        .use_x11 = use_x11,
+    };
+
     const build_targets: []const *Step.Compile = if (no_lib) &.{exe} else &.{ lib.?, exe };
     for (build_targets) |pkg| {
-        // Libraries
         pkg.root_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
         pkg.root_module.addImport("regex", regex.module("regex"));
         pkg.root_module.addImport("wdf", wdf.module("wdf"));
         pkg.root_module.addImport("shared", shared);
-
-        // GUI Related libraries
-        pkg.root_module.addImport("zgui", zgui.module("root"));
-        pkg.root_module.linkLibrary(zgui.artifact("imgui"));
-        pkg.root_module.addImport("zglfw", zglfw.module("root"));
-        pkg.root_module.linkLibrary(zglfw.artifact("glfw"));
-        pkg.root_module.addImport("zopengl", zopengl.module("root"));
-        pkg.root_module.linkLibrary(zopengl.artifact("zopengl"));
-
-        // Profiling
-        pkg.root_module.addImport("tracy", ztracy.module("root"));
-        pkg.root_module.linkLibrary(ztracy.artifact("tracy"));
-
         pkg.root_module.addOptions("options", options);
-        pkg.root_module.addImport("static_data", static_data_module);
-
-        if (target_os == .macos) {
-            addMacosSdkPaths(b, pkg.root_module, macos_sdk);
-            pkg.root_module.addImport("objc", objc_no_helpers);
-            linkFrameworks(pkg.root_module, &.{ "AppKit", "Cocoa", "CoreGraphics", "Foundation", "GameController", "Metal", "QuartzCore" });
-        }
-        if (target_os == .linux) {
-            if (use_wayland) {
-                pkg.root_module.linkSystemLibrary("wayland-client", .{});
-                pkg.root_module.linkSystemLibrary("wayland-cursor", .{});
-                pkg.root_module.linkSystemLibrary("wayland-egl", .{});
-                pkg.root_module.linkSystemLibrary("xkbcommon", .{});
-            }
-            if (use_x11) {
-                pkg.root_module.linkSystemLibrary("X11", .{});
-            }
-        }
+        wireGui(pkg.root_module, gui, .{
+            .linux_display = true,
+            .frameworks = &macos_gui_frameworks,
+        });
     }
 
-    // Specific steps for different targets
-    // Library
     if (!no_lib) {
-        const clap_plugin_step = createClapPluginStep(b, lib.?, target_os, optimize);
-        b.getInstallStep().dependOn(clap_plugin_step);
+        b.getInstallStep().dependOn(createClapPluginStep(b, lib.?, target_os, optimize));
     }
 
-    // Also create executable for testing
     if (optimize == .Debug) {
         b.installArtifact(exe);
-        const run_exe = b.addRunArtifact(exe);
-
         const run_step = b.step("run", "Run the application");
-        run_step.dependOn(&run_exe.step);
+        run_step.dependOn(&b.addRunArtifact(exe).step);
     }
 
+    // Flux DAW
     flux.root_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
     flux.root_module.addImport("regex", regex.module("regex"));
     flux.root_module.addImport("wdf", wdf.module("wdf"));
-    flux.root_module.addImport("emu2413_c", emu2413_c.createModule());
-    flux.root_module.addImport("zaudio", zaudio.module("root"));
-    flux.root_module.addImport("sqlite3", sqlite3_c.createModule());
-    flux.root_module.addCSourceFile(.{
-        .file = sqlite3.path("sqlite3.c"),
-        .flags = &.{
-            "-std=c99",
-            "-DSQLITE_DQS=0",
-            "-DSQLITE_OMIT_LOAD_EXTENSION=1",
-            "-DSQLITE_OMIT_DEPRECATED=1",
-            "-DSQLITE_THREADSAFE=1",
-        },
-    });
-    flux.root_module.addIncludePath(zaudio.path("libs/miniaudio"));
-    flux.root_module.addIncludePath(b.path("src/builtins/native"));
-    flux.root_module.addCSourceFiles(.{
-        .root = b.path(""),
-        .files = &.{
-            "src/builtins/native/dsp_bridge.c",
-            "src/builtins/native/sndfilter/compressor.c",
-        },
-        .flags = &.{ "-std=c11", "-fno-sanitize=undefined" },
-    });
-    flux.root_module.link_libc = true;
-    flux.root_module.addImport("zgui", zgui.module("root"));
-    flux.root_module.addImport("zglfw", zglfw.module("root"));
-    flux.root_module.linkLibrary(zglfw.artifact("glfw"));
-    flux.root_module.addImport("zopengl", zopengl.module("root"));
-    flux.root_module.linkLibrary(zopengl.artifact("zopengl"));
-    flux.root_module.linkLibrary(zgui.artifact("imgui"));
-    flux.root_module.linkLibrary(zaudio.artifact("miniaudio"));
-    flux.root_module.addImport("tracy", ztracy.module("root"));
-    flux.root_module.linkLibrary(ztracy.artifact("tracy"));
-    flux.root_module.addOptions("options", options);
-    flux.root_module.addImport("static_data", static_data_module);
     flux.root_module.addImport("shared", shared);
     flux.root_module.addImport("libz_jobs", libz_jobs.module("libz_jobs"));
     flux.root_module.addImport("xml", zig_xml.module("xml"));
     flux.root_module.addImport("flux_param_table", flux_param_table);
-    const portmidi_module = portmidi_zig.module("portmidi");
-    portmidi_module.addImport("c", portmidi_c.createModule());
-    portmidi_module.addIncludePath(portmidi_zig.path("pm_common"));
-    flux.root_module.addImport("portmidi", portmidi_module);
-    flux.root_module.addIncludePath(portmidi_zig.path("pm_common"));
-    flux.root_module.addIncludePath(portmidi_zig.path("pm_mac"));
-    flux.root_module.addIncludePath(portmidi_zig.path("pm_linux"));
-    flux.root_module.addIncludePath(portmidi_zig.path("porttime"));
-    flux.root_module.addIncludePath(emu2413.path(""));
-    flux.root_module.addIncludePath(zgui.path("libs/imgui"));
-    flux.root_module.link_libc = true;
-    flux.root_module.addCSourceFile(.{
-        .file = emu2413.path("emu2413.c"),
-        .flags = &.{"-std=c11"},
+    flux.root_module.addOptions("options", options);
+    wireGui(flux.root_module, gui, .{
+        .linux_display = true,
+        .frameworks = &macos_flux_frameworks,
     });
-    flux.root_module.addCSourceFiles(.{
-        .root = b.path(""),
-        .files = &.{
-            "src/zgui_bridge.cpp",
-        },
-        .flags = &.{"-std=c++17"},
+    wireFluxNative(b, flux.root_module, .{
+        .zaudio = zaudio,
+        .sqlite3 = sqlite3,
+        .emu2413 = emu2413,
+        .portmidi_zig = portmidi_zig,
+        .signalsmith_stretch = signalsmith_stretch,
+        .signalsmith_linear = signalsmith_linear,
+        .zgui = zgui,
+        .target = target,
+        .optimize = optimize,
+        .target_os = target_os,
     });
-    // Signalsmith Stretch (MIT) — offline pitch-preserving bake for audio clips.
-    // Upstream headers from HTTPS deps; thin C ABI stays in-tree.
-    flux.root_module.addIncludePath(signalsmith_stretch.path(""));
-    flux.root_module.addIncludePath(signalsmith_linear.path("include"));
-    flux.root_module.addIncludePath(b.path("src/audio/stretch"));
-    flux.root_module.addCSourceFiles(.{
-        .root = b.path(""),
-        .files = &.{
-            "src/audio/stretch/wrapper.cpp",
-        },
-        .flags = &.{
-            "-std=c++14",
-            "-O2",
-            "-fno-exceptions",
-            "-fno-rtti",
-        },
-    });
-    if (target_os == .macos) {
-        addMacosSdkPaths(b, flux.root_module, macos_sdk);
-        flux.root_module.addImport("objc", objc_no_helpers);
-        linkFrameworks(flux.root_module, &.{ "AppKit", "Cocoa", "CoreGraphics", "CoreMIDI", "Foundation", "GameController", "Metal", "QuartzCore", "CoreFoundation", "CoreServices", "CoreAudio" });
-        flux.root_module.addCSourceFiles(.{
-            .root = portmidi_zig.path(""),
-            .files = &.{
-                "pm_common/portmidi.c",
-                "pm_common/pmutil.c",
-                "pm_mac/pmmac.c",
-                "pm_mac/pmmacosxcm.c",
-                "porttime/porttime.c",
-                "porttime/ptmacosx_mach.c",
-            },
-            .flags = &.{},
-        });
-        flux.root_module.addCSourceFile(.{
-            .file = b.path("src/app/native_drop.m"),
-            .flags = &.{"-fobjc-arc"},
-        });
-    }
-    if (target_os == .linux) {
-        flux.root_module.linkSystemLibrary("asound", .{});
-        flux.root_module.linkSystemLibrary("pthread", .{});
-        flux.root_module.addCSourceFiles(.{
-            .root = portmidi_zig.path(""),
-            .files = &.{
-                "pm_common/portmidi.c",
-                "pm_common/pmutil.c",
-                "pm_linux/pmlinux.c",
-                "pm_linux/pmlinuxalsa.c",
-                "pm_linux/pmlinuxnull.c",
-                "porttime/porttime.c",
-                "porttime/ptlinux.c",
-            },
-            .flags = &.{"-DPMALSA"},
-        });
-        if (use_wayland) {
-            flux.root_module.linkSystemLibrary("wayland-client", .{});
-            flux.root_module.linkSystemLibrary("wayland-cursor", .{});
-            flux.root_module.linkSystemLibrary("wayland-egl", .{});
-            flux.root_module.linkSystemLibrary("xkbcommon", .{});
-        }
-        if (use_x11) {
-            flux.root_module.linkSystemLibrary("X11", .{});
-        }
-    }
     b.installArtifact(flux);
 
-    const run_flux = b.addRunArtifact(flux);
     const run_flux_step = b.step("run-flux", "Run the flux application");
-    run_flux_step.dependOn(&run_flux.step);
+    run_flux_step.dependOn(&b.addRunArtifact(flux).step);
     const bundle_flux_app_step = b.step("bundle-flux-app", "Build Flux.app bundle (macOS)");
     const run_flux_app_step = b.step("run-flux-app", "Build and run Flux.app (macOS)");
     if (target_os == .macos) {
@@ -421,47 +257,26 @@ pub fn build(b: *std.Build) void {
         run_flux_app_step.dependOn(&open_flux_app.step);
     }
 
-    // Unit tests for complete Minimoog
-    const dsp_test_module = b.createModule(.{
-        .root_source_file = b.path("src/builtins/instruments/zminimoog/dsp/dsp.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    // Tests
+    const dsp_test_module = rootModule(b, "src/builtins/instruments/zminimoog/dsp/dsp.zig", target, optimize);
     dsp_test_module.addImport("wdf", wdf.module("wdf"));
+    const run_dsp_tests = b.addRunArtifact(b.addTest(.{ .root_module = dsp_test_module, .use_llvm = use_llvm }));
 
-    const dsp_tests = b.addTest(.{ .root_module = dsp_test_module, .use_llvm = use_llvm });
-    const run_dsp_tests = b.addRunArtifact(dsp_tests);
-
-    const zsynth_smoke_test_module = b.createModule(.{
-        .root_source_file = b.path("src/builtins/instruments/zsynth/plugin_smoke_test.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    const zsynth_smoke_test_module = rootModule(b, "src/builtins/instruments/zsynth/plugin_smoke_test.zig", target, optimize);
     zsynth_smoke_test_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
     zsynth_smoke_test_module.addImport("regex", regex.module("regex"));
-    zsynth_smoke_test_module.addImport("zgui", zgui.module("root"));
-    zsynth_smoke_test_module.addImport("zglfw", zglfw.module("root"));
-    zsynth_smoke_test_module.addImport("zopengl", zopengl.module("root"));
-    zsynth_smoke_test_module.addImport("tracy", ztracy.module("root"));
     zsynth_smoke_test_module.addImport("shared", shared);
     zsynth_smoke_test_module.addImport("options", options_core_module);
-    zsynth_smoke_test_module.addImport("static_data", static_data_module);
-    if (target_os == .macos) {
-        zsynth_smoke_test_module.addImport("objc", objc_no_helpers);
-    }
-
     const zsynth_smoke_tests = b.addTest(.{
         .root_module = zsynth_smoke_test_module,
         .filters = &.{"zsynth produces audio after note on"},
         .use_llvm = use_llvm,
     });
-    inline for (.{ zgui.artifact("imgui"), zglfw.artifact("glfw"), zopengl.artifact("zopengl"), ztracy.artifact("tracy") }) |library| {
-        zsynth_smoke_tests.root_module.linkLibrary(library);
-    }
-    if (target_os == .macos) {
-        addMacosSdkPaths(b, zsynth_smoke_tests.root_module, macos_sdk);
-        linkFrameworks(zsynth_smoke_tests.root_module, &.{ "AppKit", "Cocoa", "CoreGraphics", "Foundation", "GameController", "Metal", "QuartzCore" });
-    }
+    // Wire on the test compile step's module (same pattern as before for linked artifacts).
+    wireGui(zsynth_smoke_tests.root_module, gui, .{
+        .linux_display = false,
+        .frameworks = &macos_gui_frameworks,
+    });
     const run_zsynth_smoke_tests = b.addRunArtifact(zsynth_smoke_tests);
 
     const flux_tests = b.addTest(.{
@@ -474,11 +289,7 @@ pub fn build(b: *std.Build) void {
     // Integration: load every installed system CLAP (discover → create → activate → destroy).
     // Standalone exe (not addTest): third-party plugins flood stderr and deadlock zig's
     // listen-mode test runner over pipe buffers.
-    const clap_load_module = b.createModule(.{
-        .root_source_file = b.path("src/clap_plugin_load_test.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
+    const clap_load_module = rootModule(b, "src/clap_plugin_load_test.zig", target, optimize);
     clap_load_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
     const clap_load_exe = b.addExecutable(.{
         .name = "clap-load-test",
@@ -488,7 +299,6 @@ pub fn build(b: *std.Build) void {
     const run_clap_load = b.addRunArtifact(clap_load_exe);
     run_clap_load.setCwd(b.path("."));
     run_clap_load.setEnvironmentVariable("FLUX_CLAP_FULL_SCAN", "1");
-    // Expect failure status when any plugin fails to load.
     run_clap_load.expectExitCode(0);
 
     const test_clap_load_step = b.step("test-clap-load", "Load all installed system CLAP plugins");
@@ -501,6 +311,207 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_clap_load.step);
 }
 
+// --- helpers -----------------------------------------------------------------
+
+fn rootModule(
+    b: *std.Build,
+    path: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path(path),
+        .target = target,
+        .optimize = optimize,
+    });
+}
+
+const GuiCtx = struct {
+    b: *std.Build,
+    zgui: *std.Build.Dependency,
+    zglfw: *std.Build.Dependency,
+    zopengl: *std.Build.Dependency,
+    ztracy: *std.Build.Dependency,
+    static_data: *std.Build.Module,
+    objc: *std.Build.Module,
+    target_os: std.Target.Os.Tag,
+    macos_sdk: ?[]const u8,
+    use_wayland: bool,
+    use_x11: bool,
+};
+
+fn wireGui(module: *std.Build.Module, gui: GuiCtx, cfg: struct {
+    linux_display: bool,
+    frameworks: []const []const u8,
+}) void {
+    module.addImport("zgui", gui.zgui.module("root"));
+    module.addImport("zglfw", gui.zglfw.module("root"));
+    module.addImport("zopengl", gui.zopengl.module("root"));
+    module.addImport("tracy", gui.ztracy.module("root"));
+    module.linkLibrary(gui.zgui.artifact("imgui"));
+    module.linkLibrary(gui.zglfw.artifact("glfw"));
+    module.linkLibrary(gui.zopengl.artifact("zopengl"));
+    module.linkLibrary(gui.ztracy.artifact("tracy"));
+    module.addImport("static_data", gui.static_data);
+    if (gui.target_os == .macos) {
+        addMacosSdkPaths(gui.b, module, gui.macos_sdk);
+        module.addImport("objc", gui.objc);
+        linkFrameworks(module, cfg.frameworks);
+    }
+    if (cfg.linux_display and gui.target_os == .linux) {
+        linkLinuxDisplay(module, gui.use_wayland, gui.use_x11);
+    }
+}
+
+fn linkLinuxDisplay(module: *std.Build.Module, use_wayland: bool, use_x11: bool) void {
+    if (use_wayland) {
+        module.linkSystemLibrary("wayland-client", .{});
+        module.linkSystemLibrary("wayland-cursor", .{});
+        module.linkSystemLibrary("wayland-egl", .{});
+        module.linkSystemLibrary("xkbcommon", .{});
+    }
+    if (use_x11) module.linkSystemLibrary("X11", .{});
+}
+
+fn linkFrameworks(module: *std.Build.Module, names: []const []const u8) void {
+    for (names) |name| module.linkFramework(name, .{});
+}
+
+const FluxNativeDeps = struct {
+    zaudio: *std.Build.Dependency,
+    sqlite3: *std.Build.Dependency,
+    emu2413: *std.Build.Dependency,
+    portmidi_zig: *std.Build.Dependency,
+    signalsmith_stretch: *std.Build.Dependency,
+    signalsmith_linear: *std.Build.Dependency,
+    zgui: *std.Build.Dependency,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    target_os: std.Target.Os.Tag,
+};
+
+/// Flux-only C/C++/ObjC: sqlite, emu2413, portmidi, stretch, bridges, native drop.
+fn wireFluxNative(b: *std.Build, module: *std.Build.Module, d: FluxNativeDeps) void {
+    const sqlite3_c = b.addTranslateC(.{
+        .root_source_file = d.sqlite3.path("sqlite3.h"),
+        .target = d.target,
+        .optimize = d.optimize,
+        .link_libc = true,
+    });
+    const portmidi_c = b.addTranslateC(.{
+        .root_source_file = d.portmidi_zig.path("pm_common/portmidi.h"),
+        .target = d.target,
+        .optimize = d.optimize,
+        .link_libc = true,
+    });
+    portmidi_c.addIncludePath(d.portmidi_zig.path("pm_common"));
+    const emu2413_c = b.addTranslateC(.{
+        .root_source_file = d.emu2413.path("emu2413.h"),
+        .target = d.target,
+        .optimize = d.optimize,
+        .link_libc = true,
+    });
+    emu2413_c.addIncludePath(d.emu2413.path(""));
+
+    module.link_libc = true;
+    module.addImport("emu2413_c", emu2413_c.createModule());
+    module.addImport("zaudio", d.zaudio.module("root"));
+    module.addImport("sqlite3", sqlite3_c.createModule());
+    module.linkLibrary(d.zaudio.artifact("miniaudio"));
+
+    module.addCSourceFile(.{
+        .file = d.sqlite3.path("sqlite3.c"),
+        .flags = &.{
+            "-std=c99",
+            "-DSQLITE_DQS=0",
+            "-DSQLITE_OMIT_LOAD_EXTENSION=1",
+            "-DSQLITE_OMIT_DEPRECATED=1",
+            "-DSQLITE_THREADSAFE=1",
+        },
+    });
+    module.addIncludePath(d.zaudio.path("libs/miniaudio"));
+    module.addIncludePath(b.path("src/builtins/native"));
+    module.addCSourceFiles(.{
+        .root = b.path(""),
+        .files = &.{
+            "src/builtins/native/dsp_bridge.c",
+            "src/builtins/native/sndfilter/compressor.c",
+        },
+        .flags = &.{ "-std=c11", "-fno-sanitize=undefined" },
+    });
+
+    const portmidi_module = d.portmidi_zig.module("portmidi");
+    portmidi_module.addImport("c", portmidi_c.createModule());
+    portmidi_module.addIncludePath(d.portmidi_zig.path("pm_common"));
+    module.addImport("portmidi", portmidi_module);
+    module.addIncludePath(d.portmidi_zig.path("pm_common"));
+    module.addIncludePath(d.portmidi_zig.path("pm_mac"));
+    module.addIncludePath(d.portmidi_zig.path("pm_linux"));
+    module.addIncludePath(d.portmidi_zig.path("porttime"));
+    module.addIncludePath(d.emu2413.path(""));
+    module.addIncludePath(d.zgui.path("libs/imgui"));
+
+    module.addCSourceFile(.{
+        .file = d.emu2413.path("emu2413.c"),
+        .flags = &.{"-std=c11"},
+    });
+    module.addCSourceFiles(.{
+        .root = b.path(""),
+        .files = &.{"src/zgui_bridge.cpp"},
+        .flags = &.{"-std=c++17"},
+    });
+    // Signalsmith Stretch (MIT) — offline pitch-preserving bake for audio clips.
+    module.addIncludePath(d.signalsmith_stretch.path(""));
+    module.addIncludePath(d.signalsmith_linear.path("include"));
+    module.addIncludePath(b.path("src/audio/stretch"));
+    module.addCSourceFiles(.{
+        .root = b.path(""),
+        .files = &.{"src/audio/stretch/wrapper.cpp"},
+        .flags = &.{
+            "-std=c++14",
+            "-O2",
+            "-fno-exceptions",
+            "-fno-rtti",
+        },
+    });
+
+    if (d.target_os == .macos) {
+        module.addCSourceFiles(.{
+            .root = d.portmidi_zig.path(""),
+            .files = &.{
+                "pm_common/portmidi.c",
+                "pm_common/pmutil.c",
+                "pm_mac/pmmac.c",
+                "pm_mac/pmmacosxcm.c",
+                "porttime/porttime.c",
+                "porttime/ptmacosx_mach.c",
+            },
+            .flags = &.{},
+        });
+        module.addCSourceFile(.{
+            .file = b.path("src/app/native_drop.m"),
+            .flags = &.{"-fobjc-arc"},
+        });
+    }
+    if (d.target_os == .linux) {
+        module.linkSystemLibrary("asound", .{});
+        module.linkSystemLibrary("pthread", .{});
+        module.addCSourceFiles(.{
+            .root = d.portmidi_zig.path(""),
+            .files = &.{
+                "pm_common/portmidi.c",
+                "pm_common/pmutil.c",
+                "pm_linux/pmlinux.c",
+                "pm_linux/pmlinuxalsa.c",
+                "pm_linux/pmlinuxnull.c",
+                "porttime/porttime.c",
+                "porttime/ptlinux.c",
+            },
+            .flags = &.{"-DPMALSA"},
+        });
+    }
+}
+
 /// Wire MacOSX.sdk Frameworks + headers into a module for cross-compilation.
 /// Native macOS builds leave `sdk_path` null and rely on host SDK discovery.
 ///
@@ -509,17 +520,13 @@ pub fn build(b: *std.Build) void {
 /// the include path for ObjC/C (e.g. libDER/DERItem.h). Absolute `-L` under
 /// the same tree as `--sysroot` is double-prefixed by Zig, so lib stubs
 /// (libobjc.tbd) come from the bundled system_sdk package instead.
-fn addMacosSdkPaths(b: *std.Build, mod: *std.Build.Module, sdk_path: ?[]const u8) void {
+fn addMacosSdkPaths(b: *std.Build, module: *std.Build.Module, sdk_path: ?[]const u8) void {
     const sdk = sdk_path orelse return;
-    mod.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }) });
-    mod.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/include" }) });
+    module.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "System/Library/Frameworks" }) });
+    module.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/include" }) });
     if (b.lazyDependency("system_sdk", .{})) |system_sdk| {
-        mod.addLibraryPath(system_sdk.path("macos12/usr/lib"));
+        module.addLibraryPath(system_sdk.path("macos12/usr/lib"));
     }
-}
-
-fn linkFrameworks(module: *std.Build.Module, names: []const []const u8) void {
-    for (names) |name| module.linkFramework(name, .{});
 }
 
 fn createClapPluginStep(
