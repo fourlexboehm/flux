@@ -971,3 +971,47 @@ test "arrangement tracks clips colors positions and media round trip" {
     try std.testing.expectEqual(@as(usize, 1), midi_clip.notes.?.notes.len);
     try std.testing.expectEqual(@as(i32, 64), midi_clip.notes.?.notes[0].key);
 }
+
+test "all DAWproject fixtures load and model-round-trip" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var fixtures = Dir.cwd().openDir(io, "tests/fixtures", .{ .iterate = true }) catch {
+        std.log.warn("skip: tests/fixtures not found", .{});
+        return;
+    };
+    defer fixtures.close(io);
+
+    var count: usize = 0;
+    var it = fixtures.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".dawproject")) continue;
+
+        const work = try std.fmt.allocPrint(allocator, "/tmp/flux_fixture_{d}", .{count});
+        defer allocator.free(work);
+        Dir.cwd().deleteTree(io, work) catch {};
+        try Dir.cwd().createDirPath(io, work);
+        defer Dir.cwd().deleteTree(io, work) catch {};
+
+        const source = try std.fmt.allocPrint(allocator, "tests/fixtures/{s}", .{entry.name});
+        defer allocator.free(source);
+        const copied = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ work, entry.name });
+        defer allocator.free(copied);
+        const bytes = try media_layout.readEntireFile(allocator, io, source);
+        defer allocator.free(bytes);
+        try media_layout.writeBytesAtomic(allocator, io, copied, bytes);
+
+        var loaded = try load(allocator, io, copied);
+        defer loaded.deinit();
+        try std.testing.expect(loaded.project.application.name.len > 0);
+
+        var arena = std.heap.ArenaAllocator.init(allocator);
+        defer arena.deinit();
+        const xml = try toXml(arena.allocator(), &loaded.project);
+        const reparsed = try parse.parseProjectXml(arena.allocator(), xml);
+        try std.testing.expectEqual(loaded.project.tracks.len, reparsed.tracks.len);
+        try std.testing.expectEqual(loaded.project.scenes.len, reparsed.scenes.len);
+        try std.testing.expectEqual(loaded.project.arrangement != null, reparsed.arrangement != null);
+        count += 1;
+    }
+    if (count == 0) std.log.warn("skip: no .dawproject files under tests/fixtures", .{});
+}
