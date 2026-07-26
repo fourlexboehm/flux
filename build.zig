@@ -142,7 +142,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     const flux_module = b.createModule(.{
-        .root_source_file = b.path("src/flux/main.zig"),
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -209,7 +209,7 @@ pub fn build(b: *std.Build) void {
 
     // Stock FX param definitions (clap-free) — shared by flux app and project format tests.
     const flux_param_table = b.createModule(.{
-        .root_source_file = b.path("src/flux/builtins/param_table.zig"),
+        .root_source_file = b.path("src/builtins/param_table.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -351,12 +351,12 @@ pub fn build(b: *std.Build) void {
         },
     });
     flux.root_module.addIncludePath(zaudio.path("libs/miniaudio"));
-    flux.root_module.addIncludePath(b.path("src/flux/builtins/native"));
+    flux.root_module.addIncludePath(b.path("src/builtins/native"));
     flux.root_module.addCSourceFiles(.{
         .root = b.path(""),
         .files = &.{
-            "src/flux/builtins/native/dsp_bridge.c",
-            "src/flux/builtins/native/sndfilter/compressor.c",
+            "src/builtins/native/dsp_bridge.c",
+            "src/builtins/native/sndfilter/compressor.c",
         },
         .flags = &.{ "-std=c11", "-fno-sanitize=undefined" },
     });
@@ -394,7 +394,7 @@ pub fn build(b: *std.Build) void {
     flux.root_module.addCSourceFiles(.{
         .root = b.path(""),
         .files = &.{
-            "src/flux/zgui_bridge.cpp",
+            "src/zgui_bridge.cpp",
         },
         .flags = &.{"-std=c++17"},
     });
@@ -402,11 +402,11 @@ pub fn build(b: *std.Build) void {
     // Upstream headers from HTTPS deps; thin C ABI stays in-tree.
     flux.root_module.addIncludePath(signalsmith_stretch.path(""));
     flux.root_module.addIncludePath(signalsmith_linear.path("include"));
-    flux.root_module.addIncludePath(b.path("src/flux/audio/stretch"));
+    flux.root_module.addIncludePath(b.path("src/audio/stretch"));
     flux.root_module.addCSourceFiles(.{
         .root = b.path(""),
         .files = &.{
-            "src/flux/audio/stretch/wrapper.cpp",
+            "src/audio/stretch/wrapper.cpp",
         },
         .flags = &.{
             "-std=c++14",
@@ -442,7 +442,7 @@ pub fn build(b: *std.Build) void {
             .flags = &.{},
         });
         flux.root_module.addCSourceFile(.{
-            .file = b.path("src/flux/app/native_drop.m"),
+            .file = b.path("src/app/native_drop.m"),
             .flags = &.{"-fobjc-arc"},
         });
     }
@@ -558,56 +558,80 @@ pub fn build(b: *std.Build) void {
     }
     const run_zsynth_smoke_tests = b.addRunArtifact(zsynth_smoke_tests);
 
-    const project_test_module = b.createModule(.{
-        .root_source_file = b.path("src/flux/project/tests.zig"),
+    // Host unit tests: same package root as the app (src/main.zig). No thin reexport files.
+    // `builtin.is_test` imports in main.zig pull test-only modules into the graph.
+    const flux_test_module = b.createModule(.{
+        .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
     });
-    project_test_module.addImport("xml", zig_xml.module("xml"));
-    project_test_module.addImport("flux_param_table", flux_param_table);
-    const project_tests = b.addTest(.{
-        .root_module = project_test_module,
-        .use_llvm = use_llvm,
+    flux_test_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
+    flux_test_module.addImport("zsynth-core", zsynth_core);
+    flux_test_module.addImport("zminimoog-core", zminimoog_core);
+    flux_test_module.addImport("zportafm-core", zportafm_core);
+    flux_test_module.addImport("zaudio", zaudio.module("root"));
+    flux_test_module.addImport("sqlite3", sqlite3_c.createModule());
+    flux_test_module.addCSourceFile(.{
+        .file = sqlite3.path("sqlite3.c"),
+        .flags = &.{
+            "-std=c99",
+            "-DSQLITE_DQS=0",
+            "-DSQLITE_OMIT_LOAD_EXTENSION=1",
+            "-DSQLITE_OMIT_DEPRECATED=1",
+            "-DSQLITE_THREADSAFE=1",
+        },
     });
-    const run_project_tests = b.addRunArtifact(project_tests);
-
-    const builtin_dsp_test_module = b.createModule(.{
-        .root_source_file = b.path("src/flux/builtins/dsp/tests.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    builtin_dsp_test_module.addIncludePath(zaudio.path("libs/miniaudio"));
-    builtin_dsp_test_module.addIncludePath(b.path("src/flux/builtins/native"));
-    builtin_dsp_test_module.addCSourceFiles(.{
+    flux_test_module.addIncludePath(zaudio.path("libs/miniaudio"));
+    flux_test_module.addIncludePath(b.path("src/builtins/native"));
+    flux_test_module.addCSourceFiles(.{
         .root = b.path(""),
         .files = &.{
-            "src/flux/builtins/native/dsp_bridge.c",
-            "src/flux/builtins/native/sndfilter/compressor.c",
+            "src/builtins/native/dsp_bridge.c",
+            "src/builtins/native/sndfilter/compressor.c",
         },
         .flags = &.{ "-std=c11", "-fno-sanitize=undefined" },
     });
-    builtin_dsp_test_module.link_libc = true;
-    const builtin_dsp_tests = b.addTest(.{
-        .root_module = builtin_dsp_test_module,
-        .use_llvm = use_llvm,
+    flux_test_module.link_libc = true;
+    flux_test_module.addImport("zgui", zgui.module("root"));
+    flux_test_module.addImport("zglfw", zglfw.module("root"));
+    flux_test_module.linkLibrary(zglfw.artifact("glfw"));
+    flux_test_module.addImport("zopengl", zopengl.module("root"));
+    flux_test_module.linkLibrary(zopengl.artifact("zopengl"));
+    flux_test_module.linkLibrary(zgui.artifact("imgui"));
+    flux_test_module.linkLibrary(zaudio.artifact("miniaudio"));
+    flux_test_module.addImport("tracy", ztracy.module("root"));
+    flux_test_module.linkLibrary(ztracy.artifact("tracy"));
+    flux_test_module.addOptions("options", options);
+    flux_test_module.addImport("static_data", static_data_module);
+    flux_test_module.addImport("shared", shared);
+    flux_test_module.addImport("libz_jobs", libz_jobs.module("libz_jobs"));
+    flux_test_module.addImport("xml", zig_xml.module("xml"));
+    flux_test_module.addImport("flux_param_table", flux_param_table);
+    flux_test_module.addImport("portmidi", portmidi_module);
+    flux_test_module.addIncludePath(portmidi_zig.path("pm_common"));
+    flux_test_module.addIncludePath(portmidi_zig.path("pm_mac"));
+    flux_test_module.addIncludePath(portmidi_zig.path("pm_linux"));
+    flux_test_module.addIncludePath(portmidi_zig.path("porttime"));
+    flux_test_module.addIncludePath(emu2413.path(""));
+    flux_test_module.addIncludePath(zgui.path("libs/imgui"));
+    flux_test_module.addCSourceFile(.{
+        .file = emu2413.path("emu2413.c"),
+        .flags = &.{"-std=c11"},
     });
-    builtin_dsp_tests.root_module.linkLibrary(zaudio.artifact("miniaudio"));
-    const run_builtin_dsp_tests = b.addRunArtifact(builtin_dsp_tests);
-
-    const audio_clip_test_module = b.createModule(.{
-        .root_source_file = b.path("src/flux/run_audio_clip_tests.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    // Relative imports under src/flux resolve sample_store → zaudio + stretch ABI.
-    audio_clip_test_module.addImport("zaudio", zaudio.module("root"));
-    audio_clip_test_module.addIncludePath(signalsmith_stretch.path(""));
-    audio_clip_test_module.addIncludePath(signalsmith_linear.path("include"));
-    audio_clip_test_module.addIncludePath(b.path("src/flux/audio/stretch"));
-    audio_clip_test_module.addCSourceFiles(.{
+    flux_test_module.addCSourceFiles(.{
         .root = b.path(""),
         .files = &.{
-            "src/flux/audio/stretch/wrapper.cpp",
+            "src/zgui_bridge.cpp",
+        },
+        .flags = &.{"-std=c++17"},
+    });
+    flux_test_module.addIncludePath(signalsmith_stretch.path(""));
+    flux_test_module.addIncludePath(signalsmith_linear.path("include"));
+    flux_test_module.addIncludePath(b.path("src/audio/stretch"));
+    flux_test_module.addCSourceFiles(.{
+        .root = b.path(""),
+        .files = &.{
+            "src/audio/stretch/wrapper.cpp",
         },
         .flags = &.{
             "-std=c++14",
@@ -616,45 +640,75 @@ pub fn build(b: *std.Build) void {
             "-fno-rtti",
         },
     });
-    audio_clip_test_module.link_libcpp = true;
-    const audio_clip_tests = b.addTest(.{
-        .root_module = audio_clip_test_module,
+    if (target_os == .macos) {
+        addMacosSdkPaths(b, flux_test_module, macos_sdk);
+        flux_test_module.addImport("objc", objc_no_helpers);
+        flux_test_module.linkFramework("AppKit", .{});
+        flux_test_module.linkFramework("Cocoa", .{});
+        flux_test_module.linkFramework("CoreGraphics", .{});
+        flux_test_module.linkFramework("CoreMIDI", .{});
+        flux_test_module.linkFramework("Foundation", .{});
+        flux_test_module.linkFramework("GameController", .{});
+        flux_test_module.linkFramework("Metal", .{});
+        flux_test_module.linkFramework("QuartzCore", .{});
+        flux_test_module.linkFramework("CoreFoundation", .{});
+        flux_test_module.linkFramework("CoreServices", .{});
+        flux_test_module.linkFramework("CoreAudio", .{});
+        flux_test_module.addCSourceFiles(.{
+            .root = portmidi_zig.path(""),
+            .files = &.{
+                "pm_common/portmidi.c",
+                "pm_common/pmutil.c",
+                "pm_mac/pmmac.c",
+                "pm_mac/pmmacosxcm.c",
+                "porttime/porttime.c",
+                "porttime/ptmacosx_mach.c",
+            },
+            .flags = &.{},
+        });
+        flux_test_module.addCSourceFile(.{
+            .file = b.path("src/app/native_drop.m"),
+            .flags = &.{"-fobjc-arc"},
+        });
+    }
+    if (target_os == .linux) {
+        flux_test_module.linkSystemLibrary("asound", .{});
+        flux_test_module.linkSystemLibrary("pthread", .{});
+        flux_test_module.addCSourceFiles(.{
+            .root = portmidi_zig.path(""),
+            .files = &.{
+                "pm_common/portmidi.c",
+                "pm_common/pmutil.c",
+                "pm_linux/pmlinux.c",
+                "pm_linux/pmlinuxalsa.c",
+                "pm_linux/pmlinuxnull.c",
+                "porttime/porttime.c",
+                "porttime/ptlinux.c",
+            },
+            .flags = &.{"-DPMALSA"},
+        });
+        if (use_wayland) {
+            flux_test_module.linkSystemLibrary("wayland-client", .{});
+            flux_test_module.linkSystemLibrary("wayland-cursor", .{});
+            flux_test_module.linkSystemLibrary("wayland-egl", .{});
+            flux_test_module.linkSystemLibrary("xkbcommon", .{});
+        }
+        if (use_x11) {
+            flux_test_module.linkSystemLibrary("X11", .{});
+        }
+    }
+    const flux_tests = b.addTest(.{
+        .root_module = flux_test_module,
         .use_llvm = use_llvm,
     });
-    audio_clip_tests.root_module.linkLibrary(zaudio.artifact("miniaudio"));
-    const run_audio_clip_tests = b.addRunArtifact(audio_clip_tests);
-
-    // Thin Save As media roundtrip (uses tests/fixtures/*.dawproject when present)
-    const media_roundtrip_module = b.createModule(.{
-        .root_source_file = b.path("src/flux/run_media_roundtrip_tests.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    media_roundtrip_module.addImport("zaudio", zaudio.module("root"));
-    const media_roundtrip_tests = b.addTest(.{
-        .root_module = media_roundtrip_module,
-        .use_llvm = use_llvm,
-    });
-    media_roundtrip_tests.root_module.linkLibrary(zaudio.artifact("miniaudio"));
-    // Run from repo root so tests/fixtures/ resolves
-    const run_media_roundtrip_tests = b.addRunArtifact(media_roundtrip_tests);
-    run_media_roundtrip_tests.setCwd(b.path("."));
-
-    const arrangement_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/flux/run_arrangement_tests.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-        .use_llvm = use_llvm,
-    });
-    const run_arrangement_tests = b.addRunArtifact(arrangement_tests);
+    const run_flux_tests = b.addRunArtifact(flux_tests);
+    run_flux_tests.setCwd(b.path(".")); // media roundtrip fixtures under tests/fixtures
 
     // Integration: load every installed system CLAP (discover → create → activate → destroy).
     // Standalone exe (not addTest): third-party plugins flood stderr and deadlock zig's
     // listen-mode test runner over pipe buffers.
     const clap_load_module = b.createModule(.{
-        .root_source_file = b.path("src/flux/run_clap_load_tests.zig"),
+        .root_source_file = b.path("src/clap_plugin_load_test.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -677,11 +731,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_filter_tests.step);
     test_step.dependOn(&run_dsp_tests.step);
     test_step.dependOn(&run_zsynth_smoke_tests.step);
-    test_step.dependOn(&run_project_tests.step);
-    test_step.dependOn(&run_builtin_dsp_tests.step);
-    test_step.dependOn(&run_audio_clip_tests.step);
-    test_step.dependOn(&run_media_roundtrip_tests.step);
-    test_step.dependOn(&run_arrangement_tests.step);
+    test_step.dependOn(&run_flux_tests.step);
     // CLAP load is opt-in (test-clap-load): system plugins are slow/noisy and not on CI.
 }
 
