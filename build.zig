@@ -553,7 +553,8 @@ fn createClapPluginStep(
             );
 
             var bundle_ready: *Step = &clap_bundle.step;
-            if (optimize == .Debug) {
+            // dsymutil is a host macOS tool — skip when cross-compiling from Linux CI.
+            if (optimize == .Debug and builtin.os.tag == .macos) {
                 const dsym = b.addSystemCommand(&.{"dsymutil"});
                 dsym.addFileArg(plugin_bin);
                 dsym.step.dependOn(&clap_bundle.step);
