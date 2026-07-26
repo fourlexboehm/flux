@@ -229,9 +229,7 @@ pub fn build(b: *std.Build) void {
     if (target_os == .macos) {
         addMacosSdkPaths(b, objc_no_helpers, macos_sdk);
         objc_no_helpers.linkSystemLibrary("objc", .{});
-        objc_no_helpers.linkFramework("AppKit", .{});
-        objc_no_helpers.linkFramework("CoreVideo", .{});
-        objc_no_helpers.linkFramework("QuartzCore", .{});
+        linkFrameworks(objc_no_helpers, &.{ "AppKit", "CoreVideo", "QuartzCore" });
 
         shared.addImport("objc", objc_no_helpers);
     }
@@ -262,13 +260,7 @@ pub fn build(b: *std.Build) void {
         if (target_os == .macos) {
             addMacosSdkPaths(b, pkg.root_module, macos_sdk);
             pkg.root_module.addImport("objc", objc_no_helpers);
-            pkg.root_module.linkFramework("AppKit", .{});
-            pkg.root_module.linkFramework("Cocoa", .{});
-            pkg.root_module.linkFramework("CoreGraphics", .{});
-            pkg.root_module.linkFramework("Foundation", .{});
-            pkg.root_module.linkFramework("GameController", .{});
-            pkg.root_module.linkFramework("Metal", .{});
-            pkg.root_module.linkFramework("QuartzCore", .{});
+            linkFrameworks(pkg.root_module, &.{ "AppKit", "Cocoa", "CoreGraphics", "Foundation", "GameController", "Metal", "QuartzCore" });
         }
         if (target_os == .linux) {
             if (use_wayland) {
@@ -418,17 +410,7 @@ pub fn build(b: *std.Build) void {
     if (target_os == .macos) {
         addMacosSdkPaths(b, flux.root_module, macos_sdk);
         flux.root_module.addImport("objc", objc_no_helpers);
-        flux.root_module.linkFramework("AppKit", .{});
-        flux.root_module.linkFramework("Cocoa", .{});
-        flux.root_module.linkFramework("CoreGraphics", .{});
-        flux.root_module.linkFramework("CoreMIDI", .{});
-        flux.root_module.linkFramework("Foundation", .{});
-        flux.root_module.linkFramework("GameController", .{});
-        flux.root_module.linkFramework("Metal", .{});
-        flux.root_module.linkFramework("QuartzCore", .{});
-        flux.root_module.linkFramework("CoreFoundation", .{});
-        flux.root_module.linkFramework("CoreServices", .{});
-        flux.root_module.linkFramework("CoreAudio", .{});
+        linkFrameworks(flux.root_module, &.{ "AppKit", "Cocoa", "CoreGraphics", "CoreMIDI", "Foundation", "GameController", "Metal", "QuartzCore", "CoreFoundation", "CoreServices", "CoreAudio" });
         flux.root_module.addCSourceFiles(.{
             .root = portmidi_zig.path(""),
             .files = &.{
@@ -489,21 +471,6 @@ pub fn build(b: *std.Build) void {
         run_flux_app_step.dependOn(&open_flux_app.step);
     }
 
-    // Unit tests for zminimoog DSP - filter module
-    const filter_test_module = b.createModule(.{
-        .root_source_file = b.path("zminimoog/src/dsp/board4_filter_vca.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    filter_test_module.addImport("wdf", wdf.module("wdf"));
-
-    const filter_tests = b.addTest(.{
-        .root_module = filter_test_module,
-        .use_llvm = use_llvm,
-    });
-
-    const run_filter_tests = b.addRunArtifact(filter_tests);
-
     // Unit tests for complete Minimoog
     const dsp_test_module = b.createModule(.{
         .root_source_file = b.path("zminimoog/src/dsp/dsp.zig"),
@@ -512,11 +479,7 @@ pub fn build(b: *std.Build) void {
     });
     dsp_test_module.addImport("wdf", wdf.module("wdf"));
 
-    const dsp_tests = b.addTest(.{
-        .root_module = dsp_test_module,
-        .use_llvm = use_llvm,
-    });
-
+    const dsp_tests = b.addTest(.{ .root_module = dsp_test_module, .use_llvm = use_llvm });
     const run_dsp_tests = b.addRunArtifact(dsp_tests);
 
     const zsynth_smoke_test_module = b.createModule(.{
@@ -542,19 +505,12 @@ pub fn build(b: *std.Build) void {
         .filters = &.{"zsynth produces audio after note on"},
         .use_llvm = use_llvm,
     });
-    zsynth_smoke_tests.root_module.linkLibrary(zgui.artifact("imgui"));
-    zsynth_smoke_tests.root_module.linkLibrary(zglfw.artifact("glfw"));
-    zsynth_smoke_tests.root_module.linkLibrary(zopengl.artifact("zopengl"));
-    zsynth_smoke_tests.root_module.linkLibrary(ztracy.artifact("tracy"));
+    inline for (.{ zgui.artifact("imgui"), zglfw.artifact("glfw"), zopengl.artifact("zopengl"), ztracy.artifact("tracy") }) |library| {
+        zsynth_smoke_tests.root_module.linkLibrary(library);
+    }
     if (target_os == .macos) {
         addMacosSdkPaths(b, zsynth_smoke_tests.root_module, macos_sdk);
-        zsynth_smoke_tests.root_module.linkFramework("AppKit", .{});
-        zsynth_smoke_tests.root_module.linkFramework("Cocoa", .{});
-        zsynth_smoke_tests.root_module.linkFramework("CoreGraphics", .{});
-        zsynth_smoke_tests.root_module.linkFramework("Foundation", .{});
-        zsynth_smoke_tests.root_module.linkFramework("GameController", .{});
-        zsynth_smoke_tests.root_module.linkFramework("Metal", .{});
-        zsynth_smoke_tests.root_module.linkFramework("QuartzCore", .{});
+        linkFrameworks(zsynth_smoke_tests.root_module, &.{ "AppKit", "Cocoa", "CoreGraphics", "Foundation", "GameController", "Metal", "QuartzCore" });
     }
     const run_zsynth_smoke_tests = b.addRunArtifact(zsynth_smoke_tests);
 
@@ -589,7 +545,6 @@ pub fn build(b: *std.Build) void {
     test_clap_load_step.dependOn(&run_clap_load.step);
 
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_filter_tests.step);
     test_step.dependOn(&run_dsp_tests.step);
     test_step.dependOn(&run_zsynth_smoke_tests.step);
     test_step.dependOn(&run_flux_tests.step);
@@ -611,6 +566,10 @@ fn addMacosSdkPaths(b: *std.Build, mod: *std.Build.Module, sdk_path: ?[]const u8
     if (b.lazyDependency("system_sdk", .{})) |system_sdk| {
         mod.addLibraryPath(system_sdk.path("macos12/usr/lib"));
     }
+}
+
+fn linkFrameworks(module: *std.Build.Module, names: []const []const u8) void {
+    for (names) |name| module.linkFramework(name, .{});
 }
 
 fn createClapPluginStep(

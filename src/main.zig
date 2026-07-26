@@ -21,10 +21,10 @@ const bench = @import("app/bench.zig");
 const dawproject_runtime = @import("project/runtime.zig");
 const device_state = @import("app/device_state.zig");
 const host_mod = @import("app/host.zig");
-    const linux_x11 = if (builtin.os.tag == .linux) @import("plugin/linux_x11.zig") else struct {
-        pub fn initThreads() void {}
-    };
-    const native_drop = @import("app/native_drop.zig");
+const linux_x11 = if (builtin.os.tag == .linux) @import("plugin/linux_x11.zig") else struct {
+    pub fn initThreads() void {}
+};
+const native_drop = @import("app/native_drop.zig");
 const controller_mapping = @import("midi/controller_mapping.zig");
 const midi_input = @import("midi/input.zig");
 const options = @import("options");
