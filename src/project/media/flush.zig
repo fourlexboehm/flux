@@ -313,26 +313,29 @@ test "Save As fails loudly when media cannot be found" {
     );
 }
 
-test "bitwig fixture: embedded audio hydrate + Save As copies all wavs" {
+test "DAWproject fixtures: embedded audio hydrate + Save As copies all wavs" {
     const allocator = std.testing.allocator;
     const io = testIo();
-
-    const fixture_candidates = [_][]const u8{
-        "tests/fixtures/pushMeToTheBedEURORACK.dawproject",
-    };
-    var fixture_path: ?[]const u8 = null;
-    for (fixture_candidates) |c| {
-        if (Dir.cwd().statFile(io, c, .{})) |_| {
-            fixture_path = c;
-            break;
-        } else |_| {}
-    }
-    if (fixture_path == null) {
-        std.log.warn("skip: tests/fixtures/pushMeToTheBedEURORACK.dawproject not found", .{});
+    var fixtures_dir = Dir.cwd().openDir(io, "tests/fixtures", .{ .iterate = true }) catch {
+        std.log.warn("skip: tests/fixtures not found", .{});
         return;
-    }
+    };
+    defer fixtures_dir.close(io);
 
-    const work = try makeTempDir(allocator, "bitwig");
+    var count: usize = 0;
+    var it = fixtures_dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".dawproject")) continue;
+        const fixture_path = try std.fmt.allocPrint(allocator, "tests/fixtures/{s}", .{entry.name});
+        defer allocator.free(fixture_path);
+        try testFixtureSaveAs(allocator, io, fixture_path);
+        count += 1;
+    }
+    if (count == 0) std.log.warn("skip: no .dawproject files under tests/fixtures", .{});
+}
+
+fn testFixtureSaveAs(allocator: std.mem.Allocator, io: std.Io, fixture_path: []const u8) !void {
+    const work = try makeTempDir(allocator, "fixture");
     defer {
         Dir.cwd().deleteTree(io, work) catch {};
         allocator.free(work);
@@ -341,7 +344,7 @@ test "bitwig fixture: embedded audio hydrate + Save As copies all wavs" {
     const open_path = try std.fmt.allocPrint(allocator, "{s}/opened.dawproject", .{work});
     defer allocator.free(open_path);
     {
-        const src = try media_layout.readEntireFile(allocator, io, fixture_path.?);
+        const src = try media_layout.readEntireFile(allocator, io, fixture_path);
         defer allocator.free(src);
         try media_layout.writeBytesAtomic(allocator, io, open_path, src);
     }
@@ -361,14 +364,15 @@ test "bitwig fixture: embedded audio hydrate + Save As copies all wavs" {
         try std.zip.extract(out_dir, &fr, .{ .allow_backslashes = true });
     }
 
-    const expected = [_][]const u8{
-        "audio/Audio 2-1.wav",
-        "audio/Audio 2-2.wav",
-        "audio/Audio 2-3.wav",
-        "audio/Audio 2-4.wav",
-        "audio/Audio 2-5.wav",
-        "audio/Audio 4-1.wav",
-    };
+    var expected: std.ArrayList([]u8) = .empty;
+    defer {
+        for (expected.items) |path| allocator.free(path);
+        expected.deinit(allocator);
+    }
+    var extracted = try Dir.cwd().openDir(io, extract_dir, .{ .iterate = true });
+    defer extracted.close(io);
+    try collectWavs(allocator, io, extracted, "", &expected);
+    try std.testing.expect(expected.items.len > 0);
 
     const open_dir = try media_layout.projectDir(allocator, open_path);
     defer allocator.free(open_dir);
@@ -377,7 +381,7 @@ test "bitwig fixture: embedded audio hydrate + Save As copies all wavs" {
     var store = SampleStore.init(allocator);
     defer store.deinit();
 
-    for (expected) |zip_path| {
+    for (expected.items) |zip_path| {
         const member_abs = try media_layout.joinRel(allocator, extract_dir, zip_path);
         defer allocator.free(member_abs);
         const bytes = try media_layout.readEntireFile(allocator, io, member_abs);
@@ -407,7 +411,7 @@ test "bitwig fixture: embedded audio hydrate + Save As copies all wavs" {
 
     try flushSampleStoreToDisk(allocator, io, save_as_dir, open_dir, &store);
 
-    for (expected) |zip_path| {
+    for (expected.items) |zip_path| {
         const base = std.fs.path.basename(zip_path);
         var rel_buf: [256]u8 = undefined;
         const rel = try std.fmt.bufPrint(&rel_buf, "samples/{s}", .{base});
@@ -421,7 +425,7 @@ test "bitwig fixture: embedded audio hydrate + Save As copies all wavs" {
     }
 
     // "Reopen": every path must still resolve from the new project dir alone
-    for (expected) |zip_path| {
+    for (expected.items) |zip_path| {
         const base = std.fs.path.basename(zip_path);
         var rel_buf: [256]u8 = undefined;
         const rel = try std.fmt.bufPrint(&rel_buf, "samples/{s}", .{base});
@@ -430,5 +434,34 @@ test "bitwig fixture: embedded audio hydrate + Save As copies all wavs" {
         const data = try media_layout.readEntireFile(allocator, io, abs);
         defer allocator.free(data);
         try std.testing.expect(data.len > 1000);
+    }
+}
+
+fn collectWavs(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir: Dir,
+    prefix: []const u8,
+    paths: *std.ArrayList([]u8),
+) !void {
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind == .directory) {
+            var child = try dir.openDir(io, entry.name, .{ .iterate = true });
+            defer child.close(io);
+            const child_prefix = if (prefix.len == 0)
+                try allocator.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(allocator, "{s}/{s}", .{ prefix, entry.name });
+            defer allocator.free(child_prefix);
+            try collectWavs(allocator, io, child, child_prefix, paths);
+        } else if (entry.kind == .file and std.ascii.endsWithIgnoreCase(entry.name, ".wav")) {
+            const path = if (prefix.len == 0)
+                try allocator.dupe(u8, entry.name)
+            else
+                try std.fmt.allocPrint(allocator, "{s}/{s}", .{ prefix, entry.name });
+            errdefer allocator.free(path);
+            try paths.append(allocator, path);
+        }
     }
 }
