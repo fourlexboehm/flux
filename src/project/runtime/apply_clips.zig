@@ -45,13 +45,8 @@ pub fn applyLanes(
                 }
                 for (clips.clips, 0..) |clip, s| {
                     if (s >= scene_count) break;
-                    var name: @TypeOf(state.session.clips[0][0].name) = .{};
-                    if (clip.name) |n| name.set(n);
-                    state.session.clips[t][s] = .{
-                        .state = .stopped,
-                        .length_beats = @floatCast(clip.duration),
-                        .name = name,
-                    };
+                    state.releaseSlotClip(t, s);
+                    state.session.clips[t][s].state = .stopped;
                     try applyClipContent(state, loaded, io, t, s, &clip, tracks, instrument_device_ids, fx_device_ids);
                 }
             }
@@ -93,13 +88,8 @@ pub fn applyScenes(
             if (track_idx) |t| {
                 if (t >= track_count) continue;
                 if (slot.clip) |clip| {
-                    var name: @TypeOf(state.session.clips[0][0].name) = .{};
-                    if (clip.name) |n| name.set(n);
-                    state.session.clips[t][s] = .{
-                        .state = .stopped,
-                        .length_beats = @floatCast(clip.duration),
-                        .name = name,
-                    };
+                    state.releaseSlotClip(t, s);
+                    state.session.clips[t][s].state = .stopped;
                     try applyClipContent(state, loaded, io, t, s, &clip, tracks, instrument_device_ids, fx_device_ids);
                 }
             }
@@ -126,29 +116,30 @@ fn applyClipContent(
         defer flat_arena.deinit();
         if (try flatten.flattenClipAudio(flat_arena.allocator(), clip)) |flat| {
             try applyFlattenedAudio(state, loaded, io, track_idx, scene_idx, flat);
-            applied_audio = state.audio_clips[track_idx][scene_idx].hasAudio();
+            applied_audio = state.slotHasAudio(track_idx, scene_idx);
         }
     }
 
-    var piano = &state.piano_clips[track_idx][scene_idx];
-    piano.length_beats = @floatCast(clip.duration);
-    // Punch in/out + loop region (DAWproject playStart/playStop/loopStart/loopEnd).
-    // contentTimeUnit defaults to parent (beats for session/arrangement).
-    const content_unit = clip.content_time_unit orelse .beats;
-    piano.play_start_beats = @floatCast(time_mod.timeToBeats(clip.play_start, content_unit, state.bpm));
-    piano.loop_start_beats = @floatCast(time_mod.timeToBeats(clip.loop_start orelse 0, content_unit, state.bpm));
-    if (clip.loop_end) |end| {
-        piano.loop_end_beats = @floatCast(time_mod.timeToBeats(end, content_unit, state.bpm));
-    } else if (clip.play_stop) |stop| {
-        // One-shot punch-out when no loopEnd: play through playStop, then wrap at stop.
-        piano.loop_end_beats = @floatCast(time_mod.timeToBeats(stop, content_unit, state.bpm));
-    } else {
-        piano.loop_end_beats = piano.length_beats;
-    }
-    piano.notes.clearRetainingCapacity();
-
-    // One content type per slot: skip notes when audio was applied
+    // One content type per slot: only build the MIDI clip when no audio was
+    // applied (materializing a piano clip would evict the pooled audio clip).
     if (!applied_audio) {
+        var piano = state.ensureSlotPiano(track_idx, scene_idx);
+        piano.length_beats = @floatCast(clip.duration);
+        // Punch in/out + loop region (DAWproject playStart/playStop/loopStart/loopEnd).
+        // contentTimeUnit defaults to parent (beats for session/arrangement).
+        const content_unit = clip.content_time_unit orelse .beats;
+        piano.play_start_beats = @floatCast(time_mod.timeToBeats(clip.play_start, content_unit, state.bpm));
+        piano.loop_start_beats = @floatCast(time_mod.timeToBeats(clip.loop_start orelse 0, content_unit, state.bpm));
+        if (clip.loop_end) |end| {
+            piano.loop_end_beats = @floatCast(time_mod.timeToBeats(end, content_unit, state.bpm));
+        } else if (clip.play_stop) |stop| {
+            // One-shot punch-out when no loopEnd: play through playStop, then wrap at stop.
+            piano.loop_end_beats = @floatCast(time_mod.timeToBeats(stop, content_unit, state.bpm));
+        } else {
+            piano.loop_end_beats = piano.length_beats;
+        }
+        piano.notes.clearRetainingCapacity();
+
         if (clip.notes) |notes| {
             for (notes.notes) |note| {
                 if (note.key < 0 or note.key > 127) continue;
@@ -175,34 +166,40 @@ fn applyClipContent(
                 }
             }
         }
-    }
 
-    if (track_idx < tracks.len) {
-        piano.automation.clear(state.allocator);
-        const track = tracks[track_idx];
-        const channel = track.channel;
-        const vol_id = if (channel) |ch| if (ch.volume) |vol| vol.id else null else null;
-        const pan_id = if (channel) |ch| if (ch.pan) |pan| pan.id else null else null;
-        try applyAutomationToClip(
-            state.allocator,
-            piano,
-            clip.points,
-            instrument_device_ids[track_idx],
-            &fx_device_ids[track_idx],
-            vol_id,
-            pan_id,
-        );
-        if (clip.lanes) |lanes| {
+        if (track_idx < tracks.len) {
+            piano.automation.clear(state.allocator);
+            const track = tracks[track_idx];
+            const channel = track.channel;
+            const vol_id = if (channel) |ch| if (ch.volume) |vol| vol.id else null else null;
+            const pan_id = if (channel) |ch| if (ch.pan) |pan| pan.id else null else null;
             try applyAutomationToClip(
                 state.allocator,
                 piano,
-                lanes.points,
+                clip.points,
                 instrument_device_ids[track_idx],
                 &fx_device_ids[track_idx],
                 vol_id,
                 pan_id,
             );
+            if (clip.lanes) |lanes| {
+                try applyAutomationToClip(
+                    state.allocator,
+                    piano,
+                    lanes.points,
+                    instrument_device_ids[track_idx],
+                    &fx_device_ids[track_idx],
+                    vol_id,
+                    pan_id,
+                );
+            }
         }
+    }
+
+    // Clip name lives on the pooled clip; apply the outer clip name (audio
+    // slots may already carry a media-derived name from applyFlattenedAudio).
+    if (clip.name) |n| {
+        if (state.slotClip(track_idx, scene_idx)) |c| c.name.set(n);
     }
 }
 
@@ -235,10 +232,8 @@ fn applyFlattenedAudio(
     var sample_owned = true;
     defer if (sample_owned) state.sample_store.release(sample_id);
 
-    // Hybrid exclusive slot: sample owns this cell (drop MIDI notes)
-    state.claimSlotForAudio(track_idx, scene_idx);
-
-    var audio = &state.audio_clips[track_idx][scene_idx];
+    // Exclusive slot: materialize (or convert to) a pooled audio clip.
+    var audio = state.ensureSlotAudio(track_idx, scene_idx) orelse return error.OutOfMemory;
     audio.clear(&state.sample_store);
     audio.length_beats = @floatCast(flat.duration);
     audio.play_start_beats = @floatCast(time_mod.timeToBeats(flat.play_start, flat.content_time_unit, state.bpm));
@@ -254,9 +249,10 @@ fn applyFlattenedAudio(
     audio.fade_out_beats = @floatCast(time_mod.timeToBeats(flat.fade_out_time orelse 0, fade_unit, state.bpm));
     if (flat.name) |n| {
         audio.name.set(n);
-        // Prefer outer clip name already applied; fill empty slot name from media.
-        if (state.session.clips[track_idx][scene_idx].name.len == 0) {
-            state.session.clips[track_idx][scene_idx].name.set(n);
+        // Fill the pooled clip's name from media when not already set; the outer
+        // clip name (if any) is applied afterwards by applyClipContent.
+        if (state.slotClip(track_idx, scene_idx)) |c| {
+            if (c.name.get().len == 0) c.name.set(n);
         }
     }
     try audio.setAlgorithm(flat.algorithm);

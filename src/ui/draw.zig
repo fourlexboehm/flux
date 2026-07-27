@@ -526,7 +526,6 @@ fn drawClipGrid(state: *State, ui_scale: f32) void {
         state.playhead_beat,
         state.beatsPerBar(),
         .{
-            .audio_clips = &state.audio_clips,
             .sample_store = &state.sample_store,
         },
         &state.track_levels,
@@ -556,8 +555,8 @@ fn drawClipGrid(state: *State, ui_scale: f32) void {
     // Handle request to clear piano clip (when starting new recording on empty slot)
     if (state.session.clear_piano_clip_request) |req| {
         state.session.clear_piano_clip_request = null;
-        state.piano_clips[req.track][req.scene].clear();
-        state.piano_clips[req.track][req.scene].length_beats = state.session.clips[req.track][req.scene].length_beats;
+        // New recording on this slot: materialize a fresh, empty MIDI clip.
+        state.ensureSlotPiano(req.track, req.scene).clear();
     }
     if (state.session.start_playback_request) {
         state.session.start_playback_request = false;
@@ -636,14 +635,14 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
             const track_idx = state.selectedTrack();
             const scene_idx = state.selectedScene();
             const clip_slot = state.session.clips[track_idx][scene_idx];
-            const audio = &state.audio_clips[track_idx][scene_idx];
+            const audio_opt = state.slotAudio(track_idx, scene_idx);
             if (clip_slot.state == .empty) {
                 widgets.emptyState("No clip", "Double-click a slot in the session grid to create one", ui_scale);
-            } else if (audio.hasAudio()) {
+            } else if (audio_opt != null and audio_opt.?.hasAudio()) {
                 // Audio clip detail: waveform + format / I/O (not the piano roll)
                 const is_focused = state.focused_pane == .bottom;
                 audio_clip_viewer.draw(
-                    audio,
+                    audio_opt.?,
                     &state.sample_store,
                     state.currentClipLabel(),
                     state.playhead_beat,
@@ -672,8 +671,6 @@ fn drawBottomPanel(state: *State, ui_scale: f32) void {
                     instrument_plugin,
                     fx_plugins,
                 );
-                // Keep session slot length in sync with piano clip (÷2/×2 tools, end handle).
-                state.session.clips[track_idx][scene_idx].length_beats = state.currentClip().length_beats;
                 if (state.piano_state.preview_pitch) |pitch| {
                     if (state.piano_state.preview_track) |track| {
                         if (track < max_tracks) {
@@ -773,17 +770,13 @@ fn loadAudioFileIntoSessionClip(state: *State, track: usize, scene: usize, abs_p
     const io = std.Io.Threaded.global_single_threaded.io();
     const sample_id = state.sample_store.loadFromPath(basename, abs_path, io) catch return;
 
-    const clip_slot = &state.session.clips[track][scene];
-    if (clip_slot.state == .empty) {
-        clip_slot.state = .stopped;
-        clip_slot.length_beats = state.beatsPerBar() * 4.0;
-    }
-    clip_slot.name.set(basename);
-
-    state.claimSlotForAudio(track, scene);
-    state.audio_clips[track][scene].setSample(&state.sample_store, sample_id);
-    state.audio_clips[track][scene].name.set(basename);
-    state.audio_clips[track][scene].length_beats = clip_slot.length_beats;
+    const default_len = state.beatsPerBar() * 4.0;
+    // Materialize (or convert to) an audio clip in the pool for this slot.
+    const audio = state.ensureSlotAudio(track, scene) orelse return;
+    audio.setSample(&state.sample_store, sample_id);
+    audio.name.set(basename);
+    if (audio.length_beats <= 0) audio.length_beats = default_len;
+    if (state.slotClip(track, scene)) |c| c.name.set(basename);
 
     state.session.primary_track = track;
     state.session.primary_scene = scene;

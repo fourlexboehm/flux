@@ -139,6 +139,7 @@ pub fn main(init: std.process.Init) !void {
 
     var state = ui_state.State.init(allocator);
     defer state.deinit();
+    state.wireInternalRefs();
     state.plugin_items = catalog.items_z;
     state.plugin_fx_items = catalog.fx_items_z;
     state.plugin_fx_indices = catalog.fx_indices;

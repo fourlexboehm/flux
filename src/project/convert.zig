@@ -253,12 +253,13 @@ pub fn fromFluxProject(
 
         for (0..state.session.track_count) |t| {
             const slot = state.session.clips[t][s];
-            const piano = &state.piano_clips[t][s];
-            const audio = &state.audio_clips[t][s];
+            const piano = state.slotPianoConst(t, s);
+            const audio = state.slotAudioConst(t, s);
+            const clip_name: []const u8 = if (state.slotClipConst(t, s)) |c| c.name.get() else "";
             const clip_slot_id = try ids.next();
 
-            const has_audio = audio.hasAudio();
-            const has_notes = piano.notes.items.len > 0;
+            const has_audio = if (audio) |a| a.hasAudio() else false;
+            const has_notes = if (piano) |p| p.notes.items.len > 0 else false;
             const has_content = slot.state != .empty or has_notes or has_audio;
 
             if (has_content and has_audio) {
@@ -271,9 +272,12 @@ pub fn fromFluxProject(
                     .clip = clip,
                 });
             } else if (has_content) {
-                // Convert notes
+                // Convert notes (MIDI slot). An empty stopped slot still has a
+                // pooled MIDI clip; a slot with neither midi nor audio content
+                // is inconsistent and simply skipped.
+                const p = piano orelse continue;
                 var daw_notes = std.ArrayList(Note).empty;
-                for (piano.notes.items) |note| {
+                for (p.notes.items) |note| {
                     try daw_notes.append(allocator, .{
                         .time = note.start,
                         .duration = note.duration,
@@ -283,11 +287,11 @@ pub fn fromFluxProject(
                     });
                 }
 
-                const clip_duration = if (slot.state != .empty) slot.length_beats else piano.length_beats;
+                const clip_duration = p.length_beats;
                 const notes_id = try ids.next();
                 var points_list = std.ArrayList(Points).empty;
-                if (piano.automation.lanes.items.len > 0) {
-                    for (piano.automation.lanes.items) |lane| {
+                if (p.automation.lanes.items.len > 0) {
+                    for (p.automation.lanes.items) |lane| {
                         const points_id = try ids.next();
                         const points = try allocator.alloc(AutomationPoint, lane.points.items.len);
                         for (lane.points.items, 0..) |point, idx| {
@@ -332,7 +336,7 @@ pub fn fromFluxProject(
                     }
                 }
 
-                const loop_end: f64 = if (piano.loop_end_beats > 0) piano.loop_end_beats else clip_duration;
+                const loop_end: f64 = if (p.loop_end_beats > 0) p.loop_end_beats else clip_duration;
                 try clip_slots.append(allocator, .{
                     .id = clip_slot_id,
                     .track = track_ids.items[t],
@@ -340,10 +344,10 @@ pub fn fromFluxProject(
                     .clip = .{
                         .time = 0.0,
                         .duration = clip_duration,
-                        .play_start = piano.play_start_beats,
-                        .loop_start = piano.loop_start_beats,
+                        .play_start = p.play_start_beats,
+                        .loop_start = p.loop_start_beats,
                         .loop_end = loop_end,
-                        .name = try clipExportName(allocator, slot, null),
+                        .name = try clipExportName(allocator, clip_name, null),
                         .lanes = if (points_list.items.len > 0) .{
                             .id = try ids.next(),
                             .notes = .{
@@ -497,10 +501,10 @@ fn buildArrangementClip(
         }
     } else {
         // MIDI: prefer embedded notes; fall back to session piano clip reference.
-        const piano = if (arr_clip.midi) |*m|
+        const piano: ?*const @import("../session/notes.zig").PianoRollClip = if (arr_clip.midi) |*m|
             m
         else if (arr_clip.midi_session_track < track_count and arr_clip.midi_session_scene < session_constants.max_scenes)
-            &state.piano_clips[arr_clip.midi_session_track][arr_clip.midi_session_scene]
+            state.slotPianoConst(arr_clip.midi_session_track, arr_clip.midi_session_scene)
         else
             null;
 
@@ -594,11 +598,10 @@ fn trackContentTypesAttr(allocator: std.mem.Allocator, state: *const ui_state.St
 
 fn clipExportName(
     allocator: std.mem.Allocator,
-    slot: session_view.ClipSlot,
+    clip_name: []const u8,
     audio: ?*const @import("../session/audio_clip.zig").AudioClip,
 ) !?[]const u8 {
-    const slot_name = slot.name.get();
-    if (slot_name.len > 0) return try allocator.dupe(u8, slot_name);
+    if (clip_name.len > 0) return try allocator.dupe(u8, clip_name);
     if (audio) |a| {
         const audio_name = a.name.get();
         if (audio_name.len > 0) return try allocator.dupe(u8, audio_name);
@@ -614,15 +617,11 @@ fn buildAudioClip(
     ids: *IdGenerator,
     media_mode: MediaMode,
 ) !Clip {
-    const slot = state.session.clips[track][scene];
-    const audio = &state.audio_clips[track][scene];
+    const audio = state.slotAudioConst(track, scene) orelse return error.MissingSample;
     const sample_id = audio.sample_id orelse return error.MissingSample;
     const asset = state.sample_store.get(sample_id) orelse return error.MissingSample;
 
-    const clip_duration: f64 = if (slot.state != .empty)
-        slot.length_beats
-    else
-        audio.length_beats;
+    const clip_duration: f64 = audio.length_beats;
 
     var warp_points: []WarpPoint = undefined;
     if (audio.warps.items.len >= 2) {
@@ -636,7 +635,8 @@ fn buildAudioClip(
         warp_points[1] = .{ .time = clip_duration, .content_time = asset.duration_seconds };
     }
 
-    const name = try clipExportName(allocator, slot, audio);
+    const clip_name: []const u8 = if (state.slotClipConst(track, scene)) |c| c.name.get() else "";
+    const name = try clipExportName(allocator, clip_name, audio);
 
     const algorithm: ?[]const u8 = if (audio.algorithm) |a|
         try allocator.dupe(u8, a)

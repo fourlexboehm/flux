@@ -8,6 +8,7 @@ const session_constants = @import("../session/constants.zig");
 const session_ops = @import("../session/ops.zig");
 const piano_roll_types = @import("../session/notes.zig");
 const audio_clip_types = @import("../session/audio_clip.zig");
+const clip_pool_mod = @import("../session/clip_pool.zig");
 const sample_store_mod = @import("../audio/sample_store.zig");
 const arr_types = @import("../arrangement/types.zig");
 const arr_undo = @import("../arrangement/undo.zig");
@@ -20,6 +21,9 @@ const max_tracks = session_constants.max_tracks;
 const max_scenes = session_constants.max_scenes;
 const SampleStore = sample_store_mod.SampleStore;
 const AudioClip = audio_clip_types.AudioClip;
+const ClipPool = clip_pool_mod.ClipPool;
+const ClipId = clip_pool_mod.ClipId;
+const PianoRollClip = piano_roll_types.PianoRollClip;
 
 // Constants for audio buffer options.
 pub const max_fx_slots = 4;
@@ -172,11 +176,13 @@ pub const State = struct {
     // Piano roll state
     piano_state: piano_roll_types.PianoRollState,
 
-    // Piano clips storage (separate from session view's clip metadata)
-    piano_clips: [max_tracks][max_scenes]piano_roll_types.PianoRollClip,
-
-    // Audio clips (parallel to piano_clips; one content type per slot preferred)
-    audio_clips: [max_tracks][max_scenes]AudioClip,
+    // Shared clip pool: session slots (and, from Phase 3, arrangement
+    // placements) reference clip content by `ClipId` handle. Replaces the old
+    // parallel `piano_clips` / `audio_clips` arrays.
+    clip_pool: ClipPool,
+    // Read-only fallback returned by `currentClip` for empty slots so callers
+    // always get a valid, non-persisted pointer.
+    scratch_clip: PianoRollClip,
     sample_store: SampleStore,
 
     // Track plugin UI state
@@ -294,19 +300,6 @@ pub const State = struct {
                 };
             }
         }
-        var piano_clips_data: [max_tracks][max_scenes]piano_roll_types.PianoRollClip = undefined;
-        for (&piano_clips_data) |*track_clips| {
-            for (track_clips) |*clip| {
-                clip.* = piano_roll_types.PianoRollClip.init(allocator);
-            }
-        }
-        var audio_clips_data: [max_tracks][max_scenes]AudioClip = undefined;
-        for (&audio_clips_data) |*track_clips| {
-            for (track_clips) |*clip| {
-                clip.* = AudioClip.init(allocator);
-            }
-        }
-
         return .{
             .allocator = allocator,
             .playing = false,
@@ -335,8 +328,8 @@ pub const State = struct {
             .focused_pane = .session,
             .session = session_ops.init(allocator),
             .piano_state = piano_roll_types.PianoRollState.init(allocator),
-            .piano_clips = piano_clips_data,
-            .audio_clips = audio_clips_data,
+            .clip_pool = ClipPool.init(allocator),
+            .scratch_clip = PianoRollClip.init(allocator),
             .sample_store = SampleStore.init(allocator),
             .track_plugins = track_plugins_data,
             .track_fx = track_fx_data,
@@ -396,29 +389,163 @@ pub const State = struct {
             self.allocator.free(self.preset_filter_indices);
         }
         self.clearMissingPlugins();
+        // Order matters: undo history holds audio snapshots that free samples
+        // into the store; the clipboard releases dupes into the pool; the pool
+        // frees remaining clip content (and its samples) — all before the
+        // sample store and scratch clip go away.
         self.undo_history.deinit();
-        for (&self.piano_clips) |*track_clips| {
-            for (track_clips) |*clip| {
-                clip.deinit();
-            }
-        }
-        for (&self.audio_clips) |*track_clips| {
-            for (track_clips) |*clip| {
-                clip.deinit(&self.sample_store);
-            }
-        }
-        self.sample_store.deinit();
         session_ops.deinit(&self.session);
+        self.clip_pool.deinit(&self.sample_store);
+        self.scratch_clip.deinit();
+        self.sample_store.deinit();
         self.piano_state.deinit();
         self.arrangement.deinit();
         for (self.browser_folders.items) |f| self.allocator.free(f);
         self.browser_folders.deinit(self.allocator);
     }
 
+    /// Wire back-references from sub-structs into this State. Must be called
+    /// once after `State` reaches its final address (see main.zig), because
+    /// `init` returns by value and any address taken during it would dangle.
+    pub fn wireInternalRefs(self: *State) void {
+        self.session.clip_pool = &self.clip_pool;
+        self.session.sample_store = &self.sample_store;
+    }
+
+    // ── Clip-pool slot accessors ────────────────────────────────────────
+    // A session slot references at most one pooled clip (midi OR audio).
+
+    /// The pooled clip a slot references, or null when empty/stale.
+    pub fn slotClip(self: *State, track: usize, scene: usize) ?*clip_pool_mod.Clip {
+        return self.clip_pool.get(self.session.clips[track][scene].clip);
+    }
+
+    /// The slot's MIDI content, or null if the slot is empty or holds audio.
+    pub fn slotPiano(self: *State, track: usize, scene: usize) ?*PianoRollClip {
+        if (self.slotClip(track, scene)) |c| {
+            if (c.content == .midi) return &c.content.midi;
+        }
+        return null;
+    }
+
+    /// The slot's audio content, or null if the slot is empty or holds MIDI.
+    pub fn slotAudio(self: *State, track: usize, scene: usize) ?*AudioClip {
+        if (self.slotClip(track, scene)) |c| {
+            if (c.content == .audio) return &c.content.audio;
+        }
+        return null;
+    }
+
+    /// Const accessors mirroring `slotClip`/`slotPiano`/`slotAudio` for
+    /// read-only callers such as project save.
+    pub fn slotClipConst(self: *const State, track: usize, scene: usize) ?*const clip_pool_mod.Clip {
+        return self.clip_pool.getConst(self.session.clips[track][scene].clip);
+    }
+    pub fn slotPianoConst(self: *const State, track: usize, scene: usize) ?*const PianoRollClip {
+        if (self.slotClipConst(track, scene)) |c| {
+            if (c.content == .midi) return &c.content.midi;
+        }
+        return null;
+    }
+    pub fn slotAudioConst(self: *const State, track: usize, scene: usize) ?*const AudioClip {
+        if (self.slotClipConst(track, scene)) |c| {
+            if (c.content == .audio) return &c.content.audio;
+        }
+        return null;
+    }
+
+    /// Intrinsic length (beats) of the clip a slot references, or the default
+    /// when empty.
+    pub fn slotLengthBeats(self: *State, track: usize, scene: usize) f32 {
+        if (self.slotClip(track, scene)) |c| return c.lengthBeats();
+        return session_constants.default_clip_bars * self.beatsPerBar();
+    }
+
+    /// True when the slot holds an audio clip with a loaded sample.
+    pub fn slotHasAudio(self: *State, track: usize, scene: usize) bool {
+        if (self.slotAudio(track, scene)) |a| return a.hasAudio();
+        return false;
+    }
+
+    /// Drop a slot's reference to its pooled clip and mark it empty. Callers
+    /// that need the old content for undo must capture it before calling.
+    pub fn releaseSlotClip(self: *State, track: usize, scene: usize) void {
+        const slot = &self.session.clips[track][scene];
+        if (!slot.clip.isNone()) {
+            self.clip_pool.release(slot.clip, &self.sample_store);
+        }
+        slot.* = .{};
+    }
+
+    /// Create a fresh MIDI clip in the pool (refcount 1) of the given length,
+    /// or `.none` on allocation failure.
+    fn makeMidiClip(self: *State, length_beats: f32) ClipId {
+        var pc = PianoRollClip.init(self.allocator);
+        if (length_beats > 0) pc.length_beats = length_beats;
+        const id = self.clip_pool.addMidi(pc) catch {
+            pc.deinit();
+            return ClipId.none;
+        };
+        self.clip_pool.retain(id);
+        return id;
+    }
+
+    /// Resolve (or materialize) the slot's MIDI content, converting a prior
+    /// audio clip to MIDI. Falls back to a scratch clip on allocation failure.
+    pub fn ensureSlotPiano(self: *State, track: usize, scene: usize) *PianoRollClip {
+        if (self.slotClip(track, scene)) |c| {
+            if (c.content == .midi) return &c.content.midi;
+        }
+        // Empty or wrong kind: replace with a fresh MIDI clip.
+        const prev_len = if (self.slotClip(track, scene)) |c| c.lengthBeats() else 0;
+        self.releaseSlotClip(track, scene);
+        const id = self.makeMidiClip(prev_len);
+        if (id.isNone()) {
+            self.scratch_clip.clear();
+            return &self.scratch_clip;
+        }
+        self.session.clips[track][scene].clip = id;
+        if (self.session.clips[track][scene].state == .empty) {
+            self.session.clips[track][scene].state = .stopped;
+        }
+        return &self.clip_pool.get(id).?.content.midi;
+    }
+
+    /// Resolve (or materialize) the slot's audio content, converting a prior
+    /// MIDI clip to audio. Returns null on allocation failure.
+    pub fn ensureSlotAudio(self: *State, track: usize, scene: usize) ?*AudioClip {
+        if (self.slotClip(track, scene)) |c| {
+            if (c.content == .audio) return &c.content.audio;
+        }
+        const prev_len = if (self.slotClip(track, scene)) |c| c.lengthBeats() else 0;
+        self.releaseSlotClip(track, scene);
+        var ac = AudioClip.init(self.allocator);
+        if (prev_len > 0) ac.length_beats = prev_len;
+        const id = self.clip_pool.addAudio(ac) catch {
+            ac.deinit(&self.sample_store);
+            return null;
+        };
+        self.clip_pool.retain(id);
+        self.session.clips[track][scene].clip = id;
+        if (self.session.clips[track][scene].state == .empty) {
+            self.session.clips[track][scene].state = .stopped;
+        }
+        return &self.clip_pool.get(id).?.content.audio;
+    }
+
+    /// Release every session slot's pooled clip and mark it empty. Used on a
+    /// fresh project load to reset all clip content in one pass.
+    pub fn resetSessionClips(self: *State) void {
+        for (0..max_tracks) |t| {
+            for (0..max_scenes) |s| self.releaseSlotClip(t, s);
+        }
+    }
+
+    /// Release every audio-kind slot's clip (used on project (re)load).
     pub fn clearAllAudioClips(self: *State) void {
-        for (&self.audio_clips) |*track_clips| {
-            for (track_clips) |*clip| {
-                clip.clear(&self.sample_store);
+        for (0..max_tracks) |t| {
+            for (0..max_scenes) |s| {
+                if (self.slotAudio(t, s) != null) self.releaseSlotClip(t, s);
             }
         }
     }
@@ -431,8 +558,17 @@ pub const State = struct {
         return self.session.primary_scene;
     }
 
-    pub fn currentClip(self: *State) *piano_roll_types.PianoRollClip {
-        return &self.piano_clips[self.selectedTrack()][self.selectedScene()];
+    pub fn currentClip(self: *State) *PianoRollClip {
+        const track = self.selectedTrack();
+        const scene = self.selectedScene();
+        // Empty slots have no clip to edit; return a cleared scratch clip so
+        // callers always get a valid, non-persisted pointer (the piano roll is
+        // only shown for non-empty MIDI slots, see ui/draw.zig).
+        if (self.session.clips[track][scene].state == .empty) {
+            self.scratch_clip.clear();
+            return &self.scratch_clip;
+        }
+        return self.ensureSlotPiano(track, scene);
     }
 
     pub fn currentClipLabel(self: *const State) []const u8 {
@@ -444,7 +580,9 @@ pub const State = struct {
         if (track >= max_tracks) return false;
         const scene_count = @min(self.session.scene_count, max_scenes);
         for (0..scene_count) |s| {
-            if (self.audio_clips[track][s].hasAudio()) return true;
+            if (self.slotAudioConst(track, s)) |a| {
+                if (a.hasAudio()) return true;
+            }
         }
         return false;
     }
@@ -454,25 +592,27 @@ pub const State = struct {
         if (track >= max_tracks) return false;
         const scene_count = @min(self.session.scene_count, max_scenes);
         for (0..scene_count) |s| {
-            if (self.audio_clips[track][s].hasAudio()) continue;
-            if (self.piano_clips[track][s].notes.items.len > 0) return true;
+            if (self.slotAudioConst(track, s)) |a| {
+                if (a.hasAudio()) continue;
+            }
+            if (self.slotPianoConst(track, s)) |p| {
+                if (p.notes.items.len > 0) return true;
+            }
             if (self.session.clips[track][s].state != .empty) return true;
         }
         return false;
     }
 
-    /// Hybrid track, exclusive slot: claim cell for audio (drops MIDI notes).
+    /// Exclusive slot: make the cell an audio clip (drops any MIDI content).
     pub fn claimSlotForAudio(self: *State, track: usize, scene: usize) void {
         if (track >= max_tracks or scene >= max_scenes) return;
-        var piano = &self.piano_clips[track][scene];
-        piano.notes.clearRetainingCapacity();
-        // Keep length/automation; audio clip owns musical length when playing samples.
+        _ = self.ensureSlotAudio(track, scene);
     }
 
-    /// Hybrid track, exclusive slot: claim cell for MIDI (drops sample).
+    /// Exclusive slot: make the cell a MIDI clip (drops any sample).
     pub fn claimSlotForMidi(self: *State, track: usize, scene: usize) void {
         if (track >= max_tracks or scene >= max_scenes) return;
-        self.audio_clips[track][scene].clear(&self.sample_store);
+        _ = self.ensureSlotPiano(track, scene);
     }
 
     pub fn beatsPerBar(self: *const State) f32 {
@@ -563,68 +703,68 @@ pub const State = struct {
 
     const UndoDirection = enum { undo, redo };
 
+    /// Rebuild a session slot's pooled content from an undo snapshot. The
+    /// snapshot's audio payload determines the kind: a loaded sample restores
+    /// an audio clip, otherwise a MIDI clip with the captured notes.
+    fn restoreSlotFromSnapshot(
+        self: *State,
+        track: usize,
+        scene: usize,
+        has_clip: bool,
+        length_beats: f32,
+        name: session_view.NameField,
+        notes: []const piano_roll_types.Note,
+        audio: *const audio_clip_types.AudioClipSnapshot,
+    ) void {
+        self.releaseSlotClip(track, scene);
+        if (!has_clip) return;
+        if (audio.clip.hasAudio()) {
+            const a = self.ensureSlotAudio(track, scene) orelse return;
+            audio.apply(a) catch {};
+            if (length_beats > 0) a.length_beats = length_beats;
+        } else {
+            const p = self.ensureSlotPiano(track, scene);
+            p.clear();
+            for (notes) |note| p.addNote(note.pitch, note.start, note.duration) catch {};
+            if (length_beats > 0) p.length_beats = length_beats;
+        }
+        if (self.slotClip(track, scene)) |c| c.name = name;
+    }
+
     fn executeCommand(self: *State, cmd: *const undo.Command, comptime direction: UndoDirection) void {
         switch (cmd.*) {
             .clip_create => |c| {
                 if (direction == .undo) {
-                    self.session.clips[c.track][c.scene] = .{};
-                    self.piano_clips[c.track][c.scene].clear();
-                    self.audio_clips[c.track][c.scene].clear(&self.sample_store);
+                    self.releaseSlotClip(c.track, c.scene);
                 } else {
-                    self.session.clips[c.track][c.scene] = .{
-                        .state = .stopped,
-                        .length_beats = c.length_beats,
-                    };
+                    self.releaseSlotClip(c.track, c.scene);
+                    const id = self.makeMidiClip(c.length_beats);
+                    if (!id.isNone()) {
+                        self.session.clips[c.track][c.scene] = .{ .state = .stopped, .clip = id };
+                    }
                 }
             },
             .clip_delete => |c| {
                 if (direction == .undo) {
-                    self.session.clips[c.track][c.scene] = .{
-                        .state = .stopped,
-                        .length_beats = c.length_beats,
-                        .name = c.name,
-                    };
-                    self.piano_clips[c.track][c.scene].notes.clearRetainingCapacity();
-                    for (c.notes) |note| {
-                        self.piano_clips[c.track][c.scene].addNote(note.pitch, note.start, note.duration) catch {};
-                    }
-                    c.audio.apply(&self.audio_clips[c.track][c.scene]) catch {};
+                    self.restoreSlotFromSnapshot(c.track, c.scene, true, c.length_beats, c.name, c.notes, &c.audio);
                 } else {
-                    self.session.clips[c.track][c.scene] = .{};
-                    self.piano_clips[c.track][c.scene].clear();
-                    self.audio_clips[c.track][c.scene].clear(&self.sample_store);
+                    self.releaseSlotClip(c.track, c.scene);
                 }
             },
             .clip_paste => |c| {
                 const slot = if (direction == .undo) c.old_clip else c.new_clip;
                 const notes = if (direction == .undo) c.old_notes else c.new_notes;
                 const audio = if (direction == .undo) &c.old_audio else &c.new_audio;
-                if (slot.has_clip) {
-                    self.session.clips[c.track][c.scene] = .{
-                        .state = .stopped,
-                        .length_beats = slot.length_beats,
-                        .name = slot.name,
-                    };
-                    const clip = &self.piano_clips[c.track][c.scene];
-                    clip.notes.clearRetainingCapacity();
-                    for (notes) |note| {
-                        clip.addNote(note.pitch, note.start, note.duration) catch {};
-                    }
-                } else {
-                    self.session.clips[c.track][c.scene] = .{};
-                    self.piano_clips[c.track][c.scene].clear();
-                    self.audio_clips[c.track][c.scene].clear(&self.sample_store);
-                }
-                audio.apply(&self.audio_clips[c.track][c.scene]) catch {};
+                self.restoreSlotFromSnapshot(c.track, c.scene, slot.has_clip, slot.length_beats, slot.name, notes, audio);
             },
             .note_add => |c| {
                 if (direction == .undo) {
-                    const clip = &self.piano_clips[c.track][c.scene];
+                    const clip = self.ensureSlotPiano(c.track, c.scene);
                     if (c.note_index < clip.notes.items.len) {
                         _ = clip.notes.orderedRemove(c.note_index);
                     }
                 } else {
-                    const clip = &self.piano_clips[c.track][c.scene];
+                    const clip = self.ensureSlotPiano(c.track, c.scene);
                     if (c.note_index <= clip.notes.items.len) {
                         clip.notes.insert(clip.allocator, c.note_index, c.note) catch {
                             clip.addFullNote(c.note) catch {};
@@ -636,44 +776,44 @@ pub const State = struct {
             },
             .note_remove => |c| {
                 if (direction == .undo) {
-                    const clip = &self.piano_clips[c.track][c.scene];
+                    const clip = self.ensureSlotPiano(c.track, c.scene);
                     clip.notes.insert(clip.allocator, c.note_index, c.note) catch {
                         clip.addFullNote(c.note) catch {};
                     };
                 } else {
-                    const clip = &self.piano_clips[c.track][c.scene];
+                    const clip = self.ensureSlotPiano(c.track, c.scene);
                     if (c.note_index < clip.notes.items.len) {
                         _ = clip.notes.orderedRemove(c.note_index);
                     }
                 }
             },
             .note_move => |c| {
-                const clip = &self.piano_clips[c.track][c.scene];
+                const clip = self.ensureSlotPiano(c.track, c.scene);
                 if (c.note_index < clip.notes.items.len) {
                     clip.notes.items[c.note_index].start = if (direction == .undo) c.old_start else c.new_start;
                     clip.notes.items[c.note_index].pitch = if (direction == .undo) c.old_pitch else c.new_pitch;
                 }
             },
             .note_resize => |c| {
-                const clip = &self.piano_clips[c.track][c.scene];
+                const clip = self.ensureSlotPiano(c.track, c.scene);
                 if (c.note_index < clip.notes.items.len) {
                     clip.notes.items[c.note_index].duration = if (direction == .undo) c.old_duration else c.new_duration;
                 }
             },
             .note_batch => |c| {
                 if (direction == .undo) {
-                    const clip = &self.piano_clips[c.track][c.scene];
+                    const clip = self.ensureSlotPiano(c.track, c.scene);
                     const remove_count = @min(c.notes.len, clip.notes.items.len);
                     clip.notes.shrinkRetainingCapacity(clip.notes.items.len - remove_count);
                 } else {
-                    const clip = &self.piano_clips[c.track][c.scene];
+                    const clip = self.ensureSlotPiano(c.track, c.scene);
                     for (c.notes) |note| {
                         clip.addFullNote(note) catch {};
                     }
                 }
             },
             .notes_replace => |c| {
-                const clip = &self.piano_clips[c.track][c.scene];
+                const clip = self.ensureSlotPiano(c.track, c.scene);
                 const notes = if (direction == .undo) c.old_notes else c.new_notes;
                 clip.notes.clearRetainingCapacity();
                 for (notes) |note| {
@@ -684,7 +824,6 @@ pub const State = struct {
                 clip.play_start_beats = timing.play_start;
                 clip.loop_start_beats = timing.loop_start;
                 clip.loop_end_beats = timing.loop_end;
-                self.session.clips[c.track][c.scene].length_beats = timing.length;
             },
             .track_add => |c| {
                 if (direction == .undo) {
@@ -729,8 +868,7 @@ pub const State = struct {
             },
             .clip_rename => |c| {
                 const name = if (direction == .undo) c.old_name else c.new_name;
-                self.session.clips[c.track][c.scene].name = name;
-                self.audio_clips[c.track][c.scene].name = name;
+                if (self.slotClip(c.track, c.scene)) |clip| clip.name = name;
             },
             .bpm_change => |c| {
                 self.bpm = if (direction == .undo) c.old_bpm else c.new_bpm;
@@ -744,9 +882,12 @@ pub const State = struct {
             },
             .clip_resize => |c| {
                 const length = if (direction == .undo) c.old_length else c.new_length;
-                self.session.clips[c.track][c.scene].length_beats = length;
-                self.piano_clips[c.track][c.scene].length_beats = length;
-                self.audio_clips[c.track][c.scene].length_beats = length;
+                if (self.slotClip(c.track, c.scene)) |clip| {
+                    switch (clip.content) {
+                        .midi => |*m| m.length_beats = length,
+                        .audio => |*a| a.length_beats = length,
+                    }
+                }
             },
             .plugin_state => |c| {
                 self.plugin_state_restore_request = .{
@@ -786,60 +927,23 @@ pub const State = struct {
     }
 
     fn moveClipPayloads(self: *State, moves: []const undo.command.ClipMoveCmd.ClipMove, reverse: bool) void {
+        // Content travels with each slot's ClipId, so a move is just moving the
+        // ClipSlot value. Lift all sources first (in case source and dest sets
+        // overlap), then drop them at their destinations.
         var slots: [max_tracks * max_scenes]@TypeOf(self.session.clips[0][0]) = undefined;
-        var piano: [max_tracks * max_scenes]piano_roll_types.PianoRollClip = undefined;
-        var audio: [max_tracks * max_scenes]AudioClip = undefined;
 
         for (moves, 0..) |move, i| {
             const src_track = if (reverse) move.dst_track else move.src_track;
             const src_scene = if (reverse) move.dst_scene else move.src_scene;
             slots[i] = self.session.clips[src_track][src_scene];
-            self.session.clips[src_track][src_scene] = .{};
-            piano[i] = self.piano_clips[src_track][src_scene];
-            self.piano_clips[src_track][src_scene] = piano_roll_types.PianoRollClip.init(self.allocator);
-            audio[i] = self.audio_clips[src_track][src_scene];
-            self.audio_clips[src_track][src_scene] = AudioClip.init(self.allocator);
+            self.session.clips[src_track][src_scene] = .{}; // move out (handle carried in `slots[i]`)
         }
 
         for (moves, 0..) |move, i| {
             const dst_track = if (reverse) move.src_track else move.dst_track;
             const dst_scene = if (reverse) move.src_scene else move.dst_scene;
+            self.releaseSlotClip(dst_track, dst_scene); // free any clip displaced at the destination
             self.session.clips[dst_track][dst_scene] = slots[i];
-            self.piano_clips[dst_track][dst_scene].deinit();
-            self.piano_clips[dst_track][dst_scene] = piano[i];
-            self.audio_clips[dst_track][dst_scene].takeFrom(&audio[i], &self.sample_store);
-        }
-    }
-
-    pub fn deleteTrackPianoClips(self: *State, track: usize, old_track_count: usize) void {
-        if (track >= old_track_count) return;
-        for (0..max_scenes) |s| {
-            self.piano_clips[track][s].deinit();
-            self.audio_clips[track][s].clear(&self.sample_store);
-        }
-        if (track + 1 > old_track_count - 1) return;
-        for (track..old_track_count - 1) |t| {
-            for (0..max_scenes) |s| {
-                self.piano_clips[t][s] = self.piano_clips[t + 1][s];
-                self.piano_clips[t + 1][s] = piano_roll_types.PianoRollClip.init(self.allocator);
-                self.audio_clips[t][s].takeFrom(&self.audio_clips[t + 1][s], &self.sample_store);
-            }
-        }
-    }
-
-    pub fn deleteScenePianoClips(self: *State, scene: usize, old_scene_count: usize) void {
-        if (scene >= old_scene_count) return;
-        for (0..max_tracks) |t| {
-            self.piano_clips[t][scene].deinit();
-            self.audio_clips[t][scene].clear(&self.sample_store);
-        }
-        if (scene + 1 > old_scene_count - 1) return;
-        for (0..max_tracks) |t| {
-            for (scene..old_scene_count - 1) |s| {
-                self.piano_clips[t][s] = self.piano_clips[t][s + 1];
-                self.piano_clips[t][s + 1] = piano_roll_types.PianoRollClip.init(self.allocator);
-                self.audio_clips[t][s].takeFrom(&self.audio_clips[t][s + 1], &self.sample_store);
-            }
         }
     }
 
@@ -847,10 +951,12 @@ pub const State = struct {
         if (self.session.track_count <= 1) return;
         if (track >= self.session.track_count) return;
 
-        const old_track_count = self.session.track_count;
         for (0..self.session.scene_count) |s| {
             session_ops.deselectClip(&self.session, track, s);
         }
+        // Release the deleted track's pooled clips before the shift overwrites
+        // them (content lives in the pool, referenced by ClipId in each slot).
+        for (0..max_scenes) |s| self.releaseSlotClip(track, s);
         for (track..self.session.track_count - 1) |t| {
             self.session.tracks[t] = self.session.tracks[t + 1];
             for (0..max_scenes) |s| {
@@ -859,25 +965,23 @@ pub const State = struct {
             }
         }
         for (0..max_scenes) |s| {
-            self.session.clips[self.session.track_count - 1][s] = .{};
+            self.session.clips[self.session.track_count - 1][s] = .{}; // moved out by shift
             self.session.clip_selected[self.session.track_count - 1][s] = false;
         }
         self.session.track_count -= 1;
         if (self.session.primary_track >= self.session.track_count) {
             self.session.primary_track = self.session.track_count - 1;
         }
-
-        self.deleteTrackPianoClips(track, old_track_count);
     }
 
     fn deleteSceneInState(self: *State, scene: usize) void {
         if (self.session.scene_count <= 1) return;
         if (scene >= self.session.scene_count) return;
 
-        const old_scene_count = self.session.scene_count;
         for (0..self.session.track_count) |t| {
             session_ops.deselectClip(&self.session, t, scene);
         }
+        for (0..max_tracks) |t| self.releaseSlotClip(t, scene);
         for (scene..self.session.scene_count - 1) |s| {
             self.session.scenes[s] = self.session.scenes[s + 1];
             for (0..max_tracks) |t| {
@@ -886,15 +990,13 @@ pub const State = struct {
             }
         }
         for (0..max_tracks) |t| {
-            self.session.clips[t][self.session.scene_count - 1] = .{};
+            self.session.clips[t][self.session.scene_count - 1] = .{}; // moved out by shift
             self.session.clip_selected[t][self.session.scene_count - 1] = false;
         }
         self.session.scene_count -= 1;
         if (self.session.primary_scene >= self.session.scene_count) {
             self.session.primary_scene = self.session.scene_count - 1;
         }
-
-        self.deleteScenePianoClips(scene, old_scene_count);
     }
 
     fn insertTrackInState(self: *State, cmd: *const undo.command.TrackDeleteCmd) void {
@@ -904,11 +1006,10 @@ pub const State = struct {
         while (t > cmd.track_index) : (t -= 1) {
             self.session.tracks[t] = self.session.tracks[t - 1];
             for (0..max_scenes) |s| {
+                // ClipId carries content, so shifting the slot shifts the clip.
                 self.session.clips[t][s] = self.session.clips[t - 1][s];
                 self.session.clip_selected[t][s] = self.session.clip_selected[t - 1][s];
-                self.piano_clips[t][s] = self.piano_clips[t - 1][s];
-                self.piano_clips[t - 1][s] = piano_roll_types.PianoRollClip.init(self.allocator);
-                self.audio_clips[t][s].takeFrom(&self.audio_clips[t - 1][s], &self.sample_store);
+                self.session.clips[t - 1][s] = .{}; // moved out
             }
         }
 
@@ -921,22 +1022,9 @@ pub const State = struct {
         };
         for (0..max_scenes) |s| {
             const slot = cmd.clips[s];
-            self.session.clips[cmd.track_index][s] = if (slot.has_clip) .{
-                .state = .stopped,
-                .length_beats = slot.length_beats,
-            } else .{};
             self.session.clip_selected[cmd.track_index][s] = false;
-            self.piano_clips[cmd.track_index][s].clear();
-            self.audio_clips[cmd.track_index][s].clear(&self.sample_store);
-            cmd.audio[s].apply(&self.audio_clips[cmd.track_index][s]) catch {};
-            if (slot.has_clip) {
-                self.piano_clips[cmd.track_index][s].length_beats = slot.length_beats;
-                if (s < cmd.notes.len) {
-                    for (cmd.notes[s]) |note| {
-                        self.piano_clips[cmd.track_index][s].addNote(note.pitch, note.start, note.duration) catch {};
-                    }
-                }
-            }
+            const notes: []const piano_roll_types.Note = if (s < cmd.notes.len) cmd.notes[s] else &.{};
+            self.restoreSlotFromSnapshot(cmd.track_index, s, slot.has_clip, slot.length_beats, slot.name, notes, &cmd.audio[s]);
         }
 
         self.session.track_count += 1;
@@ -954,9 +1042,7 @@ pub const State = struct {
             for (0..max_tracks) |t| {
                 self.session.clips[t][s] = self.session.clips[t][s - 1];
                 self.session.clip_selected[t][s] = self.session.clip_selected[t][s - 1];
-                self.piano_clips[t][s] = self.piano_clips[t][s - 1];
-                self.piano_clips[t][s - 1] = piano_roll_types.PianoRollClip.init(self.allocator);
-                self.audio_clips[t][s].takeFrom(&self.audio_clips[t][s - 1], &self.sample_store);
+                self.session.clips[t][s - 1] = .{}; // moved out
             }
         }
 
@@ -965,22 +1051,9 @@ pub const State = struct {
         };
         for (0..max_tracks) |t| {
             const slot = cmd.clips[t];
-            self.session.clips[t][cmd.scene_index] = if (slot.has_clip) .{
-                .state = .stopped,
-                .length_beats = slot.length_beats,
-            } else .{};
             self.session.clip_selected[t][cmd.scene_index] = false;
-            self.piano_clips[t][cmd.scene_index].clear();
-            self.audio_clips[t][cmd.scene_index].clear(&self.sample_store);
-            cmd.audio[t].apply(&self.audio_clips[t][cmd.scene_index]) catch {};
-            if (slot.has_clip) {
-                self.piano_clips[t][cmd.scene_index].length_beats = slot.length_beats;
-                if (t < cmd.notes.len) {
-                    for (cmd.notes[t]) |note| {
-                        self.piano_clips[t][cmd.scene_index].addNote(note.pitch, note.start, note.duration) catch {};
-                    }
-                }
-            }
+            const notes: []const piano_roll_types.Note = if (t < cmd.notes.len) cmd.notes[t] else &.{};
+            self.restoreSlotFromSnapshot(t, cmd.scene_index, slot.has_clip, slot.length_beats, slot.name, notes, &cmd.audio[t]);
         }
 
         self.session.scene_count += 1;

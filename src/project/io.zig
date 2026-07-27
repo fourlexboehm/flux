@@ -160,7 +160,7 @@ pub fn pack(
     // Session audio clips
     for (0..state.session.track_count) |t| {
         for (0..state.session.scene_count) |s| {
-            const clip = &state.audio_clips[t][s];
+            const clip = state.slotAudioConst(t, s) orelse continue;
             const sample_id = clip.sample_id orelse continue;
             if (pack_path_by_id.contains(sample_id)) continue;
             const asset = state.sample_store.get(sample_id) orelse continue;
@@ -470,7 +470,8 @@ fn flushReferencedSamples(
 
     for (0..state.session.track_count) |t| {
         for (0..state.session.scene_count) |s| {
-            const sample_id = state.audio_clips[t][s].sample_id orelse continue;
+            const audio = state.slotAudioConst(t, s) orelse continue;
+            const sample_id = audio.sample_id orelse continue;
             if (seen.contains(sample_id)) continue;
             try seen.put(sample_id, {});
             try media_flush.flushOneSample(allocator, io, project_dir, prev_project_dir, &state.sample_store, sample_id);

@@ -1,10 +1,44 @@
 const std = @import("std");
 const session_view = @import("types.zig");
 const constants = @import("constants.zig");
+const notes_mod = @import("notes.zig");
+const clip_pool = @import("clip_pool.zig");
 
 const max_tracks = constants.max_tracks;
 const max_scenes = constants.max_scenes;
 const default_clip_bars = constants.default_clip_bars;
+const ClipId = clip_pool.ClipId;
+
+/// Intrinsic length of the clip a slot references, or the default when empty.
+fn slotLength(self: *session_view.SessionView, id: ClipId) f32 {
+    if (self.clip_pool.get(id)) |c| return c.lengthBeats();
+    return default_clip_bars * constants.beats_per_bar;
+}
+
+/// Name of the clip a slot references, or an empty name when empty.
+fn slotName(self: *session_view.SessionView, id: ClipId) session_view.NameField {
+    if (self.clip_pool.get(id)) |c| return c.name;
+    return .{};
+}
+
+/// Drop a slot's reference to its pooled clip (no-op if empty). Used when a
+/// slot is overwritten in place; delete/paste paths that need the content for
+/// undo pass the old handle on to undo-request processing instead.
+fn releaseSlot(self: *session_view.SessionView, track: usize, scene: usize) void {
+    const slot = &self.clips[track][scene];
+    if (!slot.clip.isNone()) {
+        self.clip_pool.release(slot.clip, self.sample_store);
+    }
+    slot.* = .{};
+}
+
+/// Release every retained dupe held by the clipboard.
+fn clearClipboard(self: *session_view.SessionView) void {
+    for (self.clipboard.items) |*e| {
+        self.clip_pool.release(e.clip, self.sample_store);
+    }
+    self.clipboard.clearRetainingCapacity();
+}
 
 pub fn init(allocator: std.mem.Allocator) session_view.SessionView {
     var self = session_view.SessionView{
@@ -43,6 +77,7 @@ pub fn init(allocator: std.mem.Allocator) session_view.SessionView {
 }
 
 pub fn deinit(self: *session_view.SessionView) void {
+    clearClipboard(self);
     self.clipboard.deinit(self.allocator);
 }
 
@@ -114,10 +149,15 @@ pub fn handleClipClick(self: *session_view.SessionView, track: usize, scene: usi
 pub fn createClip(self: *session_view.SessionView, track: usize, scene: usize, beats_per_bar_in: f32) void {
     if (track >= self.track_count or scene >= self.scene_count) return;
     const length_beats = default_clip_bars * beats_per_bar_in;
-    self.clips[track][scene] = .{
-        .state = .stopped,
-        .length_beats = length_beats,
+    releaseSlot(self, track, scene);
+    var pclip = notes_mod.PianoRollClip.init(self.allocator);
+    pclip.length_beats = length_beats;
+    const id = self.clip_pool.addMidi(pclip) catch {
+        pclip.deinit();
+        return;
     };
+    self.clip_pool.retain(id);
+    self.clips[track][scene] = .{ .state = .stopped, .clip = id };
     self.emitUndoRequest(.{
         .kind = .clip_create,
         .track = track,
@@ -129,7 +169,9 @@ pub fn createClip(self: *session_view.SessionView, track: usize, scene: usize, b
 /// Delete clip at position (reset to empty)
 pub fn deleteClip(self: *session_view.SessionView, track: usize, scene: usize) void {
     if (track >= self.track_count or scene >= self.scene_count) return;
-    // Capture old state before deleting
+    // Capture old state before deleting. The pooled clip is left alive here:
+    // undo-request processing reads its content for the undo snapshot and then
+    // releases it (see ui/undo_requests.zig `.clip_delete`).
     const old_clip = self.clips[track][scene];
     if (old_clip.state == .empty) return; // Don't record deleting empty slots
     self.clips[track][scene] = .{};
@@ -137,7 +179,7 @@ pub fn deleteClip(self: *session_view.SessionView, track: usize, scene: usize) v
         .kind = .clip_delete,
         .track = track,
         .scene = scene,
-        .length_beats = old_clip.length_beats,
+        .length_beats = slotLength(self, old_clip.clip),
         .old_clip = old_clip,
     });
 }
@@ -170,7 +212,7 @@ pub fn copySelected(self: *session_view.SessionView) void {
         }
     }
 
-    self.clipboard.clearRetainingCapacity();
+    clearClipboard(self);
     self.clipboard_origin_track = min_track;
     self.clipboard_origin_scene = min_scene;
 
@@ -179,17 +221,24 @@ pub fn copySelected(self: *session_view.SessionView) void {
             if (!self.clip_selected[t][s]) continue;
             const slot = self.clips[t][s];
             // Only copy non-empty clips
-            if (slot.state != .empty) {
-                var copied = slot;
-                if (copied.state == .playing) copied.state = .stopped;
-                self.clipboard.append(self.allocator, .{
-                    .src_track = t,
-                    .src_scene = s,
-                    .track_offset = @as(i32, @intCast(t)) - @as(i32, @intCast(min_track)),
-                    .scene_offset = @as(i32, @intCast(s)) - @as(i32, @intCast(min_scene)),
-                    .slot = copied,
-                }) catch {};
-            }
+            if (slot.state == .empty) continue;
+            // Independent, retained snapshot of the content so the copy
+            // survives deletion of the source and each paste re-dupes from it.
+            const dup = self.clip_pool.dupe(slot.clip, self.sample_store);
+            if (dup.isNone()) continue;
+            self.clip_pool.retain(dup);
+            var st = slot.state;
+            if (st == .playing) st = .stopped;
+            self.clipboard.append(self.allocator, .{
+                .src_track = t,
+                .src_scene = s,
+                .track_offset = @as(i32, @intCast(t)) - @as(i32, @intCast(min_track)),
+                .scene_offset = @as(i32, @intCast(s)) - @as(i32, @intCast(min_scene)),
+                .state = st,
+                .clip = dup,
+            }) catch {
+                self.clip_pool.release(dup, self.sample_store);
+            };
         }
     }
 }
@@ -205,7 +254,6 @@ pub fn paste(self: *session_view.SessionView) void {
     if (self.clipboard.items.len == 0) return;
 
     clearSelection(self);
-    self.piano_copy_count = 0;
     for (self.clipboard.items) |entry| {
         const track_i = @as(i32, @intCast(self.primary_track)) + entry.track_offset;
         const scene_i = @as(i32, @intCast(self.primary_scene)) + entry.scene_offset;
@@ -215,18 +263,17 @@ pub fn paste(self: *session_view.SessionView) void {
         const scene: usize = @intCast(scene_i);
         if (track >= self.track_count or scene >= self.scene_count) continue;
 
+        // Independent copy of the clipboard clip; content travels with the
+        // handle (no separate piano/audio copy pass needed).
+        const dup = self.clip_pool.dupe(entry.clip, self.sample_store);
+        if (dup.isNone()) continue;
+        self.clip_pool.retain(dup);
+
+        // Old destination clip is left alive for undo capture (released by
+        // undo-request processing), mirroring deleteClip.
         const old_clip = self.clips[track][scene];
-        self.clips[track][scene] = entry.slot;
+        self.clips[track][scene] = .{ .state = entry.state, .clip = dup };
         selectClip(self, track, scene);
-        if (self.piano_copy_count < self.piano_copy_requests.len) {
-            self.piano_copy_requests[self.piano_copy_count] = .{
-                .src_track = entry.src_track,
-                .src_scene = entry.src_scene,
-                .dst_track = track,
-                .dst_scene = scene,
-            };
-            self.piano_copy_count += 1;
-        }
 
         self.emitUndoRequest(.{
             .kind = .clip_paste,
@@ -234,11 +281,10 @@ pub fn paste(self: *session_view.SessionView) void {
             .scene = scene,
             .src_track = entry.src_track,
             .src_scene = entry.src_scene,
-            .length_beats = entry.slot.length_beats,
+            .length_beats = slotLength(self, dup),
             .old_clip = old_clip,
         });
     }
-    self.pending_piano_copies = self.piano_copy_count > 0;
 }
 
 /// Add a new track
@@ -283,7 +329,8 @@ pub fn deleteScene(self: *session_view.SessionView, scene: usize) bool {
         const slot = self.clips[t][scene];
         clip_snapshots[t] = .{
             .has_clip = slot.state != .empty,
-            .length_beats = slot.length_beats,
+            .length_beats = slotLength(self, slot.clip),
+            .clip = slot.clip,
         };
     }
     self.emitUndoRequest(.{
@@ -337,7 +384,8 @@ pub fn deleteTrack(self: *session_view.SessionView, track: usize) bool {
         const slot = self.clips[track][s];
         clip_snapshots[s] = .{
             .has_clip = slot.state != .empty,
-            .length_beats = slot.length_beats,
+            .length_beats = slotLength(self, slot.clip),
+            .clip = slot.clip,
         };
     }
     self.emitUndoRequest(.{
@@ -470,8 +518,11 @@ pub fn moveSelectedClips(self: *session_view.SessionView, delta_track: i32, delt
         self.clips[m.from_t][m.from_s] = .{}; // Clear source
     }
 
-    // Place clips at new positions
+    // Place clips at new positions. Sources were already blanked above, so a
+    // destination that still holds a clip is a non-moved cell being displaced —
+    // release its pooled clip before overwriting to avoid a leak.
     for (moves[0..move_count], 0..) |m, i| {
+        releaseSlot(self, m.to_t, m.to_s);
         self.clips[m.to_t][m.to_s] = temp_clips[i];
         selectClip(self, m.to_t, m.to_s);
     }
@@ -501,7 +552,9 @@ pub fn moveSelectedClips(self: *session_view.SessionView, delta_track: i32, delt
             self.clip_move_count += 1;
         }
     }
-    self.pending_piano_moves = true;
+    // Content travels with the ClipId held in each moved slot, so no separate
+    // piano/audio content shuffle is needed (see ui/undo_requests.zig).
+    self.pending_piano_moves = false;
 }
 
 fn fillRenameBuf(self: *session_view.SessionView, name: []const u8) void {
@@ -525,8 +578,9 @@ pub fn beginRenameClip(self: *session_view.SessionView, track: usize, scene: usi
     self.rename_kind = .clip;
     self.rename_track = track;
     self.rename_scene = scene;
-    self.rename_old = self.clips[track][scene].name;
-    fillRenameBuf(self, self.clips[track][scene].name.get());
+    const nm = slotName(self, self.clips[track][scene].clip);
+    self.rename_old = nm;
+    fillRenameBuf(self, nm.get());
 }
 
 pub fn cancelRename(self: *session_view.SessionView) void {
@@ -558,7 +612,7 @@ pub fn commitRename(self: *session_view.SessionView) void {
                 self.clips[track][scene].state != .empty and
                 !std.mem.eql(u8, self.rename_old.get(), new_name.get()))
             {
-                self.clips[track][scene].name = new_name;
+                if (self.clip_pool.get(self.clips[track][scene].clip)) |c| c.name = new_name;
                 self.emitUndoRequest(.{
                     .kind = .clip_rename,
                     .track = track,

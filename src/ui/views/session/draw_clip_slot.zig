@@ -16,9 +16,9 @@ const session_constants = @import("../../../session/constants.zig");
 const AudioClip = audio_clip_types.AudioClip;
 const SampleStore = sample_store_mod.SampleStore;
 
-/// Optional audio data for session-cell waveforms (main thread).
+/// Optional audio data for session-cell waveforms (main thread). Clip content
+/// itself is resolved from the session view's `clip_pool` back-reference.
 pub const ClipAudioCtx = struct {
-    audio_clips: *const [session_constants.max_tracks][session_constants.max_scenes]AudioClip,
     sample_store: *const SampleStore,
 };
 
@@ -49,18 +49,17 @@ pub fn drawClipSlot(
     const slot = &self.clips[track][scene];
     const is_selected = ops.isSelected(self, track, scene);
 
-    const audio_clip: ?*const AudioClip = if (audio_ctx) |ctx|
-        if (track < session_constants.max_tracks and scene < session_constants.max_scenes)
-            &ctx.audio_clips[track][scene]
-        else
-            null
-    else
-        null;
+    // Resolve the pooled clip this slot references (content, length, name).
+    const pooled = self.clip_pool.get(slot.clip);
+    const clip_len: f32 = if (pooled) |c| c.lengthBeats() else 0;
+    const audio_clip: ?*const AudioClip = if (pooled) |c| switch (c.content) {
+        .audio => |*a| a,
+        .midi => null,
+    } else null;
     const is_audio = if (audio_clip) |ac| ac.hasAudio() else false;
     const sample_asset = blk: {
         if (!is_audio) break :blk null;
-        const ac = audio_clip.?;
-        const id = ac.sample_id orelse break :blk null;
+        const id = audio_clip.?.sample_id orelse break :blk null;
         if (audio_ctx) |ctx| break :blk ctx.sample_store.get(id);
         break :blk null;
     };
@@ -237,7 +236,7 @@ pub fn drawClipSlot(
         const armed_size = zgui.calcTextSize(armed_label, .{});
         draw_list.addText(.{ label_x, pos[1] + (height - armed_size[1]) / 2.0 }, text_color, "{s}", .{armed_label});
     } else if (slot.state != .empty and !ops.isRenamingClip(self, track, scene)) {
-        const clip_name = slot.name.get();
+        const clip_name = if (pooled) |c| c.name.get() else "";
         const text_color = zgui.colorConvertFloat4ToU32(colors.Colors.textOn(bg_color));
         if (clip_name.len > 0) {
             const label_size = zgui.calcTextSize(clip_name, .{});
@@ -247,14 +246,14 @@ pub fn drawClipSlot(
                 draw_list.addText(.{ label_x, pos[1] + (height - label_size[1]) / 2.0 }, text_color, "{s}", .{clip_name});
             }
         } else if (!is_audio) {
-            const bars = slot.length_beats / beats_per_bar_in;
+            const bars = clip_len / beats_per_bar_in;
             var buf: [16]u8 = undefined;
             const label = std.fmt.bufPrint(&buf, "{d:.0} bars", .{bars}) catch "";
             const label_size = zgui.calcTextSize(label, .{});
             draw_list.addText(.{ label_x, pos[1] + (height - label_size[1]) / 2.0 }, text_color, "{s}", .{label});
         } else {
             // Compact bar length in top-left so the waveform stays readable
-            const bars = slot.length_beats / beats_per_bar_in;
+            const bars = clip_len / beats_per_bar_in;
             var buf: [16]u8 = undefined;
             const label = std.fmt.bufPrint(&buf, "{d:.0}b", .{bars}) catch "";
             const dim = zgui.colorConvertFloat4ToU32(withAlpha(colors.Colors.textOn(bg_color), 0.85));

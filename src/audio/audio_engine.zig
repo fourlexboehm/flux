@@ -68,16 +68,21 @@ pub const SharedState = struct {
     pub fn updateFromUi(self: *SharedState, state: *ui_state.State) void {
         // Offline stretch bake before publishing RT snapshot (can allocate / CPU).
         // Only dirty *playing/queued* clips recompute — keeps load/idle frames cheap.
-        clip_bake.bakeDirtyClips(
-            &state.audio_clips,
-            &state.sample_store,
-            &state.session.clips,
-            state.session.track_count,
-            state.session.scene_count,
-            state.bpm,
-            audio_constants.sample_rate,
-            true,
-        );
+        {
+            const bake_tc = @min(state.session.track_count, max_tracks);
+            const bake_sc = @min(state.session.scene_count, max_scenes);
+            for (0..bake_tc) |t| {
+                for (0..bake_sc) |s| {
+                    const st = state.session.clips[t][s].state;
+                    if (st != .playing and st != .queued) continue;
+                    const audio = state.slotAudio(t, s) orelse continue;
+                    if (!audio.hasAudio()) continue;
+                    clip_bake.ensureBaked(audio, &state.sample_store, state.bpm, audio_constants.sample_rate) catch |err| {
+                        std.log.warn("Audio clip bake failed t={d} s={d}: {}", .{ t, s, err });
+                    };
+                }
+            }
+        }
 
         // Double-buffer publish: write the inactive snapshot while the audio thread
         // keeps reading the active one. Do NOT suspend/silence here — that caused
@@ -124,16 +129,23 @@ pub const SharedState = struct {
                 const slot = state.session.clips[t][scene_index];
                 if (slot.state == .playing) {
                     back.active_scene_by_track[t] = @intCast(scene_index);
-                    const audio = &state.audio_clips[t][scene_index];
-                    if (audio.hasAudio()) {
-                        audio_graph.copyPlayingAudioClip(&back.playing_audio[t], audio);
+                    if (state.slotAudio(t, scene_index)) |audio| {
+                        if (audio.hasAudio()) {
+                            audio_graph.copyPlayingAudioClip(&back.playing_audio[t], audio);
+                        }
                     }
                     break;
                 }
             }
             for (0..max_scenes) |s| {
-                const src = &state.piano_clips[t][s];
                 var dst = &back.piano_clips[t][s];
+                // Slots that hold audio (or are empty) contribute no MIDI notes.
+                const src = state.slotPiano(t, s) orelse {
+                    dst.length_beats = default_clip_bars * beats_per_bar;
+                    dst.count = 0;
+                    dst.automation_lane_count = 0;
+                    continue;
+                };
                 dst.length_beats = src.length_beats;
                 dst.play_start_beats = src.play_start_beats;
                 dst.loop_start_beats = src.loop_start_beats;
@@ -205,9 +217,9 @@ pub const SharedState = struct {
             std.atomic.spinLoopHint();
         }
         state.sample_store.flushDeferredFrees();
-        for (&state.audio_clips) |*track_clips| {
-            for (track_clips) |*clip| {
-                clip.flushDeferredBakeFrees();
+        for (0..max_tracks) |t| {
+            for (0..max_scenes) |s| {
+                if (state.slotAudio(t, s)) |audio| audio.flushDeferredBakeFrees();
             }
         }
     }
@@ -538,7 +550,6 @@ fn initSnapshot(snapshot: *audio_graph.StateSnapshot) void {
             snapshot.track_fx_enabled[t][fx_index] = true;
         }
         for (0..max_scenes) |s| {
-            snapshot.clips[t][s].length_beats = default_clip_bars * beats_per_bar;
             snapshot.piano_clips[t][s].length_beats = default_clip_bars * beats_per_bar;
             snapshot.piano_clips[t][s].count = 0;
         }

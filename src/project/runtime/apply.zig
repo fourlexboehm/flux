@@ -177,14 +177,9 @@ pub fn applyDawprojectToState(
         state.session.scenes[s].setName(proj.scenes[s].name);
     }
 
-    // Clear piano + audio clips + sample store (fresh load)
+    // Clear all pooled clip content + sample store (fresh load)
     state.undo_history.clear();
-    for (&state.piano_clips) |*track_clips| {
-        for (track_clips) |*clip| {
-            clip.clear();
-        }
-    }
-    state.clearAllAudioClips();
+    state.resetSessionClips();
     state.sample_store.clear();
 
     // Prefer Scenes only when they contain real clips. Bitwig often emits empty

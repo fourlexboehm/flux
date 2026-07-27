@@ -1,20 +1,56 @@
 const undo = @import("../undo/root.zig");
 const session_constants = @import("../session/constants.zig");
-const piano_roll_types = @import("../session/notes.zig");
+const session_types = @import("../session/types.zig");
 const audio_clip_types = @import("../session/audio_clip.zig");
+const clip_pool_mod = @import("../session/clip_pool.zig");
 const State = @import("state.zig").State;
+
+const NameField = session_types.NameField;
 
 const AudioClip = audio_clip_types.AudioClip;
 const AudioClipSnapshot = audio_clip_types.AudioClipSnapshot;
+const ClipId = clip_pool_mod.ClipId;
 
 const max_tracks = session_constants.max_tracks;
 const max_scenes = session_constants.max_scenes;
+
+/// Notes + audio snapshot captured from a pooled clip for undo. A MIDI clip
+/// yields notes with an empty audio snapshot; an audio clip yields the reverse.
+/// The audio snapshot's `hasAudio()` decides the kind on rebuild.
+const ClipContentSnapshot = struct {
+    notes: []const undo.Note,
+    audio: AudioClipSnapshot,
+};
+
+/// Capture the content of the clip a handle references (empty snapshot when the
+/// handle is stale). The returned `notes` slice is owned by the caller / undo
+/// command. Returns error only if the audio snapshot allocation fails.
+fn snapshotClip(state: *State, id: ClipId) !ClipContentSnapshot {
+    if (state.clip_pool.get(id)) |c| {
+        switch (c.content) {
+            .audio => |*a| {
+                const audio = try AudioClipSnapshot.capture(a, &state.sample_store);
+                return .{ .notes = &.{}, .audio = audio };
+            },
+            .midi => |*m| {
+                const notes = state.allocator.dupe(undo.Note, m.notes.items) catch &.{};
+                return .{ .notes = notes, .audio = try emptyAudioSnapshot(state) };
+            },
+        }
+    }
+    return .{ .notes = &.{}, .audio = try emptyAudioSnapshot(state) };
+}
+
+fn emptyAudioSnapshot(state: *State) !AudioClipSnapshot {
+    var empty = AudioClip.init(state.allocator);
+    defer empty.deinit(&state.sample_store);
+    return try AudioClipSnapshot.capture(&empty, &state.sample_store);
+}
 
 pub fn processUndoRequests(state: *State) void {
     for (state.session.undo_requests[0..state.session.undo_request_count]) |req| {
         switch (req.kind) {
             .clip_create => {
-                state.piano_clips[req.track][req.scene].length_beats = req.length_beats;
                 state.undo_history.push(.{
                     .clip_create = .{
                         .track = req.track,
@@ -24,69 +60,62 @@ pub fn processUndoRequests(state: *State) void {
                 });
             },
             .clip_delete => {
-                const audio = AudioClipSnapshot.capture(
-                    &state.audio_clips[req.track][req.scene],
-                    &state.sample_store,
-                ) catch continue;
-                // Capture notes before they're lost (they may already be cleared)
-                const notes = state.allocator.dupe(
-                    undo.Note,
-                    state.piano_clips[req.track][req.scene].notes.items,
-                ) catch &.{};
+                // The deleted slot was cleared by session ops but its pooled
+                // clip is still alive via `req.old_clip.clip`; snapshot its
+                // content for undo, then release the reference.
+                const snap = snapshotClip(state, req.old_clip.clip) catch {
+                    state.clip_pool.release(req.old_clip.clip, &state.sample_store);
+                    continue;
+                };
                 state.undo_history.push(.{
                     .clip_delete = .{
                         .track = req.track,
                         .scene = req.scene,
                         .length_beats = req.length_beats,
-                        .name = req.old_clip.name,
-                        .notes = notes,
-                        .audio = audio,
+                        .name = clipName(state, req.old_clip.clip),
+                        .notes = snap.notes,
+                        .audio = snap.audio,
                     },
                 });
-                // Clear the piano clip notes and any audio
-                state.piano_clips[req.track][req.scene].clear();
-                state.audio_clips[req.track][req.scene].clear(&state.sample_store);
+                state.clip_pool.release(req.old_clip.clip, &state.sample_store);
             },
             .clip_paste => {
-                var old_audio = AudioClipSnapshot.capture(
-                    &state.audio_clips[req.track][req.scene],
-                    &state.sample_store,
-                ) catch continue;
-                const new_audio = AudioClipSnapshot.capture(
-                    &state.audio_clips[req.src_track][req.src_scene],
-                    &state.sample_store,
-                ) catch {
-                    old_audio.deinit();
+                // New content = the freshly-pasted clip now in the slot; old
+                // content = the clip the paste displaced (`req.old_clip.clip`,
+                // still alive, released after capture).
+                const new_id = state.session.clips[req.track][req.scene].clip;
+                const old_len = clipLength(state, req.old_clip.clip);
+                var old_snap = snapshotClip(state, req.old_clip.clip) catch {
+                    state.clip_pool.release(req.old_clip.clip, &state.sample_store);
                     continue;
                 };
-                const old_notes = state.allocator.dupe(
-                    undo.Note,
-                    state.piano_clips[req.track][req.scene].notes.items,
-                ) catch &.{};
-                const new_notes = state.allocator.dupe(
-                    undo.Note,
-                    state.piano_clips[req.src_track][req.src_scene].notes.items,
-                ) catch &.{};
+                const new_snap = snapshotClip(state, new_id) catch {
+                    old_snap.audio.deinit();
+                    if (old_snap.notes.len > 0) state.allocator.free(old_snap.notes);
+                    state.clip_pool.release(req.old_clip.clip, &state.sample_store);
+                    continue;
+                };
                 state.undo_history.push(.{
                     .clip_paste = .{
                         .track = req.track,
                         .scene = req.scene,
                         .old_clip = .{
                             .has_clip = req.old_clip.state != .empty,
-                            .length_beats = req.old_clip.length_beats,
-                            .name = req.old_clip.name,
+                            .length_beats = old_len,
+                            .name = clipName(state, req.old_clip.clip),
                         },
                         .new_clip = .{
-                            .has_clip = req.length_beats > 0,
+                            .has_clip = true,
                             .length_beats = req.length_beats,
-                            .name = state.session.clips[req.track][req.scene].name,
+                            .name = clipName(state, new_id),
                         },
-                        .old_notes = old_notes,
-                        .new_notes = new_notes,
-                        .old_audio = old_audio,
-                        .new_audio = new_audio,
+                        .old_notes = old_snap.notes,
+                        .new_notes = new_snap.notes,
+                        .old_audio = old_snap.audio,
+                        .new_audio = new_snap.audio,
                     },
                 });
+                state.clip_pool.release(req.old_clip.clip, &state.sample_store);
             },
             .track_add => {
                 const track = &state.session.tracks[req.track];
@@ -98,45 +127,7 @@ pub fn processUndoRequests(state: *State) void {
                 });
             },
             .track_delete => {
-                var audio = captureTrackAudio(state, req.track) catch continue;
-                var clips: [max_scenes]undo.ClipSlotData = undefined;
-                for (0..max_scenes) |s| {
-                    clips[s] = .{
-                        .has_clip = req.track_clips[s].has_clip,
-                        .length_beats = req.track_clips[s].length_beats,
-                    };
-                }
-
-                if (state.allocator.alloc([]const undo.Note, max_scenes)) |notes| {
-                    for (0..max_scenes) |s| {
-                        if (req.track_clips[s].has_clip) {
-                            const note_items = state.piano_clips[req.track][s].notes.items;
-                            notes[s] = state.allocator.dupe(undo.Note, note_items) catch &.{};
-                        } else {
-                            notes[s] = &.{};
-                        }
-                    }
-                    state.undo_history.push(.{
-                        .track_delete = .{
-                            .track_index = req.track,
-                            .track_data = .{
-                                .name = req.track_data.name,
-                                .volume = req.track_data.volume,
-                                .pan = req.track_data.pan,
-                                .mute = req.track_data.mute,
-                                .solo = req.track_data.solo,
-                            },
-                            .clips = clips,
-                            .notes = notes,
-                            .audio = audio,
-                        },
-                    });
-                } else |_| {
-                    deinitSnapshots(&audio);
-                }
-
-                const old_track_count = @min(state.session.track_count + 1, max_tracks);
-                state.deleteTrackPianoClips(req.track, old_track_count);
+                pushColumnDelete(state, req) catch {};
             },
             .scene_add => {
                 const scene = &state.session.scenes[req.scene];
@@ -148,41 +139,7 @@ pub fn processUndoRequests(state: *State) void {
                 });
             },
             .scene_delete => {
-                var audio = captureSceneAudio(state, req.scene) catch continue;
-                var clips: [max_tracks]undo.ClipSlotData = undefined;
-                for (0..max_tracks) |t| {
-                    clips[t] = .{
-                        .has_clip = req.scene_clips[t].has_clip,
-                        .length_beats = req.scene_clips[t].length_beats,
-                    };
-                }
-
-                if (state.allocator.alloc([]const undo.Note, max_tracks)) |notes| {
-                    for (0..max_tracks) |t| {
-                        if (req.scene_clips[t].has_clip) {
-                            const note_items = state.piano_clips[t][req.scene].notes.items;
-                            notes[t] = state.allocator.dupe(undo.Note, note_items) catch &.{};
-                        } else {
-                            notes[t] = &.{};
-                        }
-                    }
-                    state.undo_history.push(.{
-                        .scene_delete = .{
-                            .scene_index = req.scene,
-                            .scene_data = .{
-                                .name = req.scene_data.name,
-                            },
-                            .clips = clips,
-                            .notes = notes,
-                            .audio = audio,
-                        },
-                    });
-                } else |_| {
-                    deinitSnapshots(&audio);
-                }
-
-                const old_scene_count = @min(state.session.scene_count + 1, max_scenes);
-                state.deleteScenePianoClips(req.scene, old_scene_count);
+                pushRowDelete(state, req) catch {};
             },
             .track_volume => {
                 state.undo_history.push(.{
@@ -203,8 +160,7 @@ pub fn processUndoRequests(state: *State) void {
                 });
             },
             .clip_rename => {
-                // Keep audio payload name in sync with the session slot name.
-                state.audio_clips[req.track][req.scene].name = req.new_name;
+                // The live clip's name was already updated by session ops.
                 state.undo_history.push(.{
                     .clip_rename = .{
                         .track = req.track,
@@ -218,28 +174,9 @@ pub fn processUndoRequests(state: *State) void {
     }
     state.session.undo_request_count = 0; // Clear processed requests
 
-    // Process clip move requests (separate since it involves multiple clips)
+    // Clip moves: the slots (and their ClipIds) were already moved by session
+    // ops; content travels with the handle, so only the undo record remains.
     if (state.session.clip_move_count > 0) {
-        // First, move the piano clips (session_view already moved the clip slots)
-        if (state.session.pending_piano_moves) {
-            var temp_clips: [max_tracks * max_scenes]piano_roll_types.PianoRollClip = undefined;
-            var temp_audio: [max_tracks * max_scenes]AudioClip = undefined;
-            const requests = state.session.clip_move_requests[0..state.session.clip_move_count];
-            for (requests, 0..) |req, i| {
-                temp_clips[i] = state.piano_clips[req.src_track][req.src_scene];
-                state.piano_clips[req.src_track][req.src_scene] = piano_roll_types.PianoRollClip.init(state.allocator);
-                temp_audio[i] = state.audio_clips[req.src_track][req.src_scene];
-                state.audio_clips[req.src_track][req.src_scene] = AudioClip.init(state.allocator);
-            }
-            for (requests, 0..) |req, i| {
-                state.piano_clips[req.dst_track][req.dst_scene].deinit();
-                state.piano_clips[req.dst_track][req.dst_scene] = temp_clips[i];
-                state.audio_clips[req.dst_track][req.dst_scene].takeFrom(&temp_audio[i], &state.sample_store);
-            }
-            state.session.pending_piano_moves = false;
-        }
-
-        // Allocate and copy the moves for undo
         if (state.allocator.alloc(undo.command.ClipMoveCmd.ClipMove, state.session.clip_move_count)) |moves| {
             for (state.session.clip_move_requests[0..state.session.clip_move_count], 0..) |req, i| {
                 moves[i] = .{
@@ -249,72 +186,95 @@ pub fn processUndoRequests(state: *State) void {
                     .dst_scene = req.dst_scene,
                 };
             }
-            state.undo_history.push(.{
-                .clip_move = .{
-                    .moves = moves,
-                },
-            });
+            state.undo_history.push(.{ .clip_move = .{ .moves = moves } });
         } else |_| {}
         state.session.clip_move_count = 0;
     }
+    state.session.pending_piano_moves = false;
+    state.session.pending_piano_copies = false;
+    state.session.piano_copy_count = 0;
+}
 
-    // Process piano clip copy requests (from session view paste)
-    if (state.session.pending_piano_copies and state.session.piano_copy_count > 0) {
-        var temp_clips: [max_tracks * max_scenes]piano_roll_types.PianoRollClip = undefined;
-        var temp_audio: [max_tracks * max_scenes]AudioClip = undefined;
-        var temp_valid: [max_tracks * max_scenes]bool = undefined;
-        for (state.session.piano_copy_requests[0..state.session.piano_copy_count], 0..) |req, i| {
-            if (req.src_track == req.dst_track and req.src_scene == req.dst_scene) {
-                temp_valid[i] = false;
-                continue;
-            }
-            temp_valid[i] = true;
-            temp_clips[i] = piano_roll_types.PianoRollClip.init(state.allocator);
-            temp_clips[i].copyFrom(&state.piano_clips[req.src_track][req.src_scene]);
-            temp_clips[i].length_beats = state.session.clips[req.dst_track][req.dst_scene].length_beats;
-            temp_audio[i] = AudioClip.init(state.allocator);
-            state.audio_clips[req.src_track][req.src_scene].copyTo(&temp_audio[i], &state.sample_store) catch {
-                temp_audio[i].clear(&state.sample_store);
-            };
-            temp_audio[i].length_beats = state.session.clips[req.dst_track][req.dst_scene].length_beats;
+fn clipName(state: *State, id: ClipId) NameField {
+    if (state.clip_pool.get(id)) |c| return c.name;
+    return .{};
+}
+
+fn clipLength(state: *State, id: ClipId) f32 {
+    if (state.clip_pool.get(id)) |c| return c.lengthBeats();
+    return 0;
+}
+
+/// Build a `track_delete` undo command from the ClipIds captured at delete time
+/// (`req.track_clips[s].clip`) and release those pooled clips.
+fn pushColumnDelete(state: *State, req: anytype) !void {
+    var audio: [max_scenes]AudioClipSnapshot = undefined;
+    var notes: [max_scenes][]const undo.Note = undefined;
+    var clips: [max_scenes]undo.ClipSlotData = undefined;
+    var captured: usize = 0;
+    errdefer {
+        for (0..captured) |i| {
+            audio[i].deinit();
+            if (notes[i].len > 0) state.allocator.free(notes[i]);
         }
+    }
+    for (0..max_scenes) |s| {
+        const snap = try snapshotClip(state, req.track_clips[s].clip);
+        notes[s] = snap.notes;
+        audio[s] = snap.audio;
+        clips[s] = .{ .has_clip = req.track_clips[s].has_clip, .length_beats = req.track_clips[s].length_beats };
+        captured += 1;
+    }
+    const notes_owned = try state.allocator.alloc([]const undo.Note, max_scenes);
+    @memcpy(notes_owned, notes[0..]);
+    state.undo_history.push(.{
+        .track_delete = .{
+            .track_index = req.track,
+            .track_data = .{
+                .name = req.track_data.name,
+                .volume = req.track_data.volume,
+                .pan = req.track_data.pan,
+                .mute = req.track_data.mute,
+                .solo = req.track_data.solo,
+            },
+            .clips = clips,
+            .notes = notes_owned,
+            .audio = audio,
+        },
+    });
+    for (0..max_scenes) |s| state.clip_pool.release(req.track_clips[s].clip, &state.sample_store);
+}
 
-        for (state.session.piano_copy_requests[0..state.session.piano_copy_count], 0..) |req, i| {
-            if (!temp_valid[i]) continue;
-            state.piano_clips[req.dst_track][req.dst_scene].deinit();
-            state.piano_clips[req.dst_track][req.dst_scene] = temp_clips[i];
-            state.audio_clips[req.dst_track][req.dst_scene].takeFrom(&temp_audio[i], &state.sample_store);
+fn pushRowDelete(state: *State, req: anytype) !void {
+    var audio: [max_tracks]AudioClipSnapshot = undefined;
+    var notes: [max_tracks][]const undo.Note = undefined;
+    var clips: [max_tracks]undo.ClipSlotData = undefined;
+    var captured: usize = 0;
+    errdefer {
+        for (0..captured) |i| {
+            audio[i].deinit();
+            if (notes[i].len > 0) state.allocator.free(notes[i]);
         }
-
-        state.session.pending_piano_copies = false;
-        state.session.piano_copy_count = 0;
     }
-}
-
-fn captureTrackAudio(state: *State, track: usize) ![max_scenes]AudioClipSnapshot {
-    var snapshots: [max_scenes]AudioClipSnapshot = undefined;
-    var count: usize = 0;
-    errdefer deinitSnapshots(snapshots[0..count]);
-    for (0..max_scenes) |scene| {
-        snapshots[scene] = try AudioClipSnapshot.capture(&state.audio_clips[track][scene], &state.sample_store);
-        count += 1;
+    for (0..max_tracks) |t| {
+        const snap = try snapshotClip(state, req.scene_clips[t].clip);
+        notes[t] = snap.notes;
+        audio[t] = snap.audio;
+        clips[t] = .{ .has_clip = req.scene_clips[t].has_clip, .length_beats = req.scene_clips[t].length_beats };
+        captured += 1;
     }
-    return snapshots;
-}
-
-fn captureSceneAudio(state: *State, scene: usize) ![max_tracks]AudioClipSnapshot {
-    var snapshots: [max_tracks]AudioClipSnapshot = undefined;
-    var count: usize = 0;
-    errdefer deinitSnapshots(snapshots[0..count]);
-    for (0..max_tracks) |track| {
-        snapshots[track] = try AudioClipSnapshot.capture(&state.audio_clips[track][scene], &state.sample_store);
-        count += 1;
-    }
-    return snapshots;
-}
-
-fn deinitSnapshots(snapshots: []AudioClipSnapshot) void {
-    for (snapshots) |*snapshot| snapshot.deinit();
+    const notes_owned = try state.allocator.alloc([]const undo.Note, max_tracks);
+    @memcpy(notes_owned, notes[0..]);
+    state.undo_history.push(.{
+        .scene_delete = .{
+            .scene_index = req.scene,
+            .scene_data = .{ .name = req.scene_data.name },
+            .clips = clips,
+            .notes = notes_owned,
+            .audio = audio,
+        },
+    });
+    for (0..max_tracks) |t| state.clip_pool.release(req.scene_clips[t].clip, &state.sample_store);
 }
 
 pub fn processPianoRollUndoRequests(state: *State) void {
@@ -365,8 +325,8 @@ pub fn processPianoRollUndoRequests(state: *State) void {
                 });
             },
             .clip_resize => {
-                // Also sync the session clip length
-                state.session.clips[req.track][req.scene].length_beats = req.new_duration;
+                // The live pooled clip length was already updated by the piano
+                // roll (it edits the clip directly); only record the command.
                 state.undo_history.push(.{
                     .clip_resize = .{
                         .track = req.track,
@@ -377,7 +337,6 @@ pub fn processPianoRollUndoRequests(state: *State) void {
                 });
             },
             .notes_replace => {
-                state.session.clips[req.track][req.scene].length_beats = req.new_timing.length;
                 state.undo_history.push(.{
                     .notes_replace = .{
                         .track = req.track,

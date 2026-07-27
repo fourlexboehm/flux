@@ -27,8 +27,16 @@ pub const ClipId = struct {
     index: u32,
     generation: u32,
 
+    /// Sentinel "no clip" handle. `index` is out of any pool's range, so it
+    /// resolves to null through the normal `get`/`retain`/`release` paths.
+    pub const none: ClipId = .{ .index = std.math.maxInt(u32), .generation = 0 };
+
     pub fn eql(a: ClipId, b: ClipId) bool {
         return a.index == b.index and a.generation == b.generation;
+    }
+
+    pub fn isNone(self: ClipId) bool {
+        return self.index == std.math.maxInt(u32);
     }
 };
 
@@ -102,6 +110,54 @@ pub const ClipPool = struct {
         return .{ .index = idx, .generation = 0 };
     }
 
+    /// Convenience: insert a fresh MIDI clip. Refcount starts at 0.
+    pub fn addMidi(self: *ClipPool, clip: PianoRollClip) !ClipId {
+        return self.add(.{ .content = .{ .midi = clip } });
+    }
+
+    /// Convenience: insert a fresh audio clip. Refcount starts at 0.
+    pub fn addAudio(self: *ClipPool, clip: AudioClip) !ClipId {
+        return self.add(.{ .content = .{ .audio = clip } });
+    }
+
+    /// Deep-copy a clip's content into a new pool entry ("Make Unique" /
+    /// clipboard). The copy starts at refcount 0. Returns `.none` if the
+    /// source handle is stale or the copy fails. `store` is required for
+    /// audio clips (to retain the shared sample).
+    pub fn dupe(self: *ClipPool, id: ClipId, store: ?*SampleStore) ClipId {
+        const src = self.get(id) orelse return .none;
+        const name = src.name;
+        const color = src.color;
+        var new_content: ClipContent = undefined;
+        switch (src.content) {
+            .midi => |*m| {
+                var dst = PianoRollClip.init(self.allocator);
+                dst.copyFromFallible(m) catch {
+                    dst.deinit();
+                    return .none;
+                };
+                new_content = .{ .midi = dst };
+            },
+            .audio => |*a| {
+                const s = store orelse return .none;
+                var dst = AudioClip.init(self.allocator);
+                a.copyTo(&dst, s) catch {
+                    dst.deinit(s);
+                    return .none;
+                };
+                new_content = .{ .audio = dst };
+            },
+        }
+        // `src` may be invalidated by the append below; do not touch it after.
+        return self.add(.{ .content = new_content, .name = name, .color = color }) catch {
+            switch (new_content) {
+                .midi => |*m| m.deinit(),
+                .audio => |*a| a.deinit(store),
+            }
+            return .none;
+        };
+    }
+
     fn entryFor(self: *ClipPool, id: ClipId) ?*Entry {
         if (id.index >= self.entries.items.len) return null;
         const e = &self.entries.items[id.index];
@@ -113,6 +169,15 @@ pub const ClipPool = struct {
     /// Resolve a handle to its clip, or null if the handle is stale/freed.
     pub fn get(self: *ClipPool, id: ClipId) ?*Clip {
         const e = self.entryFor(id) orelse return null;
+        return &e.clip.?;
+    }
+
+    /// Const view of `get`, for read-only callers (e.g. project save).
+    pub fn getConst(self: *const ClipPool, id: ClipId) ?*const Clip {
+        if (id.index >= self.entries.items.len) return null;
+        const e = &self.entries.items[id.index];
+        if (e.generation != id.generation) return null;
+        if (e.clip == null) return null;
         return &e.clip.?;
     }
 
@@ -206,4 +271,42 @@ test "out-of-range handle resolves to null" {
     var pool = ClipPool.init(testing.allocator);
     defer pool.deinit(null);
     try testing.expect(pool.get(.{ .index = 99, .generation = 0 }) == null);
+}
+
+test "none sentinel resolves to null and is inert" {
+    var pool = ClipPool.init(testing.allocator);
+    defer pool.deinit(null);
+    try testing.expect(ClipId.none.isNone());
+    try testing.expect(pool.get(ClipId.none) == null);
+    pool.retain(ClipId.none); // no-op, must not crash
+    pool.release(ClipId.none, null); // no-op, must not crash
+    try testing.expectEqual(@as(usize, 0), pool.liveCount());
+}
+
+test "dupe makes an independent copy of MIDI content" {
+    var pool = ClipPool.init(testing.allocator);
+    defer pool.deinit(null);
+
+    const src = try pool.add(testMidiClip(testing.allocator));
+    pool.retain(src);
+    pool.get(src).?.content.midi.addNote(60, 0, 1) catch unreachable;
+    pool.get(src).?.name.set("orig");
+
+    const copy = pool.dupe(src, null);
+    try testing.expect(!copy.isNone());
+    try testing.expect(!copy.eql(src));
+    pool.retain(copy);
+
+    // Same content, independent storage.
+    try testing.expectEqual(@as(usize, 1), pool.get(copy).?.content.midi.notes.items.len);
+    try testing.expectEqualStrings("orig", pool.get(copy).?.name.get());
+
+    // Editing the copy must not touch the source.
+    pool.get(copy).?.content.midi.addNote(64, 1, 1) catch unreachable;
+    try testing.expectEqual(@as(usize, 1), pool.get(src).?.content.midi.notes.items.len);
+    try testing.expectEqual(@as(usize, 2), pool.get(copy).?.content.midi.notes.items.len);
+
+    pool.release(src, null);
+    pool.release(copy, null);
+    try testing.expectEqual(@as(usize, 0), pool.liveCount());
 }

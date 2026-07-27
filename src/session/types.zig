@@ -1,6 +1,10 @@
 const std = @import("std");
 const selection = @import("selection.zig");
 const constants = @import("constants.zig");
+const clip_pool = @import("clip_pool.zig");
+const SampleStore = @import("../audio/sample_store.zig").SampleStore;
+
+pub const ClipId = clip_pool.ClipId;
 
 pub const NameField = struct {
     buf: [32]u8 = undefined,
@@ -32,10 +36,13 @@ pub const ClipState = enum {
     record_queued,
 };
 
+/// A session grid placement: a launcher that references a pooled clip.
+/// Content, intrinsic length, name and color all live on the pooled `Clip`
+/// (resolve via `State.clip_pool`); the slot owns only its launch state and
+/// the handle. `.empty` state ⇔ `clip == .none`.
 pub const ClipSlot = struct {
     state: ClipState = .empty,
-    length_beats: f32 = constants.default_clip_bars * constants.beats_per_bar,
-    name: NameField = .{},
+    clip: ClipId = ClipId.none,
 };
 
 pub const RenameKind = enum {
@@ -93,13 +100,16 @@ pub const Scene = struct {
     }
 };
 
-/// Clipboard entry for clip copy/paste
+/// Clipboard entry for clip copy/paste. Holds an independent, retained dupe
+/// of the copied clip's content (freed when the clipboard is cleared), so the
+/// copy survives deletion of the source and each paste re-dupes from it.
 pub const ClipboardEntry = struct {
     src_track: usize,
     src_scene: usize,
     track_offset: i32,
     scene_offset: i32,
-    slot: ClipSlot,
+    state: ClipState,
+    clip: ClipId,
 };
 
 pub const PianoCopyRequest = struct {
@@ -117,6 +127,9 @@ pub const OpenClipRequest = struct {
 pub const ClipSnapshot = struct {
     has_clip: bool = false,
     length_beats: f32 = 0,
+    /// Pool handle captured at delete time so undo-request processing can read
+    /// the deleted clip's content before the slot shift discards the handle.
+    clip: ClipId = ClipId.none,
 };
 
 pub const TrackSnapshot = struct {
@@ -211,6 +224,12 @@ pub const StopRecordingMode = enum {
 
 pub const SessionView = struct {
     allocator: std.mem.Allocator,
+
+    // Back-references into the owning `State` (wired once after State reaches
+    // its final address; see `State.wireInternalRefs`). Session ops resolve
+    // and mutate pooled clip content through these.
+    clip_pool: *clip_pool.ClipPool = undefined,
+    sample_store: *SampleStore = undefined,
 
     // Grid data
     tracks: [constants.max_tracks]Track = undefined,

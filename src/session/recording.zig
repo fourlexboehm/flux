@@ -14,12 +14,12 @@ pub fn startRecording(self: *session_view.SessionView, track: usize, scene: usiz
     // MIDI recording owns the slot (hybrid exclusivity: drop sample if present)
     self.claim_midi_slot_request = .{ .track = track, .scene = scene };
 
-    // Create clip if empty, set to recording state
-    if (self.clips[track][scene].state == .empty) {
-        self.clips[track][scene] = .{
-            .state = if (playing) .record_queued else .recording,
-            .length_beats = default_clip_bars * beats_per_bar_in,
-        };
+    // Create clip if empty, set to recording state. The pooled MIDI clip is
+    // materialized by the `claim_midi_slot_request` handling (ui/draw.zig ->
+    // State.claimSlotForMidi); the slot here only carries launch state.
+    const was_empty = self.clips[track][scene].state == .empty;
+    if (was_empty) {
+        self.clips[track][scene].state = if (playing) .record_queued else .recording;
         // Clear any old notes in the piano clip (new recording, not overdub)
         self.clear_piano_clip_request = .{ .track = track, .scene = scene };
         self.recording.is_new_clip = true;
@@ -32,7 +32,10 @@ pub fn startRecording(self: *session_view.SessionView, track: usize, scene: usiz
     // Set up recording state
     self.recording.track = track;
     self.recording.scene = scene;
-    self.recording.target_length_beats = self.clips[track][scene].length_beats;
+    self.recording.target_length_beats = if (self.clip_pool.get(self.clips[track][scene].clip)) |c|
+        c.lengthBeats()
+    else
+        default_clip_bars * beats_per_bar_in;
     self.recording.note_start_beats = @splat(null);
     self.recording.start_beat = 0;
     self.recording.queued_at_beat = playhead_beat;

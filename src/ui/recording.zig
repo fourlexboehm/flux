@@ -15,8 +15,8 @@ pub fn processMidiEvents(state: *State, events: []const midi_input.MidiEvent, no
     const rec = &state.session.recording;
     const track = rec.track orelse return;
     const scene = rec.scene orelse return;
-    const piano_clip = &state.piano_clips[track][scene];
-    const clip_length = state.session.clips[track][scene].length_beats;
+    const piano_clip = state.ensureSlotPiano(track, scene);
+    const clip_length = state.slotLengthBeats(track, scene);
     const beats_per_ns = @as(f64, state.bpm) / (60.0 * std.time.ns_per_s);
 
     for (events) |event| {
@@ -67,9 +67,9 @@ pub fn tick(state: *State, dt: f64) void {
     if (state.session.finalize_recording_track) |track| {
         if (state.session.finalize_recording_scene) |scene| {
             // Finalize held notes to the specified clip
-            const piano_clip = &state.piano_clips[track][scene];
+            const piano_clip = state.ensureSlotPiano(track, scene);
             const rec = &state.session.recording;
-            const clip_length = state.session.clips[track][scene].length_beats;
+            const clip_length = state.slotLengthBeats(track, scene);
 
             // Calculate current position relative to recording start
             const current_beat = @mod(state.playhead_beat - rec.start_beat + clip_length, clip_length);
@@ -142,7 +142,7 @@ pub fn tick(state: *State, dt: f64) void {
     // Determine loop length (use recording clip if recording, otherwise current clip)
     var loop_length = if (state.session.recording.track) |t|
         if (state.session.recording.scene) |s|
-            state.session.clips[t][s].length_beats
+            state.slotLengthBeats(t, s)
         else
             state.currentClip().length_beats
     else
@@ -160,8 +160,7 @@ pub fn tick(state: *State, dt: f64) void {
                     while (state.playhead_beat >= loop_length) {
                         loop_length += extend_beats;
                     }
-                    state.session.clips[track][scene].length_beats = loop_length;
-                    state.piano_clips[track][scene].length_beats = loop_length;
+                    state.ensureSlotPiano(track, scene).length_beats = loop_length;
                     state.session.recording.target_length_beats = loop_length;
                     will_loop = false;
                 }
@@ -241,8 +240,8 @@ pub fn processKeyboardEvents(state: *State) void {
     const track = rec.track orelse return;
     const scene = rec.scene orelse return;
 
-    const piano_clip = &state.piano_clips[track][scene];
-    const clip_length = state.session.clips[track][scene].length_beats;
+    const piano_clip = state.ensureSlotPiano(track, scene);
+    const clip_length = state.slotLengthBeats(track, scene);
 
     // Calculate position within the clip (relative to recording start)
     // This ensures notes are placed at the beginning of the clip, not at absolute playhead position
@@ -284,8 +283,8 @@ fn finalizeHeldNotesAtPosition(state: *State, end_beat: f32) void {
     const track = rec.track orelse return;
     const scene = rec.scene orelse return;
 
-    const piano_clip = &state.piano_clips[track][scene];
-    const clip_length = state.session.clips[track][scene].length_beats;
+    const piano_clip = state.ensureSlotPiano(track, scene);
+    const clip_length = state.slotLengthBeats(track, scene);
 
     // Calculate end position relative to recording start
     const relative_end = @mod(end_beat - rec.start_beat + clip_length, clip_length);
@@ -314,8 +313,8 @@ pub fn finalizeHeldNotes(state: *State) void {
     const track = rec.track orelse return;
     const scene = rec.scene orelse return;
 
-    const piano_clip = &state.piano_clips[track][scene];
-    const clip_length = state.session.clips[track][scene].length_beats;
+    const piano_clip = state.ensureSlotPiano(track, scene);
+    const clip_length = state.slotLengthBeats(track, scene);
 
     // Calculate current position relative to recording start
     const current_beat = @mod(state.playhead_beat - rec.start_beat + clip_length, clip_length);
