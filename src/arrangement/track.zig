@@ -1,6 +1,8 @@
 const std = @import("std");
 const arr_clip = @import("clip.zig");
 const session_types = @import("../session/types.zig");
+const clip_pool = @import("../session/clip_pool.zig");
+const SampleStore = @import("../audio/sample_store.zig").SampleStore;
 
 pub const ArrangementTrack = struct {
     session_track_index: usize = 0,
@@ -18,9 +20,18 @@ pub const ArrangementTrack = struct {
         return t;
     }
 
-    pub fn deinit(self: *ArrangementTrack, allocator: std.mem.Allocator) void {
-        for (self.clips.items) |*clip| {
-            clip.deinit(allocator);
+    /// Release every placement's pooled clip reference, then free the list.
+    /// `pool`/`store` may be null for standalone (unit-test) views.
+    pub fn deinit(
+        self: *ArrangementTrack,
+        allocator: std.mem.Allocator,
+        pool: ?*clip_pool.ClipPool,
+        store: ?*SampleStore,
+    ) void {
+        if (pool) |p| {
+            for (self.clips.items) |*clip| {
+                if (!clip.clip.isNone()) p.release(clip.clip, store);
+            }
         }
         self.clips.deinit(allocator);
     }

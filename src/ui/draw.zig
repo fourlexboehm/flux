@@ -695,20 +695,25 @@ fn selectedArrangementClip(state: *State) ?[2]usize {
 
 fn drawArrangementClipPanel(state: *State, selected: [2]usize, ui_scale: f32) void {
     const clip = &state.arrangement.tracks.items[selected[0]].clips.items[selected[1]];
-    if (clip.kind == .midi) {
-        const track = clip.midi_session_track;
-        const scene = clip.midi_session_scene;
-        if (track >= max_tracks or scene >= max_scenes or clip.midi == null) {
+    const pooled = state.arrangement.placementClip(clip);
+    const is_midi = if (pooled) |c| c.content == .midi else false;
+    if (is_midi) {
+        // Instrument/FX routing follows the arrangement track's mirrored
+        // session track (the per-clip back-reference is gone with the pool).
+        const track = state.arrangement.tracks.items[selected[0]].session_track_index;
+        const scene: usize = 0;
+        if (track >= max_tracks) {
             widgets.dimLabel("MIDI clip source is unavailable");
             return;
         }
 
         const instrument_plugin = state.track_plugin_ptrs[track];
         const fx_plugins = state.track_fx_plugin_ptrs[track][0..state.track_fx_slot_count[track]];
-        const label = if (clip.name.get().len > 0) clip.name.get() else "MIDI clip";
+        const clip_name = pooled.?.name.get();
+        const label = if (clip_name.len > 0) clip_name else "MIDI clip";
         piano_roll_draw.drawSequencer(
             &state.piano_state,
-            &clip.midi.?,
+            &pooled.?.content.midi,
             label,
             state.playhead_beat - @as(f32, @floatFromInt(clip.start_tick)) / 960.0,
             state.playing,
@@ -733,13 +738,14 @@ fn drawArrangementClipPanel(state: *State, selected: [2]usize, ui_scale: f32) vo
         return;
     }
 
-    const kind = switch (clip.kind) {
+    const kind = if (pooled) |c| switch (c.content) {
         .audio => "Audio clip",
         .midi => "MIDI clip",
-    };
+    } else "Empty clip";
     const beats = @as(f32, @floatFromInt(clip.duration_ticks)) / 960.0;
     const bars = beats / @as(f32, @floatFromInt(state.arrangement.beats_per_bar));
-    const name = if (clip.name.get().len > 0) clip.name.get() else kind;
+    const clip_name = if (pooled) |c| c.name.get() else "";
+    const name = if (clip_name.len > 0) clip_name else kind;
 
     zgui.text("{s}", .{name});
     zgui.sameLine(.{ .spacing = tokens.gapGroup(ui_scale) });
@@ -812,11 +818,15 @@ fn loadAudioFileIntoArrangement(state: *State, abs_path: []const u8) void {
     const duration_ticks: i64 = @intFromFloat(sample_duration_seconds * state.bpm / 60.0 * 960.0);
 
     const clip_index = @import("../arrangement/ops.zig").createClip(&state.arrangement, ti, .audio, snapped, @max(1, duration_ticks), basename) catch return;
-    @import("../arrangement/ops.zig").setClipAudioPath(&state.arrangement.tracks.items[ti].clips.items[clip_index], state.allocator, basename) catch {
+    const placement = &state.arrangement.tracks.items[ti].clips.items[clip_index];
+    if (state.arrangement.placementAudio(placement)) |audio| {
+        audio.setSample(&state.sample_store, sample_id);
+    } else {
+        state.sample_store.release(sample_id);
         @import("../arrangement/ops.zig").deleteClip(&state.arrangement, ti, clip_index);
         return;
-    };
-    state.arrangement.tracks.items[ti].clips.items[clip_index].selected = true;
+    }
+    placement.selected = true;
 
     state.markProjectDirty();
 }

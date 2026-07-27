@@ -22,8 +22,8 @@ pub const ClipAction = enum {
 
 const resize_zone: f32 = 6.0;
 
-fn clipBodyColor(clip: *const arr_clip_mod.ArrangementClip, is_selected: bool) [4]f32 {
-    const base = if (clip.kind == .midi)
+fn clipBodyColor(is_audio: bool, is_selected: bool) [4]f32 {
+    const base = if (!is_audio)
         colors.Colors.current.clip_stopped
     else
         colors.Colors.current.clip_audio_stopped;
@@ -39,6 +39,8 @@ fn clipBodyColor(clip: *const arr_clip_mod.ArrangementClip, is_selected: bool) [
 /// Draw a single arrangement clip. Returns hit-test result when `allow_mouse`.
 pub fn drawClip(
     clip: *const arr_clip_mod.ArrangementClip,
+    name: []const u8,
+    is_audio: bool,
     asset: ?*const sample_store_mod.SampleAsset,
     clip_index: usize,
     lane_left: f32,
@@ -63,7 +65,7 @@ pub fn drawClip(
 
     if (x1 < lane_left - 1 or x0 > lane_left + lane_width + 1) return .{};
 
-    const body_col = clipBodyColor(clip, is_selected);
+    const body_col = clipBodyColor(is_audio, is_selected);
     const col_u32 = zgui.colorConvertFloat4ToU32(body_col);
 
     draw_list.addRectFilled(.{
@@ -94,7 +96,6 @@ pub fn drawClip(
 
     // Clip name
     if (x1 - x0 > 20) {
-        const name = clip.name.get();
         if (name.len > 0) {
             const text_x = @max(x0 + strip_w + 4, x0 + 4);
             const clip_w = x1 - x0;
@@ -107,7 +108,7 @@ pub fn drawClip(
 
     // Peak bins are resampled to the current pixel width every frame, so zoom
     // and tempo-driven clip geometry never require cached waveform rebuilds.
-    if (clip.kind == .audio and asset != null and x1 - x0 > 20) {
+    if (is_audio and asset != null and x1 - x0 > 20) {
         draw_waveform.drawPeaks(draw_list, .{
             .pmin = .{ @max(x0 + strip_w + 3, lane_left), clip_top + 14 },
             .pmax = .{ @min(x1 - 3, lane_left + lane_width), clip_top + clip_h - 3 },

@@ -4,6 +4,7 @@ const std = @import("std");
 
 const arr_ops = @import("../../arrangement/ops.zig");
 const arr_clip_mod = @import("../../arrangement/clip.zig");
+const clip_pool = @import("../../session/clip_pool.zig");
 const arr_timeline = @import("../../arrangement/timeline.zig");
 const flatten = @import("../format/flatten.zig");
 const types = @import("../format/types.zig");
@@ -75,7 +76,9 @@ fn applyClipsToTrack(
         arr_clip.enabled = clip.enable;
         arr_clip.source_offset_ticks = beatsToTicks(clip.play_start);
         if (clip.color) |hex| {
-            arr_clip.color = parseHexColor(hex);
+            if (state.arrangement.placementClip(arr_clip)) |pooled| {
+                pooled.color = clip_pool.packColor(parseHexColor(hex));
+            }
         }
 
         if (kind == .audio) {
@@ -118,9 +121,12 @@ fn applyAudioToArrangementClip(
     const path_in_project = loaded.media_rel_paths.get(path_buf) orelse path_buf;
 
     // Ensure sample is in the store (shared with session clips when same path).
-    _ = loadSample(state, loaded, io, path_buf, path_in_project);
-
-    try arr_ops.setClipAudioPath(arr_clip, state.allocator, path_in_project);
+    const sample_id = loadSample(state, loaded, io, path_buf, path_in_project) orelse return;
+    const audio = state.arrangement.placementAudio(arr_clip) orelse {
+        state.sample_store.release(sample_id);
+        return;
+    };
+    audio.setSample(&state.sample_store, sample_id);
 }
 
 fn applyMidiToArrangementClip(
@@ -128,7 +134,7 @@ fn applyMidiToArrangementClip(
     arr_clip: *arr_clip_mod.ArrangementClip,
     clip: *const types.Clip,
 ) !void {
-    const midi = &(arr_clip.midi orelse return);
+    const midi = state.arrangement.placementMidi(arr_clip) orelse return;
     midi.clear();
     midi.length_beats = @floatCast(clip.duration);
     midi.play_start_beats = @floatCast(clip.play_start);

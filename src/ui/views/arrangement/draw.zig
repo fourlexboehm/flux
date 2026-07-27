@@ -246,7 +246,6 @@ pub fn draw(
                 const default_dur = arr_timeline.ppq * 4 * 4; // 4 bars
                 if (arr_ops.createClip(view, ti, .midi, snap, default_dur, "MIDI")) |clip_index| {
                     const source_track = view.tracks.items[ti].session_track_index;
-                    arr_ops.setClipMidiSource(&view.tracks.items[ti].clips.items[clip_index], source_track, mixer.primary_scene);
                     arr_ops.selectClip(view, ti, clip_index, false);
                     pushCreatedClip(history, view, ti, clip_index);
                     if (source_track < mixer.track_count) {
@@ -534,6 +533,7 @@ fn updateDrag(
         .clip_resize_left => {
             const new_start = drag.original_start_tick + tick_delta;
             arr_ops.resizeClipLeft(
+                view,
                 &view.tracks.items[drag.track].clips.items[drag.clip_index],
                 new_start,
                 snap,
@@ -542,6 +542,7 @@ fn updateDrag(
         .clip_resize_right => {
             const new_dur = drag.original_duration_ticks + tick_delta;
             arr_ops.resizeClip(
+                view,
                 &view.tracks.items[drag.track].clips.items[drag.clip_index],
                 new_dur,
                 snap,
@@ -557,7 +558,7 @@ fn deleteSelectedWithTrackShift(view: *arr_types.ArrangementView, history: *undo
     for (view.tracks.items, 0..) |track, ti| {
         for (track.clips.items, 0..) |clip, ci| {
             if (!clip.selected) continue;
-            const before = arr_undo.captureClip(history.allocator, ti, ci, &clip) catch {
+            const before = arr_undo.captureClip(view, ti, ci, &clip) catch {
                 for (changes.items) |change| if (change.before) |item| arr_undo.deinitCaptured(history.allocator, item);
                 return;
             };
@@ -595,7 +596,7 @@ fn duplicateSelectedClips(view: *arr_types.ArrangementView, history: *undo.UndoH
                 const new_idx = arr_ops.duplicateClip(view, ti, ci) catch continue;
                 view.tracks.items[ti].clips.items[ci].selected = false;
                 view.tracks.items[ti].clips.items[new_idx].selected = true;
-                const after = arr_undo.captureClip(history.allocator, ti, new_idx, &view.tracks.items[ti].clips.items[new_idx]) catch {
+                const after = arr_undo.captureClip(view, ti, new_idx, &view.tracks.items[ti].clips.items[new_idx]) catch {
                     arr_ops.deleteClip(view, ti, new_idx);
                     continue;
                 };
@@ -618,16 +619,16 @@ fn commitDrag(view: *arr_types.ArrangementView, history: *undo.UndoHistory) void
         clip.start_tick != drag.original_start_tick or clip.duration_ticks != drag.original_duration_ticks;
     if (!changed) return;
 
-    const after = arr_undo.captureClip(history.allocator, drag.track, drag.clip_index, clip) catch return;
+    const after = arr_undo.captureClip(view, drag.track, drag.clip_index, clip) catch return;
     var change: undo.ArrangementClipChange = .{ .after = after };
     if (!drag.duplicated) {
-        var before = arr_undo.captureClip(history.allocator, drag.original_track, drag.original_clip_index, clip) catch {
+        var before = arr_undo.captureClip(view, drag.original_track, drag.original_clip_index, clip) catch {
             arr_undo.deinitCaptured(history.allocator, after);
             return;
         };
         before.clip.start_tick = drag.original_start_tick;
         before.clip.duration_ticks = drag.original_duration_ticks;
-        before.clip.midi_length_beats = @as(f32, @floatFromInt(drag.original_duration_ticks)) / @as(f32, @floatFromInt(arr_timeline.ppq));
+        before.clip.length_beats = @as(f32, @floatFromInt(drag.original_duration_ticks)) / @as(f32, @floatFromInt(arr_timeline.ppq));
         change.before = before;
     }
 
@@ -641,7 +642,7 @@ fn commitDrag(view: *arr_types.ArrangementView, history: *undo.UndoHistory) void
 }
 
 fn pushCreatedClip(history: *undo.UndoHistory, view: *arr_types.ArrangementView, track: usize, clip_index: usize) void {
-    const after = arr_undo.captureClip(history.allocator, track, clip_index, &view.tracks.items[track].clips.items[clip_index]) catch return;
+    const after = arr_undo.captureClip(view, track, clip_index, &view.tracks.items[track].clips.items[clip_index]) catch return;
     const changes = history.allocator.alloc(undo.ArrangementClipChange, 1) catch {
         arr_undo.deinitCaptured(history.allocator, after);
         return;
@@ -666,7 +667,7 @@ fn splitSelectedAt(view: *arr_types.ArrangementView, history: *undo.UndoHistory,
     for (view.tracks.items, 0..) |track, ti| {
         for (track.clips.items, 0..) |clip, ci| {
             if (!clip.selected or tick <= clip.start_tick or tick >= clip.endTick()) continue;
-            const before = arr_undo.captureClip(history.allocator, ti, ci, &clip) catch return;
+            const before = arr_undo.captureClip(view, ti, ci, &clip) catch return;
             const new_idx = (arr_ops.splitClip(view, ti, ci, tick, view.snap_division_ticks) catch {
                 arr_undo.deinitCaptured(history.allocator, before);
                 return;
@@ -674,12 +675,12 @@ fn splitSelectedAt(view: *arr_types.ArrangementView, history: *undo.UndoHistory,
                 arr_undo.deinitCaptured(history.allocator, before);
                 return;
             };
-            const after_left = arr_undo.captureClip(history.allocator, ti, ci, &view.tracks.items[ti].clips.items[ci]) catch {
+            const after_left = arr_undo.captureClip(view, ti, ci, &view.tracks.items[ti].clips.items[ci]) catch {
                 rollbackSplit(view, ti, ci, new_idx, before.clip.duration_ticks);
                 arr_undo.deinitCaptured(history.allocator, before);
                 return;
             };
-            const after_right = arr_undo.captureClip(history.allocator, ti, new_idx, &view.tracks.items[ti].clips.items[new_idx]) catch {
+            const after_right = arr_undo.captureClip(view, ti, new_idx, &view.tracks.items[ti].clips.items[new_idx]) catch {
                 rollbackSplit(view, ti, ci, new_idx, before.clip.duration_ticks);
                 arr_undo.deinitCaptured(history.allocator, after_left);
                 arr_undo.deinitCaptured(history.allocator, before);
@@ -704,7 +705,7 @@ fn rollbackSplit(view: *arr_types.ArrangementView, track: usize, left: usize, ri
     arr_ops.deleteClip(view, track, right);
     const clip = &view.tracks.items[track].clips.items[left];
     clip.duration_ticks = duration_ticks;
-    if (clip.midi) |*midi| midi.length_beats = @as(f32, @floatFromInt(duration_ticks)) / @as(f32, @floatFromInt(arr_timeline.ppq));
+    if (view.placementMidi(clip)) |midi| midi.length_beats = @as(f32, @floatFromInt(duration_ticks)) / @as(f32, @floatFromInt(arr_timeline.ppq));
 }
 
 fn addTrack(view: *arr_types.ArrangementView, mixer: *session_view.SessionView, history: *undo.UndoHistory) void {

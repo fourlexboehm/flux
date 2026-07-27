@@ -64,12 +64,20 @@ pub fn drawTrackLane(
     var event: ?LaneEvent = null;
 
     for (track.clips.items, 0..) |clip, ci| {
-        const asset = if (clip.audio_path) |path|
-            if (sample_store.path_to_id.get(path)) |sample_id| sample_store.get(sample_id) else null
-        else
-            null;
+        // Resolve content (name/kind/sample) from the pooled clip this
+        // placement references.
+        const pooled = view.placementClip(&clip);
+        const is_audio = if (pooled) |c| c.content == .audio else false;
+        const name = if (pooled) |c| c.name.get() else "";
+        const asset = if (is_audio) blk: {
+            const audio = &pooled.?.content.audio;
+            const sample_id = audio.sample_id orelse break :blk null;
+            break :blk sample_store.get(sample_id);
+        } else null;
         const result = draw_clip.drawClip(
             &clip,
+            name,
+            is_audio,
             asset,
             ci,
             lane_left,

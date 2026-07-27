@@ -4,6 +4,7 @@ const session_constants = @import("../session/constants.zig");
 const session_view = @import("../session/types.zig");
 const arr_timeline = @import("../arrangement/timeline.zig");
 const arr_clip_mod = @import("../arrangement/clip.zig");
+const clip_pool = @import("../session/clip_pool.zig");
 const track_count = session_constants.max_tracks;
 const master_track_index = session_view.master_track_index;
 const plugins = @import("../plugin/plugins.zig");
@@ -477,12 +478,18 @@ fn buildArrangementClip(
 ) !Clip {
     const time = ticksToBeats(arr_clip.start_tick);
     const duration = ticksToBeats(arr_clip.duration_ticks);
+    const pooled = state.clip_pool.getConst(arr_clip.clip);
+    const is_audio = if (pooled) |c| c.content == .audio else false;
     const name: ?[]const u8 = blk: {
-        const n = arr_clip.name.get();
+        const n = if (pooled) |c| c.name.get() else "";
         if (n.len == 0) break :blk null;
         break :blk try allocator.dupe(u8, n);
     };
-    const color = try colorToHex(allocator, arr_clip.color);
+    const color: ?[]const u8 = blk: {
+        const packed_color = if (pooled) |c| c.color else 0;
+        if (packed_color == 0) break :blk null;
+        break :blk try colorToHex(allocator, clip_pool.unpackColor(packed_color));
+    };
 
     var clip = Clip{
         .time = time,
@@ -495,16 +502,13 @@ fn buildArrangementClip(
         .color = color,
     };
 
-    if (arr_clip.kind == .audio) {
+    if (is_audio) {
         if (try buildArrangementAudio(allocator, state, arr_clip, duration, ids, media_mode)) |warps| {
             clip.warps = warps;
         }
     } else {
-        // MIDI: prefer embedded notes; fall back to session piano clip reference.
-        const piano: ?*const @import("../session/notes.zig").PianoRollClip = if (arr_clip.midi) |*m|
-            m
-        else if (arr_clip.midi_session_track < track_count and arr_clip.midi_session_scene < session_constants.max_scenes)
-            state.slotPianoConst(arr_clip.midi_session_track, arr_clip.midi_session_scene)
+        const piano: ?*const @import("../session/notes.zig").PianoRollClip = if (pooled) |c|
+            (if (c.content == .midi) &c.content.midi else null)
         else
             null;
 
@@ -539,22 +543,21 @@ fn buildArrangementAudio(
     ids: *IdGenerator,
     media_mode: MediaMode,
 ) !?types.Warps {
-    const path = arr_clip.audio_path orelse return null;
-    if (path.len == 0) return null;
+    const pooled = state.clip_pool.getConst(arr_clip.clip) orelse return null;
+    if (pooled.content != .audio) return null;
+    const sample_id = pooled.content.audio.sample_id orelse return null;
 
-    // Prefer sample_store (pack remaps path_in_project); fall back to raw path.
-    var file_path = path;
+    var file_path: []const u8 = "";
     var duration_sec: f64 = clip_duration_beats * 60.0 / @as(f64, @floatCast(state.bpm));
     var sample_rate: i32 = 44100;
     var channels: i32 = 2;
-    if (state.sample_store.path_to_id.get(path)) |sid| {
-        if (state.sample_store.get(sid)) |asset| {
-            file_path = asset.path_in_project;
-            duration_sec = asset.duration_seconds;
-            sample_rate = asset.original_sample_rate;
-            channels = asset.original_channels;
-        }
+    if (state.sample_store.get(sample_id)) |asset| {
+        file_path = asset.path_in_project;
+        duration_sec = asset.duration_seconds;
+        sample_rate = asset.original_sample_rate;
+        channels = asset.original_channels;
     }
+    if (file_path.len == 0) return null;
 
     const warp_points = try allocator.alloc(WarpPoint, 2);
     warp_points[0] = .{ .time = 0.0, .content_time = 0.0 };

@@ -42,6 +42,27 @@ pub const ClipId = struct {
 
 pub const ClipKind = enum { midi, audio };
 
+/// Pack an RGBA float color (each channel 0..1) into a `Clip.color` u32 as
+/// 0xRRGGBBAA. An all-zero input maps to 0, which `Clip.color` treats as
+/// "unset".
+pub fn packColor(c: [4]f32) u32 {
+    const r: u32 = @intFromFloat(std.math.clamp(c[0], 0, 1) * 255.0 + 0.5);
+    const g: u32 = @intFromFloat(std.math.clamp(c[1], 0, 1) * 255.0 + 0.5);
+    const b: u32 = @intFromFloat(std.math.clamp(c[2], 0, 1) * 255.0 + 0.5);
+    const a: u32 = @intFromFloat(std.math.clamp(c[3], 0, 1) * 255.0 + 0.5);
+    return (r << 24) | (g << 16) | (b << 8) | a;
+}
+
+/// Inverse of `packColor`.
+pub fn unpackColor(v: u32) [4]f32 {
+    return .{
+        @as(f32, @floatFromInt((v >> 24) & 0xFF)) / 255.0,
+        @as(f32, @floatFromInt((v >> 16) & 0xFF)) / 255.0,
+        @as(f32, @floatFromInt((v >> 8) & 0xFF)) / 255.0,
+        @as(f32, @floatFromInt(v & 0xFF)) / 255.0,
+    };
+}
+
 /// A clip owns its content and intrinsic length; placements own position.
 pub const ClipContent = union(ClipKind) {
     midi: PianoRollClip,

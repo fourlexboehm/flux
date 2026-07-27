@@ -395,11 +395,13 @@ pub const State = struct {
         // sample store and scratch clip go away.
         self.undo_history.deinit();
         session_ops.deinit(&self.session);
+        // Arrangement placements hold pool references; release them before the
+        // pool frees remaining clip content (and its samples).
+        self.arrangement.deinit();
         self.clip_pool.deinit(&self.sample_store);
         self.scratch_clip.deinit();
         self.sample_store.deinit();
         self.piano_state.deinit();
-        self.arrangement.deinit();
         for (self.browser_folders.items) |f| self.allocator.free(f);
         self.browser_folders.deinit(self.allocator);
     }
@@ -410,6 +412,8 @@ pub const State = struct {
     pub fn wireInternalRefs(self: *State) void {
         self.session.clip_pool = &self.clip_pool;
         self.session.sample_store = &self.sample_store;
+        self.arrangement.clip_pool = &self.clip_pool;
+        self.arrangement.sample_store = &self.sample_store;
     }
 
     // ── Clip-pool slot accessors ────────────────────────────────────────

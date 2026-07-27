@@ -3,41 +3,67 @@ const arr_clip = @import("clip.zig");
 const arr_track = @import("track.zig");
 const arr_types = @import("types.zig");
 const command = @import("../undo/command.zig");
+const audio_clip = @import("../session/audio_clip.zig");
+
+const AudioClipSnapshot = audio_clip.AudioClipSnapshot;
 
 pub const Direction = enum { undo, redo };
 
+/// Capture a placement's position plus a content snapshot of its pooled clip.
+/// MIDI clips yield notes with a null audio snapshot; audio clips yield the
+/// reverse. The snapshot owns its own note slice / retained sample.
 pub fn captureClip(
-    allocator: std.mem.Allocator,
+    view: *arr_types.ArrangementView,
     track: usize,
     index: usize,
     clip: *const arr_clip.ArrangementClip,
 ) !command.ArrangementClipAt {
-    const path = if (clip.audio_path) |value| try allocator.dupe(u8, value) else &.{};
-    errdefer if (path.len > 0) allocator.free(path);
-    const notes = if (clip.midi) |midi| try allocator.dupe(command.Note, midi.notes.items) else &.{};
+    var notes: []const command.Note = &.{};
+    var audio: ?AudioClipSnapshot = null;
+    var length_beats: f32 = 0;
+    var color: u32 = 0;
+    var name: @import("../session/types.zig").NameField = .{};
+
+    if (view.placementClip(@constCast(clip))) |pooled| {
+        length_beats = pooled.lengthBeats();
+        color = pooled.color;
+        name = pooled.name;
+        switch (pooled.content) {
+            .midi => |*m| {
+                notes = try view.allocator.dupe(command.Note, m.notes.items);
+            },
+            .audio => |*a| {
+                if (view.sample_store) |store| {
+                    audio = try AudioClipSnapshot.capture(a, store);
+                }
+            },
+        }
+    }
+    errdefer if (notes.len > 0) view.allocator.free(notes);
+
     return .{
         .track = track,
         .index = index,
         .clip = .{
-            .kind = clip.kind,
             .start_tick = clip.start_tick,
             .duration_ticks = clip.duration_ticks,
             .source_offset_ticks = clip.source_offset_ticks,
-            .color = clip.color,
-            .name = clip.name,
+            .color = color,
+            .name = name,
             .enabled = clip.enabled,
-            .audio_path = path,
-            .midi_session_track = clip.midi_session_track,
-            .midi_session_scene = clip.midi_session_scene,
-            .midi_length_beats = if (clip.midi) |midi| midi.length_beats else 0,
+            .length_beats = length_beats,
             .midi_notes = notes,
+            .audio = audio,
         },
     };
 }
 
 pub fn deinitCaptured(allocator: std.mem.Allocator, item: command.ArrangementClipAt) void {
-    if (item.clip.audio_path.len > 0) allocator.free(item.clip.audio_path);
     if (item.clip.midi_notes.len > 0) allocator.free(item.clip.midi_notes);
+    if (item.clip.audio) |audio| {
+        var a = audio;
+        a.deinit();
+    }
 }
 
 pub fn deinitChanges(allocator: std.mem.Allocator, changes: []command.ArrangementClipChange) void {
@@ -69,8 +95,7 @@ fn removeSide(view: *arr_types.ArrangementView, changes: []const command.Arrange
             for (changes) |change| {
                 const item = side(change, which) orelse continue;
                 if (item.track == track_index and item.index == clip_index) {
-                    var clip = &view.tracks.items[track_index].clips.items[clip_index];
-                    clip.deinit(view.allocator);
+                    view.releasePlacement(&view.tracks.items[track_index].clips.items[clip_index]);
                     _ = view.tracks.items[track_index].clips.orderedRemove(clip_index);
                     break;
                 }
@@ -104,30 +129,48 @@ fn insertSide(view: *arr_types.ArrangementView, changes: []const command.Arrange
     }
 }
 
+/// Rebuild a placement (and a fresh pooled clip) from a captured snapshot.
 fn insertClip(view: *arr_types.ArrangementView, item: command.ArrangementClipAt) !void {
     if (item.track >= view.tracks.items.len) return error.InvalidTrack;
     const data = item.clip;
-    var clip = arr_clip.ArrangementClip.init(view.allocator, data.kind, data.start_tick, data.duration_ticks);
-    errdefer clip.deinit(view.allocator);
-    clip.color = data.color;
-    clip.source_offset_ticks = data.source_offset_ticks;
-    clip.name = data.name;
-    clip.enabled = data.enabled;
-    clip.midi_session_track = data.midi_session_track;
-    clip.midi_session_scene = data.midi_session_scene;
-    if (data.audio_path.len > 0) clip.audio_path = try view.allocator.dupe(u8, data.audio_path);
-    if (clip.midi) |*midi| {
-        midi.length_beats = data.midi_length_beats;
-        try midi.notes.appendSlice(midi.allocator, data.midi_notes);
+    const is_audio = if (data.audio) |a| a.clip.hasAudio() else false;
+    const kind: arr_clip.ClipKind = if (is_audio) .audio else .midi;
+    const id = view.addPooledClip(kind, data.length_beats);
+    if (id.isNone()) return error.OutOfMemory;
+
+    if (view.clip_pool.?.get(id)) |pooled| {
+        pooled.name = data.name;
+        pooled.color = data.color;
+        switch (pooled.content) {
+            .midi => |*m| {
+                try m.notes.appendSlice(m.allocator, data.midi_notes);
+                if (data.length_beats > 0) m.length_beats = data.length_beats;
+            },
+            .audio => |*a| {
+                if (data.audio) |snap| snap.apply(a) catch {};
+                if (data.length_beats > 0) a.length_beats = data.length_beats;
+            },
+        }
     }
-    const index = @min(item.index, view.tracks.items[item.track].clips.items.len);
-    try view.tracks.items[item.track].clips.insert(view.allocator, index, clip);
+
+    const clip: arr_clip.ArrangementClip = .{
+        .clip = id,
+        .start_tick = data.start_tick,
+        .duration_ticks = data.duration_ticks,
+        .source_offset_ticks = data.source_offset_ticks,
+        .enabled = data.enabled,
+    };
+    const dst_index = @min(item.index, view.tracks.items[item.track].clips.items.len);
+    view.tracks.items[item.track].clips.insert(view.allocator, dst_index, clip) catch |err| {
+        view.releasePlacement(&clip);
+        return err;
+    };
 }
 
 pub fn executeTrackAdd(view: *arr_types.ArrangementView, cmd: command.ArrangementTrackAddCmd, direction: Direction) void {
     if (direction == .undo) {
         if (cmd.index >= view.tracks.items.len) return;
-        view.tracks.items[cmd.index].deinit(view.allocator);
+        view.tracks.items[cmd.index].deinit(view.allocator, view.clip_pool, view.sample_store);
         _ = view.tracks.orderedRemove(cmd.index);
         return;
     }
@@ -137,19 +180,23 @@ pub fn executeTrackAdd(view: *arr_types.ArrangementView, cmd: command.Arrangemen
 
 test "arrangement edit moves a clip across tracks and reverses cleanly" {
     const allocator = std.testing.allocator;
+    const clip_pool_mod = @import("../session/clip_pool.zig");
+    var pool = clip_pool_mod.ClipPool.init(allocator);
+    defer pool.deinit(null);
     var view = arr_types.ArrangementView.init(allocator);
+    view.clip_pool = &pool;
     defer view.deinit();
     view.clearTracks();
     try view.tracks.append(allocator, arr_track.ArrangementTrack.init("A", 0, .{ 1, 0, 0, 1 }));
     try view.tracks.append(allocator, arr_track.ArrangementTrack.init("B", 1, .{ 0, 1, 0, 1 }));
 
-    var clip = arr_clip.ArrangementClip.init(allocator, .midi, 120, 960);
-    clip.name.set("Lead");
-    try clip.midi.?.notes.append(allocator, .{ .pitch = 64, .start = 0.25, .duration = 0.5 });
-    try view.tracks.items[0].clips.append(allocator, clip);
+    const arr_ops = @import("ops.zig");
+    const clip_index = try arr_ops.createClip(&view, 0, .midi, 120, 960, "Lead");
+    const midi = view.placementMidi(&view.tracks.items[0].clips.items[clip_index]).?;
+    try midi.notes.append(allocator, .{ .pitch = 64, .start = 0.25, .duration = 0.5 });
 
-    const before = try captureClip(allocator, 0, 0, &view.tracks.items[0].clips.items[0]);
-    var after = try captureClip(allocator, 1, 0, &view.tracks.items[0].clips.items[0]);
+    const before = try captureClip(&view, 0, 0, &view.tracks.items[0].clips.items[0]);
+    var after = try captureClip(&view, 1, 0, &view.tracks.items[0].clips.items[0]);
     after.clip.start_tick = 1920;
     const changes = try allocator.alloc(command.ArrangementClipChange, 1);
     changes[0] = .{ .before = before, .after = after };
@@ -159,10 +206,10 @@ test "arrangement edit moves a clip across tracks and reverses cleanly" {
     execute(&view, &cmd.arrangement_edit, .redo);
     try std.testing.expectEqual(@as(usize, 0), view.tracks.items[0].clips.items.len);
     try std.testing.expectEqual(@as(i64, 1920), view.tracks.items[1].clips.items[0].start_tick);
-    try std.testing.expectEqual(@as(u8, 64), view.tracks.items[1].clips.items[0].midi.?.notes.items[0].pitch);
+    try std.testing.expectEqual(@as(u8, 64), view.placementMidi(&view.tracks.items[1].clips.items[0]).?.notes.items[0].pitch);
 
     execute(&view, &cmd.arrangement_edit, .undo);
     try std.testing.expectEqual(@as(usize, 0), view.tracks.items[1].clips.items.len);
     try std.testing.expectEqual(@as(i64, 120), view.tracks.items[0].clips.items[0].start_tick);
-    try std.testing.expectEqualStrings("Lead", view.tracks.items[0].clips.items[0].name.get());
+    try std.testing.expectEqualStrings("Lead", view.placementClip(&view.tracks.items[0].clips.items[0]).?.name.get());
 }

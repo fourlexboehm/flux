@@ -6,7 +6,6 @@ const session_view = @import("../session/types.zig");
 const session_view_constants = @import("../session/constants.zig");
 const piano_roll_types = @import("../session/notes.zig");
 const audio_clip_types = @import("../session/audio_clip.zig");
-const arrangement_clip = @import("../arrangement/clip.zig");
 
 pub const Note = piano_roll_types.Note;
 pub const AudioClipSnapshot = audio_clip_types.AudioClipSnapshot;
@@ -275,19 +274,21 @@ pub const PluginStateCmd = struct {
     new_state: []const u8, // State after the change
 };
 
+/// Position + content snapshot for one arrangement placement. Like the session
+/// clip commands, undo carries a content snapshot (not a live `ClipId`): the
+/// pooled clip is re-materialized on apply. `audio.clip.hasAudio()` decides the
+/// kind on rebuild — an audio clip yields an empty `midi_notes`, and vice versa.
 pub const ArrangementClipData = struct {
-    kind: arrangement_clip.ClipKind,
     start_tick: i64,
     duration_ticks: i64,
     source_offset_ticks: i64,
-    color: [4]f32,
+    color: u32,
     name: session_view.NameField,
     enabled: bool,
-    audio_path: []const u8,
-    midi_session_track: usize,
-    midi_session_scene: usize,
-    midi_length_beats: f32,
+    length_beats: f32,
     midi_notes: []const Note,
+    /// Present only for audio clips; null captures a MIDI clip.
+    audio: ?AudioClipSnapshot = null,
 };
 
 pub const ArrangementClipAt = struct {
@@ -506,6 +507,9 @@ pub const Command = union(CommandKind) {
 };
 
 fn deinitArrangementClipData(allocator: std.mem.Allocator, data: ArrangementClipData) void {
-    if (data.audio_path.len > 0) allocator.free(data.audio_path);
     if (data.midi_notes.len > 0) allocator.free(data.midi_notes);
+    if (data.audio) |audio| {
+        var a = audio;
+        a.deinit();
+    }
 }
