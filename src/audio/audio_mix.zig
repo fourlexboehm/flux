@@ -13,45 +13,6 @@ inline fn store(buf: []f32, i: usize, v: F32xN) void {
     buf[i..][0..lanes].* = @as([lanes]f32, v);
 }
 
-pub inline fn addStereo(
-    out_left: []f32,
-    out_right: []f32,
-    src_left: []const f32,
-    src_right: []const f32,
-    frame_count: usize,
-) void {
-    var i: usize = 0;
-    const unroll_width = lanes * unroll;
-    const vec_unroll_end = frame_count - (frame_count % unroll_width);
-    while (i < vec_unroll_end) : (i += unroll_width) {
-        store(out_left, i, load(out_left, i) + load(src_left, i));
-        store(out_right, i, load(out_right, i) + load(src_right, i));
-        const j = i + lanes;
-        store(out_left, j, load(out_left, j) + load(src_left, j));
-        store(out_right, j, load(out_right, j) + load(src_right, j));
-    }
-    const vec_end = frame_count - (frame_count % lanes);
-    while (i < vec_end) : (i += lanes) {
-        store(out_left, i, load(out_left, i) + load(src_left, i));
-        store(out_right, i, load(out_right, i) + load(src_right, i));
-    }
-    while (i < frame_count) : (i += 1) {
-        out_left[i] += src_left[i];
-        out_right[i] += src_right[i];
-    }
-}
-
-pub inline fn copyStereo(
-    out_left: []f32,
-    out_right: []f32,
-    src_left: []const f32,
-    src_right: []const f32,
-    frame_count: usize,
-) void {
-    @memcpy(out_left[0..frame_count], src_left[0..frame_count]);
-    @memcpy(out_right[0..frame_count], src_right[0..frame_count]);
-}
-
 pub inline fn mulStereo(out_left: []f32, out_right: []f32, frame_count: usize, gain: f32) void {
     if (gain == 1.0) return;
     var i: usize = 0;
@@ -100,45 +61,45 @@ pub inline fn applyStereoGainsAndPeak(left: []f32, right: []f32, frame_count: us
     return .{ left_peak, right_peak };
 }
 
-pub inline fn copyScaledStereo(
-    out_left: []f32,
-    out_right: []f32,
-    src_left: []const f32,
-    src_right: []const f32,
-    frame_count: usize,
-    gain: f32,
-) void {
-    var i: usize = 0;
-    const gain_vec: F32xN = @splat(gain);
-    const vec_end = frame_count - (frame_count % lanes);
-    while (i < vec_end) : (i += lanes) {
-        store(out_left, i, load(src_left, i) * gain_vec);
-        store(out_right, i, load(src_right, i) * gain_vec);
-    }
-    while (i < frame_count) : (i += 1) {
-        out_left[i] = src_left[i] * gain;
-        out_right[i] = src_right[i] * gain;
-    }
-}
+/// A planar stereo input to the fused mixer: two same-length channel slices.
+pub const StereoSpan = struct {
+    left: []const f32,
+    right: []const f32,
+};
 
-pub inline fn addScaledStereo(
+/// Fused multi-input stereo mix: `out = (Σ spans) * gain`, computed in ONE pass
+/// over the output (samples outer, inputs inner, running sum kept in a register)
+/// so the output is written once instead of once per input. Callers pass at
+/// least one span.
+pub fn sumSpans(
     out_left: []f32,
     out_right: []f32,
-    src_left: []const f32,
-    src_right: []const f32,
+    spans: []const StereoSpan,
     frame_count: usize,
     gain: f32,
 ) void {
-    var i: usize = 0;
     const gain_vec: F32xN = @splat(gain);
+    var i: usize = 0;
     const vec_end = frame_count - (frame_count % lanes);
     while (i < vec_end) : (i += lanes) {
-        store(out_left, i, load(out_left, i) + (load(src_left, i) * gain_vec));
-        store(out_right, i, load(out_right, i) + (load(src_right, i) * gain_vec));
+        var acc_l: F32xN = @splat(0);
+        var acc_r: F32xN = @splat(0);
+        for (spans) |s| {
+            acc_l += load(s.left, i);
+            acc_r += load(s.right, i);
+        }
+        store(out_left, i, acc_l * gain_vec);
+        store(out_right, i, acc_r * gain_vec);
     }
     while (i < frame_count) : (i += 1) {
-        out_left[i] += src_left[i] * gain;
-        out_right[i] += src_right[i] * gain;
+        var sl: f32 = 0;
+        var sr: f32 = 0;
+        for (spans) |s| {
+            sl += s.left[i];
+            sr += s.right[i];
+        }
+        out_left[i] = sl * gain;
+        out_right[i] = sr * gain;
     }
 }
 
@@ -183,6 +144,50 @@ test "stereo gains and peak are calculated in one pass" {
     try std.testing.expectEqualSlices(f32, &.{ 0.25, -0.125, 0.0625, 0 }, &left);
     try std.testing.expectEqualSlices(f32, &.{ 0.75, 1, -1, 0.5 }, &right);
     try std.testing.expectEqual([2]f32{ 0.25, 1.0 }, peak);
+}
+
+test "sumSpans fused mix matches naive sum with gain" {
+    const frames = 37; // deliberately not a multiple of `lanes`, to hit the tail
+    const n_inputs = 9;
+
+    var prng = std.Random.DefaultPrng.init(0x5150);
+    const rnd = prng.random();
+
+    var lefts: [n_inputs][frames]f32 = undefined;
+    var rights: [n_inputs][frames]f32 = undefined;
+    var spans: [n_inputs]StereoSpan = undefined;
+    for (0..n_inputs) |k| {
+        for (0..frames) |f| {
+            lefts[k][f] = rnd.float(f32) * 2 - 1;
+            rights[k][f] = rnd.float(f32) * 2 - 1;
+        }
+        spans[k] = .{ .left = &lefts[k], .right = &rights[k] };
+    }
+
+    const gain: f32 = 0.75;
+
+    // Naive reference: Σ inputs, then scale.
+    var expect_l: [frames]f32 = @splat(0);
+    var expect_r: [frames]f32 = @splat(0);
+    for (0..frames) |f| {
+        var sl: f32 = 0;
+        var sr: f32 = 0;
+        for (0..n_inputs) |k| {
+            sl += lefts[k][f];
+            sr += rights[k][f];
+        }
+        expect_l[f] = sl * gain;
+        expect_r[f] = sr * gain;
+    }
+
+    var out_l: [frames]f32 = @splat(0);
+    var out_r: [frames]f32 = @splat(0);
+    sumSpans(&out_l, &out_r, &spans, frames, gain);
+
+    for (0..frames) |f| {
+        try std.testing.expectApproxEqAbs(expect_l[f], out_l[f], 1e-5);
+        try std.testing.expectApproxEqAbs(expect_r[f], out_r[f], 1e-5);
+    }
 }
 
 test "interleaveStereo planar to interleaved" {

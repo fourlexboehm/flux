@@ -136,7 +136,6 @@ const SynthRuntime = struct {
     out: BufferId,
     event_source: NoteSourceId = invalid_id,
     sleeping: bool = false,
-    removed: bool = false,
     out_events_list: audio_events.OutputEventList = .{},
     out_events: clap.events.OutputEvents = .{
         .context = undefined,
@@ -163,7 +162,6 @@ const FxRuntime = struct {
     event_source: NoteSourceId = invalid_id,
     policy: FxPolicy = .track_fx_fast_skip,
     sleeping: bool = false,
-    removed: bool = false,
 };
 
 const GainRuntime = struct {
@@ -216,6 +214,11 @@ pub const Graph = struct {
     audio_inputs: std.ArrayList(AudioInputRef),
     scratch_input_left: []f32 = &.{},
     scratch_input_right: []f32 = &.{},
+    /// Pre-allocated gather buffer for the fused mixer. Sized (at graph build) to
+    /// the total input-edge count (an upper bound on any single node's fan-in)
+    /// so summing a node's inputs never allocates on the audio thread and always
+    /// fits in one pass. Safe to share: the mixing nodes run serially.
+    sum_scratch: []audio_mix.StereoSpan = &.{},
 
     pub fn init(allocator: std.mem.Allocator) Graph {
         return .{
@@ -356,6 +359,11 @@ pub const Graph = struct {
         try self.buildRenderOrder();
         try self.compileEventInputs();
         try self.compileAudioInputs();
+
+        // audio_inputs is now fully populated; size the fused-mix gather buffer to
+        // the total edge count (>= any single node's fan-in). @max(_, 1) avoids a
+        // zero-length allocation when the graph has no audio edges.
+        self.sum_scratch = try self.allocator.alloc(audio_mix.StereoSpan, @max(self.audio_inputs.items.len, 1));
     }
 
     pub fn getMasterOutput(self: *Graph) ?AudioOutput {
@@ -368,23 +376,6 @@ pub const Graph = struct {
         return self.outputForBuffer(buffer_id);
     }
 
-    pub fn markNodeRemoved(self: *Graph, node_id: NodeId) void {
-        const ref = self.node_refs.items[node_id];
-        switch (ref.kind) {
-            .synth => self.synths.items[ref.index].removed = true,
-            .fx => self.fx.items[ref.index].removed = true,
-            else => {},
-        }
-    }
-
-    pub fn isNodeRemoved(self: *const Graph, node_id: NodeId) bool {
-        const ref = self.node_refs.items[node_id];
-        return switch (ref.kind) {
-            .synth => self.synths.items[ref.index].removed,
-            .fx => self.fx.items[ref.index].removed,
-            else => false,
-        };
-    }
 
     const ProcessContext = struct {
         graph: *Graph,
@@ -467,10 +458,6 @@ pub const Graph = struct {
         var active_count: usize = 0;
         for (self.synth_order.items) |synth_id| {
             var synth = &self.synths.items[synth_id];
-            if (synth.removed) {
-                self.zeroBufferOnce(synth.out, ctx.frame_count);
-                continue;
-            }
 
             // Audio clip on this track's active scene: silence instrument (Phase 2).
             if (ctx.snapshot.playing_audio[synth.track_index].hasAudio()) {
@@ -617,10 +604,6 @@ pub const Graph = struct {
 
     fn processFxNode(self: *Graph, ctx: *const ProcessContext, fx_id: FxId) bool {
         var fx = &self.fx.items[fx_id];
-        if (fx.removed) {
-            self.zeroBufferOnce(fx.out, ctx.frame_count);
-            return false;
-        }
 
         const allow_fast_skip = fx.policy == .track_fx_fast_skip;
         const has_active_audio = if (allow_fast_skip) self.hasActiveInput(fx.inputs) else true;
@@ -811,6 +794,10 @@ pub const Graph = struct {
         if (self.scratch_input_right.len > 0) {
             self.allocator.free(self.scratch_input_right);
             self.scratch_input_right = &.{};
+        }
+        if (self.sum_scratch.len > 0) {
+            self.allocator.free(self.sum_scratch);
+            self.sum_scratch = &.{};
         }
         for (self.buffers.items) |*buffer| {
             if (buffer.left.len > 0) self.allocator.free(buffer.left);
@@ -1020,24 +1007,7 @@ pub const Graph = struct {
         out_right: []f32,
         active_only: bool,
     ) bool {
-        const frames: usize = @intCast(frame_count);
-        const inputs = self.audio_inputs.items[range.start..][0..range.count];
-        var any = false;
-        for (inputs) |input| {
-            const src = &self.buffers.items[input.buffer];
-            if (active_only and !src.active) continue;
-            if (!any) {
-                audio_mix.copyStereo(out_left, out_right, src.left, src.right, frames);
-                any = true;
-            } else {
-                audio_mix.addStereo(out_left, out_right, src.left, src.right, frames);
-            }
-        }
-        if (!any) {
-            @memset(out_left[0..frame_count], 0);
-            @memset(out_right[0..frame_count], 0);
-        }
-        return any;
+        return self.sumInputsToSlicesScaled(range, frame_count, out_left, out_right, active_only, 1.0);
     }
 
     fn sumInputsToSlicesScaled(
@@ -1049,27 +1019,27 @@ pub const Graph = struct {
         active_only: bool,
         gain: f32,
     ) bool {
-        if (gain == 1.0) {
-            return self.sumInputsToSlices(range, frame_count, out_left, out_right, active_only);
-        }
         const frames: usize = @intCast(frame_count);
         const inputs = self.audio_inputs.items[range.start..][0..range.count];
-        var any = false;
+
+        // Gather this node's active inputs into the pre-allocated scratch, then
+        // fold them all into the output with one fused pass.
+        var count: usize = 0;
         for (inputs) |input| {
             const src = &self.buffers.items[input.buffer];
             if (active_only and !src.active) continue;
-            if (!any) {
-                audio_mix.copyScaledStereo(out_left, out_right, src.left, src.right, frames, gain);
-                any = true;
-            } else {
-                audio_mix.addScaledStereo(out_left, out_right, src.left, src.right, frames, gain);
-            }
+            self.sum_scratch[count] = .{ .left = src.left, .right = src.right };
+            count += 1;
         }
-        if (!any) {
+
+        if (count == 0) {
             @memset(out_left[0..frame_count], 0);
             @memset(out_right[0..frame_count], 0);
+            return false;
         }
-        return any;
+
+        audio_mix.sumSpans(out_left, out_right, self.sum_scratch[0..count], frames, gain);
+        return true;
     }
 };
 

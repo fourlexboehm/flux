@@ -78,11 +78,14 @@ pub const Waveform = enum {
 pub fn Oversampler(comptime T: type, comptime factor: comptime_int) type {
     comptime if (factor != 2 and factor != 4) @compileError("Oversampling factor must be 2 or 4");
 
+    const num_taps = 7;
+
     return struct {
-        // Half-band filter coefficients (optimized for oversampling)
-        // Using a simple but effective 7-tap half-band filter
-        filter_state: [7]T = @splat(0.0),
-        output_accumulator: T = 0.0,
+        // Double-length ring buffer: the newest `num_taps` samples (newest first)
+        // are the contiguous slice `buf[head..head + num_taps]`, making each push
+        // O(1) instead of an O(num_taps) shift and keeping the FIR window contiguous.
+        buf: [2 * num_taps]T = @splat(0.0),
+        head: usize = 0,
 
         const Self = @This();
 
@@ -99,31 +102,25 @@ pub fn Oversampler(comptime T: type, comptime factor: comptime_int) type {
         }
 
         pub fn reset(self: *Self) void {
-            self.filter_state = @splat(0.0);
-            self.output_accumulator = 0.0;
+            self.buf = @splat(0.0);
+            self.head = 0;
+        }
+
+        inline fn push(self: *Self, sample: T) void {
+            self.head = (self.head + num_taps - 1) % num_taps;
+            self.buf[self.head] = sample;
+            self.buf[self.head + num_taps] = sample;
         }
 
         /// Process multiple oversampled inputs and return decimated output
         pub fn processAndDecimate(self: *Self, samples: [factor]T) T {
+            for (samples) |sample| self.push(sample);
+
+            const window = self.buf[self.head..][0..num_taps];
             var result: T = 0.0;
-
-            // Process each oversampled sample through the filter
-            for (samples) |sample| {
-                // Shift filter state
-                var i: usize = 6;
-                while (i > 0) : (i -= 1) {
-                    self.filter_state[i] = self.filter_state[i - 1];
-                }
-                self.filter_state[0] = sample;
-
-                // Apply filter (only compute output for last sample in group)
+            inline for (0..num_taps) |i| {
+                result += coeffs[i] * window[i];
             }
-
-            // Compute filtered output
-            for (coeffs, 0..) |coef, i| {
-                result += coef * self.filter_state[i];
-            }
-
             return result;
         }
     };

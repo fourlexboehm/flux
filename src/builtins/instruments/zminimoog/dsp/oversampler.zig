@@ -74,8 +74,16 @@ pub fn GlobalOversampler(comptime T: type, comptime max_factor: comptime_int) ty
 
     const num_taps = 31;
 
+    const lanes = std.simd.suggestVectorLength(T) orelse 4;
+    const V = @Vector(lanes, T);
+
     return struct {
-        filter_state: [num_taps]T = @splat(0.0),
+        // Double-length ring buffer: the newest `num_taps` samples (newest first)
+        // are always the contiguous slice `buf[head..head + num_taps]`, so pushing
+        // a sample is O(1) instead of an O(num_taps) shift, and the FIR reads a
+        // contiguous window that vectorizes cleanly.
+        buf: [2 * num_taps]T = @splat(0.0),
+        head: usize = 0,
 
         // Pre-computed Kaiser window coefficients (β=8, ~70dB stopband attenuation)
         const coeffs_2x = generateKaiserFIR(T, num_taps, 2, 8.0);
@@ -88,47 +96,39 @@ pub fn GlobalOversampler(comptime T: type, comptime max_factor: comptime_int) ty
         }
 
         pub fn reset(self: *Self) void {
-            self.filter_state = @splat(0.0);
+            self.buf = @splat(0.0);
+            self.head = 0;
+        }
+
+        inline fn push(self: *Self, sample: T) void {
+            self.head = (self.head + num_taps - 1) % num_taps;
+            self.buf[self.head] = sample;
+            self.buf[self.head + num_taps] = sample;
+        }
+
+        /// SIMD dot product of the current window (newest first) with `coeffs`.
+        inline fn applyFir(self: *const Self, comptime coeffs: [num_taps]T) T {
+            const window = self.buf[self.head..][0..num_taps];
+            var acc: V = @splat(0.0);
+            comptime var i: usize = 0;
+            inline while (i + lanes <= num_taps) : (i += lanes) {
+                acc += @as(V, window[i..][0..lanes].*) * @as(V, coeffs[i..][0..lanes].*);
+            }
+            var result: T = @reduce(.Add, acc);
+            inline while (i < num_taps) : (i += 1) result += window[i] * coeffs[i];
+            return result;
         }
 
         /// Decimate from 2x oversampled rate
         pub fn decimate2x(self: *Self, samples: [2]T) T {
-            // Push samples into filter state
-            for (samples) |sample| {
-                // Shift state
-                var i: usize = num_taps - 1;
-                while (i > 0) : (i -= 1) {
-                    self.filter_state[i] = self.filter_state[i - 1];
-                }
-                self.filter_state[0] = sample;
-            }
-
-            // Apply FIR filter
-            var result: T = 0.0;
-            inline for (0..num_taps) |i| {
-                result += coeffs_2x[i] * self.filter_state[i];
-            }
-            return result;
+            for (samples) |sample| self.push(sample);
+            return self.applyFir(coeffs_2x);
         }
 
         /// Decimate from 4x oversampled rate
         pub fn decimate4x(self: *Self, samples: [4]T) T {
-            // Push samples into filter state
-            for (samples) |sample| {
-                // Shift state
-                var i: usize = num_taps - 1;
-                while (i > 0) : (i -= 1) {
-                    self.filter_state[i] = self.filter_state[i - 1];
-                }
-                self.filter_state[0] = sample;
-            }
-
-            // Apply FIR filter
-            var result: T = 0.0;
-            inline for (0..num_taps) |i| {
-                result += coeffs_4x[i] * self.filter_state[i];
-            }
-            return result;
+            for (samples) |sample| self.push(sample);
+            return self.applyFir(coeffs_4x);
         }
 
         /// Generic decimate function for runtime factor selection
@@ -212,6 +212,33 @@ test "oversampler decimates DC correctly" {
     }
 
     try std.testing.expectApproxEqAbs(out, 0.5, 0.01);
+}
+
+test "ring buffer FIR matches naive shift implementation" {
+    // Reference: original O(n)-shift algorithm.
+    const num_taps = 31;
+    const coeffs = generateKaiserFIR(f64, num_taps, 4, 8.0);
+    var ref_state: [num_taps]f64 = @splat(0.0);
+    var os = GlobalOversampler(f64, 4).init();
+
+    var prng = std.Random.DefaultPrng.init(0xC0FFEE);
+    const rnd = prng.random();
+    for (0..200) |_| {
+        var group: [4]f64 = undefined;
+        for (&group) |*g| g.* = rnd.float(f64) * 2.0 - 1.0;
+
+        // Reference decimate4x.
+        for (group) |sample| {
+            var i: usize = num_taps - 1;
+            while (i > 0) : (i -= 1) ref_state[i] = ref_state[i - 1];
+            ref_state[0] = sample;
+        }
+        var ref_result: f64 = 0.0;
+        for (0..num_taps) |i| ref_result += coeffs[i] * ref_state[i];
+
+        const got = os.decimate4x(group);
+        try std.testing.expectApproxEqAbs(ref_result, got, 1e-12);
+    }
 }
 
 test "oversample factor enum conversions" {

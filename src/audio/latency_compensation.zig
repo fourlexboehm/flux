@@ -41,7 +41,42 @@ pub const StereoDelay = struct {
         // silence was causing buffer-length (or worse) audio holes whenever latency
         // fluttered or a clip/plugin enabled state changed mid-playback.
         self.delay = @min(requested_delay, max_frames);
+        const delay = self.delay;
+        const n: u32 = @intCast(left.len);
+        const write = self.write_pos;
 
+        // Steady-state fast path: `delay` is constant across the block and the
+        // cold-start / sub-block / max-delay-alias branches don't apply, so the
+        // whole block is two contiguous ring spans (≤2 @memcpy each, vectorized
+        // by the backend) instead of a per-sample masked loop.
+        //   - delay == 0: passthrough, ring still advances.
+        //   - warm && n <= delay < max_frames: read region is entirely in the
+        //     past (no overlap with the write region, no wrap-alias), so input
+        //     can be stored first and the delayed span copied straight out.
+        const warm = self.history >= delay;
+        const fast = n <= max_frames and (delay == 0 or (warm and delay >= n and delay < max_frames));
+        if (!fast) {
+            self.processScalar(left, right);
+            return;
+        }
+
+        const start = write & ring_mask;
+        copyToRing(self.left, start, left);
+        copyToRing(self.right, start, right);
+        if (delay != 0) {
+            const read = (write -% delay) & ring_mask;
+            copyFromRing(left, self.left, read);
+            copyFromRing(right, self.right, read);
+        }
+
+        self.write_pos = write +% n;
+        self.history = @min(self.history + n, max_frames);
+    }
+
+    /// Reference per-sample path. Handles cold-start fill, sub-block delays
+    /// (output draws from current-block input), and the max_frames alias slot
+    /// (read-before-write): cases the block-copy fast path can't express.
+    fn processScalar(self: *StereoDelay, left: []f32, right: []f32) void {
         var write = self.write_pos;
         var history = self.history;
         const delay = self.delay;
@@ -54,7 +89,6 @@ pub const StereoDelay = struct {
             if (delay == 0) {
                 // Pass-through; ring still advanced so a later non-zero delay is continuous.
             } else if (history < delay) {
-                // Cold start only — not used on delay *changes* once history is deep enough.
                 l.* = 0;
                 r.* = 0;
             } else {
@@ -73,7 +107,76 @@ pub const StereoDelay = struct {
         self.write_pos = write;
         self.history = history;
     }
+
+    /// Copy `src` into the ring starting at masked index `start`, wrapping once.
+    /// Requires `src.len <= max_frames` (guaranteed by the caller's fast-path gate).
+    inline fn copyToRing(ring: []f32, start: u32, src: []const f32) void {
+        const count = src.len;
+        const first = @min(count, ring.len - start);
+        @memcpy(ring[start..][0..first], src[0..first]);
+        if (first < count) @memcpy(ring[0 .. count - first], src[first..]);
+    }
+
+    /// Copy a contiguous ring span starting at masked index `start` into `dst`,
+    /// wrapping once. Requires `dst.len <= max_frames`.
+    inline fn copyFromRing(dst: []f32, ring: []const f32, start: u32) void {
+        const count = dst.len;
+        const first = @min(count, ring.len - start);
+        @memcpy(dst[0..first], ring[start..][0..first]);
+        if (first < count) @memcpy(dst[first..], ring[0 .. count - first]);
+    }
 };
+
+test "block-copy fast path matches per-sample reference" {
+    // Independent oracle: a naive per-sample delay line on its own ring.
+    const Ref = struct {
+        buf: [max_frames]f32 = @splat(0),
+        write: u32 = 0,
+        history: u32 = 0,
+        fn process(self: *@This(), sig: []f32, delay: u32) void {
+            for (sig) |*s| {
+                const in = s.*;
+                if (delay == 0) {
+                    // passthrough
+                } else if (self.history < delay) {
+                    s.* = 0;
+                } else {
+                    s.* = self.buf[(self.write -% delay) & ring_mask];
+                }
+                self.buf[self.write & ring_mask] = in;
+                self.write +%= 1;
+                if (self.history < max_frames) self.history += 1;
+            }
+        }
+    };
+
+    var opt = try StereoDelay.init(std.testing.allocator);
+    defer opt.deinit(std.testing.allocator);
+    var ref = Ref{};
+
+    var prng = std.Random.DefaultPrng.init(0xDECAF);
+    const rnd = prng.random();
+    var scratch: [4096]f32 = undefined;
+    var expected: [4096]f32 = undefined;
+
+    for (0..500) |_| {
+        const n = rnd.intRangeAtMost(usize, 1, scratch.len);
+        // Bias toward delays >= n so the warm block-copy path is exercised often.
+        const delay: u32 = switch (rnd.intRangeAtMost(u8, 0, 3)) {
+            0 => 0,
+            1 => rnd.intRangeAtMost(u32, 1, @intCast(n)),
+            else => rnd.intRangeAtMost(u32, @intCast(n), 8192),
+        };
+        for (scratch[0..n]) |*s| s.* = rnd.float(f32) * 2 - 1;
+        @memcpy(expected[0..n], scratch[0..n]);
+
+        // Same signal on both channels; only left is compared (right mirrors it).
+        var right = scratch;
+        opt.process(scratch[0..n], right[0..n], delay);
+        ref.process(expected[0..n], delay);
+        try std.testing.expectEqualSlices(f32, expected[0..n], scratch[0..n]);
+    }
+}
 
 test "stereo delay compensates by exact frame count" {
     var delay = try StereoDelay.init(std.testing.allocator);

@@ -169,6 +169,17 @@ pub fn processVoice(plugin: *Plugin, voice_index: u32) !void {
     const osc2_octave: f64 = plugin.params.get(.Octave2).Float;
     const oscillator_mix: f64 = plugin.params.get(.Mix).Float;
 
+    // Waveform, tuning and dt are constant across the block, so configure the
+    // oscillators once instead of recomputing (incl. an exp2 in getFrequency)
+    // every sample.
+    const osc1_key = voice.getTunedKey(osc1_detune, osc1_octave);
+    const osc2_key = voice.getTunedKey(osc2_detune, osc2_octave);
+    voice.osc1.setWaveform(polyblepWaveform(osc1_wave_shape));
+    voice.osc2.setWaveform(polyblepWaveform(osc2_wave_shape));
+    voice.osc1.setFrequency(waves.getFrequency(osc1_key));
+    voice.osc2.setFrequency(waves.getFrequency(osc2_key));
+    const dt = (1 / plugin.sample_rate.?) * 1000;
+
     var index = render_payload.start;
     while (index < render_payload.end) : (index += 1) {
         var voice_sum_l: f64 = 0;
@@ -176,16 +187,8 @@ pub fn processVoice(plugin: *Plugin, voice_index: u32) !void {
         var voice_sum_mono: f64 = 0;
         var wave: f64 = undefined;
 
-        var osc1_wave: f64 = 0;
-        var osc2_wave: f64 = 0;
-        const osc1_key = voice.getTunedKey(osc1_detune, osc1_octave);
-        const osc2_key = voice.getTunedKey(osc2_detune, osc2_octave);
-        voice.osc1.setWaveform(polyblepWaveform(osc1_wave_shape));
-        voice.osc2.setWaveform(polyblepWaveform(osc2_wave_shape));
-        voice.osc1.setFrequency(waves.getFrequency(osc1_key));
-        voice.osc2.setFrequency(waves.getFrequency(osc2_key));
-        osc1_wave = voice.osc1.getAndInc();
-        osc2_wave = voice.osc2.getAndInc();
+        const osc1_wave: f64 = voice.osc1.getAndInc();
+        const osc2_wave: f64 = voice.osc2.getAndInc();
 
         const zone_postprocess = tracy.ZoneN(@src(), "Wave post-process");
         defer zone_postprocess.End();
@@ -196,7 +199,6 @@ pub fn processVoice(plugin: *Plugin, voice_index: u32) !void {
         voice_sum_l += voice_sum_mono * (1 - pan);
         voice_sum_r += voice_sum_mono * pan;
 
-        const dt = (1 / plugin.sample_rate.?) * 1000;
         voice.adsr.update(dt);
 
         var output_l: f32 = @floatCast(voice_sum_l);

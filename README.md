@@ -1,6 +1,6 @@
 # Flux
 
-Flux is a minimal DAW and CLAP host built in Zig. It started as a fork of, and was originally designed around, ZSynth (https://github.com/jrachele/zsynth). It focuses on a session view workflow (Ableton/Bitwig-style clip launching), MIDI sequencing, and a tight embedded instrument workflow. There is no arrangement view and no audio clips by design.
+Flux is a minimal DAW and CLAP host built in Zig. It started as a fork of, and was originally designed around, ZSynth (https://github.com/jrachele/zsynth). It focuses on a session view workflow (Ableton/Bitwig-style clip launching), MIDI sequencing, and a tight embedded instrument workflow.
 
 Core features:
 - Session view clip launcher with MIDI clips

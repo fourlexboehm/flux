@@ -454,7 +454,9 @@ fn wireFluxNative(b: *std.Build, module: *std.Build.Module, d: FluxNativeDeps) v
 
     module.addCSourceFile(.{
         .file = d.emu2413.path("emu2413.c"),
-        .flags = &.{"-std=c11"},
+        // emu2413 relies on well-defined-in-practice signed shifts/overflow that
+        // trip Zig's C UBSan in debug builds (e.g. `~res << 1` in lookup_exp_table).
+        .flags = &.{ "-std=c11", "-fno-sanitize=undefined" },
     });
     module.addCSourceFiles(.{
         .root = b.path(""),
