@@ -79,6 +79,7 @@ pub fn init(allocator: std.mem.Allocator) session_view.SessionView {
 pub fn deinit(self: *session_view.SessionView) void {
     clearClipboard(self);
     self.clipboard.deinit(self.allocator);
+    self.undo_requests.deinit(self.allocator);
 }
 
 pub fn isSelected(self: *const session_view.SessionView, track: usize, scene: usize) bool {
@@ -158,7 +159,7 @@ pub fn createClip(self: *session_view.SessionView, track: usize, scene: usize, b
     };
     self.clip_pool.retain(id);
     self.clips[track][scene] = .{ .state = .stopped, .clip = id };
-    self.emitUndoRequest(.{
+    _ = self.emitUndoRequest(.{
         .kind = .clip_create,
         .track = track,
         .scene = scene,
@@ -175,13 +176,14 @@ pub fn deleteClip(self: *session_view.SessionView, track: usize, scene: usize) v
     const old_clip = self.clips[track][scene];
     if (old_clip.state == .empty) return; // Don't record deleting empty slots
     self.clips[track][scene] = .{};
-    self.emitUndoRequest(.{
+    const queued = self.emitUndoRequest(.{
         .kind = .clip_delete,
         .track = track,
         .scene = scene,
         .length_beats = slotLength(self, old_clip.clip),
         .old_clip = old_clip,
     });
+    if (!queued) self.clip_pool.release(old_clip.clip, self.sample_store);
 }
 
 /// Delete all selected clips
@@ -275,7 +277,7 @@ pub fn paste(self: *session_view.SessionView) void {
         self.clips[track][scene] = .{ .state = entry.state, .clip = dup };
         selectClip(self, track, scene);
 
-        self.emitUndoRequest(.{
+        const queued = self.emitUndoRequest(.{
             .kind = .clip_paste,
             .track = track,
             .scene = scene,
@@ -284,6 +286,7 @@ pub fn paste(self: *session_view.SessionView) void {
             .length_beats = slotLength(self, dup),
             .old_clip = old_clip,
         });
+        if (!queued) self.clip_pool.release(old_clip.clip, self.sample_store);
     }
 }
 
@@ -296,7 +299,7 @@ pub fn addTrack(self: *session_view.SessionView) bool {
     const TrackType = @TypeOf(self.tracks[0]);
     self.tracks[self.track_count] = TrackType.init(name);
     self.track_count += 1;
-    self.emitUndoRequest(.{
+    _ = self.emitUndoRequest(.{
         .kind = .track_add,
         .track = self.track_count - 1,
     });
@@ -312,7 +315,7 @@ pub fn addScene(self: *session_view.SessionView) bool {
     const SceneType = @TypeOf(self.scenes[0]);
     self.scenes[self.scene_count] = SceneType.init(name);
     self.scene_count += 1;
-    self.emitUndoRequest(.{
+    _ = self.emitUndoRequest(.{
         .kind = .scene_add,
         .scene = self.scene_count - 1,
     });
@@ -324,7 +327,7 @@ pub fn deleteScene(self: *session_view.SessionView, scene: usize) bool {
     if (self.scene_count <= 1) return false;
     if (scene >= self.scene_count) return false;
 
-    var clip_snapshots: [max_tracks]@TypeOf(self.undo_requests[0].scene_clips[0]) = @splat(.{});
+    var clip_snapshots: [max_tracks]session_view.ClipSnapshot = @splat(.{});
     for (0..self.track_count) |t| {
         const slot = self.clips[t][scene];
         clip_snapshots[t] = .{
@@ -333,7 +336,7 @@ pub fn deleteScene(self: *session_view.SessionView, scene: usize) bool {
             .clip = slot.clip,
         };
     }
-    self.emitUndoRequest(.{
+    const queued = self.emitUndoRequest(.{
         .kind = .scene_delete,
         .scene = scene,
         .scene_data = .{
@@ -341,6 +344,9 @@ pub fn deleteScene(self: *session_view.SessionView, scene: usize) bool {
         },
         .scene_clips = clip_snapshots,
     });
+    if (!queued) {
+        for (clip_snapshots) |snapshot| self.clip_pool.release(snapshot.clip, self.sample_store);
+    }
 
     // Clear selection in this scene
     for (0..self.track_count) |t| {
@@ -379,7 +385,7 @@ pub fn deleteTrack(self: *session_view.SessionView, track: usize) bool {
     if (self.track_count <= 1) return false;
     if (track >= self.track_count) return false;
 
-    var clip_snapshots: [max_scenes]@TypeOf(self.undo_requests[0].track_clips[0]) = @splat(.{});
+    var clip_snapshots: [max_scenes]session_view.ClipSnapshot = @splat(.{});
     for (0..self.scene_count) |s| {
         const slot = self.clips[track][s];
         clip_snapshots[s] = .{
@@ -388,7 +394,7 @@ pub fn deleteTrack(self: *session_view.SessionView, track: usize) bool {
             .clip = slot.clip,
         };
     }
-    self.emitUndoRequest(.{
+    const queued = self.emitUndoRequest(.{
         .kind = .track_delete,
         .track = track,
         .track_data = .{
@@ -400,6 +406,9 @@ pub fn deleteTrack(self: *session_view.SessionView, track: usize) bool {
         },
         .track_clips = clip_snapshots,
     });
+    if (!queued) {
+        for (clip_snapshots) |snapshot| self.clip_pool.release(snapshot.clip, self.sample_store);
+    }
 
     // Clear selection in this track
     for (0..self.scene_count) |s| {
@@ -597,7 +606,7 @@ pub fn commitRename(self: *session_view.SessionView) void {
             const scene = self.rename_scene;
             if (scene < self.scene_count and !std.mem.eql(u8, self.rename_old.get(), new_name.get())) {
                 self.scenes[scene].name = new_name;
-                self.emitUndoRequest(.{
+                _ = self.emitUndoRequest(.{
                     .kind = .scene_rename,
                     .scene = scene,
                     .old_name = self.rename_old,
@@ -613,7 +622,7 @@ pub fn commitRename(self: *session_view.SessionView) void {
                 !std.mem.eql(u8, self.rename_old.get(), new_name.get()))
             {
                 if (self.clip_pool.get(self.clips[track][scene].clip)) |c| c.name = new_name;
-                self.emitUndoRequest(.{
+                _ = self.emitUndoRequest(.{
                     .kind = .clip_rename,
                     .track = track,
                     .scene = scene,

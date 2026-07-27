@@ -269,9 +269,10 @@ pub const SessionView = struct {
     start_playback_request: bool = false,
     reset_playhead_request: bool = false,
 
-    // Undo requests (populated by operations, processed by ui/undo_requests.zig)
-    undo_requests: [16]UndoRequest = undefined,
-    undo_request_count: usize = 0,
+    // Undo requests are staged during a UI frame, then consumed by
+    // ui/undo_requests.zig. This must grow for bulk edits so displaced pooled
+    // clips always reach their ownership hand-off.
+    undo_requests: std.ArrayListUnmanaged(UndoRequest) = .empty,
 
     // Clip move undo (separate since it can involve multiple clips)
     clip_move_requests: [constants.max_tracks * constants.max_scenes]ClipMoveEntry = undefined,
@@ -305,11 +306,9 @@ pub const SessionView = struct {
     rename_old: NameField = .{},
     rename_focus: bool = false,
 
-    pub fn emitUndoRequest(self: *SessionView, req: UndoRequest) void {
-        if (self.undo_request_count < self.undo_requests.len) {
-            self.undo_requests[self.undo_request_count] = req;
-            self.undo_request_count += 1;
-        }
+    pub fn emitUndoRequest(self: *SessionView, req: UndoRequest) bool {
+        self.undo_requests.append(self.allocator, req) catch return false;
+        return true;
     }
 };
 
@@ -317,4 +316,17 @@ test {
     // Pull the clip-pool module into the test graph so its unit tests run
     // under `zig build test`. Nothing wires it into runtime.
     _ = @import("clip_pool.zig");
+}
+
+test "undo request staging grows for bulk edits" {
+    var view = SessionView{ .allocator = std.testing.allocator };
+    defer view.undo_requests.deinit(std.testing.allocator);
+
+    for (0..17) |track| {
+        try std.testing.expect(view.emitUndoRequest(.{
+            .kind = .track_add,
+            .track = track,
+        }));
+    }
+    try std.testing.expectEqual(@as(usize, 17), view.undo_requests.items.len);
 }

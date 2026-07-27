@@ -48,7 +48,7 @@ fn emptyAudioSnapshot(state: *State) !AudioClipSnapshot {
 }
 
 pub fn processUndoRequests(state: *State) void {
-    for (state.session.undo_requests[0..state.session.undo_request_count]) |req| {
+    for (state.session.undo_requests.items) |req| {
         switch (req.kind) {
             .clip_create => {
                 state.undo_history.push(.{
@@ -172,7 +172,7 @@ pub fn processUndoRequests(state: *State) void {
             },
         }
     }
-    state.session.undo_request_count = 0; // Clear processed requests
+    state.session.undo_requests.clearRetainingCapacity();
 
     // Clip moves: the slots (and their ClipIds) were already moved by session
     // ops; content travels with the handle, so only the undo record remains.
@@ -212,6 +212,14 @@ fn pushColumnDelete(state: *State, req: anytype) !void {
     var notes: [max_scenes][]const undo.Note = undefined;
     var clips: [max_scenes]undo.ClipSlotData = undefined;
     var captured: usize = 0;
+    // The slots were already detached from the session grid. If optional undo
+    // capture cannot be allocated, drop their pooled references rather than
+    // leaving unreachable clips (and sample refs) alive.
+    errdefer {
+        for (req.track_clips) |snapshot| {
+            state.clip_pool.release(snapshot.clip, &state.sample_store);
+        }
+    }
     errdefer {
         for (0..captured) |i| {
             audio[i].deinit();
@@ -250,6 +258,13 @@ fn pushRowDelete(state: *State, req: anytype) !void {
     var notes: [max_tracks][]const undo.Note = undefined;
     var clips: [max_tracks]undo.ClipSlotData = undefined;
     var captured: usize = 0;
+    // See pushColumnDelete: an allocation failure drops this undo entry, but
+    // must still release every detached pooled clip.
+    errdefer {
+        for (req.scene_clips) |snapshot| {
+            state.clip_pool.release(snapshot.clip, &state.sample_store);
+        }
+    }
     errdefer {
         for (0..captured) |i| {
             audio[i].deinit();

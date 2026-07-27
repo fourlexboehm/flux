@@ -663,7 +663,7 @@ fn drawTrackMixer(self: *session_view.SessionView, track: usize, levels: [2]f32,
     } else if (self.volume_drag_track == track) {
         // Drag ended - emit undo request if changed
         if (self.tracks[track].volume != self.volume_drag_start) {
-            self.emitUndoRequest(.{
+            _ = self.emitUndoRequest(.{
                 .kind = .track_volume,
                 .track = track,
                 .old_volume = self.volume_drag_start,
