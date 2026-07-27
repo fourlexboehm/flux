@@ -293,3 +293,9 @@ pub const SessionView = struct {
         }
     }
 };
+
+test {
+    // Pull the clip-pool module into the test graph so its unit tests run
+    // under `zig build test`. Nothing wires it into runtime.
+    _ = @import("clip_pool.zig");
+}
