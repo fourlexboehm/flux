@@ -15,6 +15,39 @@ const transport = @import("transport.zig");
 const browser = @import("panels/browser.zig");
 const bottom = @import("panels/bottom.zig");
 const main_pane = @import("views/main_pane.zig");
+const piano_roll = @import("views/piano_roll.zig");
+
+const sdl = dvui.backend.c;
+
+const PianoKeyBinding = struct {
+    scancode: c_int,
+    offset: u8,
+};
+
+/// Physical positions of the QWERTY A–; piano rows. SDL scancodes are layout
+/// independent, so these positions stay put under Dvorak and other layouts.
+const piano_key_bindings = [_]PianoKeyBinding{
+    .{ .scancode = sdl.SDL_SCANCODE_A, .offset = 0 },
+    .{ .scancode = sdl.SDL_SCANCODE_W, .offset = 1 },
+    .{ .scancode = sdl.SDL_SCANCODE_S, .offset = 2 },
+    .{ .scancode = sdl.SDL_SCANCODE_E, .offset = 3 },
+    .{ .scancode = sdl.SDL_SCANCODE_D, .offset = 4 },
+    .{ .scancode = sdl.SDL_SCANCODE_F, .offset = 5 },
+    .{ .scancode = sdl.SDL_SCANCODE_T, .offset = 6 },
+    .{ .scancode = sdl.SDL_SCANCODE_G, .offset = 7 },
+    .{ .scancode = sdl.SDL_SCANCODE_Y, .offset = 8 },
+    .{ .scancode = sdl.SDL_SCANCODE_H, .offset = 9 },
+    .{ .scancode = sdl.SDL_SCANCODE_U, .offset = 10 },
+    .{ .scancode = sdl.SDL_SCANCODE_J, .offset = 11 },
+    .{ .scancode = sdl.SDL_SCANCODE_K, .offset = 12 },
+    .{ .scancode = sdl.SDL_SCANCODE_O, .offset = 13 },
+    .{ .scancode = sdl.SDL_SCANCODE_L, .offset = 14 },
+    .{ .scancode = sdl.SDL_SCANCODE_P, .offset = 15 },
+    .{ .scancode = sdl.SDL_SCANCODE_SEMICOLON, .offset = 16 },
+};
+
+var octave_down_was_down = false;
+var octave_up_was_down = false;
 
 pub fn init(win: *dvui.Window) !void {
     theme.apply(win);
@@ -29,7 +62,7 @@ pub fn init(win: *dvui.Window) !void {
     std.log.info("flux-dvui host ready (backend={s})", .{@tagName(dvui.backend.kind)});
     std.log.info("  document: empty session+arrangement", .{});
     std.log.info("  audio: full AudioEngine + CLAP catalog + floating plugin GUIs", .{});
-    std.log.info("  MIDI: computer keyboard A–; (Z/X octave) + hardware portmidi", .{});
+    std.log.info("  MIDI: physical keyboard A–; positions (Z/X octave) + hardware portmidi", .{});
     std.log.info("  Space = play/stop, Tab = session/arrangement, Shift+Tab = device/clip, B = browser", .{});
 }
 
@@ -50,6 +83,7 @@ pub fn frame() !dvui.App.Result {
     const state = &state_mod.g;
     std.debug.assert(host_mod.ready());
     host_mod.g.drainPlaybackRequests(state);
+    pollPhysicalPiano(state);
     handleGlobalKeys(state);
 
     // Full engine: buffer, MIDI, plugin sync, publish host+chrome → RT, pull meters.
@@ -150,13 +184,18 @@ fn handleGlobalKeys(state: *state_mod.State) void {
         if (e.evt != .key) continue;
         const ke = e.evt.key;
 
-        // Computer-keyboard MIDI (edge on down/up; ignore when modifiers held).
-        if (plugin_host.ready() and !ke.mod.control() and !ke.mod.command() and !ke.mod.alt()) {
-            if (handlePianoKey(state, ke)) {
-                e.handle(@src(), wd);
-                dvui.refresh(null, @src(), wd.id);
-                continue;
-            }
+        // The computer piano owns its physical key positions before any
+        // layout-dependent editor/global shortcuts see the translated key.
+        if (plugin_host.ready() and !ke.mod.control() and !ke.mod.command() and !ke.mod.alt() and isPhysicalPianoKey(ke.code)) {
+            e.handle(@src(), wd);
+            dvui.refresh(null, @src(), wd.id);
+            continue;
+        }
+
+        if (state.focused_pane == .bottom and state.bottom_mode == .sequencer and piano_roll.handleKey(state, ke)) {
+            e.handle(@src(), wd);
+            dvui.refresh(null, @src(), wd.id);
+            continue;
         }
 
         if (ke.action != .down and ke.action != .repeat) continue;
@@ -230,57 +269,91 @@ fn handleGlobalKeys(state: *state_mod.State) void {
     }
 }
 
-/// A–; white/black piano map + Z/X octave. Returns true if consumed.
-fn handlePianoKey(state: *state_mod.State, ke: dvui.Event.Key) bool {
-    const ph = &plugin_host.g;
-    const track = state.selected_track;
+fn keyboardDown(keys: [*c]const bool, count: c_int, scancode: c_int) bool {
+    return scancode >= 0 and scancode < count and keys[@intCast(scancode)];
+}
 
-    // Octave change on edge down only.
-    if (ke.action == .down) {
-        if (ke.code == .z) {
+fn keyboardModifierDown(keys: [*c]const bool, count: c_int) bool {
+    const modifiers = [_]c_int{
+        sdl.SDL_SCANCODE_LCTRL,
+        sdl.SDL_SCANCODE_RCTRL,
+        sdl.SDL_SCANCODE_LALT,
+        sdl.SDL_SCANCODE_RALT,
+        sdl.SDL_SCANCODE_LGUI,
+        sdl.SDL_SCANCODE_RGUI,
+    };
+    for (modifiers) |scancode| if (keyboardDown(keys, count, scancode)) return true;
+    return false;
+}
+
+/// Poll SDL's physical key state instead of DVUI's layout-translated key names.
+fn pollPhysicalPiano(state: *const state_mod.State) void {
+    if (!plugin_host.ready()) return;
+    const ph = &plugin_host.g;
+    var count: c_int = 0;
+    const keys = sdl.SDL_GetKeyboardState(&count);
+    const octave_down = keyboardDown(keys, count, sdl.SDL_SCANCODE_Z);
+    const octave_up = keyboardDown(keys, count, sdl.SDL_SCANCODE_X);
+
+    ph.clearKeyboardNotes();
+    if (!keyboardModifierDown(keys, count)) {
+        if (octave_down and !octave_down_was_down) {
             ph.keyboard_octave = @max(ph.keyboard_octave - 1, -5);
-            ph.clearLiveKeys();
-            return true;
         }
-        if (ke.code == .x) {
+        if (octave_up and !octave_up_was_down) {
             ph.keyboard_octave = @min(ph.keyboard_octave + 1, 5);
-            ph.clearLiveKeys();
-            return true;
+        }
+
+        for (piano_key_bindings) |binding| {
+            if (keyboardDown(keys, count, binding.scancode)) {
+                ph.applyKeyboardNote(state.selected_track, binding.offset, true);
+            }
         }
     }
+    octave_down_was_down = octave_down;
+    octave_up_was_down = octave_up;
+}
 
-    const offset: ?u8 = switch (ke.code) {
-        .a => 0,
-        .w => 1,
-        .s => 2,
-        .e => 3,
-        .d => 4,
-        .f => 5,
-        .t => 6,
-        .g => 7,
-        .y => 8,
-        .h => 9,
-        .u => 10,
-        .j => 11,
-        .k => 12,
-        .o => 13,
-        .l => 14,
-        .p => 15,
-        .semicolon => 16,
+fn dvuiKeyToSdl(code: dvui.enums.Key) ?sdl.SDL_Keycode {
+    return switch (code) {
+        .a,
+        .b,
+        .c,
+        .d,
+        .e,
+        .f,
+        .g,
+        .h,
+        .i,
+        .j,
+        .k,
+        .l,
+        .m,
+        .n,
+        .o,
+        .p,
+        .q,
+        .r,
+        .s,
+        .t,
+        .u,
+        .v,
+        .w,
+        .x,
+        .y,
+        .z,
+        => @intCast(sdl.SDLK_A + @backingInt(code) - @backingInt(dvui.enums.Key.a)),
+        .semicolon => sdl.SDLK_SEMICOLON,
+        .comma => sdl.SDLK_COMMA,
+        .period => sdl.SDLK_PERIOD,
         else => null,
     };
-    const off = offset orelse return false;
+}
 
-    switch (ke.action) {
-        .down => {
-            // Ignore key-repeat for note-on.
-            ph.applyKeyboardNote(track, off, true);
-            return true;
-        },
-        .up => {
-            ph.applyKeyboardNote(track, off, false);
-            return true;
-        },
-        .repeat => return true, // swallow repeat
-    }
+fn isPhysicalPianoKey(code: dvui.enums.Key) bool {
+    const keycode = dvuiKeyToSdl(code) orelse return false;
+    const scancode: c_int = @intCast(sdl.SDL_GetScancodeFromKey(keycode, null));
+    if (scancode == sdl.SDL_SCANCODE_Z or scancode == sdl.SDL_SCANCODE_X) return true;
+    for (piano_key_bindings) |binding| if (scancode == binding.scancode) return true;
+    return false;
 }

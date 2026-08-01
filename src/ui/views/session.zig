@@ -2,6 +2,7 @@
 //! Slot content projects from `ui/host.zig` (real session + clip pool).
 //! Full behavior reference: `ui_zgui/views/session/`.
 
+const std = @import("std");
 const dvui = @import("dvui");
 const theme = @import("../theme.zig");
 const tokens = @import("../tokens.zig");
@@ -10,6 +11,8 @@ const state_mod = @import("../state.zig");
 const host_mod = @import("../host.zig");
 const document_model = @import("../../document/model.zig");
 const document_commands = @import("../../document/commands.zig");
+
+const add_track_col_w: f32 = 84;
 
 pub fn draw(state: *state_mod.State) void {
     // Chrome is projected each frame from host in root.frame.
@@ -35,7 +38,7 @@ pub fn draw(state: *state_mod.State) void {
     // the viewport hid horizontal overflow even when the track cells did not
     // fit, so no horizontal scrollbar could be produced.
     const grid_w = tokens.scene_col_w +
-        @as(f32, @floatFromInt(state.track_count)) * tokens.track_col_w + 84;
+        @as(f32, @floatFromInt(state.track_count)) * tokens.track_col_w + add_track_col_w;
     var grid_content = dvui.box(@src(), .{ .dir = .vertical }, .{
         .min_size_content = .{ .w = grid_w },
     });
@@ -48,7 +51,7 @@ pub fn draw(state: *state_mod.State) void {
             .background = true,
             .color_fill = theme.header,
             .min_size_content = .{ .h = tokens.session_header_h },
-            .padding = .{ .x = tokens.gap_xs, .y = 1, .w = tokens.gap_xs, .h = 1 },
+            .padding = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
             .border = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
             .color_border = theme.grid,
         });
@@ -56,6 +59,7 @@ pub fn draw(state: *state_mod.State) void {
 
         var corner = dvui.box(@src(), .{}, .{
             .min_size_content = .{ .w = tokens.scene_col_w, .h = tokens.session_header_h - 2 },
+            .max_size_content = .width(tokens.scene_col_w),
         });
         corner.deinit();
 
@@ -65,7 +69,7 @@ pub fn draw(state: *state_mod.State) void {
             const name = state.trackName(t);
             var track_cell = dvui.box(@src(), .{ .dir = .vertical }, .{
                 .min_size_content = .{ .w = tokens.track_col_w, .h = tokens.session_header_h - 2 },
-                .padding = .{ .x = 1, .y = 0, .w = 1, .h = 0 },
+                .max_size_content = .width(tokens.track_col_w),
                 .id_extra = t,
             });
             defer track_cell.deinit();
@@ -77,6 +81,7 @@ pub fn draw(state: *state_mod.State) void {
                 .color_text = if (selected) theme.bg else theme.text_dim,
                 .corners = .round(tokens.radius_sm),
                 .gravity_y = 0.5,
+                .margin = .{ .x = 1, .y = 0, .w = 1, .h = 0 },
                 .id_extra = t,
             })) {
                 state.selectTrack(t);
@@ -99,11 +104,12 @@ pub fn draw(state: *state_mod.State) void {
         }
 
         if (dvui.button(@src(), "+ Track", .{}, .{
-            .min_size_content = .{ .w = 72, .h = tokens.session_header_h - 4 },
+            .min_size_content = .{ .w = add_track_col_w - 11, .h = tokens.session_header_h - 4 },
             .color_fill = theme.cell,
             .color_text = theme.text_dim,
             .corners = .round(tokens.radius_sm),
             .margin = .{ .x = 3, .y = 1, .w = 2, .h = 1 },
+            .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
         })) {
             if (document_model.ready()) {
                 if (document_commands.addTrack(&document_model.g) and host_mod.ready()) host_mod.g.projectChrome(state);
@@ -120,7 +126,7 @@ pub fn draw(state: *state_mod.State) void {
             .background = true,
             .color_fill = if (scene_sel) theme.panel else theme.cell,
             .min_size_content = .{ .h = tokens.session_row_h },
-            .padding = .{ .x = tokens.gap_xs, .y = 2, .w = tokens.gap_xs, .h = 2 },
+            .padding = .{ .x = 0, .y = 2, .w = 0, .h = 2 },
             .border = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
             .color_border = theme.grid,
             .id_extra = s,
@@ -130,7 +136,8 @@ pub fn draw(state: *state_mod.State) void {
         // Scene launch + name (vertically centered in row)
         {
             var scene_cell = dvui.box(@src(), .{ .dir = .horizontal }, .{
-                .min_size_content = .{ .w = tokens.scene_col_w - 2, .h = tokens.session_row_h - 4 },
+                .min_size_content = .{ .w = tokens.scene_col_w, .h = tokens.session_row_h - 4 },
+                .max_size_content = .width(tokens.scene_col_w),
                 .gravity_y = 0.5,
                 .id_extra = s,
             });
@@ -154,6 +161,7 @@ pub fn draw(state: *state_mod.State) void {
                 .color_fill = if (scene_sel) theme.accent_dim else theme.panel,
                 .color_text = if (scene_sel) theme.text else theme.text_dim,
                 .margin = .{ .x = tokens.gap_xs, .y = 0, .w = 0, .h = 0 },
+                .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
                 .corners = .round(tokens.radius_sm),
                 .gravity_y = 0.5,
                 .id_extra = s + 1000,
@@ -170,11 +178,12 @@ pub fn draw(state: *state_mod.State) void {
     }
 
     if (dvui.button(@src(), "+ Scene", .{}, .{
-        .min_size_content = .{ .w = tokens.scene_col_w - 4, .h = tokens.session_row_h - 8 },
+        .min_size_content = .{ .w = tokens.scene_col_w - 10, .h = tokens.session_row_h - 8 },
         .color_fill = theme.panel,
         .color_text = theme.text_dim,
         .corners = .round(tokens.radius_sm),
         .margin = .{ .x = 2, .y = 3, .w = 2, .h = 2 },
+        .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
     })) {
         if (document_model.ready()) {
             if (document_commands.addScene(&document_model.g) and host_mod.ready()) host_mod.g.projectChrome(state);
@@ -189,7 +198,7 @@ fn drawMixer(state: *state_mod.State) void {
         .background = true,
         .color_fill = theme.header,
         .min_size_content = .{ .h = tokens.session_mixer_h },
-        .padding = .{ .x = tokens.scene_col_w + 2, .y = 4, .w = 4, .h = 4 },
+        .padding = .{ .x = tokens.scene_col_w, .y = 4, .w = 0, .h = 4 },
         .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
         .border = .{ .x = 0, .y = 1, .w = 0, .h = 0 },
         .color_border = theme.grid,
@@ -202,8 +211,16 @@ fn drawMixer(state: *state_mod.State) void {
 
 fn drawMixerChannel(state: *state_mod.State, track: usize) void {
     const selected = state.selected_track == track;
+    var track_cell = dvui.box(@src(), .{}, .{
+        .min_size_content = .{ .w = tokens.track_col_w },
+        .max_size_content = .width(tokens.track_col_w),
+        .id_extra = track,
+    });
+    defer track_cell.deinit();
+
     var channel = dvui.box(@src(), .{ .dir = .vertical }, .{
-        .min_size_content = .{ .w = tokens.track_col_w - 2, .h = tokens.session_mixer_h - 8 },
+        .expand = .horizontal,
+        .min_size_content = .{ .h = tokens.session_mixer_h - 8 },
         .background = true,
         .color_fill = if (selected) theme.panel else theme.cell,
         .border = dvui.Rect.all(if (selected) 1.5 else 1),
@@ -219,10 +236,14 @@ fn drawMixerChannel(state: *state_mod.State, track: usize) void {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .id_extra = track });
         defer row.deinit();
 
+        const button_w: f32 = 16;
+        const button_padding = dvui.Rect{ .x = 2, .y = 0, .w = 2, .h = 0 };
         if (dvui.button(@src(), "M", .{}, .{
             .color_fill = if (state.track_mute[track]) theme.mute_on else theme.panel,
             .color_text = theme.text,
-            .min_size_content = .{ .w = 24, .h = tokens.control_h },
+            .min_size_content = .{ .w = button_w, .h = tokens.control_h },
+            .margin = .{},
+            .padding = button_padding,
             .corners = .round(tokens.radius_sm),
             .id_extra = track,
         })) {
@@ -232,12 +253,32 @@ fn drawMixerChannel(state: *state_mod.State, track: usize) void {
         if (dvui.button(@src(), "S", .{}, .{
             .color_fill = if (state.track_solo[track]) theme.solo_on else theme.panel,
             .color_text = theme.text,
-            .min_size_content = .{ .w = 24, .h = tokens.control_h },
+            .min_size_content = .{ .w = button_w, .h = tokens.control_h },
             .margin = .{ .x = tokens.gap_tight, .y = 0, .w = 0, .h = 0 },
+            .padding = button_padding,
             .corners = .round(tokens.radius_sm),
             .id_extra = track,
         })) {
             if (document_model.ready()) document_commands.toggleTrackSolo(&document_model.g, track);
+            state.selectTrack(track);
+        }
+
+        const armed = state.armed_track == track;
+        if (dvui.button(@src(), "R", .{}, .{
+            .color_fill = if (armed) theme.arm_on else theme.panel,
+            .color_text = theme.text,
+            .min_size_content = .{ .w = button_w, .h = tokens.control_h },
+            .margin = .{ .x = tokens.gap_tight, .y = 0, .w = 0, .h = 0 },
+            .padding = button_padding,
+            .corners = .round(tokens.radius_sm),
+            .id_extra = track,
+        })) {
+            if (document_model.ready()) {
+                document_commands.toggleTrackArm(&document_model.g, track);
+                if (host_mod.ready()) host_mod.g.projectChrome(state);
+            } else {
+                state.armed_track = if (armed) null else track;
+            }
             state.selectTrack(track);
         }
 
@@ -351,8 +392,16 @@ fn drawClipSlot(state: *state_mod.State, track: usize, scene: usize) void {
         theme.grid;
 
     const slot_h = tokens.session_row_h - 6;
+    var track_cell = dvui.box(@src(), .{}, .{
+        .min_size_content = .{ .w = tokens.track_col_w },
+        .max_size_content = .width(tokens.track_col_w),
+        .id_extra = id,
+    });
+    defer track_cell.deinit();
+
     var cell = dvui.box(@src(), .{ .dir = .horizontal }, .{
-        .min_size_content = .{ .w = tokens.track_col_w - 2, .h = slot_h },
+        .expand = .horizontal,
+        .min_size_content = .{ .h = slot_h },
         .background = true,
         .color_fill = if (is_selected and slot.kind != .empty) theme.lighten(fill, 0.08) else fill,
         .corners = .round(tokens.radius_sm),
@@ -380,18 +429,31 @@ fn drawClipSlot(state: *state_mod.State, track: usize, scene: usize) void {
         }
     }
 
-    const body_w = tokens.track_col_w - tokens.play_btn_w - 10;
+    const body_w = tokens.track_col_w - tokens.play_btn_w - 11;
     const label = slotLabel(slot);
     if (dvui.button(@src(), label, .{}, .{
         .min_size_content = .{ .w = body_w, .h = slot_h - 2 },
         .color_fill = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
         .color_text = if (slot.kind == .empty) theme.text_soft else theme.text_on_fill,
         .padding = .{ .x = if (slot.kind != .empty) 5 else 2, .y = 0, .w = 1, .h = 0 },
+        .margin = .{},
         .gravity_y = 0.5,
         .id_extra = id,
     })) {
+        const now = dvui.currentWindow().frame_time_ns;
+        const same_slot = state.session_last_slot_click_track == track and state.session_last_slot_click_scene == scene;
+        const elapsed = now - state.session_last_slot_click_ns;
+        const double_click = same_slot and elapsed > 0 and elapsed <= 450 * std.time.ns_per_ms;
         selectSlot(state, track, scene);
-        if (slot.kind != .empty) state.bottom_mode = .sequencer;
+        if (double_click and slot.kind == .empty) {
+            createClipAt(state, track, scene);
+        } else if (slot.kind != .empty) {
+            state.bottom_mode = .sequencer;
+            state.focused_pane = .bottom;
+        }
+        state.session_last_slot_click_ns = now;
+        state.session_last_slot_click_track = track;
+        state.session_last_slot_click_scene = scene;
     }
 
     const kind = playIconKind(slot);

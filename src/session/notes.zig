@@ -134,6 +134,21 @@ pub const PianoRollClip = struct {
         return self.length_beats;
     }
 
+    /// Resize the visible clip while retaining a genuine sub-loop. An implicit
+    /// loop end (or an explicit end at the old clip boundary) continues to
+    /// follow the clip boundary instead of becoming a second end marker.
+    pub fn resizeKeepingLoop(self: *PianoRollClip, length_beats: f32) bool {
+        if (length_beats == self.length_beats) return false;
+        const loop_was_at_boundary = self.loop_end_beats <= 0 or
+            @abs(self.loop_end_beats - self.length_beats) <= 0.001;
+        self.length_beats = length_beats;
+        self.loop_end_beats = if (loop_was_at_boundary)
+            0
+        else
+            @min(self.loop_end_beats, length_beats);
+        return true;
+    }
+
     pub fn addNote(self: *PianoRollClip, pitch: u8, start: f32, duration: f32) !void {
         return self.addNoteWithVelocity(pitch, start, duration, 0.8, 0.8);
     }
@@ -214,6 +229,24 @@ pub const PianoRollClip = struct {
         }
     }
 };
+
+test "clip resize keeps an implicit loop end at the clip boundary" {
+    var clip = PianoRollClip.init(std.testing.allocator);
+    defer clip.deinit();
+
+    try std.testing.expectEqual(@as(f32, 16), clip.loopEnd());
+    try std.testing.expect(clip.resizeKeepingLoop(8));
+    try std.testing.expectEqual(@as(f32, 8), clip.loopEnd());
+    try std.testing.expect(clip.resizeKeepingLoop(24));
+    try std.testing.expectEqual(@as(f32, 24), clip.loopEnd());
+
+    clip.loop_start_beats = 4;
+    clip.loop_end_beats = 12;
+    try std.testing.expect(clip.resizeKeepingLoop(20));
+    try std.testing.expectEqual(@as(f32, 12), clip.loopEnd());
+    try std.testing.expect(clip.resizeKeepingLoop(10));
+    try std.testing.expectEqual(@as(f32, 10), clip.loopEnd());
+}
 
 fn cloneAutomationLane(allocator: std.mem.Allocator, src: AutomationLane) !AutomationLane {
     var dst = AutomationLane{ .target_kind = src.target_kind };

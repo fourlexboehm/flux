@@ -65,6 +65,7 @@ pub const max_tracks: usize = 16;
 pub const max_scenes: usize = 16;
 pub const max_fx_slots: usize = 8;
 pub const max_arr_clips: usize = 32;
+pub const max_piano_notes: usize = 4096;
 
 pub const ClipSlot = struct {
     kind: ClipKind = .empty,
@@ -80,6 +81,16 @@ pub const ArrClip = struct {
     kind: ClipKind,
     name: []const u8,
 };
+
+pub const PianoClipboardNote = struct {
+    pitch: u8 = 60,
+    start: f32 = 0,
+    duration: f32 = 0.25,
+    velocity: f32 = 0.8,
+    release_velocity: f32 = 0.8,
+};
+
+pub const PianoMarkerDrag = enum { none, play_start, loop_start, loop_end };
 
 // ── Transport constants (aligned with zgui transport chrome) ─────────────────
 
@@ -137,15 +148,49 @@ pub const State = struct {
     selected_arr_clip: ?usize = null,
     // Dense-canvas piano-roll interaction state. Notes remain in the document.
     piano_scroll_beat: f32 = 0,
-    piano_scroll_pitch: f32 = 48,
+    /// Pitch at the vertical center of the piano-roll viewport.
+    piano_scroll_pitch: f32 = 60,
     piano_pixels_per_beat: f32 = 64,
     piano_row_height: f32 = 14,
     piano_selected_note: ?usize = null,
+    piano_note_selected: [max_piano_notes]bool = @splat(false),
+    piano_selection_track: usize = std.math.maxInt(usize),
+    piano_selection_scene: usize = std.math.maxInt(usize),
     piano_drag_note: ?usize = null,
     piano_drag_mouse_x: f32 = 0,
     piano_drag_mouse_y: f32 = 0,
     piano_drag_start: f32 = 0,
     piano_drag_pitch: u8 = 0,
+    piano_drag_duration: f32 = 0,
+    piano_drag_resize: bool = false,
+    piano_drag_changed: bool = false,
+    piano_drag_original_start: [max_piano_notes]f32 = @splat(0),
+    piano_drag_original_pitch: [max_piano_notes]u8 = @splat(0),
+    piano_drag_original_duration: [max_piano_notes]f32 = @splat(0),
+    piano_box_select: bool = false,
+    piano_box_additive: bool = false,
+    piano_box_start_x: f32 = 0,
+    piano_box_start_y: f32 = 0,
+    piano_box_current_x: f32 = 0,
+    piano_box_current_y: f32 = 0,
+    piano_velocity_drag: bool = false,
+    piano_velocity_open: bool = false,
+    piano_clip_resize: bool = false,
+    piano_marker_drag: PianoMarkerDrag = .none,
+    piano_nav_drag: bool = false,
+    piano_nav_mouse_x: f32 = 0,
+    piano_nav_mouse_y: f32 = 0,
+    piano_nav_start_beat: f32 = 0,
+    piano_nav_start_zoom: f32 = 64,
+    piano_tools_open: bool = false,
+    piano_last_grid_click_ns: i128 = 0,
+    piano_last_grid_click_x: f32 = 0,
+    piano_last_grid_click_y: f32 = 0,
+    piano_clipboard: [512]PianoClipboardNote = @splat(.{}),
+    piano_clipboard_len: usize = 0,
+    session_last_slot_click_ns: i128 = 0,
+    session_last_slot_click_track: usize = std.math.maxInt(usize),
+    session_last_slot_click_scene: usize = std.math.maxInt(usize),
     /// Defaults match `session_ops.init` (projected over by host each frame).
     track_count: usize = 4,
     scene_count: usize = 8,
@@ -162,6 +207,7 @@ pub const State = struct {
     track_pan: [max_tracks]f32 = @splat(0),
     track_mute: [max_tracks]bool = @splat(false),
     track_solo: [max_tracks]bool = @splat(false),
+    armed_track: ?usize = null,
     scene_names: [max_scenes][24]u8 = undefined,
     scene_name_lens: [max_scenes]usize = @splat(0),
     instrument_names: [max_tracks][]const u8 = @splat(""),

@@ -132,6 +132,10 @@ pub const Host = struct {
             state.scene_name_lens[s] = 0;
         }
         state.arr_clip_count = 0;
+        state.armed_track = if (store.session.armed_track) |track|
+            if (track < state.track_count) track else null
+        else
+            null;
 
         for (0..state.track_count) |t| {
             const tn = store.session.tracks[t].getName();
@@ -333,6 +337,7 @@ test "host projectChrome projects empty grid" {
     try std.testing.expectEqualStrings("Inst 1", s.trackName(0));
     try std.testing.expectEqualStrings("1", s.sceneName(0));
     try std.testing.expect(s.slot(0, 0).kind == .empty);
+    try std.testing.expectEqual(@as(?usize, null), s.armed_track);
     try std.testing.expectEqual(@as(usize, 0), s.arr_clip_count);
     try std.testing.expectEqual(@as(usize, 1), h.document_projection_count);
 
@@ -348,6 +353,10 @@ test "host projectChrome projects empty grid" {
     s.time_signature_numerator = 3;
     h.projectChrome(&s);
     try std.testing.expectEqual(@as(usize, 3), h.document_projection_count);
+
+    document_commands.toggleTrackArm(&store, 2);
+    h.projectChrome(&s);
+    try std.testing.expectEqual(@as(?usize, 2), s.armed_track);
 }
 
 test "host createClipAt adds pooled midi clip on empty project" {

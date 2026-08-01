@@ -576,11 +576,6 @@ fn drawPluginPicker(state: *state_mod.State) void {
 fn drawClipEditor(state: *state_mod.State) void {
     const slot = state.selectedSlot();
 
-    dvui.label(@src(), "Clip editor", .{}, .{
-        .font = .theme(.heading),
-        .color_text = theme.text,
-    });
-
     if (slot.kind == .empty) {
         dvui.label(@src(), "No clip selected — use + on an empty session slot to create one.", .{}, .{
             .color_text = theme.text_soft,
@@ -588,6 +583,19 @@ fn drawClipEditor(state: *state_mod.State) void {
         });
         return;
     }
+
+    if (slot.kind == .midi) {
+        dvui.label(@src(), "{s} · {d:.0} bars", .{ if (slot.name.len > 0) slot.name else "Untitled MIDI", slot.bars }, .{
+            .color_text = theme.text_dim,
+        });
+        piano_roll.draw(state);
+        return;
+    }
+
+    dvui.label(@src(), "Clip editor", .{}, .{
+        .font = .theme(.heading),
+        .color_text = theme.text,
+    });
 
     const kind_label: []const u8 = switch (slot.kind) {
         .empty => "Empty",
@@ -614,7 +622,7 @@ fn drawClipEditor(state: *state_mod.State) void {
         .margin = .{ .x = 0, .y = tokens.gap_xs, .w = 0, .h = 0 },
     });
     switch (slot.kind) {
-        .midi => piano_roll.draw(state),
+        .midi => unreachable,
         .audio => dvui.label(@src(), "Audio viewer — port from ui_zgui/views/", .{}, .{
             .color_text = theme.text_soft,
             .margin = .{ .x = 0, .y = tokens.gap_group, .w = 0, .h = 0 },

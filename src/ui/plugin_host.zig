@@ -61,7 +61,7 @@ pub const PluginHost = struct {
     pending_instrument_state: [track_count]?[]u8 = @splat(null),
     pending_fx_state: [track_count][max_fx_slots]?[]u8 = @splat(@splat(null)),
 
-    /// Computer-keyboard MIDI (A–; piano map) → merged into live keys.
+    /// Computer-keyboard MIDI (physical A–; positions) → merged into live keys.
     keyboard_octave: i8 = 0,
     keyboard_notes: [128]bool = @splat(false),
     keyboard_velocities: [128]f32 = @splat(0),
