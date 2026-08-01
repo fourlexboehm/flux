@@ -8,6 +8,7 @@ const std = @import("std");
 const dvui = @import("dvui");
 const theme = @import("../theme.zig");
 const state_mod = @import("../state.zig");
+const edit_actions = @import("../edit_actions.zig");
 const document_model = @import("../../document/model.zig");
 const document_commands = @import("../../document/commands.zig");
 const notes_mod = @import("../../session/notes.zig");
@@ -87,27 +88,59 @@ pub fn draw(state: *state_mod.State) void {
     drawBoxSelection(state);
     if (state.piano_velocity_open) drawVelocityLane(state, clip, velocity_area, rs.s);
     handleEvents(state, clip, canvas.data(), grid_area, velocity_area, rs.s);
+    drawContextMenu(state, clip, grid_area);
 
     _ = visible;
+}
+
+fn drawContextMenu(state: *state_mod.State, clip: *notes_mod.PianoRollClip, rect: dvui.Rect.Physical) void {
+    const context = dvui.context(@src(), .{ .rect = rect }, .{});
+    defer context.deinit();
+    const point = context.activePoint() orelse return;
+    state.focused_pane = .bottom;
+
+    const has_selection = selectionCount(state, clip.notes.items.len) > 0;
+    var menu = dvui.floatingMenu(@src(), .{ .from = dvui.Rect.Natural.fromPoint(point) }, .{});
+    defer menu.deinit();
+    const action = edit_actions.drawMenu(.{
+        .copy = has_selection,
+        .cut = has_selection,
+        .paste = state.piano_clipboard_len > 0,
+        .duplicate = has_selection,
+        .delete = has_selection,
+        .select_all = true,
+    }) orelse return;
+    switch (action) {
+        .copy => copySelection(state, clip),
+        .cut => {
+            copySelection(state, clip);
+            deleteSelection(state, clip);
+        },
+        .paste => pasteClipboard(state, clip),
+        .duplicate => transform(state, clip, .duplicate),
+        .delete => deleteSelection(state, clip),
+        .select_all => selectAll(state, clip.notes.items.len),
+        else => return,
+    }
+    menu.close();
 }
 
 /// Editor-owned shortcuts are dispatched by the root before the live MIDI map.
 pub fn handleKey(state: *state_mod.State, key: dvui.Event.Key) bool {
     if (key.action != .down and key.action != .repeat) return false;
     const clip = selectedClip(state) orelse return false;
-    const command = key.mod.control() or key.mod.command();
-    if (command) switch (key.code) {
-        .a => selectAll(state, clip.notes.items.len),
-        .c => copySelection(state, clip),
-        .x => {
+    if (edit_actions.fromKey(key)) |action| switch (action) {
+        .select_all => selectAll(state, clip.notes.items.len),
+        .copy => copySelection(state, clip),
+        .cut => {
             copySelection(state, clip);
             deleteSelection(state, clip);
         },
-        .v => pasteClipboard(state, clip),
-        .d => transform(state, clip, .duplicate),
+        .paste => pasteClipboard(state, clip),
+        .duplicate => transform(state, clip, .duplicate),
+        .delete => deleteSelection(state, clip),
         else => return false,
     } else switch (key.code) {
-        .delete, .backspace => deleteSelection(state, clip),
         .q => transform(state, clip, .quantize),
         .left => nudgeSelection(state, clip, -quantizeStep(state), 0),
         .right => nudgeSelection(state, clip, quantizeStep(state), 0),

@@ -191,6 +191,17 @@ pub const State = struct {
     session_last_slot_click_ns: i128 = 0,
     session_last_slot_click_track: usize = std.math.maxInt(usize),
     session_last_slot_click_scene: usize = std.math.maxInt(usize),
+    // Session drag state is a dense fixed-size overlay; document clips stay in
+    // session storage and are only moved once on pointer release.
+    session_drag_active: bool = false,
+    session_drag_started: bool = false,
+    session_drag_source_track: usize = 0,
+    session_drag_source_scene: usize = 0,
+    session_drag_target_track: usize = 0,
+    session_drag_target_scene: usize = 0,
+    session_drag_target_valid: bool = false,
+    /// Physical x/y/w/h for hit-testing while the pointer is captured.
+    session_slot_rects: [max_tracks][max_scenes][4]f32 = @splat(@splat(@splat(0))),
     /// Defaults match `session_ops.init` (projected over by host each frame).
     track_count: usize = 4,
     scene_count: usize = 8,

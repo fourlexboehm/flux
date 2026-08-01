@@ -8,6 +8,7 @@ const theme = @import("../theme.zig");
 const tokens = @import("../tokens.zig");
 const icons = @import("../icons.zig");
 const state_mod = @import("../state.zig");
+const edit_actions = @import("../edit_actions.zig");
 const host_mod = @import("../host.zig");
 const document_model = @import("../../document/model.zig");
 const document_commands = @import("../../document/commands.zig");
@@ -23,170 +24,184 @@ pub fn draw(state: *state_mod.State) void {
     });
     defer col.deinit();
 
-    var scroll = dvui.scrollArea(@src(), .{
-        .horizontal_bar = .auto,
-        .vertical_bar = .auto,
-    }, .{
-        .expand = .both,
-        .background = true,
-        .color_fill = theme.cell,
-        .corners = .round(tokens.radius_md),
-    });
-    defer scroll.deinit();
-
-    // Give the scroll container a real virtual width. Expanding each row to
-    // the viewport hid horizontal overflow even when the track cells did not
-    // fit, so no horizontal scrollbar could be produced.
     const grid_w = tokens.scene_col_w +
         @as(f32, @floatFromInt(state.track_count)) * tokens.track_col_w + add_track_col_w;
-    var grid_content = dvui.box(@src(), .{ .dir = .vertical }, .{
+    var horizontal_scroll = dvui.scrollArea(@src(), .{
+        .horizontal_bar = .auto,
+        .vertical_bar = .hide,
+    }, .{ .expand = .both, .background = false });
+    defer horizontal_scroll.deinit();
+
+    var session_content = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .expand = .both,
         .min_size_content = .{ .w = grid_w },
     });
-    defer grid_content.deinit();
+    defer session_content.deinit();
 
-    // ── Header: scene corner + track names ──────────────────────────────────
     {
-        var header = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .expand = .horizontal,
+        var scroll = dvui.scrollArea(@src(), .{
+            .horizontal_bar = .hide,
+            .vertical_bar = .auto,
+        }, .{
+            .expand = .both,
             .background = true,
-            .color_fill = theme.header,
-            .min_size_content = .{ .h = tokens.session_header_h },
-            .padding = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
-            .border = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
-            .color_border = theme.grid,
+            .color_fill = theme.cell,
+            .corners = .round(tokens.radius_md),
         });
-        defer header.deinit();
+        defer scroll.deinit();
 
-        var corner = dvui.box(@src(), .{}, .{
-            .min_size_content = .{ .w = tokens.scene_col_w, .h = tokens.session_header_h - 2 },
-            .max_size_content = .width(tokens.scene_col_w),
+        // Give the scroll container a real virtual width. Expanding each row to
+        // the viewport hid horizontal overflow even when the track cells did not
+        // fit, so no horizontal scrollbar could be produced.
+        var grid_content = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .min_size_content = .{ .w = grid_w },
         });
-        corner.deinit();
+        defer grid_content.deinit();
 
-        var t: usize = 0;
-        while (t < state.track_count) : (t += 1) {
-            const selected = t == state.selected_track;
-            const name = state.trackName(t);
-            var track_cell = dvui.box(@src(), .{ .dir = .vertical }, .{
-                .min_size_content = .{ .w = tokens.track_col_w, .h = tokens.session_header_h - 2 },
-                .max_size_content = .width(tokens.track_col_w),
-                .id_extra = t,
-            });
-            defer track_cell.deinit();
-
-            if (dvui.button(@src(), name, .{}, .{
+        // ── Header: scene corner + track names ──────────────────────────────────
+        {
+            var header = dvui.box(@src(), .{ .dir = .horizontal }, .{
                 .expand = .horizontal,
-                .min_size_content = .{ .h = tokens.session_header_h - 6 },
-                .color_fill = if (selected) theme.accent else theme.panel,
-                .color_text = if (selected) theme.bg else theme.text_dim,
-                .corners = .round(tokens.radius_sm),
-                .gravity_y = 0.5,
-                .margin = .{ .x = 1, .y = 0, .w = 1, .h = 0 },
-                .id_extra = t,
-            })) {
-                state.selectTrack(t);
-                if (document_model.ready()) document_commands.setPrimarySelection(&document_model.g, state.selected_track, state.selected_scene);
+                .background = true,
+                .color_fill = theme.header,
+                .min_size_content = .{ .h = tokens.session_header_h },
+                .padding = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
+                .border = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
+                .color_border = theme.grid,
+            });
+            defer header.deinit();
+
+            var corner = dvui.box(@src(), .{}, .{
+                .min_size_content = .{ .w = tokens.scene_col_w, .h = tokens.session_header_h - 2 },
+                .max_size_content = .width(tokens.scene_col_w),
+            });
+            corner.deinit();
+
+            var t: usize = 0;
+            while (t < state.track_count) : (t += 1) {
+                const selected = t == state.selected_track;
+                const name = state.trackName(t);
+                var track_cell = dvui.box(@src(), .{ .dir = .vertical }, .{
+                    .min_size_content = .{ .w = tokens.track_col_w, .h = tokens.session_header_h - 2 },
+                    .max_size_content = .width(tokens.track_col_w),
+                    .id_extra = t,
+                });
+                defer track_cell.deinit();
+
+                if (dvui.button(@src(), name, .{}, .{
+                    .expand = .horizontal,
+                    .min_size_content = .{ .h = tokens.session_header_h - 6 },
+                    .color_fill = if (selected) theme.accent else theme.panel,
+                    .color_text = if (selected) theme.bg else theme.text_dim,
+                    .corners = .round(tokens.radius_sm),
+                    .gravity_y = 0.5,
+                    .margin = .{ .x = 1, .y = 0, .w = 1, .h = 0 },
+                    .id_extra = t,
+                })) {
+                    state.selectTrack(t);
+                    if (document_model.ready()) document_commands.setSessionAnchor(&document_model.g, state.selected_track, state.selected_scene, true);
+                }
+
+                // Track color stripe under header
+                const stripe_rs = track_cell.data().borderRectScale();
+                const stripe_area = stripe_rs.r;
+                if (stripe_area.w > 0 and stripe_area.h > 0) {
+                    const bar_h = @max(2.0, stripe_rs.s * 2.0);
+                    const bar: dvui.Rect.Physical = .{
+                        .x = stripe_area.x + 2 * stripe_rs.s,
+                        .y = stripe_area.y + stripe_area.h - bar_h,
+                        .w = stripe_area.w - 4 * stripe_rs.s,
+                        .h = bar_h,
+                    };
+                    bar.fill(.all(0), .{ .color = theme.trackColor(t) });
+                }
             }
 
-            // Track color stripe under header
-            const stripe_rs = track_cell.data().borderRectScale();
-            const stripe_area = stripe_rs.r;
-            if (stripe_area.w > 0 and stripe_area.h > 0) {
-                const bar_h = @max(2.0, stripe_rs.s * 2.0);
-                const bar: dvui.Rect.Physical = .{
-                    .x = stripe_area.x + 2 * stripe_rs.s,
-                    .y = stripe_area.y + stripe_area.h - bar_h,
-                    .w = stripe_area.w - 4 * stripe_rs.s,
-                    .h = bar_h,
-                };
-                bar.fill(.all(0), .{ .color = theme.trackColor(t) });
+            if (dvui.button(@src(), "+ Track", .{}, .{
+                .min_size_content = .{ .w = add_track_col_w - 11, .h = tokens.session_header_h - 4 },
+                .color_fill = theme.cell,
+                .color_text = theme.text_dim,
+                .corners = .round(tokens.radius_sm),
+                .margin = .{ .x = 3, .y = 1, .w = 2, .h = 1 },
+                .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
+            })) {
+                if (document_model.ready()) {
+                    if (document_commands.addTrack(&document_model.g) and host_mod.ready()) host_mod.g.projectChrome(state);
+                }
             }
         }
 
-        if (dvui.button(@src(), "+ Track", .{}, .{
-            .min_size_content = .{ .w = add_track_col_w - 11, .h = tokens.session_header_h - 4 },
-            .color_fill = theme.cell,
+        // ── Scene rows ──────────────────────────────────────────────────────────
+        var s: usize = 0;
+        while (s < state.scene_count) : (s += 1) {
+            const scene_sel = s == state.selected_scene;
+            var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                .expand = .horizontal,
+                .background = true,
+                .color_fill = if (scene_sel) theme.panel else theme.cell,
+                .min_size_content = .{ .h = tokens.session_row_h },
+                .padding = .{ .x = 0, .y = 2, .w = 0, .h = 2 },
+                .border = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
+                .color_border = theme.grid,
+                .id_extra = s,
+            });
+            defer row.deinit();
+
+            // Scene launch + name (vertically centered in row)
+            {
+                var scene_cell = dvui.box(@src(), .{ .dir = .horizontal }, .{
+                    .min_size_content = .{ .w = tokens.scene_col_w, .h = tokens.session_row_h - 4 },
+                    .max_size_content = .width(tokens.scene_col_w),
+                    .gravity_y = 0.5,
+                    .id_extra = s,
+                });
+                defer scene_cell.deinit();
+
+                const has_clip = sceneHasClip(state, s);
+                if (icons.button(@src(), if (has_clip) .play else .stop, .{
+                    .fill = if (has_clip) theme.panel else theme.empty_slot_fill,
+                    .color = if (has_clip) theme.accent else theme.text_soft,
+                    .size = tokens.icon_sm,
+                    .pad = 2,
+                    .border = true,
+                    .id_extra = s,
+                })) {
+                    launchScene(state, s);
+                }
+
+                const sn = state.sceneName(s);
+                if (dvui.button(@src(), sn, .{}, .{
+                    .min_size_content = .{ .w = tokens.scene_col_w - tokens.launch_btn - 12, .h = tokens.launch_btn },
+                    .color_fill = if (scene_sel) theme.accent_dim else theme.panel,
+                    .color_text = if (scene_sel) theme.text else theme.text_dim,
+                    .margin = .{ .x = tokens.gap_xs, .y = 0, .w = 0, .h = 0 },
+                    .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
+                    .corners = .round(tokens.radius_sm),
+                    .gravity_y = 0.5,
+                    .id_extra = s + 1000,
+                })) {
+                    state.selectScene(s);
+                    if (document_model.ready()) document_commands.setSessionAnchor(&document_model.g, state.selected_track, state.selected_scene, true);
+                }
+            }
+
+            var t: usize = 0;
+            while (t < state.track_count) : (t += 1) {
+                drawClipSlot(state, t, s);
+            }
+        }
+
+        if (dvui.button(@src(), "+ Scene", .{}, .{
+            .min_size_content = .{ .w = tokens.scene_col_w - 10, .h = tokens.session_row_h - 8 },
+            .color_fill = theme.panel,
             .color_text = theme.text_dim,
             .corners = .round(tokens.radius_sm),
-            .margin = .{ .x = 3, .y = 1, .w = 2, .h = 1 },
+            .margin = .{ .x = 2, .y = 3, .w = 2, .h = 2 },
             .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
         })) {
             if (document_model.ready()) {
-                if (document_commands.addTrack(&document_model.g) and host_mod.ready()) host_mod.g.projectChrome(state);
+                if (document_commands.addScene(&document_model.g) and host_mod.ready()) host_mod.g.projectChrome(state);
             }
-        }
-    }
-
-    // ── Scene rows ──────────────────────────────────────────────────────────
-    var s: usize = 0;
-    while (s < state.scene_count) : (s += 1) {
-        const scene_sel = s == state.selected_scene;
-        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .expand = .horizontal,
-            .background = true,
-            .color_fill = if (scene_sel) theme.panel else theme.cell,
-            .min_size_content = .{ .h = tokens.session_row_h },
-            .padding = .{ .x = 0, .y = 2, .w = 0, .h = 2 },
-            .border = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
-            .color_border = theme.grid,
-            .id_extra = s,
-        });
-        defer row.deinit();
-
-        // Scene launch + name (vertically centered in row)
-        {
-            var scene_cell = dvui.box(@src(), .{ .dir = .horizontal }, .{
-                .min_size_content = .{ .w = tokens.scene_col_w, .h = tokens.session_row_h - 4 },
-                .max_size_content = .width(tokens.scene_col_w),
-                .gravity_y = 0.5,
-                .id_extra = s,
-            });
-            defer scene_cell.deinit();
-
-            const has_clip = sceneHasClip(state, s);
-            if (icons.button(@src(), if (has_clip) .play else .stop, .{
-                .fill = if (has_clip) theme.panel else theme.empty_slot_fill,
-                .color = if (has_clip) theme.accent else theme.text_soft,
-                .size = tokens.icon_sm,
-                .pad = 2,
-                .border = true,
-                .id_extra = s,
-            })) {
-                launchScene(state, s);
-            }
-
-            const sn = state.sceneName(s);
-            if (dvui.button(@src(), sn, .{}, .{
-                .min_size_content = .{ .w = tokens.scene_col_w - tokens.launch_btn - 12, .h = tokens.launch_btn },
-                .color_fill = if (scene_sel) theme.accent_dim else theme.panel,
-                .color_text = if (scene_sel) theme.text else theme.text_dim,
-                .margin = .{ .x = tokens.gap_xs, .y = 0, .w = 0, .h = 0 },
-                .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
-                .corners = .round(tokens.radius_sm),
-                .gravity_y = 0.5,
-                .id_extra = s + 1000,
-            })) {
-                state.selectScene(s);
-                if (document_model.ready()) document_commands.setPrimarySelection(&document_model.g, state.selected_track, state.selected_scene);
-            }
-        }
-
-        var t: usize = 0;
-        while (t < state.track_count) : (t += 1) {
-            drawClipSlot(state, t, s);
-        }
-    }
-
-    if (dvui.button(@src(), "+ Scene", .{}, .{
-        .min_size_content = .{ .w = tokens.scene_col_w - 10, .h = tokens.session_row_h - 8 },
-        .color_fill = theme.panel,
-        .color_text = theme.text_dim,
-        .corners = .round(tokens.radius_sm),
-        .margin = .{ .x = 2, .y = 3, .w = 2, .h = 2 },
-        .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
-    })) {
-        if (document_model.ready()) {
-            if (document_commands.addScene(&document_model.g) and host_mod.ready()) host_mod.g.projectChrome(state);
         }
     }
 
@@ -380,11 +395,13 @@ fn launchScene(state: *state_mod.State, scene: usize) void {
 
 fn drawClipSlot(state: *state_mod.State, track: usize, scene: usize) void {
     const slot = state.slot(track, scene);
-    const is_selected = track == state.selected_track and scene == state.selected_scene;
+    const is_selected = slotIsSelected(state, track, scene, slot);
+    const is_drop_target = state.session_drag_target_valid and
+        state.session_drag_target_track == track and state.session_drag_target_scene == scene;
     const id = track * 64 + scene;
 
     const fill = slotFill(slot);
-    const border_col = if (is_selected)
+    const border_col = if (is_selected or is_drop_target)
         theme.selected
     else if (slot.kind == .empty)
         theme.empty_slot_border
@@ -405,7 +422,7 @@ fn drawClipSlot(state: *state_mod.State, track: usize, scene: usize) void {
         .background = true,
         .color_fill = if (is_selected and slot.kind != .empty) theme.lighten(fill, 0.08) else fill,
         .corners = .round(tokens.radius_sm),
-        .border = dvui.Rect.all(if (is_selected) 1.5 else 1),
+        .border = dvui.Rect.all(if (is_selected or is_drop_target) 1.5 else 1),
         .color_border = border_col,
         .margin = .{ .x = 1, .y = 0, .w = 1, .h = 0 },
         .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
@@ -413,6 +430,9 @@ fn drawClipSlot(state: *state_mod.State, track: usize, scene: usize) void {
         .id_extra = id,
     });
     defer cell.deinit();
+
+    const cell_area = cell.data().borderRectScale().r;
+    state.session_slot_rects[track][scene] = .{ cell_area.x, cell_area.y, cell_area.w, cell_area.h };
 
     // Track color strip on filled clips
     if (slot.kind != .empty) {
@@ -431,29 +451,26 @@ fn drawClipSlot(state: *state_mod.State, track: usize, scene: usize) void {
 
     const body_w = tokens.track_col_w - tokens.play_btn_w - 11;
     const label = slotLabel(slot);
-    if (dvui.button(@src(), label, .{}, .{
-        .min_size_content = .{ .w = body_w, .h = slot_h - 2 },
-        .color_fill = .{ .r = 0, .g = 0, .b = 0, .a = 0 },
-        .color_text = if (slot.kind == .empty) theme.text_soft else theme.text_on_fill,
-        .padding = .{ .x = if (slot.kind != .empty) 5 else 2, .y = 0, .w = 1, .h = 0 },
-        .margin = .{},
-        .gravity_y = 0.5,
-        .id_extra = id,
-    })) {
-        const now = dvui.currentWindow().frame_time_ns;
-        const same_slot = state.session_last_slot_click_track == track and state.session_last_slot_click_scene == scene;
-        const elapsed = now - state.session_last_slot_click_ns;
-        const double_click = same_slot and elapsed > 0 and elapsed <= 450 * std.time.ns_per_ms;
-        selectSlot(state, track, scene);
-        if (double_click and slot.kind == .empty) {
-            createClipAt(state, track, scene);
-        } else if (slot.kind != .empty) {
-            state.bottom_mode = .sequencer;
-            state.focused_pane = .bottom;
-        }
-        state.session_last_slot_click_ns = now;
-        state.session_last_slot_click_track = track;
-        state.session_last_slot_click_scene = scene;
+    {
+        var body = dvui.box(@src(), .{}, .{
+            .min_size_content = .{ .w = body_w, .h = slot_h - 2 },
+            .background = false,
+            .padding = .{ .x = if (slot.kind != .empty) 5 else 2, .y = 0, .w = 1, .h = 0 },
+            .margin = .{},
+            .gravity_y = 0.5,
+            .id_extra = id,
+        });
+        dvui.labelNoFmt(@src(), label, .{}, .{
+            .expand = .both,
+            .color_text = if (slot.kind == .empty) theme.text_soft else theme.text_on_fill,
+            .gravity_y = 0.5,
+            .margin = .{},
+            .padding = .{},
+            .id_extra = id,
+        });
+        handleSlotEvents(state, track, scene, slot, body.data());
+        drawSlotContextMenu(state, track, scene, body.data().borderRectScale().r, id);
+        body.deinit();
     }
 
     const kind = playIconKind(slot);
@@ -467,18 +484,198 @@ fn drawClipSlot(state: *state_mod.State, track: usize, scene: usize) void {
         .margin = .{ .x = 0, .y = 0, .w = 1, .h = 0 },
         .id_extra = id + 10000,
     })) {
-        if (slot.kind == .empty) {
-            createClipAt(state, track, scene);
-        } else {
+        if (slot.kind != .empty) {
             toggleSlotPlay(state, track, scene);
         }
     }
 }
 
-fn selectSlot(state: *state_mod.State, track: usize, scene: usize) void {
+fn slotIsSelected(state: *const state_mod.State, track: usize, scene: usize, slot: state_mod.ClipSlot) bool {
+    if (slot.kind == .empty or !document_model.ready()) {
+        return track == state.selected_track and scene == state.selected_scene;
+    }
+    return document_commands.sessionSlotSelected(&document_model.g, track, scene);
+}
+
+fn handleSlotEvents(
+    state: *state_mod.State,
+    track: usize,
+    scene: usize,
+    slot: state_mod.ClipSlot,
+    wd: *dvui.WidgetData,
+) void {
+    for (dvui.events()) |*event| {
+        if (!dvui.eventMatchSimple(event, wd) or event.evt != .mouse) continue;
+        const mouse = event.evt.mouse;
+        switch (mouse.action) {
+            .press => if (mouse.button.pointer()) {
+                event.handle(@src(), wd);
+                state.focused_pane = .session;
+                focusSlot(state, track, scene, mouse.mod.shift());
+                state.session_drag_active = slot.kind != .empty;
+                state.session_drag_started = false;
+                state.session_drag_source_track = track;
+                state.session_drag_source_scene = scene;
+                state.session_drag_target_track = track;
+                state.session_drag_target_scene = scene;
+                state.session_drag_target_valid = slot.kind != .empty;
+                dvui.captureMouse(wd, event.num);
+                dvui.dragPreStart(mouse.button, mouse.p, .{ .name = "session_clip" });
+                dvui.refresh(null, @src(), wd.id);
+            },
+            .motion => if (dvui.captured(wd.id)) {
+                event.handle(@src(), wd);
+                if (state.session_drag_active and dvui.dragging(mouse.p, null) != null) {
+                    state.session_drag_started = true;
+                    if (hitSlot(state, mouse.p)) |target| {
+                        state.session_drag_target_track = target[0];
+                        state.session_drag_target_scene = target[1];
+                        state.session_drag_target_valid = true;
+                    } else {
+                        state.session_drag_target_valid = false;
+                    }
+                    dvui.refresh(null, @src(), wd.id);
+                }
+            },
+            .release => if (mouse.button.pointer() and dvui.captured(wd.id)) {
+                event.handle(@src(), wd);
+                if (state.session_drag_started and state.session_drag_target_valid) {
+                    const dt = @as(i32, @intCast(state.session_drag_target_track)) - @as(i32, @intCast(state.session_drag_source_track));
+                    const ds = @as(i32, @intCast(state.session_drag_target_scene)) - @as(i32, @intCast(state.session_drag_source_scene));
+                    _ = moveSelection(state, state.session_drag_source_track, state.session_drag_source_scene, dt, ds);
+                } else if (!state.session_drag_started) {
+                    activateSlot(state, track, scene, slot);
+                }
+                state.session_drag_active = false;
+                state.session_drag_started = false;
+                state.session_drag_target_valid = false;
+                dvui.captureMouse(null, event.num);
+                dvui.dragEnd();
+                dvui.refresh(null, @src(), wd.id);
+            },
+            .position => if (slot.kind != .empty) dvui.cursorSet(.arrow_all),
+            else => {},
+        }
+    }
+}
+
+fn hitSlot(state: *const state_mod.State, point: dvui.Point.Physical) ?[2]usize {
+    for (0..state.track_count) |track| {
+        for (0..state.scene_count) |scene| {
+            const raw = state.session_slot_rects[track][scene];
+            const rect: dvui.Rect.Physical = .{ .x = raw[0], .y = raw[1], .w = raw[2], .h = raw[3] };
+            if (rect.w > 0 and rect.h > 0 and rect.contains(point)) return .{ track, scene };
+        }
+    }
+    return null;
+}
+
+fn activateSlot(state: *state_mod.State, track: usize, scene: usize, slot: state_mod.ClipSlot) void {
+    const now = dvui.currentWindow().frame_time_ns;
+    const same_slot = state.session_last_slot_click_track == track and state.session_last_slot_click_scene == scene;
+    const elapsed = now - state.session_last_slot_click_ns;
+    const double_click = same_slot and elapsed > 0 and elapsed <= 450 * std.time.ns_per_ms;
+    if (double_click) {
+        if (slot.kind == .empty) {
+            createClipAt(state, track, scene);
+        } else {
+            state.bottom_mode = .sequencer;
+            state.focused_pane = .bottom;
+        }
+    }
+    state.session_last_slot_click_ns = now;
+    state.session_last_slot_click_track = track;
+    state.session_last_slot_click_scene = scene;
+}
+
+fn drawSlotContextMenu(
+    state: *state_mod.State,
+    track: usize,
+    scene: usize,
+    rect: dvui.Rect.Physical,
+    id: usize,
+) void {
+    const context = dvui.context(@src(), .{ .rect = rect }, .{ .id_extra = id });
+    defer context.deinit();
+    const point = context.activePoint() orelse return;
+
+    state.focused_pane = .session;
+    focusSlot(state, track, scene, false);
+    var menu = dvui.floatingMenu(@src(), .{ .from = dvui.Rect.Natural.fromPoint(point) }, .{ .id_extra = id });
+    defer menu.deinit();
+    if (edit_actions.drawMenu(editAvailability())) |action| {
+        _ = applyEditAction(state, action);
+        menu.close();
+    }
+}
+
+fn editAvailability() edit_actions.Availability {
+    if (!document_model.ready()) return .{};
+    const store = &document_model.g;
+    const selected = document_commands.sessionHasSelection(store);
+    return .{
+        .copy = selected,
+        .cut = selected,
+        .paste = document_commands.sessionCanPaste(store),
+        .duplicate = selected,
+        .delete = selected,
+        .select_all = true,
+        .move_left = document_commands.canMoveSessionSelection(store, -1, 0),
+        .move_right = document_commands.canMoveSessionSelection(store, 1, 0),
+        .move_up = document_commands.canMoveSessionSelection(store, 0, -1),
+        .move_down = document_commands.canMoveSessionSelection(store, 0, 1),
+    };
+}
+
+/// Shared entry point for context-menu and keyboard edit actions.
+pub fn applyEditAction(state: *state_mod.State, action: edit_actions.Action) bool {
+    if (!document_model.ready()) return false;
+    const store = &document_model.g;
+    const changed = switch (action) {
+        .copy => blk: {
+            if (!document_commands.sessionHasSelection(store)) break :blk false;
+            document_commands.copySessionSelection(store);
+            break :blk true;
+        },
+        .cut => document_commands.cutSessionSelection(store),
+        .paste => document_commands.pasteSessionSelection(store),
+        .duplicate => document_commands.duplicateSessionSelection(store),
+        .delete => document_commands.deleteSessionSelection(store),
+        .select_all => blk: {
+            document_commands.selectAllSessionClips(store);
+            break :blk true;
+        },
+        .move_left => moveSelection(state, state.selected_track, state.selected_scene, -1, 0),
+        .move_right => moveSelection(state, state.selected_track, state.selected_scene, 1, 0),
+        .move_up => moveSelection(state, state.selected_track, state.selected_scene, 0, -1),
+        .move_down => moveSelection(state, state.selected_track, state.selected_scene, 0, 1),
+    };
+    if (changed) syncAfterEdit(state);
+    return changed;
+}
+
+fn moveSelection(state: *state_mod.State, anchor_track: usize, anchor_scene: usize, dt: i32, ds: i32) bool {
+    if (!document_model.ready()) return false;
+    const moved = document_commands.moveSessionSelection(&document_model.g, anchor_track, anchor_scene, dt, ds);
+    if (moved) syncAfterEdit(state);
+    return moved;
+}
+
+fn syncAfterEdit(state: *state_mod.State) void {
+    if (!document_model.ready()) return;
+    state.selected_track = document_model.g.session.primary_track;
+    state.selected_scene = document_model.g.session.primary_scene;
+    if (host_mod.ready()) host_mod.g.projectChrome(state);
+}
+
+fn focusSlot(state: *state_mod.State, track: usize, scene: usize, additive: bool) void {
     state.selectSlot(track, scene);
     if (document_model.ready()) {
-        document_commands.selectSlot(&document_model.g, track, scene);
+        if (state.slot(track, scene).kind == .empty) {
+            document_commands.setSessionAnchor(&document_model.g, track, scene, !additive);
+        } else {
+            document_commands.selectSessionSlot(&document_model.g, track, scene, additive);
+        }
         document_commands.setPrimarySelection(&document_model.g, state.selected_track, state.selected_scene);
     }
 }
@@ -489,6 +686,7 @@ fn createClipAt(state: *state_mod.State, track: usize, scene: usize) void {
         if (host_mod.ready()) host_mod.g.projectChrome(state);
         state.selectSlot(track, scene);
         state.bottom_mode = .sequencer;
+        state.focused_pane = .bottom;
         return;
     }
     state.createClipAt(track, scene);

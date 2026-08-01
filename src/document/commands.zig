@@ -54,7 +54,110 @@ pub fn launchScene(store: *model.Store, scene: usize, transport_playing: bool) v
 pub fn selectSlot(store: *model.Store, track: usize, scene: usize) void {
     if (track >= store.session.track_count or scene >= store.session.scene_count) return;
     session_ops.selectOnly(&store.session, track, scene);
+}
+
+/// Select a filled launcher slot. Clicking an already-selected clip preserves
+/// a multi-selection so it can be dragged as one block.
+pub fn selectSessionSlot(store: *model.Store, track: usize, scene: usize, additive: bool) void {
+    if (track >= store.session.track_count or scene >= store.session.scene_count) return;
+    session_ops.handleClipClick(&store.session, track, scene, additive);
+}
+
+/// Set the destination used by Paste without treating an empty slot as clip
+/// content. This mirrors Ableton's empty-cell selection behavior.
+pub fn setSessionAnchor(store: *model.Store, track: usize, scene: usize, clear_selection: bool) void {
+    if (track >= store.session.track_count or scene >= store.session.scene_count) return;
+    if (clear_selection) session_ops.clearSelection(&store.session);
+    store.session.primary_track = track;
+    store.session.primary_scene = scene;
+}
+
+pub fn sessionSlotSelected(store: *const model.Store, track: usize, scene: usize) bool {
+    if (track >= store.session.track_count or scene >= store.session.scene_count) return false;
+    return session_ops.isSelected(&store.session, track, scene);
+}
+
+pub fn sessionHasSelection(store: *const model.Store) bool {
+    return session_ops.hasSelection(&store.session);
+}
+
+pub fn sessionCanPaste(store: *const model.Store) bool {
+    return store.session.clipboard.items.len > 0;
+}
+
+pub fn copySessionSelection(store: *model.Store) void {
+    session_ops.copySelected(&store.session);
+}
+
+pub fn cutSessionSelection(store: *model.Store) bool {
+    if (!session_ops.hasSelection(&store.session)) return false;
+    session_ops.cutSelected(&store.session);
     store.markChanged();
+    return true;
+}
+
+pub fn pasteSessionSelection(store: *model.Store) bool {
+    if (store.session.clipboard.items.len == 0) return false;
+    session_ops.paste(&store.session);
+    store.markChanged();
+    return true;
+}
+
+pub fn deleteSessionSelection(store: *model.Store) bool {
+    if (!session_ops.hasSelection(&store.session)) return false;
+    session_ops.deleteSelected(&store.session);
+    store.markChanged();
+    return true;
+}
+
+pub fn selectAllSessionClips(store: *model.Store) void {
+    session_ops.selectAllClips(&store.session);
+}
+
+pub fn canMoveSessionSelection(store: *const model.Store, delta_track: i32, delta_scene: i32) bool {
+    if ((delta_track == 0 and delta_scene == 0) or !session_ops.hasSelection(&store.session)) return false;
+    for (0..store.session.track_count) |track| {
+        for (0..store.session.scene_count) |scene| {
+            if (!store.session.clip_selected[track][scene] or store.session.clips[track][scene].state == .empty) continue;
+            const target_track = @as(i32, @intCast(track)) + delta_track;
+            const target_scene = @as(i32, @intCast(scene)) + delta_scene;
+            if (target_track < 0 or target_track >= @as(i32, @intCast(store.session.track_count))) return false;
+            if (target_scene < 0 or target_scene >= @as(i32, @intCast(store.session.scene_count))) return false;
+        }
+    }
+    return true;
+}
+
+pub fn moveSessionSelection(store: *model.Store, anchor_track: usize, anchor_scene: usize, delta_track: i32, delta_scene: i32) bool {
+    if (!canMoveSessionSelection(store, delta_track, delta_scene)) return false;
+    store.session.drag_start_track = anchor_track;
+    store.session.drag_start_scene = anchor_scene;
+    session_ops.moveSelectedClips(&store.session, delta_track, delta_scene);
+    store.markChanged();
+    return true;
+}
+
+/// Duplicate the selected rectangle into the following scene range, matching
+/// launcher workflows while retaining the copied clips for subsequent Paste.
+pub fn duplicateSessionSelection(store: *model.Store) bool {
+    if (!session_ops.hasSelection(&store.session)) return false;
+    var min_scene = store.session.scene_count;
+    var max_scene: usize = 0;
+    for (0..store.session.track_count) |track| {
+        for (0..store.session.scene_count) |scene| {
+            if (!store.session.clip_selected[track][scene] or store.session.clips[track][scene].state == .empty) continue;
+            min_scene = @min(min_scene, scene);
+            max_scene = @max(max_scene, scene);
+        }
+    }
+    if (min_scene == store.session.scene_count) return false;
+    const scene_delta = max_scene - min_scene + 1;
+    if (!canMoveSessionSelection(store, 0, @intCast(scene_delta))) return false;
+    session_ops.copySelected(&store.session);
+    store.session.primary_scene += scene_delta;
+    session_ops.paste(&store.session);
+    store.markChanged();
+    return true;
 }
 
 pub fn addTrack(store: *model.Store) bool {
@@ -147,6 +250,75 @@ pub fn processQuantizedSwitches(store: *model.Store) void {
 pub fn setPrimarySelection(store: *model.Store, track: usize, scene: usize) void {
     if (track < store.session.track_count) store.session.primary_track = track;
     if (scene < store.session.scene_count) store.session.primary_scene = scene;
+}
+
+pub const ArrangementLocation = struct {
+    track: usize,
+    clip: usize,
+};
+
+pub fn arrangementLocation(store: *const model.Store, global_index: usize) ?ArrangementLocation {
+    var global: usize = 0;
+    for (store.arrangement.tracks.items, 0..) |track, track_index| {
+        for (track.clips.items, 0..) |_, clip_index| {
+            if (global == global_index) return .{ .track = track_index, .clip = clip_index };
+            global += 1;
+        }
+    }
+    return null;
+}
+
+pub fn selectArrangementClip(store: *model.Store, global_index: usize, additive: bool) bool {
+    const location = arrangementLocation(store, global_index) orelse return false;
+    arr_ops.selectClip(&store.arrangement, location.track, location.clip, additive);
+    return true;
+}
+
+pub fn selectAllArrangementClips(store: *model.Store) void {
+    store.arrangement.selectAllClips();
+}
+
+pub fn deleteArrangementClip(store: *model.Store, global_index: usize) bool {
+    const location = arrangementLocation(store, global_index) orelse return false;
+    arr_ops.deleteClip(&store.arrangement, location.track, location.clip);
+    store.markChanged();
+    return true;
+}
+
+pub fn duplicateArrangementClip(store: *model.Store, global_index: usize) ?usize {
+    const location = arrangementLocation(store, global_index) orelse return null;
+    const source = store.arrangement.tracks.items[location.track].clips.items[location.clip];
+    const duplicate = arr_ops.duplicateClip(&store.arrangement, location.track, location.clip) catch return null;
+    const clip = &store.arrangement.tracks.items[location.track].clips.items[duplicate];
+    clip.start_tick = source.endTick();
+    store.arrangement.clearSelection();
+    clip.selected = true;
+    store.markChanged();
+    return arrangementGlobalIndex(store, location.track, duplicate);
+}
+
+pub fn moveArrangementClip(store: *model.Store, global_index: usize, delta_track: i32, delta_ticks: i64) ?usize {
+    const location = arrangementLocation(store, global_index) orelse return null;
+    const target_track_i = @as(i32, @intCast(location.track)) + delta_track;
+    if (target_track_i < 0 or target_track_i >= @as(i32, @intCast(store.arrangement.tracks.items.len))) return null;
+    const target_track: usize = @intCast(target_track_i);
+    var clip_index = location.clip;
+    if (target_track != location.track) {
+        clip_index = arr_ops.moveClipToTrack(&store.arrangement, location.track, location.clip, target_track) catch return null;
+    }
+    const clip = &store.arrangement.tracks.items[target_track].clips.items[clip_index];
+    arr_ops.moveClip(clip, clip.start_tick + delta_ticks, store.arrangement.snap_division_ticks);
+    store.markChanged();
+    return arrangementGlobalIndex(store, target_track, clip_index);
+}
+
+fn arrangementGlobalIndex(store: *const model.Store, target_track: usize, target_clip: usize) usize {
+    var global: usize = 0;
+    for (store.arrangement.tracks.items, 0..) |track, track_index| {
+        if (track_index == target_track) return global + target_clip;
+        global += track.clips.items.len;
+    }
+    return global;
 }
 
 fn midiClip(store: *model.Store, track: usize, scene: usize) ?*notes.PianoRollClip {
@@ -375,4 +547,47 @@ test "piano-roll bulk transforms preserve a single revision boundary" {
     try std.testing.expectEqual(before + 1, store.revision);
     try std.testing.expect(transformMidiNotes(&store, 0, 0, &.{ 0, 1 }, .duplicate, 0.5));
     try std.testing.expectEqual(@as(usize, 4), midiClip(&store, 0, 0).?.notes.items.len);
+}
+
+test "session edit commands duplicate move copy paste and delete pooled clips" {
+    var store = model.Store.init(std.testing.allocator);
+    defer store.deinit();
+    store.wireInternalRefs();
+
+    createClip(&store, 0, 0, 4);
+    const original = store.session.clips[0][0].clip;
+    try std.testing.expect(duplicateSessionSelection(&store));
+    const duplicate = store.session.clips[0][1].clip;
+    try std.testing.expect(!duplicate.isNone());
+    try std.testing.expect(!duplicate.eql(original));
+
+    try std.testing.expect(moveSessionSelection(&store, 0, 1, 1, 1));
+    try std.testing.expect(store.session.clips[0][1].clip.isNone());
+    try std.testing.expect(store.session.clips[1][2].clip.eql(duplicate));
+
+    copySessionSelection(&store);
+    setSessionAnchor(&store, 2, 3, true);
+    try std.testing.expect(pasteSessionSelection(&store));
+    const pasted = store.session.clips[2][3].clip;
+    try std.testing.expect(!pasted.isNone());
+    try std.testing.expect(!pasted.eql(duplicate));
+    try std.testing.expect(deleteSessionSelection(&store));
+    try std.testing.expect(store.session.clips[2][3].clip.isNone());
+}
+
+test "arrangement edit commands duplicate and nudge placements" {
+    var store = model.Store.init(std.testing.allocator);
+    defer store.deinit();
+    store.wireInternalRefs();
+    syncArrangementTracks(&store);
+
+    _ = try arr_ops.createClip(&store.arrangement, 0, .midi, 0, 960, "Seed");
+    const duplicate = duplicateArrangementClip(&store, 0) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 1), duplicate);
+    try std.testing.expectEqual(@as(i64, 960), store.arrangement.tracks.items[0].clips.items[1].start_tick);
+
+    const moved = moveArrangementClip(&store, duplicate, 1, 240) orelse return error.TestUnexpectedResult;
+    const location = arrangementLocation(&store, moved) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 1), location.track);
+    try std.testing.expectEqual(@as(i64, 1200), store.arrangement.tracks.items[1].clips.items[location.clip].start_tick);
 }

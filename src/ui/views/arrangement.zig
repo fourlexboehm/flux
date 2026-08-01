@@ -5,6 +5,10 @@ const dvui = @import("dvui");
 const theme = @import("../theme.zig");
 const tokens = @import("../tokens.zig");
 const state_mod = @import("../state.zig");
+const edit_actions = @import("../edit_actions.zig");
+const host_mod = @import("../host.zig");
+const document_model = @import("../../document/model.zig");
+const document_commands = @import("../../document/commands.zig");
 
 const clip_pad_y: f32 = 3;
 
@@ -193,8 +197,7 @@ fn drawLane(state: *state_mod.State, track: usize) void {
         if (!dvui.eventMatchSimple(e, lane.data())) continue;
         if (e.evt != .mouse) continue;
         const me = e.evt.mouse;
-        if (me.action != .press or !me.button.pointer()) continue;
-        e.handle(@src(), lane.data());
+        if (me.action != .press or (!me.button.pointer() and me.button != .right)) continue;
 
         const local_x = (me.p.x - area.x) / rs.s;
         var hit: ?usize = null;
@@ -214,12 +217,82 @@ fn drawLane(state: *state_mod.State, track: usize) void {
             state.selectTrack(track);
             state.selected_arr_clip = idx;
             state.bottom_mode = .sequencer;
+            if (document_model.ready()) _ = document_commands.selectArrangementClip(&document_model.g, idx, me.mod.shift());
         } else {
             state.selectTrack(track);
             state.selected_arr_clip = null;
         }
+        if (me.button == .right) continue;
+        e.handle(@src(), lane.data());
         dvui.refresh(null, @src(), lane.data().id);
     }
+
+    drawContextMenu(state, lane.data().borderRectScale().r, track);
+}
+
+fn drawContextMenu(state: *state_mod.State, rect: dvui.Rect.Physical, track: usize) void {
+    const context = dvui.context(@src(), .{ .rect = rect }, .{ .id_extra = track });
+    defer context.deinit();
+    const point = context.activePoint() orelse return;
+    const selected = state.selected_arr_clip != null;
+    var menu = dvui.floatingMenu(@src(), .{ .from = dvui.Rect.Natural.fromPoint(point) }, .{ .id_extra = track });
+    defer menu.deinit();
+    if (edit_actions.drawMenu(.{
+        .duplicate = selected,
+        .delete = selected,
+        .select_all = true,
+        .move_left = selected,
+        .move_right = selected,
+        .move_up = selected,
+        .move_down = selected,
+    })) |action| {
+        _ = applyEditAction(state, action);
+        menu.close();
+    }
+}
+
+pub fn applyEditAction(state: *state_mod.State, action: edit_actions.Action) bool {
+    if (!document_model.ready()) return false;
+    const store = &document_model.g;
+    const selected = state.selected_arr_clip;
+    var changed = false;
+    switch (action) {
+        .select_all => {
+            document_commands.selectAllArrangementClips(store);
+            changed = true;
+        },
+        .duplicate => if (selected) |index| {
+            if (document_commands.duplicateArrangementClip(store, index)) |new_index| {
+                state.selected_arr_clip = new_index;
+                changed = true;
+            }
+        },
+        .delete => if (selected) |index| {
+            if (document_commands.deleteArrangementClip(store, index)) {
+                state.selected_arr_clip = null;
+                changed = true;
+            }
+        },
+        .move_left, .move_right, .move_up, .move_down => if (selected) |index| {
+            const dt: i32 = switch (action) {
+                .move_up => -1,
+                .move_down => 1,
+                else => 0,
+            };
+            const ticks: i64 = switch (action) {
+                .move_left => -store.arrangement.snap_division_ticks,
+                .move_right => store.arrangement.snap_division_ticks,
+                else => 0,
+            };
+            if (document_commands.moveArrangementClip(store, index, dt, ticks)) |new_index| {
+                state.selected_arr_clip = new_index;
+                changed = true;
+            }
+        },
+        else => {},
+    }
+    if (changed and host_mod.ready()) host_mod.g.projectChrome(state);
+    return changed;
 }
 
 fn drawArrClip(

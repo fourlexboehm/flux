@@ -16,6 +16,9 @@ const browser = @import("panels/browser.zig");
 const bottom = @import("panels/bottom.zig");
 const main_pane = @import("views/main_pane.zig");
 const piano_roll = @import("views/piano_roll.zig");
+const session_view = @import("views/session.zig");
+const arrangement_view = @import("views/arrangement.zig");
+const edit_actions = @import("edit_actions.zig");
 
 const sdl = dvui.backend.c;
 
@@ -200,6 +203,20 @@ fn handleGlobalKeys(state: *state_mod.State) void {
 
         if (ke.action != .down and ke.action != .repeat) continue;
 
+        if (state.focused_pane == .session) {
+            if (edit_actions.fromKey(ke)) |action| {
+                const edited = switch (state.view_mode) {
+                    .session => session_view.applyEditAction(state, action),
+                    .arrangement => arrangement_view.applyEditAction(state, action),
+                };
+                if (edited) {
+                    e.handle(@src(), wd);
+                    dvui.refresh(null, @src(), wd.id);
+                    continue;
+                }
+            }
+        }
+
         switch (ke.code) {
             .space => {
                 e.handle(@src(), wd);
@@ -224,7 +241,7 @@ fn handleGlobalKeys(state: *state_mod.State) void {
                 }
             },
             .left, .right, .up, .down => {
-                if (state.focused_pane != .session) continue;
+                if (state.focused_pane != .session or state.view_mode != .session) continue;
                 e.handle(@src(), wd);
                 switch (ke.code) {
                     .left => {
@@ -241,11 +258,17 @@ fn handleGlobalKeys(state: *state_mod.State) void {
                     },
                     else => unreachable,
                 }
-                if (document_model.ready()) document_commands.setPrimarySelection(&document_model.g, state.selected_track, state.selected_scene);
+                if (document_model.ready()) {
+                    if (state.selectedSlot().kind == .empty) {
+                        document_commands.setSessionAnchor(&document_model.g, state.selected_track, state.selected_scene, !ke.mod.shift());
+                    } else {
+                        document_commands.selectSessionSlot(&document_model.g, state.selected_track, state.selected_scene, ke.mod.shift());
+                    }
+                }
                 dvui.refresh(null, @src(), wd.id);
             },
             .enter => {
-                if (state.focused_pane != .session) continue;
+                if (state.focused_pane != .session or state.view_mode != .session) continue;
                 e.handle(@src(), wd);
                 if (state.selectedSlot().kind == .empty and document_model.ready()) {
                     document_commands.createClip(&document_model.g, state.selected_track, state.selected_scene, state.beatsPerBar());
@@ -256,7 +279,7 @@ fn handleGlobalKeys(state: *state_mod.State) void {
                 dvui.refresh(null, @src(), wd.id);
             },
             .delete, .backspace => {
-                if (state.focused_pane != .session or state.selectedSlot().kind == .empty) continue;
+                if (state.focused_pane != .session or state.view_mode != .session or state.selectedSlot().kind == .empty) continue;
                 e.handle(@src(), wd);
                 if (document_model.ready()) {
                     document_commands.deleteClip(&document_model.g, state.selected_track, state.selected_scene);
