@@ -13,7 +13,7 @@ pub fn draw(state: *state_mod.State) void {
         .expand = .horizontal,
         .background = true,
         .color_fill = theme.panel,
-        .padding = .{ .x = tokens.gap_tight, .y = 2, .w = tokens.gap_tight, .h = 2 },
+        .padding = .{ .x = tokens.pad_content, .y = 2, .w = tokens.gap_tight, .h = 2 },
         .border = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
         .color_border = theme.grid,
         .min_size_content = .{ .h = tokens.transport_h },
@@ -22,11 +22,13 @@ pub fn draw(state: *state_mod.State) void {
 
     // Play / Stop — icon only
     const play_kind: icons.IconKind = if (state.playing) .stop else .play;
-    const play_fill = if (state.playing) theme.stop else theme.play;
+    const play_color = if (state.playing) theme.stop else theme.play;
     if (icons.button(@src(), play_kind, .{
-        .fill = play_fill,
-        .color = theme.bg,
+        .fill = theme.cell,
+        .color = play_color,
         .size = tokens.icon_md,
+        .pad = 3,
+        .border = true,
     })) {
         state.togglePlay();
     }

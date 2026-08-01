@@ -34,6 +34,7 @@ pub const ClipPool = clip_pool_mod.ClipPool;
 /// Main-thread snapshot published into the RT double-buffer each frame.
 /// Pointers must remain valid for the duration of `updateFromUi`.
 pub const EngineUiView = struct {
+    document_revision: u64,
     playing: bool,
     metronome_enabled: bool,
     bpm: f32,

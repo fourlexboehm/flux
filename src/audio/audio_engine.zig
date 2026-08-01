@@ -41,6 +41,9 @@ pub const SharedState = struct {
         @splat(@splat(std.atomic.Value(bool).init(false))),
     track_peak_left: [max_tracks]std.atomic.Value(u32) = @splat(std.atomic.Value(u32).init(0)),
     track_peak_right: [max_tracks]std.atomic.Value(u32) = @splat(std.atomic.Value(u32).init(0)),
+    published_document_revision: u64 = std.math.maxInt(u64),
+    published_document_bpm: f32 = -1,
+    document_compile_count: usize = 0,
 
     pub fn setTrackPeak(self: *SharedState, track: usize, left: f32, right: f32) void {
         self.track_peak_left[track].store(@bitCast(left), .release);
@@ -68,9 +71,11 @@ pub const SharedState = struct {
     }
 
     pub fn updateFromUi(self: *SharedState, view: *EngineUiView) void {
+        const document_changed = self.published_document_revision != view.document_revision or
+            self.published_document_bpm != view.bpm;
         // Offline stretch bake before publishing RT snapshot (can allocate / CPU).
         // Only dirty *playing/queued* clips recompute — keeps load/idle frames cheap.
-        {
+        if (document_changed) {
             const bake_tc = @min(view.session.track_count, max_tracks);
             const bake_sc = @min(view.session.scene_count, max_scenes);
             for (0..bake_tc) |t| {
@@ -98,10 +103,12 @@ pub const SharedState = struct {
         back.time_signature_numerator = view.time_signature_numerator;
         back.time_signature_denominator = view.time_signature_denominator;
         back.playhead_beat = view.playhead_beat;
-        back.track_count = view.session.track_count;
-        back.scene_count = view.session.scene_count;
-        back.tracks = view.session.tracks;
-        back.clips = view.session.clips;
+        if (document_changed) {
+            back.track_count = view.session.track_count;
+            back.scene_count = view.session.scene_count;
+            back.tracks = view.session.tracks;
+            back.clips = view.session.clips;
+        }
         back.track_plugins = self.track_plugins;
         back.track_fx_plugins = self.track_fx_plugins;
         for (0..max_tracks) |t| {
@@ -121,78 +128,79 @@ pub const SharedState = struct {
             );
         }
 
-        // Sample table: immutable views; only fully loaded assets, never touch store on RT.
-        audio_graph.publishSampleTableFromStore(&back.sample_table, view.sample_store);
+        if (document_changed) {
+            // Immutable sample views; only fully loaded assets, never touch store on RT.
+            audio_graph.publishSampleTableFromStore(&back.sample_table, view.sample_store);
 
-        for (0..max_tracks) |t| {
-            back.active_scene_by_track[t] = -1;
-            back.playing_audio[t].clear();
-            const active_scene_count = @min(view.session.scene_count, max_scenes);
-            for (0..active_scene_count) |scene_index| {
-                const slot = view.session.clips[t][scene_index];
-                if (slot.state == .playing) {
-                    back.active_scene_by_track[t] = @intCast(scene_index);
-                    if (view.slotAudio(t, scene_index)) |audio| {
-                        if (audio.hasAudio()) {
-                            audio_graph.copyPlayingAudioClip(&back.playing_audio[t], audio);
-                        }
-                    }
-                    break;
-                }
-            }
-            for (0..max_scenes) |s| {
-                var dst = &back.piano_clips[t][s];
-                // Slots that hold audio (or are empty) contribute no MIDI notes.
-                const src = view.slotPiano(t, s) orelse {
-                    dst.length_beats = default_clip_bars * beats_per_bar;
-                    dst.count = 0;
-                    dst.automation_lane_count = 0;
-                    continue;
-                };
-                dst.length_beats = src.length_beats;
-                dst.play_start_beats = src.play_start_beats;
-                dst.loop_start_beats = src.loop_start_beats;
-                dst.loop_end_beats = src.loop_end_beats;
-                const note_count = @min(src.notes.items.len, audio_graph.max_clip_notes);
-                dst.count = @intCast(note_count);
-                if (note_count > 0) {
-                    @memcpy(dst.notes[0..note_count], src.notes.items[0..note_count]);
-                }
-                dst.automation_lane_count = 0;
-                for (src.automation.lanes.items) |lane| {
-                    if (dst.automation_lane_count >= audio_graph.max_automation_lanes) break;
-                    if (lane.target_kind != .parameter) continue;
-                    const param_id_str = lane.param_id orelse continue;
-                    const param_id_int = std.fmt.parseInt(u32, param_id_str, 10) catch continue;
-
-                    var dst_lane = &dst.automation_lanes[dst.automation_lane_count];
-                    dst_lane.* = .{};
-                    dst_lane.target_kind = .parameter;
-                    dst_lane.param_id = @enumFromInt(param_id_int);
-                    dst_lane.target_fx_index = -1;
-                    if (lane.target_id.len > 0) {
-                        if (std.mem.eql(u8, lane.target_id, "instrument")) {
-                            dst_lane.target_fx_index = -1;
-                        } else if (std.mem.startsWith(u8, lane.target_id, "fx")) {
-                            var idx_str = lane.target_id["fx".len..];
-                            if (std.mem.startsWith(u8, idx_str, ":")) {
-                                idx_str = idx_str[1..];
+            for (0..max_tracks) |t| {
+                back.active_scene_by_track[t] = -1;
+                back.playing_audio[t].clear();
+                const active_scene_count = @min(view.session.scene_count, max_scenes);
+                for (0..active_scene_count) |scene_index| {
+                    const slot = view.session.clips[t][scene_index];
+                    if (slot.state == .playing) {
+                        back.active_scene_by_track[t] = @intCast(scene_index);
+                        if (view.slotAudio(t, scene_index)) |audio| {
+                            if (audio.hasAudio()) {
+                                audio_graph.copyPlayingAudioClip(&back.playing_audio[t], audio);
                             }
-                            const fx_idx = std.fmt.parseInt(i8, idx_str, 10) catch -1;
-                            dst_lane.target_fx_index = fx_idx;
                         }
+                        break;
                     }
+                }
+                for (0..max_scenes) |s| {
+                    var dst = &back.piano_clips[t][s];
+                    // Slots that hold audio (or are empty) contribute no MIDI notes.
+                    const src = view.slotPiano(t, s) orelse {
+                        dst.length_beats = default_clip_bars * beats_per_bar;
+                        dst.count = 0;
+                        dst.automation_lane_count = 0;
+                        continue;
+                    };
+                    dst.length_beats = src.length_beats;
+                    dst.play_start_beats = src.play_start_beats;
+                    dst.loop_start_beats = src.loop_start_beats;
+                    dst.loop_end_beats = src.loop_end_beats;
+                    const note_count = @min(src.notes.items.len, audio_graph.max_clip_notes);
+                    dst.count = @intCast(note_count);
+                    if (note_count > 0) {
+                        @memcpy(dst.notes[0..note_count], src.notes.items[0..note_count]);
+                    }
+                    dst.automation_lane_count = 0;
+                    for (src.automation.lanes.items) |lane| {
+                        if (dst.automation_lane_count >= audio_graph.max_automation_lanes) break;
+                        if (lane.target_kind != .parameter) continue;
+                        const param_id_str = lane.param_id orelse continue;
+                        const param_id_int = std.fmt.parseInt(u32, param_id_str, 10) catch continue;
 
-                    const point_count = @min(lane.points.items.len, audio_graph.max_automation_points);
-                    dst_lane.point_count = @intCast(point_count);
-                    for (0..point_count) |idx| {
-                        const point = lane.points.items[idx];
-                        dst_lane.points[idx] = .{ .time = point.time, .value = point.value };
+                        var dst_lane = &dst.automation_lanes[dst.automation_lane_count];
+                        dst_lane.* = .{};
+                        dst_lane.target_kind = .parameter;
+                        dst_lane.param_id = @fromBackingInt(@intCast(param_id_int));
+                        dst_lane.target_fx_index = -1;
+                        if (lane.target_id.len > 0) {
+                            if (std.mem.eql(u8, lane.target_id, "instrument")) {
+                                dst_lane.target_fx_index = -1;
+                            } else if (std.mem.startsWith(u8, lane.target_id, "fx")) {
+                                var idx_str = lane.target_id["fx".len..];
+                                if (std.mem.startsWith(u8, idx_str, ":")) {
+                                    idx_str = idx_str[1..];
+                                }
+                                const fx_idx = std.fmt.parseInt(i8, idx_str, 10) catch -1;
+                                dst_lane.target_fx_index = fx_idx;
+                            }
+                        }
+
+                        const point_count = @min(lane.points.items.len, audio_graph.max_automation_points);
+                        dst_lane.point_count = @intCast(point_count);
+                        for (0..point_count) |idx| {
+                            const point = lane.points.items[idx];
+                            dst_lane.points[idx] = .{ .time = point.time, .value = point.value };
+                        }
+                        dst.automation_lane_count += 1;
                     }
-                    dst.automation_lane_count += 1;
                 }
             }
-
         }
 
         back.max_track_latency = 0;
@@ -218,6 +226,14 @@ pub const SharedState = struct {
         // still holds the previous snapshot, then free retired sample/bake buffers.
         while (self.processing.load(.acquire) != 0) {
             std.atomic.spinLoopHint();
+        }
+        if (document_changed) {
+            // Both buffers must carry the same immutable document payload so
+            // subsequent runtime-only publications can safely alternate.
+            self.snapshots[current] = self.snapshots[next];
+            self.published_document_revision = view.document_revision;
+            self.published_document_bpm = view.bpm;
+            self.document_compile_count += 1;
         }
         view.sample_store.flushDeferredFrees();
         for (0..max_tracks) |t| {
@@ -557,4 +573,51 @@ fn initSnapshot(snapshot: *audio_graph.StateSnapshot) void {
             snapshot.piano_clips[t][s].count = 0;
         }
     }
+}
+
+test "runtime publication skips unchanged document compilation" {
+    const document_model = @import("../document/model.zig");
+
+    var store = document_model.Store.init(std.testing.allocator);
+    defer store.deinit();
+    store.wireInternalRefs();
+
+    var shared = try SharedState.init(std.testing.allocator);
+    defer shared.deinit(std.testing.allocator);
+
+    const instrument_enabled: [max_tracks]bool = @splat(true);
+    const fx_enabled: [max_tracks][max_fx_slots]bool = @splat(@splat(true));
+    const live_keys: [max_tracks][128]bool = @splat(@splat(false));
+    const live_velocities: [max_tracks][128]f32 = @splat(@splat(0));
+    var view = EngineUiView{
+        .document_revision = store.revision,
+        .playing = false,
+        .metronome_enabled = false,
+        .bpm = 120,
+        .time_signature_numerator = 4,
+        .time_signature_denominator = 4,
+        .playhead_beat = 0,
+        .session = &store.session,
+        .sample_store = &store.sample_store,
+        .track_instrument_enabled = &instrument_enabled,
+        .track_fx_enabled = &fx_enabled,
+        .live_key_states = &live_keys,
+        .live_key_velocities = &live_velocities,
+        .controller_param_writes = &.{},
+    };
+
+    shared.updateFromUi(&view);
+    try std.testing.expectEqual(@as(usize, 1), shared.document_compile_count);
+
+    view.playing = true;
+    view.playhead_beat = 2.5;
+    shared.updateFromUi(&view);
+    try std.testing.expectEqual(@as(usize, 1), shared.document_compile_count);
+    try std.testing.expect(shared.snapshot().playing);
+    try std.testing.expectEqual(@as(f32, 2.5), shared.snapshot().playhead_beat);
+
+    store.markChanged();
+    view.document_revision = store.revision;
+    shared.updateFromUi(&view);
+    try std.testing.expectEqual(@as(usize, 2), shared.document_compile_count);
 }

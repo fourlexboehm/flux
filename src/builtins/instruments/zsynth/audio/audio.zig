@@ -59,9 +59,9 @@ pub fn processNoteChanges(plugin: *Plugin, event: *const clap.events.Header) voi
             new_voice.velocity = note_event.velocity;
             new_voice.adsr = adsr;
 
-            const osc1_wave_value: u32 = @intFromEnum(plugin.params.get(.WaveShape1).Wave);
+            const osc1_wave_value: u32 = @backingInt(plugin.params.get(.WaveShape1).Wave);
             const osc1_wave_shape: Wave = std.enums.fromInt(Wave, osc1_wave_value) orelse return;
-            const osc2_wave_value: u32 = @intFromEnum(plugin.params.get(.WaveShape2).Wave);
+            const osc2_wave_value: u32 = @backingInt(plugin.params.get(.WaveShape2).Wave);
             const osc2_wave_shape: Wave = std.enums.fromInt(Wave, osc2_wave_value) orelse return;
             const osc1_detune: f64 = plugin.params.get(.Pitch1).Float;
             const osc2_detune: f64 = plugin.params.get(.Pitch2).Float;
@@ -122,7 +122,7 @@ pub fn renderAudio(plugin: *Plugin, start: u32, end: u32, output_left: [*]f32, o
     };
 
     var did_render_audio = false;
-    const should_use_threadpool = builtin.mode != .Debug or plugin.params.get(Parameter.DebugBool1).Bool == true;
+    const should_use_threadpool = builtin.mode != .debug or plugin.params.get(Parameter.DebugBool1).Bool == true;
     // After this many voices, it's faster to multi-thread them
     if (should_use_threadpool) {
         if (plugin.host.getExtension(plugin.host, clap.ext.thread_pool.id)) |ext_raw| {
@@ -159,9 +159,9 @@ pub fn processVoice(plugin: *Plugin, voice_index: u32) !void {
 
     const voice: *Voice = voices.getVoice(@intCast(voice_index)).?;
 
-    const osc1_wave_value: u32 = @intFromEnum(plugin.params.get(.WaveShape1).Wave);
+    const osc1_wave_value: u32 = @backingInt(plugin.params.get(.WaveShape1).Wave);
     const osc1_wave_shape: Wave = std.enums.fromInt(Wave, osc1_wave_value) orelse return error.InvalidEnumTag;
-    const osc2_wave_value: u32 = @intFromEnum(plugin.params.get(.WaveShape2).Wave);
+    const osc2_wave_value: u32 = @backingInt(plugin.params.get(.WaveShape2).Wave);
     const osc2_wave_shape: Wave = std.enums.fromInt(Wave, osc2_wave_value) orelse return error.InvalidEnumTag;
     const osc1_detune: f64 = plugin.params.get(.Pitch1).Float;
     const osc2_detune: f64 = plugin.params.get(.Pitch2).Float;

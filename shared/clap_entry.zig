@@ -24,7 +24,7 @@ pub fn Entry(comptime PluginType: type) type {
         }
 
         fn _init(plugin_path: [*:0]const u8) callconv(.c) bool {
-            if (builtin.mode == .Debug and options.wait_for_debugger) {
+            if (builtin.mode == .debug and options.wait_for_debugger) {
                 @breakpoint();
             }
 

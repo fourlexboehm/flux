@@ -1,17 +1,17 @@
 const std = @import("std");
-const ui_state = @import("../ui_zgui/state.zig");
 const session_constants = @import("../session/constants.zig");
 const session_view = @import("../session/types.zig");
 const arr_timeline = @import("../arrangement/timeline.zig");
 const arr_clip_mod = @import("../arrangement/clip.zig");
 const clip_pool = @import("../session/clip_pool.zig");
 const track_count = session_constants.max_tracks;
+const max_fx_slots = @import("../audio/engine_ui.zig").max_fx_slots;
 const master_track_index = session_view.master_track_index;
 const plugins = @import("../plugin/plugins.zig");
 const types = @import("format/types.zig");
 const io_types = @import("io_types.zig");
 const parse = @import("format/parse.zig");
-const param_table = @import("flux_param_table");
+const param_table = @import("../builtins/param_table.zig");
 const BuiltinKind = param_table.Kind;
 
 const RealParameter = types.RealParameter;
@@ -52,10 +52,10 @@ pub const MediaMode = enum {
 /// Convert Flux project state to DAWproject format
 pub fn fromFluxProject(
     allocator: std.mem.Allocator,
-    state: *const ui_state.State,
+    state: anytype,
     catalog: *const plugins.PluginCatalog,
     track_plugin_info: []const TrackPluginInfo,
-    track_fx_plugin_info: []const [ui_state.max_fx_slots]TrackPluginInfo,
+    track_fx_plugin_info: []const [max_fx_slots]TrackPluginInfo,
     media_mode: MediaMode,
 ) !Project {
     var ids = IdGenerator{ .allocator = allocator };
@@ -67,7 +67,7 @@ pub fn fromFluxProject(
     var instrument_device_ids: [track_count]?[]const u8 = @splat(null);
     var track_volume_param_ids: [track_count]?[]const u8 = @splat(null);
     var track_pan_param_ids: [track_count]?[]const u8 = @splat(null);
-    var fx_device_ids: [track_count][ui_state.max_fx_slots]?[]const u8 = @splat(@splat(null));
+    var fx_device_ids: [track_count][max_fx_slots]?[]const u8 = @splat(@splat(null));
 
     const master_channel_id = try ids.next();
 
@@ -96,7 +96,7 @@ pub fn fromFluxProject(
             instrument_device_ids[t] = device.id;
             try devices.append(allocator, device);
         };
-        for (0..ui_state.max_fx_slots) |fx_index| {
+        for (0..max_fx_slots) |fx_index| {
             const fx_choice = state.track_fx[t][fx_index].choice_index;
             var has_fx = false;
             if (catalog.entryForIndex(fx_choice)) |entry| {
@@ -182,7 +182,7 @@ pub fn fromFluxProject(
 
     // Master track
     var master_devices = std.ArrayList(ClapPlugin).empty;
-    for (0..ui_state.max_fx_slots) |fx_index| {
+    for (0..max_fx_slots) |fx_index| {
         const fx_choice = state.track_fx[master_track_index][fx_index].choice_index;
         var has_fx = false;
         if (catalog.entryForIndex(fx_choice)) |entry| {
@@ -314,7 +314,7 @@ pub fn fromFluxProject(
                                 var idx_str = lane.target_id["fx".len..];
                                 if (std.mem.startsWith(u8, idx_str, ":")) idx_str = idx_str[1..];
                                 const fx_idx = std.fmt.parseInt(usize, idx_str, 10) catch continue;
-                                if (fx_idx >= ui_state.max_fx_slots) continue;
+                                if (fx_idx >= max_fx_slots) continue;
                                 break :blk fx_device_ids[t][fx_idx] orelse continue;
                             } else {
                                 continue;
@@ -445,7 +445,7 @@ pub fn fromFluxProject(
     };
 }
 
-fn arrangementTrackColor(state: *const ui_state.State, session_track: usize) ?[4]f32 {
+fn arrangementTrackColor(state: anytype, session_track: usize) ?[4]f32 {
     for (state.arrangement.tracks.items) |track| {
         if (track.session_track_index == session_track) return track.color;
     }
@@ -454,7 +454,7 @@ fn arrangementTrackColor(state: *const ui_state.State, session_track: usize) ?[4
 
 fn buildArrangementClipsForTrack(
     allocator: std.mem.Allocator,
-    state: *const ui_state.State,
+    state: anytype,
     session_track: usize,
     ids: *IdGenerator,
     media_mode: MediaMode,
@@ -471,7 +471,7 @@ fn buildArrangementClipsForTrack(
 
 fn buildArrangementClip(
     allocator: std.mem.Allocator,
-    state: *const ui_state.State,
+    state: anytype,
     arr_clip: *const arr_clip_mod.ArrangementClip,
     ids: *IdGenerator,
     media_mode: MediaMode,
@@ -537,7 +537,7 @@ fn buildArrangementClip(
 
 fn buildArrangementAudio(
     allocator: std.mem.Allocator,
-    state: *const ui_state.State,
+    state: anytype,
     arr_clip: *const arr_clip_mod.ArrangementClip,
     clip_duration_beats: f64,
     ids: *IdGenerator,
@@ -591,7 +591,7 @@ fn colorToHex(allocator: std.mem.Allocator, color: [4]f32) ![]const u8 {
 }
 
 /// DAWproject `contentType` list: notes | audio | "audio notes" (hybrid).
-fn trackContentTypesAttr(allocator: std.mem.Allocator, state: *const ui_state.State, track: usize) ![]const u8 {
+fn trackContentTypesAttr(allocator: std.mem.Allocator, state: anytype, track: usize) ![]const u8 {
     const has_audio = state.trackHasAudio(track);
     const has_notes = state.trackHasNotes(track);
     if (has_audio and has_notes) return try allocator.dupe(u8, "audio notes");
@@ -614,7 +614,7 @@ fn clipExportName(
 
 fn buildAudioClip(
     allocator: std.mem.Allocator,
-    state: *const ui_state.State,
+    state: anytype,
     track: usize,
     scene: usize,
     ids: *IdGenerator,
@@ -877,7 +877,7 @@ fn findParamById(items: []const RealParameter, id: u32) ?RealParameter {
 
 fn buildMissingPlugin(
     allocator: std.mem.Allocator,
-    missing: *const ui_state.MissingPlugin,
+    missing: anytype,
     info: TrackPluginInfo,
     ids: *IdGenerator,
 ) !ClapPlugin {

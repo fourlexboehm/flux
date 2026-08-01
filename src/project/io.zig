@@ -1,5 +1,4 @@
 const std = @import("std");
-const ui_state = @import("../ui_zgui/state.zig");
 const plugins = @import("../plugin/plugins.zig");
 const undo = @import("../undo/root.zig");
 const types = @import("format/types.zig");
@@ -22,6 +21,7 @@ const toXml = xml_writer.toXml;
 const Dir = std.Io.Dir;
 const WarpPoint = types.WarpPoint;
 const Clip = types.Clip;
+const max_fx_slots = @import("../audio/engine_ui.zig").max_fx_slots;
 
 pub const LoadedProject = struct {
     arena: std.heap.ArenaAllocator,
@@ -65,11 +65,11 @@ pub fn save(
     allocator: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
-    state: *ui_state.State,
+    state: anytype,
     catalog: *const plugins.PluginCatalog,
     plugin_states: []const PluginStateFile,
     track_plugin_info: []const TrackPluginInfo,
-    track_fx_plugin_info: []const [ui_state.max_fx_slots]TrackPluginInfo,
+    track_fx_plugin_info: []const [max_fx_slots]TrackPluginInfo,
 ) !void {
     const project_dir = try media_layout.projectDir(allocator, path);
     defer allocator.free(project_dir);
@@ -120,12 +120,12 @@ pub fn save(
     try zip.addFile("project.xml", xml);
     try zip.addFile("metadata.xml", metadata_xml);
 
-    const undo_xml = undo.serializeToXml(arena.allocator(), &state.undo_history) catch |err| blk: {
-        std.log.warn("Failed to serialize undo history: {}", .{err});
-        break :blk null;
-    };
-    if (undo_xml) |data| {
-        try zip.addFile("flux_undo.xml", data);
+    if (comptime @hasField(@TypeOf(state.*), "undo_history")) {
+        const undo_xml = undo.serializeToXml(arena.allocator(), &state.undo_history) catch |err| blk: {
+            std.log.warn("Failed to serialize undo history: {}", .{err});
+            break :blk null;
+        };
+        if (undo_xml) |data| try zip.addFile("flux_undo.xml", data);
     }
 
     for (plugin_states) |ps| {
@@ -142,11 +142,11 @@ pub fn pack(
     allocator: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
-    state: *ui_state.State,
+    state: anytype,
     catalog: *const plugins.PluginCatalog,
     plugin_states: []const PluginStateFile,
     track_plugin_info: []const TrackPluginInfo,
-    track_fx_plugin_info: []const [ui_state.max_fx_slots]TrackPluginInfo,
+    track_fx_plugin_info: []const [max_fx_slots]TrackPluginInfo,
 ) !void {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -249,8 +249,8 @@ pub fn pack(
     try zip.addFile("project.xml", xml);
     try zip.addFile("metadata.xml", metadata_xml);
 
-    if (undo.serializeToXml(aa, &state.undo_history) catch null) |data| {
-        try zip.addFile("flux_undo.xml", data);
+    if (comptime @hasField(@TypeOf(state.*), "undo_history")) {
+        if (undo.serializeToXml(aa, &state.undo_history) catch null) |data| try zip.addFile("flux_undo.xml", data);
     }
     for (plugin_states) |ps| {
         try zip.addFile(ps.path, ps.data);
@@ -432,7 +432,7 @@ fn flushReferencedSamples(
     io: std.Io,
     project_dir: []const u8,
     prev_project_dir: ?[]const u8,
-    state: *ui_state.State,
+    state: anytype,
 ) !void {
     var seen = std.AutoHashMap(u32, void).init(allocator);
     defer seen.deinit();
@@ -443,7 +443,7 @@ fn flushReferencedSamples(
             const sample_id = audio.sample_id orelse continue;
             if (seen.contains(sample_id)) continue;
             try seen.put(sample_id, {});
-            try media_flush.flushOneSample(allocator, io, project_dir, prev_project_dir, &state.sample_store, sample_id);
+            try media_flush.flushOneSample(allocator, io, project_dir, prev_project_dir, state.sample_store, sample_id);
         }
     }
     // Arrangement audio clips (may reference samples not used in session)
@@ -453,7 +453,7 @@ fn flushReferencedSamples(
             const sample_id = audio.sample_id orelse continue;
             if (seen.contains(sample_id)) continue;
             try seen.put(sample_id, {});
-            try media_flush.flushOneSample(allocator, io, project_dir, prev_project_dir, &state.sample_store, sample_id);
+            try media_flush.flushOneSample(allocator, io, project_dir, prev_project_dir, state.sample_store, sample_id);
         }
     }
 }

@@ -17,6 +17,8 @@ pub const icon_md: f32 = 13;
 pub const session_row_h: f32 = 28;
 /// Session track header height.
 pub const session_header_h: f32 = 20;
+/// Session mixer strip height below the launcher grid.
+pub const session_mixer_h: f32 = 118;
 /// Scene name column width.
 pub const scene_col_w: f32 = 80;
 /// Track / clip column width.
@@ -37,14 +39,16 @@ pub const arr_ruler_h: f32 = 16;
 /// Pixels per beat on arrangement timeline.
 pub const arr_beat_w: f32 = 12;
 
-/// Device chain — compact chips (header + one subtitle line).
-/// Selected device detail + floating plugin GUIs use remaining bottom height.
-pub const device_card_w: f32 = 100;
-pub const device_card_h: f32 = 32;
-pub const device_header_h: f32 = 16;
-pub const device_add_w: f32 = 36;
+/// Device chain — full-height rack cards, matching the original zgui pane.
+pub const device_card_w: f32 = 300;
+pub const device_card_h: f32 = 210;
+pub const device_header_h: f32 = 30;
+pub const device_add_w: f32 = 150;
 pub const device_led: f32 = 9;
-pub const device_chain_h: f32 = 36;
+pub const device_chain_h: f32 = 220;
+
+/// Bounded catalog/picker column; plugin rows should not span the whole pane.
+pub const plugin_list_w: f32 = 320;
 
 /// Browser category column.
 pub const browser_nav_w: f32 = 92;
@@ -59,4 +63,4 @@ pub const radius_sm: f32 = 2;
 pub const radius_md: f32 = 3;
 
 /// Default vertical split: more room for device/plugin bottom pane.
-pub const top_split_default: f32 = 0.58;
+pub const top_split_default: f32 = 0.62;

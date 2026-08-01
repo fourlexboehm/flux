@@ -5,12 +5,13 @@
 //! `audio/engine_ui.EngineUiView` (engine no longer imports `ui_zgui/state`).
 //!
 //! Hardware MIDI + computer-keyboard live keys come from `plugin_host`.
-//! Project load/save still pending (DAWproject path coupled to zgui state).
+//! DAWproject load/save is adapted by `ui/project_runtime.zig`.
 
 const std = @import("std");
 const zaudio = @import("zaudio");
 const chrome = @import("state.zig");
 const host_mod = @import("host.zig");
+const document_model = @import("../document/model.zig");
 const plugin_host_mod = @import("plugin_host.zig");
 const audio_engine_mod = @import("../audio/audio_engine.zig");
 const audio_constants = @import("../audio/audio_constants.zig");
@@ -138,17 +139,23 @@ pub const AudioRuntime = struct {
         std.log.info("audio engine device started (sr={d} buf={d})", .{ sample_rate, self.buffer_frames });
     }
 
-    /// Publish chrome + host document into the engine RT snapshot.
-    pub fn publishFromHost(self: *AudioRuntime, host: *host_mod.Host, state: *const chrome.State) void {
+    /// Publish a UI-neutral document plus runtime controls into the RT snapshot.
+    pub fn publishDocument(
+        self: *AudioRuntime,
+        document: document_model.Model,
+        instrument_enabled: *const [chrome.max_tracks]bool,
+        fx_enabled: *const [chrome.max_tracks][chrome.max_fx_slots]bool,
+        state: *const chrome.State,
+    ) void {
         if (self.engine == null) return;
         const eng = &self.engine.?;
 
         // Sync bypass flags (chrome max_fx may exceed engine depth).
         for (0..max_tracks) |t| {
-            self.instrument_enabled[t] = if (t < chrome.max_tracks) host.instrument_enabled[t] else true;
+            self.instrument_enabled[t] = if (t < chrome.max_tracks) instrument_enabled[t] else true;
             for (0..max_fx_slots) |fx| {
                 if (t < chrome.max_tracks and fx < chrome.max_fx_slots) {
-                    self.fx_enabled[t][fx] = host.fx_enabled[t][fx];
+                    self.fx_enabled[t][fx] = fx_enabled[t][fx];
                 } else {
                     self.fx_enabled[t][fx] = true;
                 }
@@ -165,14 +172,15 @@ pub const AudioRuntime = struct {
             &self.live_key_velocities;
 
         var view = EngineUiView{
+            .document_revision = document.revision,
             .playing = state.playing,
             .metronome_enabled = state.metronome_enabled,
             .bpm = state.bpm,
             .time_signature_numerator = state.time_signature_numerator,
             .time_signature_denominator = state.time_signature_denominator,
             .playhead_beat = state.playhead_beat,
-            .session = &host.session,
-            .sample_store = &host.sample_store,
+            .session = document.session,
+            .sample_store = document.sample_store,
             .track_instrument_enabled = &self.instrument_enabled,
             .track_fx_enabled = &self.fx_enabled,
             .live_key_states = live_keys,
@@ -244,7 +252,7 @@ pub const AudioRuntime = struct {
             plugin_host_mod.g.projectToDocumentHost(host);
         }
 
-        self.publishFromHost(host, state);
+        self.publishDocument(host.document(), &host.instrument_enabled, &host.fx_enabled, state);
         self.pullToChrome(state);
     }
 };
@@ -301,7 +309,10 @@ pub fn ready() bool {
 // ── Unit tests (no device) ───────────────────────────────────────────────────
 
 test "engine ui view builds from host fields" {
-    var h = host_mod.Host.init(std.testing.allocator);
+    var store = document_model.Store.init(std.testing.allocator);
+    defer store.deinit();
+    store.wireInternalRefs();
+    var h = host_mod.Host.init(&store);
     defer h.deinit();
     h.wireInternalRefs();
 
@@ -314,7 +325,7 @@ test "engine ui view builds from host fields" {
     s.bpm = 140;
 
     // publish without engine should no-op
-    rt.publishFromHost(&h, &s);
+    rt.publishDocument(h.document(), &h.instrument_enabled, &h.fx_enabled, &s);
     try std.testing.expect(!rt.engine_ready);
 }
 

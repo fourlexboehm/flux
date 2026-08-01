@@ -4,7 +4,6 @@ const sample_store = @import("../../audio/sample_store.zig");
 const audio_clip_types = @import("../../session/audio_clip.zig");
 const piano_roll_types = @import("../../session/notes.zig");
 const session_constants = @import("../../session/constants.zig");
-const ui_state = @import("../../ui_zgui/state.zig");
 
 const flatten = @import("../format/flatten.zig");
 const types = @import("../format/types.zig");
@@ -14,15 +13,16 @@ const time_mod = @import("time.zig");
 
 const track_count = session_constants.max_tracks;
 const scene_count = session_constants.max_scenes;
+const max_fx_slots = @import("../../audio/engine_ui.zig").max_fx_slots;
 
 pub fn applyLanes(
-    state: *ui_state.State,
+    state: anytype,
     loaded: *const project_io.LoadedProject,
     io: std.Io,
     lanes: *const types.Lanes,
     tracks: []const types.Track,
     instrument_device_ids: *const [track_count]?[]const u8,
-    fx_device_ids: *const [track_count][ui_state.max_fx_slots]?[]const u8,
+    fx_device_ids: *const [track_count][max_fx_slots]?[]const u8,
 ) !void {
     // Find track index for this lane
     var track_idx: ?usize = null;
@@ -60,14 +60,14 @@ pub fn applyLanes(
 }
 
 pub fn applyScenes(
-    state: *ui_state.State,
+    state: anytype,
     loaded: *const project_io.LoadedProject,
     io: std.Io,
     scenes: []const types.Scene,
     tracks: []const types.Track,
     master_track: ?types.Track,
     instrument_device_ids: *const [track_count]?[]const u8,
-    fx_device_ids: *const [track_count][ui_state.max_fx_slots]?[]const u8,
+    fx_device_ids: *const [track_count][max_fx_slots]?[]const u8,
 ) !void {
     const project_scene_count = @min(scenes.len, scene_count);
     for (0..project_scene_count) |s| {
@@ -98,7 +98,7 @@ pub fn applyScenes(
 }
 
 fn applyClipContent(
-    state: *ui_state.State,
+    state: anytype,
     loaded: *const project_io.LoadedProject,
     io: std.Io,
     track_idx: usize,
@@ -106,7 +106,7 @@ fn applyClipContent(
     clip: *const types.Clip,
     tracks: []const types.Track,
     instrument_device_ids: *const [track_count]?[]const u8,
-    fx_device_ids: *const [track_count][ui_state.max_fx_slots]?[]const u8,
+    fx_device_ids: *const [track_count][max_fx_slots]?[]const u8,
 ) !void {
     // Try audio first (flatten nested Bitwig-style clips).
     // Arena frees any synthetic identity/shifted warp buffers from flatten.
@@ -204,7 +204,7 @@ fn applyClipContent(
 }
 
 fn applyFlattenedAudio(
-    state: *ui_state.State,
+    state: anytype,
     loaded: *const project_io.LoadedProject,
     io: std.Io,
     track_idx: usize,
@@ -234,7 +234,7 @@ fn applyFlattenedAudio(
 
     // Exclusive slot: materialize (or convert to) a pooled audio clip.
     var audio = state.ensureSlotAudio(track_idx, scene_idx) orelse return error.OutOfMemory;
-    audio.clear(&state.sample_store);
+    audio.clear(state.sample_store);
     audio.length_beats = @floatCast(flat.duration);
     audio.play_start_beats = @floatCast(time_mod.timeToBeats(flat.play_start, flat.content_time_unit, state.bpm));
     audio.loop_start_beats = @floatCast(time_mod.timeToBeats(flat.loop_start orelse 0, flat.content_time_unit, state.bpm));
@@ -266,19 +266,19 @@ fn applyFlattenedAudio(
         };
     }
     try audio.setWarps(markers);
-    audio.setSample(&state.sample_store, sample_id);
+    audio.setSample(state.sample_store, sample_id);
     sample_owned = false;
 }
 
 /// Load sample the way Flux always did (zip memory first), plus thin external disk.
 fn loadSampleForClip(
-    state: *ui_state.State,
+    state: anytype,
     loaded: *const project_io.LoadedProject,
     io: std.Io,
     xml_path: []const u8,
     path_in_project: []const u8,
 ) ?sample_store.SampleId {
-    const store = &state.sample_store;
+    const store = state.sample_store;
     // 1) Pre-resolved absolute path from load().
     if (loaded.media_abs_paths.get(xml_path)) |abs| {
         if (store.loadFromPath(path_in_project, abs, io)) |id| return id else |_| {}
@@ -302,7 +302,7 @@ fn applyAutomationToClip(
     piano: *piano_roll_types.PianoRollClip,
     points_list: []const types.Points,
     instrument_device_id: ?[]const u8,
-    fx_device_ids: *const [ui_state.max_fx_slots]?[]const u8,
+    fx_device_ids: *const [max_fx_slots]?[]const u8,
     track_volume_param_id: ?[]const u8,
     track_pan_param_id: ?[]const u8,
 ) !void {
@@ -352,7 +352,7 @@ const ParsedAutomationParam = struct {
 fn parseAutomationParamId(
     param_id: []const u8,
     instrument_device_id: ?[]const u8,
-    fx_device_ids: *const [ui_state.max_fx_slots]?[]const u8,
+    fx_device_ids: *const [max_fx_slots]?[]const u8,
 ) ?ParsedAutomationParam {
     const marker = std.mem.indexOf(u8, param_id, "_p") orelse return null;
     const device_id = param_id[0..marker];

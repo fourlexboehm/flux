@@ -1,7 +1,6 @@
 //! Flux application entry (DVUI host).
 //!
-//! Built via DVUI's package root (Zig 0.17 dependency issue — see
-//! docs/dvui-migration.md). Roots at this tree (`src/`) with full AudioEngine.
+//! Built in Flux's root build graph with full AudioEngine.
 //! `zig build run-flux` → `zig-out/bin/flux`.
 //!
 //! UI lives under `src/ui/`. Legacy zgui host: `src/main_zgui.zig` + `src/ui_zgui/`

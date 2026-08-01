@@ -2,10 +2,8 @@ const builtin = @import("builtin");
 const std = @import("std");
 const Step = std.Build.Step;
 
-const macos_gui_frameworks = [_][]const u8{
-    "AppKit", "Cocoa", "CoreGraphics", "Foundation", "GameController", "Metal", "QuartzCore",
-};
-const macos_flux_frameworks = macos_gui_frameworks ++ [_][]const u8{
+const macos_flux_frameworks = [_][]const u8{
+    "AppKit",   "Cocoa",          "CoreGraphics", "Foundation", "GameController", "Metal", "QuartzCore",
     "CoreMIDI", "CoreFoundation", "CoreServices", "CoreAudio",
 };
 
@@ -14,18 +12,6 @@ pub fn build(b: *std.Build) void {
         bool,
         "wait_for_debugger",
         "Stall when creating a plugin from the factory",
-    ) orelse false;
-
-    const profiling = b.option(
-        bool,
-        "profiling",
-        "Enable profiling with tracy. Profiling is enabled by default in debug builds, but not in release builds.",
-    ) orelse false;
-
-    const disable_profiling = b.option(
-        bool,
-        "disable_profiling",
-        "Disable profiling. This will override the enable profiling flag",
     ) orelse false;
 
     const target = b.standardTargetOptions(.{});
@@ -41,62 +27,18 @@ pub fn build(b: *std.Build) void {
         "Path to MacOSX*.sdk (cross-compile framework/include/lib search roots)",
     ) orelse b.graph.environ_map.get("SDKROOT");
 
-    const GuiBackend = enum { osx_metal, win32_dx12, glfw_opengl3 };
-    const default_gui_backend: GuiBackend = switch (target_os) {
-        .macos => .osx_metal,
-        .windows => .win32_dx12,
-        else => .glfw_opengl3,
-    };
-    const gui_backend = b.option(GuiBackend, "gui-backend", "GUI backend (default: auto-detect from target)") orelse default_gui_backend;
-
-    const use_wayland = b.option(
-        bool,
-        "wayland",
-        "Use Wayland on Linux (default: true)",
-    ) orelse (gui_backend == .glfw_opengl3);
-    const use_x11 = b.option(
-        bool,
-        "x11",
-        "Use X11/XWayland on Linux for plugin windows (default: true with GLFW)",
-    ) orelse (gui_backend == .glfw_opengl3);
     const use_llvm = b.option(bool, "use-llvm", "Use LLVM backend (slower builds, required for some optimizations)") orelse (target_os == .macos);
-    const no_lib = b.option(bool, "no-lib", "Skip building the CLAP plugin library") orelse false;
     const incremental = b.option(bool, "incremental", "Enable incremental linking (faster rebuilds, but always re-links even when nothing changed)") orelse false;
     const enable_segfault_handler = b.option(
         bool,
         "enable_segfault_handler",
         "Enable std segfault handler for debug backtraces",
-    ) orelse (optimize == .Debug);
+    ) orelse (optimize == .debug);
 
     const dep_target = .{ .target = target };
     const clap_bindings = b.dependency("clap-bindings", dep_target);
     const regex = b.dependency("regex", dep_target);
-    const zgui = b.dependency("zgui", .{
-        .target = target,
-        .shared = false,
-        .with_implot = true,
-        .backend = gui_backend,
-    });
-    const zglfw = b.dependency("zglfw", .{
-        .target = target,
-        .shared = false,
-        .x11 = use_x11,
-        .wayland = use_wayland,
-    });
-    // Prefer the full MacOSX.sdk when provided (CI cross-compile); deps also fall
-    // back to their bundled system_sdk for Frameworks on non-mac hosts.
-    if (target_os == .macos) {
-        addMacosSdkPaths(b, zgui.artifact("imgui").root_module, macos_sdk);
-        addMacosSdkPaths(b, zglfw.artifact("glfw").root_module, macos_sdk);
-    }
-    const zopengl = b.dependency("zopengl", dep_target);
     const zaudio = b.dependency("zaudio", dep_target);
-    const objc = b.dependency("mach-objc", dep_target);
-    const objc_no_helpers = b.createModule(.{
-        .root_source_file = objc.path("src/main.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
     const libz_jobs = b.dependency("libz_jobs", .{
         .target = target,
         .optimize = optimize,
@@ -105,125 +47,41 @@ pub fn build(b: *std.Build) void {
     const portmidi_zig = b.dependency("portmidi-zig", dep_target);
     const wdf = b.dependency("wdf", dep_target);
     const sqlite3 = b.dependency("sqlite3", .{});
+    const dvui = b.dependency("dvui", .{
+        .target = target,
+        .optimize = optimize,
+        .backend = .sdl3,
+        .@"tree-sitter" = false,
+    });
     // Header-only C++ (MIT): fetched via build.zig.zon, no Zig package build.zig.
     const signalsmith_stretch = b.dependency("signalsmith_stretch", .{});
     const signalsmith_linear = b.dependency("signalsmith_linear", .{});
     const emu2413 = b.dependency("emu2413", .{});
 
-    const ztracy = b.dependency("ztracy", .{
-        .target = target,
-        .enable_ztracy = (builtin.mode == .Debug or profiling == true) and !disable_profiling,
-        .callstack = 20,
-        .on_demand = true,
-    });
-
-    const lib_module = rootModule(b, "src/builtins/instruments/zsynth/main.zig", target, optimize);
-    const exe_module = rootModule(b, "src/builtins/instruments/zsynth/diag.zig", target, optimize);
     // Host unit tests (not the app). App entry is src/main.zig → DVUI host.
     const flux_test_module = rootModule(b, "src/tests.zig", target, optimize);
 
-    const lib = if (!no_lib) blk: {
-        const l = b.addLibrary(.{
-            .name = "zsynth",
-            .root_module = lib_module,
-            .linkage = .dynamic,
-            .use_llvm = use_llvm,
-        });
-        l.incremental = incremental;
-        break :blk l;
-    } else null;
-
-    const exe = b.addExecutable(.{
-        .name = "zsynth",
-        .root_module = exe_module,
-        .use_llvm = use_llvm,
-    });
-    exe.incremental = incremental;
-
     const options = b.addOptions();
     options.addOption(bool, "wait_for_debugger", wait_for_debugger);
-    options.addOption(bool, "enable_gui", true);
+    options.addOption(bool, "enable_gui", false);
     options.addOption(bool, "enable_segfault_handler", enable_segfault_handler);
-    options.addOption(bool, "use_x11", use_x11);
-    const options_core = b.addOptions();
-    options_core.addOption(bool, "wait_for_debugger", wait_for_debugger);
-    options_core.addOption(bool, "enable_gui", false);
-    options_core.addOption(bool, "enable_segfault_handler", enable_segfault_handler);
-    const options_core_module = options_core.createModule();
-
-    const static_data = b.addOptions();
-    static_data.addOption([]const u8, "font", @embedFile("assets/Roboto-Medium.ttf"));
-    static_data.addOption([]const u8, "icon_rgba", @embedFile("assets/icon-64.rgba"));
-    static_data.addOption(u32, "icon_size", 64);
-    const static_data_module = static_data.createModule();
+    options.addOption(bool, "use_x11", false);
 
     const flux_param_table = rootModule(b, "src/builtins/param_table.zig", target, optimize);
-    const shared = rootModule(b, "shared/root.zig", target, optimize);
-    shared.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
-    shared.addImport("options", options_core_module);
-    shared.addImport("static_data", static_data_module);
-    shared.addImport("zgui", zgui.module("root"));
-    shared.addImport("zglfw", zglfw.module("root"));
-    shared.addImport("zopengl", zopengl.module("root"));
-    shared.addImport("tracy", ztracy.module("root"));
-    if (target_os == .macos) {
-        addMacosSdkPaths(b, objc_no_helpers, macos_sdk);
-        objc_no_helpers.linkSystemLibrary("objc", .{});
-        linkFrameworks(objc_no_helpers, &.{ "AppKit", "CoreVideo", "QuartzCore" });
-        shared.addImport("objc", objc_no_helpers);
-    }
-
-    const gui = GuiCtx{
-        .b = b,
-        .zgui = zgui,
-        .zglfw = zglfw,
-        .zopengl = zopengl,
-        .ztracy = ztracy,
-        .static_data = static_data_module,
-        .objc = objc_no_helpers,
-        .target_os = target_os,
-        .macos_sdk = macos_sdk,
-        .use_wayland = use_wayland,
-        .use_x11 = use_x11,
-    };
-
-    const build_targets: []const *Step.Compile = if (no_lib) &.{exe} else &.{ lib.?, exe };
-    for (build_targets) |pkg| {
-        pkg.root_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
-        pkg.root_module.addImport("regex", regex.module("regex"));
-        pkg.root_module.addImport("wdf", wdf.module("wdf"));
-        pkg.root_module.addImport("shared", shared);
-        pkg.root_module.addOptions("options", options);
-        wireGui(pkg.root_module, gui, .{
-            .linux_display = true,
-            .frameworks = &macos_gui_frameworks,
-        });
-    }
-
-    if (!no_lib) {
-        b.getInstallStep().dependOn(createClapPluginStep(b, lib.?, target_os, optimize));
-    }
-
-    if (optimize == .Debug) {
-        b.installArtifact(exe);
-        const run_step = b.step("run", "Run the application");
-        run_step.dependOn(&b.addRunArtifact(exe).step);
-    }
 
     // Host unit-test module graph (src/tests.zig + modules it pulls in).
-    // Still links zgui because some tested paths import ui_zgui/state.zig.
     flux_test_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
     flux_test_module.addImport("regex", regex.module("regex"));
     flux_test_module.addImport("wdf", wdf.module("wdf"));
-    flux_test_module.addImport("shared", shared);
     flux_test_module.addImport("libz_jobs", libz_jobs.module("libz_jobs"));
     flux_test_module.addImport("xml", zig_xml.module("xml"));
     flux_test_module.addImport("flux_param_table", flux_param_table);
     flux_test_module.addOptions("options", options);
-    wireGui(flux_test_module, gui, .{
-        .linux_display = true,
-        .frameworks = &macos_flux_frameworks,
-    });
+    flux_test_module.addImport("tracy", rootModule(b, "src/util/tracy_stub.zig", target, optimize));
+    if (target_os == .macos) {
+        addMacosSdkPaths(b, flux_test_module, macos_sdk);
+        linkFrameworks(flux_test_module, &macos_flux_frameworks);
+    }
     wireFluxNative(b, flux_test_module, .{
         .zaudio = zaudio,
         .sqlite3 = sqlite3,
@@ -231,51 +89,45 @@ pub fn build(b: *std.Build) void {
         .portmidi_zig = portmidi_zig,
         .signalsmith_stretch = signalsmith_stretch,
         .signalsmith_linear = signalsmith_linear,
-        .zgui = zgui,
         .target = target,
         .optimize = optimize,
         .target_os = target_os,
     });
 
-    // Flux app = src/main.zig + full engine (DVUI). Built from DVUI's package
-    // root (not as a Flux dependency): Zig 0.17 typechecks every already-fetched
-    // lazy backend when DVUI is loaded via b.dependency(). Host module roots at
-    // flux `src/` via relative path from the DVUI package. See docs/dvui-migration.md.
+    // Flux app: one root build graph. `zig-pkg` is package-manager output only;
+    // all imports and native libraries are wired here.
     {
-        const dvui_pkg = "zig-pkg/dvui-0.5.0-dev-AQFJmTFT_QCvZIRos5J8p0F2r2iQteaBYR00SgPYlKcY";
-        const host_bin = b.pathJoin(&.{ dvui_pkg, "zig-out", "bin", "flux-host" });
-
-        // Use PATH `zig` (not b.graph.zig_exe): DVUI's package scripts currently
-        // succeed under the same launcher Flux developers already use.
-        const compile = b.addSystemCommand(&.{
-            "zig",
-            "build",
-            "compile-flux-host",
-            "-Dbackend=sdl3",
-            "-Dtree-sitter=false",
+        const flux_module = rootModule(b, "src/main.zig", target, optimize);
+        flux_module.addImport("dvui", dvui.module("dvui_sdl3"));
+        flux_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
+        flux_module.addImport("regex", regex.module("regex"));
+        flux_module.addImport("wdf", wdf.module("wdf"));
+        flux_module.addImport("libz_jobs", libz_jobs.module("libz_jobs"));
+        flux_module.addImport("xml", zig_xml.module("xml"));
+        flux_module.addImport("flux_param_table", flux_param_table);
+        flux_module.addImport("tracy", rootModule(b, "src/util/tracy_stub.zig", target, optimize));
+        flux_module.addOptions("options", options);
+        wireFluxNative(b, flux_module, .{
+            .zaudio = zaudio,
+            .sqlite3 = sqlite3,
+            .emu2413 = emu2413,
+            .portmidi_zig = portmidi_zig,
+            .signalsmith_stretch = signalsmith_stretch,
+            .signalsmith_linear = signalsmith_linear,
+            .target = target,
+            .optimize = optimize,
+            .target_os = target_os,
         });
-        compile.setName("compile-flux-host");
-        compile.setCwd(b.path(dvui_pkg));
-        switch (optimize) {
-            .Debug => {},
-            .ReleaseSafe => compile.addArg("-Doptimize=ReleaseSafe"),
-            .ReleaseFast => compile.addArg("-Doptimize=ReleaseFast"),
-            .ReleaseSmall => compile.addArg("-Doptimize=ReleaseSmall"),
+        if (target_os == .macos) {
+            addMacosSdkPaths(b, flux_module, macos_sdk);
+            linkFrameworks(flux_module, &macos_flux_frameworks);
         }
 
-        const mkdir_out = b.addSystemCommand(&.{ "mkdir", "-p", "zig-out/bin" });
-        mkdir_out.setName("mkdir-flux-out");
-        const install_host = b.addSystemCommand(&.{ "cp", "-f", host_bin, "zig-out/bin/flux" });
-        install_host.setName("install-flux");
-        install_host.step.dependOn(&compile.step);
-        install_host.step.dependOn(&mkdir_out.step);
+        const flux_exe = b.addExecutable(.{ .name = "flux", .root_module = flux_module, .use_llvm = use_llvm });
+        flux_exe.incremental = incremental;
+        b.installArtifact(flux_exe);
 
-        // Default install includes the DVUI host binary.
-        b.getInstallStep().dependOn(&install_host.step);
-
-        const run_host = b.addSystemCommand(&.{"zig-out/bin/flux"});
-        run_host.setName("run-flux-bin");
-        run_host.step.dependOn(&install_host.step);
+        const run_host = b.addRunArtifact(flux_exe);
 
         const run_flux_step = b.step("run-flux", "Run Flux (DVUI host)");
         run_flux_step.dependOn(&run_host.step);
@@ -285,7 +137,7 @@ pub fn build(b: *std.Build) void {
         const run_flux_app_step = b.step("run-flux-app", "Build and run Flux.app (macOS)");
         if (target_os == .macos) {
             const create_flux_app_step = createFluxAppBundleFromBinStep(b, "zig-out/bin/flux");
-            create_flux_app_step.dependOn(&install_host.step);
+            create_flux_app_step.dependOn(&flux_exe.step);
             bundle_flux_app_step.dependOn(create_flux_app_step);
 
             const open_flux_app = b.addSystemCommand(&.{ "open", "zig-out/Flux.app" });
@@ -298,23 +150,6 @@ pub fn build(b: *std.Build) void {
     const dsp_test_module = rootModule(b, "src/builtins/instruments/zminimoog/dsp/dsp.zig", target, optimize);
     dsp_test_module.addImport("wdf", wdf.module("wdf"));
     const run_dsp_tests = b.addRunArtifact(b.addTest(.{ .root_module = dsp_test_module, .use_llvm = use_llvm }));
-
-    const zsynth_smoke_test_module = rootModule(b, "src/builtins/instruments/zsynth/plugin_smoke_test.zig", target, optimize);
-    zsynth_smoke_test_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
-    zsynth_smoke_test_module.addImport("regex", regex.module("regex"));
-    zsynth_smoke_test_module.addImport("shared", shared);
-    zsynth_smoke_test_module.addImport("options", options_core_module);
-    const zsynth_smoke_tests = b.addTest(.{
-        .root_module = zsynth_smoke_test_module,
-        .filters = &.{"zsynth produces audio after note on"},
-        .use_llvm = use_llvm,
-    });
-    // Wire on the test compile step's module (same pattern as before for linked artifacts).
-    wireGui(zsynth_smoke_tests.root_module, gui, .{
-        .linux_display = false,
-        .frameworks = &macos_gui_frameworks,
-    });
-    const run_zsynth_smoke_tests = b.addRunArtifact(zsynth_smoke_tests);
 
     const flux_tests = b.addTest(.{
         .root_module = flux_test_module,
@@ -344,7 +179,6 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_dsp_tests.step);
-    test_step.dependOn(&run_zsynth_smoke_tests.step);
     test_step.dependOn(&run_flux_tests.step);
     test_step.dependOn(&run_clap_load.step);
 }
@@ -364,53 +198,6 @@ fn rootModule(
     });
 }
 
-const GuiCtx = struct {
-    b: *std.Build,
-    zgui: *std.Build.Dependency,
-    zglfw: *std.Build.Dependency,
-    zopengl: *std.Build.Dependency,
-    ztracy: *std.Build.Dependency,
-    static_data: *std.Build.Module,
-    objc: *std.Build.Module,
-    target_os: std.Target.Os.Tag,
-    macos_sdk: ?[]const u8,
-    use_wayland: bool,
-    use_x11: bool,
-};
-
-fn wireGui(module: *std.Build.Module, gui: GuiCtx, cfg: struct {
-    linux_display: bool,
-    frameworks: []const []const u8,
-}) void {
-    module.addImport("zgui", gui.zgui.module("root"));
-    module.addImport("zglfw", gui.zglfw.module("root"));
-    module.addImport("zopengl", gui.zopengl.module("root"));
-    module.addImport("tracy", gui.ztracy.module("root"));
-    module.linkLibrary(gui.zgui.artifact("imgui"));
-    module.linkLibrary(gui.zglfw.artifact("glfw"));
-    module.linkLibrary(gui.zopengl.artifact("zopengl"));
-    module.linkLibrary(gui.ztracy.artifact("tracy"));
-    module.addImport("static_data", gui.static_data);
-    if (gui.target_os == .macos) {
-        addMacosSdkPaths(gui.b, module, gui.macos_sdk);
-        module.addImport("objc", gui.objc);
-        linkFrameworks(module, cfg.frameworks);
-    }
-    if (cfg.linux_display and gui.target_os == .linux) {
-        linkLinuxDisplay(module, gui.use_wayland, gui.use_x11);
-    }
-}
-
-fn linkLinuxDisplay(module: *std.Build.Module, use_wayland: bool, use_x11: bool) void {
-    if (use_wayland) {
-        module.linkSystemLibrary("wayland-client", .{});
-        module.linkSystemLibrary("wayland-cursor", .{});
-        module.linkSystemLibrary("wayland-egl", .{});
-        module.linkSystemLibrary("xkbcommon", .{});
-    }
-    if (use_x11) module.linkSystemLibrary("X11", .{});
-}
-
 fn linkFrameworks(module: *std.Build.Module, names: []const []const u8) void {
     for (names) |name| module.linkFramework(name, .{});
 }
@@ -422,7 +209,6 @@ const FluxNativeDeps = struct {
     portmidi_zig: *std.Build.Dependency,
     signalsmith_stretch: *std.Build.Dependency,
     signalsmith_linear: *std.Build.Dependency,
-    zgui: *std.Build.Dependency,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     target_os: std.Target.Os.Tag,
@@ -452,6 +238,7 @@ fn wireFluxNative(b: *std.Build, module: *std.Build.Module, d: FluxNativeDeps) v
     emu2413_c.addIncludePath(d.emu2413.path(""));
 
     module.link_libc = true;
+    module.link_libcpp = true;
     module.addImport("emu2413_c", emu2413_c.createModule());
     module.addImport("zaudio", d.zaudio.module("root"));
     module.addImport("sqlite3", sqlite3_c.createModule());
@@ -487,18 +274,12 @@ fn wireFluxNative(b: *std.Build, module: *std.Build.Module, d: FluxNativeDeps) v
     module.addIncludePath(d.portmidi_zig.path("pm_linux"));
     module.addIncludePath(d.portmidi_zig.path("porttime"));
     module.addIncludePath(d.emu2413.path(""));
-    module.addIncludePath(d.zgui.path("libs/imgui"));
 
     module.addCSourceFile(.{
         .file = d.emu2413.path("emu2413.c"),
         // emu2413 relies on well-defined-in-practice signed shifts/overflow that
         // trip Zig's C UBSan in debug builds (e.g. `~res << 1` in lookup_exp_table).
         .flags = &.{ "-std=c11", "-fno-sanitize=undefined" },
-    });
-    module.addCSourceFiles(.{
-        .root = b.path(""),
-        .files = &.{"src/zgui_bridge.cpp"},
-        .flags = &.{"-std=c++17"},
     });
     // Signalsmith Stretch (MIT) — offline pitch-preserving bake for audio clips.
     module.addIncludePath(d.signalsmith_stretch.path(""));
@@ -599,7 +380,7 @@ fn createClapPluginStep(
 
             var bundle_ready: *Step = &clap_bundle.step;
             // dsymutil is a host macOS tool — skip when cross-compiling from Linux CI.
-            if (optimize == .Debug and builtin.os.tag == .macos) {
+            if (optimize == .debug and builtin.os.tag == .macos) {
                 const dsym = b.addSystemCommand(&.{"dsymutil"});
                 dsym.addFileArg(plugin_bin);
                 dsym.step.dependOn(&clap_bundle.step);

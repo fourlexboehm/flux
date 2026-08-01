@@ -8,6 +8,9 @@ const state_mod = @import("state.zig");
 const host_mod = @import("host.zig");
 const plugin_host = @import("plugin_host.zig");
 const audio_runtime = @import("audio_runtime.zig");
+const project_runtime = @import("project_runtime.zig");
+const document_model = @import("../document/model.zig");
+const document_commands = @import("../document/commands.zig");
 const transport = @import("transport.zig");
 const browser = @import("panels/browser.zig");
 const bottom = @import("panels/bottom.zig");
@@ -16,6 +19,7 @@ const main_pane = @import("views/main_pane.zig");
 pub fn init(win: *dvui.Window) !void {
     theme.apply(win);
     // Empty document (session_ops.init + matching arr lanes). No demo seed.
+    document_model.initGlobal(win.gpa);
     host_mod.initGlobal(win.gpa);
     host_mod.g.projectChrome(&state_mod.g);
     // CLAP catalog (DynLib load on device pick). Builtins need zig-out/lib bundles.
@@ -39,6 +43,7 @@ pub fn deinit(win: *dvui.Window) void {
     audio_runtime.deinitGlobal();
     plugin_host.deinitGlobal();
     host_mod.deinitGlobal();
+    document_model.deinitGlobal();
 }
 
 pub fn frame() !dvui.App.Result {
@@ -56,7 +61,7 @@ pub fn frame() !dvui.App.Result {
     }
     // Project after plugin tick so device names match freshly loaded choices.
     host_mod.g.projectChrome(state);
-    handleProjectRequests(state);
+    project_runtime.handleRequests(state);
 
     // Playhead advances on the UI thread (same as zgui `ui_zgui/recording.tick`).
     // Audio thread renders graph + metronome from the published snapshot.
@@ -138,26 +143,6 @@ fn drawTop(state: *state_mod.State) void {
     }
 }
 
-fn handleProjectRequests(state: *state_mod.State) void {
-    // Full DAWproject I/O still uses ui_zgui.State; wire adapter later.
-    if (state.load_project_request) {
-        state.load_project_request = false;
-        std.log.info("project load: not yet on DVUI host (needs DAWproject adapter)", .{});
-    }
-    if (state.save_project_request) {
-        state.save_project_request = false;
-        if (state.project_path_len == 0) {
-            state.save_project_as_request = true;
-        } else {
-            std.log.info("project save: not yet on DVUI host (path set, adapter pending)", .{});
-        }
-    }
-    if (state.save_project_as_request) {
-        state.save_project_as_request = false;
-        std.log.info("project save-as: not yet on DVUI host (needs DAWproject adapter)", .{});
-    }
-}
-
 fn handleGlobalKeys(state: *state_mod.State) void {
     const wd = dvui.currentWindow().data();
     for (dvui.events()) |*e| {
@@ -198,6 +183,47 @@ fn handleGlobalKeys(state: *state_mod.State) void {
                     state.toggleBrowser();
                     dvui.refresh(null, @src(), wd.id);
                 }
+            },
+            .left, .right, .up, .down => {
+                if (state.focused_pane != .session) continue;
+                e.handle(@src(), wd);
+                switch (ke.code) {
+                    .left => {
+                        if (state.selected_track > 0) state.selected_track -= 1;
+                    },
+                    .right => {
+                        if (state.selected_track + 1 < state.track_count) state.selected_track += 1;
+                    },
+                    .up => {
+                        if (state.selected_scene > 0) state.selected_scene -= 1;
+                    },
+                    .down => {
+                        if (state.selected_scene + 1 < state.scene_count) state.selected_scene += 1;
+                    },
+                    else => unreachable,
+                }
+                if (document_model.ready()) document_commands.setPrimarySelection(&document_model.g, state.selected_track, state.selected_scene);
+                dvui.refresh(null, @src(), wd.id);
+            },
+            .enter => {
+                if (state.focused_pane != .session) continue;
+                e.handle(@src(), wd);
+                if (state.selectedSlot().kind == .empty and document_model.ready()) {
+                    document_commands.createClip(&document_model.g, state.selected_track, state.selected_scene, state.beatsPerBar());
+                    if (host_mod.ready()) host_mod.g.projectChrome(state);
+                }
+                state.bottom_mode = .sequencer;
+                state.focused_pane = .bottom;
+                dvui.refresh(null, @src(), wd.id);
+            },
+            .delete, .backspace => {
+                if (state.focused_pane != .session or state.selectedSlot().kind == .empty) continue;
+                e.handle(@src(), wd);
+                if (document_model.ready()) {
+                    document_commands.deleteClip(&document_model.g, state.selected_track, state.selected_scene);
+                    if (host_mod.ready()) host_mod.g.projectChrome(state);
+                }
+                dvui.refresh(null, @src(), wd.id);
             },
             else => {},
         }

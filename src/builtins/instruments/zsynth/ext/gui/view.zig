@@ -116,7 +116,7 @@ fn drawContent(plugin: *Plugin, options: DrawOptions) void {
         } })) {
             zgui.text("Options", .{});
             renderParam(plugin, Params.Parameter.ScaleVoices, options);
-            if (builtin.mode == .Debug) {
+            if (builtin.mode == .debug) {
                 zgui.sameLine(.{});
                 renderParam(plugin, Params.Parameter.DebugBool1, options);
                 zgui.sameLine(.{});
@@ -151,7 +151,7 @@ fn drawContent(plugin: *Plugin, options: DrawOptions) void {
             const resolution = 256;
             const sample_rate = plugin.sample_rate.?;
             var diag_voice = Voice.init(sample_rate);
-            diag_voice.key = @enumFromInt(57);
+            diag_voice.key = @fromBackingInt(@intCast(57));
 
             const osc1_wave_shape = plugin.params.get(.WaveShape1).Wave;
             const osc1_octave = plugin.params.get(.Octave1).Float;
@@ -212,7 +212,7 @@ fn drawContent(plugin: *Plugin, options: DrawOptions) void {
 }
 
 fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) void {
-    const index: u32 = @intFromEnum(param);
+    const index: u32 = @backingInt(param);
     var info: clap.ext.params.Info = undefined;
     if (!Params._getInfo(&plugin.plugin, index, &info)) {
         return;
@@ -236,7 +236,7 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
         => {
             var val: f32 = @floatCast(plugin.params.get(param_type).Float);
             var param_text_buf: [256]u8 = @splat(0);
-            _ = Params._valueToText(&plugin.plugin, @enumFromInt(index), val, &param_text_buf, 256);
+            _ = Params._valueToText(&plugin.plugin, @fromBackingInt(@intCast(index)), val, &param_text_buf, 256);
             if (zgui.sliderFloat(
                 value_text,
                 .{
@@ -267,7 +267,7 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
         .Sustain, .Mix => {
             var val: f32 = @floatCast(plugin.params.get(param_type).Float);
             var param_text_buf: [256]u8 = @splat(0);
-            _ = Params._valueToText(&plugin.plugin, @enumFromInt(index), val, &param_text_buf, 256);
+            _ = Params._valueToText(&plugin.plugin, @fromBackingInt(@intCast(index)), val, &param_text_buf, 256);
             if (std.mem.indexOf(u8, &param_text_buf, "%")) |percent_index| {
                 if (percent_index < 255) {
                     param_text_buf[percent_index + 1] = '%';
@@ -301,7 +301,7 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
             const val_float: f32 = @floatCast(plugin.params.get(param_type).Float);
             var val: i32 = @intFromFloat(val_float);
             var param_text_buf: [256]u8 = @splat(0);
-            _ = Params._valueToText(&plugin.plugin, @enumFromInt(index), val_float, &param_text_buf, 256);
+            _ = Params._valueToText(&plugin.plugin, @fromBackingInt(@intCast(index)), val_float, &param_text_buf, 256);
             if (zgui.sliderInt(
                 value_text,
                 .{
@@ -343,7 +343,7 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
             }
         },
         .ScaleVoices, .DebugBool1, .DebugBool2 => {
-            if (builtin.mode == .Debug) {
+            if (builtin.mode == .debug) {
                 var val: bool = plugin.params.get(param_type).Bool;
                 if (zgui.checkbox(value_text, .{
                     .v = &val,
@@ -404,7 +404,7 @@ fn renderParam(plugin: *Plugin, param: Params.Parameter, options: DrawOptions) v
 }
 
 fn renderMix(plugin: *Plugin, osc1: bool, options: DrawOptions) void {
-    const index: u32 = @intFromEnum(Params.Parameter.Mix);
+    const index: u32 = @backingInt(Params.Parameter.Mix);
     var info: clap.ext.params.Info = undefined;
     if (!Params._getInfo(&plugin.plugin, index, &info)) {
         return;
@@ -416,7 +416,7 @@ fn renderMix(plugin: *Plugin, osc1: bool, options: DrawOptions) void {
     }
 
     var param_text_buf: [256]u8 = @splat(0);
-    _ = Params._valueToText(&plugin.plugin, @enumFromInt(index), val, &param_text_buf, 256);
+    _ = Params._valueToText(&plugin.plugin, @fromBackingInt(@intCast(index)), val, &param_text_buf, 256);
     if (std.mem.indexOf(u8, &param_text_buf, "%")) |percent_index| {
         if (percent_index < 255) {
             param_text_buf[percent_index + 1] = '%';

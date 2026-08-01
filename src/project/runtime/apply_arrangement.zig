@@ -10,11 +10,10 @@ const flatten = @import("../format/flatten.zig");
 const types = @import("../format/types.zig");
 const project_io = @import("../io.zig");
 const media_layout = @import("../media/layout.zig");
-const ui_state = @import("../../ui_zgui/state.zig");
 
 /// Populate `state.arrangement` from parsed Arrangement XML (tracks, clips, colors, positions).
 pub fn applyArrangement(
-    state: *ui_state.State,
+    state: anytype,
     loaded: *const project_io.LoadedProject,
     io: std.Io,
     arrangement: *const types.Arrangement,
@@ -31,7 +30,7 @@ pub fn applyArrangement(
         // No track binding — attach to a synthetic track 0 if we have session tracks.
         if (state.session.track_count > 0 and clips.clips.len > 0) {
             const color = trackColorOrDefault(tracks, 0, .{ 0.40, 0.62, 0.82, 1.0 });
-            try arr_ops.createTrack(&state.arrangement, 0, trackName(tracks, 0), color);
+            try arr_ops.createTrack(state.arrangement, 0, trackName(tracks, 0), color);
             try applyClipsToTrack(state, loaded, io, 0, clips.clips);
         }
     }
@@ -41,7 +40,7 @@ pub fn applyArrangement(
         const session_idx = findTrackIndex(tracks, track_id) orelse continue;
         const name = trackName(tracks, session_idx);
         const color = trackColorOrDefault(tracks, session_idx, defaultTrackColor(session_idx));
-        try arr_ops.createTrack(&state.arrangement, session_idx, name, color);
+        try arr_ops.createTrack(state.arrangement, session_idx, name, color);
 
         const arr_track_idx = state.arrangement.tracks.items.len - 1;
         if (lane.clips) |clips| {
@@ -51,7 +50,7 @@ pub fn applyArrangement(
 }
 
 fn applyClipsToTrack(
-    state: *ui_state.State,
+    state: anytype,
     loaded: *const project_io.LoadedProject,
     io: std.Io,
     arr_track_idx: usize,
@@ -65,7 +64,7 @@ fn applyClipsToTrack(
         const name = clip.name orelse "";
         const kind: arr_clip_mod.ClipKind = if (clipIsAudio(&clip)) .audio else .midi;
         const clip_idx = try arr_ops.createClip(
-            &state.arrangement,
+            state.arrangement,
             arr_track_idx,
             kind,
             start_tick,
@@ -100,7 +99,7 @@ fn clipIsAudio(clip: *const types.Clip) bool {
 }
 
 fn applyAudioToArrangementClip(
-    state: *ui_state.State,
+    state: anytype,
     loaded: *const project_io.LoadedProject,
     io: std.Io,
     arr_clip: *arr_clip_mod.ArrangementClip,
@@ -126,11 +125,11 @@ fn applyAudioToArrangementClip(
         state.sample_store.release(sample_id);
         return;
     };
-    audio.setSample(&state.sample_store, sample_id);
+    audio.setSample(state.sample_store, sample_id);
 }
 
 fn applyMidiToArrangementClip(
-    state: *ui_state.State,
+    state: anytype,
     arr_clip: *arr_clip_mod.ArrangementClip,
     clip: *const types.Clip,
 ) !void {
@@ -173,13 +172,13 @@ fn applyMidiToArrangementClip(
 }
 
 fn loadSample(
-    state: *ui_state.State,
+    state: anytype,
     loaded: *const project_io.LoadedProject,
     io: std.Io,
     xml_path: []const u8,
     path_in_project: []const u8,
 ) ?u32 {
-    const store = &state.sample_store;
+    const store = state.sample_store;
     if (loaded.media_abs_paths.get(xml_path)) |abs| {
         if (store.loadFromPath(path_in_project, abs, io)) |id| return id else |_| {}
     }

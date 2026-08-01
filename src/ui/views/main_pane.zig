@@ -8,7 +8,7 @@ const arrangement = @import("arrangement.zig");
 pub fn draw(state: *state_mod.State) void {
     var wrap = dvui.box(@src(), .{ .dir = .vertical }, .{
         .expand = .both,
-        .padding = .{ .x = 6, .y = 0, .w = 0, .h = 0 },
+        .padding = .{ .x = 3, .y = 0, .w = 2, .h = 0 },
     });
     defer wrap.deinit();
 

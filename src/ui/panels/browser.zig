@@ -154,6 +154,12 @@ fn drawPluginList(state: *state_mod.State, fx: bool) void {
     const filter = state.searchSlice();
     const track = state.selected_track;
 
+    var list_column = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .min_size_content = .{ .w = tokens.plugin_list_w },
+        .max_size_content = .width(tokens.plugin_list_w),
+    });
+    defer list_column.deinit();
+
     var scroll = dvui.scrollArea(@src(), .{
         .horizontal_bar = .hide,
         .vertical_bar = .auto,

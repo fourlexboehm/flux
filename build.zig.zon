@@ -16,7 +16,7 @@
     // This field is optional.
     // This is currently advisory only; Zig does not yet do anything
     // with this value.
-    .minimum_zig_version = "0.17.0-dev.1441+d5181a9c9",
+    .minimum_zig_version = "0.17.0-dev.1509+bb296ab9b",
 
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
@@ -33,29 +33,6 @@
         .@"clap-bindings" = .{
             .url = "git+https://codeberg.org/fellowtraveler/clap-zig-bindings#8e9d97d3e85256c35dddd6823000171f27faa97c",
             .hash = "clap_bindings-1.0.3-9TIcDWVLAQCvN3AaarfWupPtWYgUW6JfBVKy3AYswPSj",
-        },
-        .zopengl = .{
-            .url = "git+https://github.com/zig-gamedev/zopengl#29908b1ba2d91baf91e348f6cd192630488d77b6",
-            .hash = "zopengl-0.6.0-dev-5-tnz32mDgB82moljuLD0fmbj1mU3NSCXjzttpmoV2iP",
-        },
-        .@"mach-objc" = .{
-            .url = "git+https://github.com/fourlexboehm/mach-objc#fe0535585a19af03d5421c5b6bd3b58b82b2b066",
-            .hash = "mach_objc-0.0.0-gWfVRUVdDQCHelt-Wz87THFOYbhDXCn7jtkYeUfvRXFL",
-        },
-        // kcbanner c_translate (zig-gamedev#53) is not enough: still uses std.meta.fields
-        .zglfw = .{
-            .url = "git+https://github.com/fourlexboehm/zglfw#d3fc2ef78293ebc2f2c9212f5abf1fb7d1cf3266",
-            .hash = "zglfw-0.10.0-dev-zgVDNGi-IQCyaANoqsXXgknL2giRK7XaWdznMHgqaTq4",
-        },
-        // kcbanner 0.17.x — zig-gamedev/ztracy#17 (complete)
-        .ztracy = .{
-            .url = "git+https://github.com/kcbanner/ztracy#d1c58ee00b95e399b0763c707930d43e67259d60",
-            .hash = "ztracy-0.14.0-dev-zHJSq68FGQBXGHJZt5hf7EST4ViHclC65tZ1I7knrQef",
-        },
-        // fork of zig-gamedev/zgui @ zig-0.17 = kcbanner 0.17.x + field_names Style colors
-        .zgui = .{
-            .url = "git+https://github.com/fourlexboehm/zgui#3b1ef891d1691f1056a0f1376aee7d08052b8dd3",
-            .hash = "zgui-0.6.0-dev--L6sZM5KbgCiefbE8c4yOCnkSB79BU6KcMKpi4jT8N-s",
         },
         .zaudio = .{
             .url = "git+https://github.com/zig-gamedev/zaudio#b9997fc34640d9c80e25b7829b9ad53db8bcf7f2",
@@ -97,6 +74,10 @@
             .url = "https://www.sqlite.org/2026/sqlite-amalgamation-3530000.zip",
             .hash = "N-V-__8AAAzxrQBNeXdRXqDQlfE8r_r9PGiSWKATj50chaqM",
         },
+        .dvui = .{
+            .url = "git+https://github.com/Yinameah/dvui.git#d6048fb0db3260455f9687d38dea8a14dbaa932d",
+            .hash = "dvui-0.6.0-dev-AQFJmbhj_QBT1jKOSO53G2oVFJXZiDyC71UidZnEoQat",
+        },
         // Bundled macOS .tbd stubs for cross-compile (-lobjc etc). Used when
         // --sysroot alone does not populate library search paths.
         .system_sdk = .{
@@ -104,10 +85,6 @@
             .hash = "system_sdk-0.3.0-dev-alwUNnYaaAJAtIdE2fg4NQfDqEKs7QCXy_qYukAOBfmF",
             .lazy = true,
         },
-        // DVUI is NOT a root dependency: Zig 0.17 typechecks every already-fetched
-        // lazy backend package when DVUI is loaded as a package dependency, and those
-        // package scripts are not 0.17-clean. Flux (src/ui/) builds from DVUI's
-        // own package root instead (see docs/dvui-migration.md).
     },
 
     .paths = .{

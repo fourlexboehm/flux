@@ -1,8 +1,8 @@
 //! Canonical **host chrome state** for the DVUI shell.
 //!
 //! Draw-facing snapshot + transport/view chrome. Domain data (session slots,
-//! arrangement placements) is owned by `ui/host.zig` and projected here each
-//! frame. This module stays free of session/audio/plugin imports so pure
+//! arrangement placements) is exposed through `document/model.zig`, owned by
+//! the application host, and projected here each frame. This module stays free of session/audio/plugin imports so pure
 //! chrome unit tests keep compiling without the engine graph.
 //!
 //! Product path starts empty (host projects `session_ops.init`). No demo seed.
@@ -123,7 +123,7 @@ pub const State = struct {
     focused_pane: FocusedPane = .session,
     /// Vertical split: fraction of content height for the top (session) pane.
     /// Lower = more room for device/plugin bottom pane.
-    top_split_ratio: f32 = 0.58,
+    top_split_ratio: f32 = 0.62,
     /// Horizontal split: fraction of top width for the browser (when open).
     browser_split_ratio: f32 = 0.28,
     browser_open: bool = true,
@@ -135,6 +135,17 @@ pub const State = struct {
     selected_track: usize = 0,
     selected_scene: usize = 0,
     selected_arr_clip: ?usize = null,
+    // Dense-canvas piano-roll interaction state. Notes remain in the document.
+    piano_scroll_beat: f32 = 0,
+    piano_scroll_pitch: f32 = 48,
+    piano_pixels_per_beat: f32 = 64,
+    piano_row_height: f32 = 14,
+    piano_selected_note: ?usize = null,
+    piano_drag_note: ?usize = null,
+    piano_drag_mouse_x: f32 = 0,
+    piano_drag_mouse_y: f32 = 0,
+    piano_drag_start: f32 = 0,
+    piano_drag_pitch: u8 = 0,
     /// Defaults match `session_ops.init` (projected over by host each frame).
     track_count: usize = 4,
     scene_count: usize = 8,
@@ -147,6 +158,10 @@ pub const State = struct {
     slots: [max_tracks][max_scenes]ClipSlot = @splat(@splat(.{})),
     track_names: [max_tracks][24]u8 = undefined,
     track_name_lens: [max_tracks]usize = @splat(0),
+    track_volume: [max_tracks]f32 = @splat(0.8),
+    track_pan: [max_tracks]f32 = @splat(0),
+    track_mute: [max_tracks]bool = @splat(false),
+    track_solo: [max_tracks]bool = @splat(false),
     scene_names: [max_scenes][24]u8 = undefined,
     scene_name_lens: [max_scenes]usize = @splat(0),
     instrument_names: [max_tracks][]const u8 = @splat(""),
@@ -160,7 +175,7 @@ pub const State = struct {
     /// Last frame timestamp for playhead animation (ns); DVUI frame loop only.
     last_frame_time_ns: i128 = 0,
 
-    // ── Project I/O requests (handled in root; full DAWproject adapter pending) ─
+    // ── Project I/O requests (handled by ui/project_runtime.zig) ───────────
     load_project_request: bool = false,
     save_project_request: bool = false,
     save_project_as_request: bool = false,

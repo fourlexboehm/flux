@@ -21,6 +21,7 @@ const plugin_call_context = @import("../plugin/call_context.zig");
 const midi_input = @import("../midi/input.zig");
 const audio_engine_mod = @import("../audio/audio_engine.zig");
 const thread_context = @import("../util/thread_context.zig");
+const project_plugin_state = @import("../project/runtime/plugin_state.zig");
 
 const PluginCatalog = plugins.PluginCatalog;
 const PluginEntry = plugins.PluginEntry;
@@ -54,6 +55,11 @@ pub const PluginHost = struct {
     fx_choice: [track_count][max_fx_slots]SlotChoice = @splat(@splat(.{})),
     /// Leading occupied FX slots per track (packed).
     fx_counts: [track_count]usize = @splat(0),
+
+    /// Project state is queued while the corresponding DynLib is loaded on the
+    /// next host tick. Buffers are owned by this host, not the project arena.
+    pending_instrument_state: [track_count]?[]u8 = @splat(null),
+    pending_fx_state: [track_count][max_fx_slots]?[]u8 = @splat(@splat(null)),
 
     /// Computer-keyboard MIDI (A–; piano map) → merged into live keys.
     keyboard_octave: i8 = 0,
@@ -115,6 +121,7 @@ pub const PluginHost = struct {
     }
 
     pub fn deinit(self: *PluginHost) void {
+        self.clearPendingProjectStates();
         self.closeAllGuis();
         self.unloadAll(null);
         if (self.midi_active) {
@@ -149,12 +156,14 @@ pub const PluginHost = struct {
     /// Set instrument for track from catalog index. 0 = None.
     pub fn setInstrumentChoice(self: *PluginHost, track: usize, choice: i32) void {
         if (track >= track_count) return;
+        self.clearPendingInstrumentState(track);
         self.instrument_choice[track].choice_index = choice;
     }
 
     /// Append or set FX slot. Returns false if chain full / invalid.
     pub fn setFxChoice(self: *PluginHost, track: usize, fx_index: usize, choice: i32) bool {
         if (track >= track_count or fx_index >= max_fx_slots) return false;
+        self.clearPendingFxState(track, fx_index);
         self.fx_choice[track][fx_index].choice_index = choice;
         if (choice != 0) {
             self.fx_counts[track] = @max(self.fx_counts[track], fx_index + 1);
@@ -228,11 +237,67 @@ pub const PluginHost = struct {
         const shared = if (engine) |e| &e.shared else null;
         self.syncInstruments(shared, max_frames);
         self.syncFx(shared, max_frames);
+        self.applyPendingProjectStates();
         if (engine) |e| {
             const snap = plugin_handle.collectLoaded(&self.instruments, &self.fx);
             e.updatePlugins(snap.instruments, snap.fx);
         }
         self.pumpOpenGuis();
+    }
+
+    /// Retain serialized CLAP state until the selected plugin has been loaded.
+    pub fn queueProjectState(self: *PluginHost, track: usize, fx_index: ?usize, data: []const u8) !void {
+        if (track >= track_count) return error.InvalidTrack;
+        const owned = try self.allocator.dupe(u8, data);
+        errdefer self.allocator.free(owned);
+        if (fx_index) |fx| {
+            if (fx >= max_fx_slots) return error.InvalidFxSlot;
+            self.clearPendingFxState(track, fx);
+            self.pending_fx_state[track][fx] = owned;
+        } else {
+            self.clearPendingInstrumentState(track);
+            self.pending_instrument_state[track] = owned;
+        }
+    }
+
+    pub fn clearPendingProjectStates(self: *PluginHost) void {
+        for (0..track_count) |track| {
+            self.clearPendingInstrumentState(track);
+            for (0..max_fx_slots) |fx| self.clearPendingFxState(track, fx);
+        }
+    }
+
+    fn clearPendingInstrumentState(self: *PluginHost, track: usize) void {
+        if (self.pending_instrument_state[track]) |data| self.allocator.free(data);
+        self.pending_instrument_state[track] = null;
+    }
+
+    fn clearPendingFxState(self: *PluginHost, track: usize, fx: usize) void {
+        if (self.pending_fx_state[track][fx]) |data| self.allocator.free(data);
+        self.pending_fx_state[track][fx] = null;
+    }
+
+    fn applyPendingProjectStates(self: *PluginHost) void {
+        for (0..track_count) |track| {
+            if (self.pending_instrument_state[track]) |data| {
+                if (self.instruments[track].getPlugin()) |plugin| {
+                    project_plugin_state.loadPluginStateFromData(plugin, data);
+                    self.clearPendingInstrumentState(track);
+                } else if (self.instrument_choice[track].choice_index == 0) {
+                    self.clearPendingInstrumentState(track);
+                }
+            }
+            for (0..max_fx_slots) |fx| {
+                if (self.pending_fx_state[track][fx]) |data| {
+                    if (self.fx[track][fx].getPlugin()) |plugin| {
+                        project_plugin_state.loadPluginStateFromData(plugin, data);
+                        self.clearPendingFxState(track, fx);
+                    } else if (self.fx_choice[track][fx].choice_index == 0) {
+                        self.clearPendingFxState(track, fx);
+                    }
+                }
+            }
+        }
     }
 
     /// Poll hardware MIDI + merge keyboard/hardware into live keys for `target_track`.
@@ -624,4 +689,23 @@ test "set instrument choice updates name projection" {
     try std.testing.expectEqualStrings("", ph.entryName(0));
     ph.setInstrumentChoice(0, 0);
     try std.testing.expectEqual(@as(i32, 0), ph.instrument_choice[0].choice_index);
+}
+
+test "queued project state owns and replaces its data" {
+    var ph = PluginHost.init(std.testing.allocator);
+    defer ph.deinit();
+
+    var source = [_]u8{ 1, 2, 3 };
+    try ph.queueProjectState(0, null, &source);
+    source[0] = 9;
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3 }, ph.pending_instrument_state[0].?);
+
+    try ph.queueProjectState(0, null, &.{4});
+    try std.testing.expectEqualSlices(u8, &.{4}, ph.pending_instrument_state[0].?);
+    try ph.queueProjectState(0, 1, &.{ 5, 6 });
+    try std.testing.expectEqualSlices(u8, &.{ 5, 6 }, ph.pending_fx_state[0][1].?);
+
+    ph.clearPendingProjectStates();
+    try std.testing.expect(ph.pending_instrument_state[0] == null);
+    try std.testing.expect(ph.pending_fx_state[0][1] == null);
 }
