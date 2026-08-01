@@ -1,5 +1,5 @@
 const std = @import("std");
-const ui_state = @import("../ui/state.zig");
+const ui_state = @import("../ui_zgui/state.zig");
 const session_constants = @import("../session/constants.zig");
 const session_view = @import("../session/types.zig");
 const arr_timeline = @import("../arrangement/timeline.zig");

@@ -6,7 +6,7 @@ const file_dialog = @import("../../app/file_dialog.zig");
 const plugin_runtime = @import("../../plugin/plugin_runtime.zig");
 const plugins = @import("../../plugin/plugins.zig");
 const session_constants = @import("../../session/constants.zig");
-const ui_state = @import("../../ui/state.zig");
+const ui_state = @import("../../ui_zgui/state.zig");
 
 const project_io = @import("../io.zig");
 const apply = @import("apply.zig");

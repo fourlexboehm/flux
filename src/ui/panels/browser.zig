@@ -1,289 +1,211 @@
-const std = @import("std");
-const zgui = @import("zgui");
-const colors = @import("../theme/colors.zig");
-const tokens = @import("../theme/tokens.zig");
-const file_dialog = @import("../../app/file_dialog.zig");
-const presets = @import("../../plugin/presets.zig");
+//! Browser sidebar chrome.
+//! Instruments / Audio Effects list the CLAP catalog from `ui/plugin_host`.
+//! Other categories remain placeholders until sample/preset browsers port.
 
-const Colors = colors.Colors;
-const ui_io: std.Io = std.Io.Threaded.global_single_threaded.io();
+const dvui = @import("dvui");
+const theme = @import("../theme.zig");
+const tokens = @import("../tokens.zig");
+const state_mod = @import("../state.zig");
+const plugin_host = @import("../plugin_host.zig");
 
-pub const BrowserTab = enum { sounds, drums, bass, pad, lead, keys, noise, instruments, audio_effects };
-
-pub const PluginSelection = struct {
-    catalog_index: i32,
-    is_fx: bool,
+const Category = struct {
+    tab: state_mod.BrowserTab,
+    label: []const u8,
 };
 
-/// Drag payload for plugin entries ("FLUX_PLUGIN"); dropped onto the device
-/// chain to load an instrument or append an effect.
-pub const PluginDragPayload = extern struct {
-    catalog_index: i32,
-    is_fx: u8,
+const categories = [_]Category{
+    .{ .tab = .sounds, .label = "Sounds" },
+    .{ .tab = .drums, .label = "Drums" },
+    .{ .tab = .bass, .label = "Bass" },
+    .{ .tab = .pad, .label = "Pads" },
+    .{ .tab = .lead, .label = "Leads" },
+    .{ .tab = .keys, .label = "Keys" },
+    .{ .tab = .noise, .label = "Noise" },
+    .{ .tab = .instruments, .label = "Instruments" },
+    .{ .tab = .audio_effects, .label = "Audio Effects" },
 };
 
-pub fn draw(
-    open: *bool,
-    width: *f32,
-    active_tab: *BrowserTab,
-    search_buf: [:0]u8,
-    sort_asc: *bool,
-    folders: *std.ArrayListUnmanaged([]u8),
-    plugin_instrument_items: [:0]const u8,
-    plugin_instrument_indices: []const i32,
-    plugin_fx_items: [:0]const u8,
-    plugin_fx_indices: []const i32,
-    preset_entries: []const presets.PresetEntry,
-    preset_selected: *?usize,
-    plugin_selected: *?PluginSelection,
-    file_selected_buf: []u8,
-    file_selected_len: *usize,
-    alloc: std.mem.Allocator,
-    ui_scale: f32,
-) void {
-    if (!open.*) return;
+pub fn draw(state: *state_mod.State) void {
+    if (!state.browser_open) return;
 
-    const available_w = zgui.getContentRegionAvail()[0];
-    const max_w = available_w * 0.6;
-    const min_w = @min(tokens.s(600, ui_scale), max_w);
-    width.* = std.math.clamp(width.*, min_w, max_w);
+    var side = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .background = true,
+        .color_fill = theme.panel,
+        .expand = .both,
+        .padding = dvui.Rect.all(tokens.pad_panel),
+        .corners = .round(tokens.radius_md),
+    });
+    defer side.deinit();
 
-    if (zgui.beginChild("##browser", .{
-        .w = width.*,
-        .h = zgui.getContentRegionAvail()[1],
-        .child_flags = .{ .resize_x = true, .border = true },
-        .window_flags = .{ .no_scrollbar = true, .no_scroll_with_mouse = true },
-    })) {
-        defer {
-            zgui.endChild();
-            width.* = std.math.clamp(zgui.getItemRectSize()[0], min_w, max_w);
-        }
+    dvui.label(@src(), "Browser", .{}, .{
+        .font = .theme(.heading),
+        .color_text = theme.text,
+    });
 
-        zgui.sameLine(.{ .spacing = tokens.s(5, ui_scale) });
-        zgui.setNextItemWidth(zgui.getContentRegionAvail()[0]);
-        _ = zgui.inputTextWithHint("##browser_search", .{ .hint = "Search...", .buf = search_buf, .flags = .{ .auto_select_all = true } });
-
-        zgui.separatorText("Browser");
-        if (!zgui.beginTable("sidebar_columns", .{
-            .column = 2,
-            .flags = .{ .resizable = true, .borders = .{ .inner_v = true }, .sizing = .fixed_fit },
-            .outer_size = .{ 0, zgui.getContentRegionAvail()[1] },
-        })) return;
-        defer zgui.endTable();
-        zgui.tableSetupColumn("##sidebar_nav", .{
-            .flags = .{ .width_fixed = true },
-            .init_width_or_height = @min(tokens.s(190, ui_scale), width.* * 0.5),
+    // Search
+    {
+        var search_row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .expand = .horizontal,
+            .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = tokens.gap_tight },
         });
-        zgui.tableSetupColumn("##sidebar_content", .{ .flags = .{ .width_stretch = true } });
+        defer search_row.deinit();
 
-        _ = zgui.tableNextColumn();
-        sideLeft(active_tab, folders, alloc, ui_scale);
-        _ = zgui.tableNextColumn();
-        sideRight(active_tab, sort_asc, folders, plugin_instrument_items, plugin_instrument_indices, plugin_fx_items, plugin_fx_indices, preset_entries, preset_selected, plugin_selected, search_buf, file_selected_buf, file_selected_len);
-    }
-}
-
-fn sideLeft(active_tab: *BrowserTab, folders: *std.ArrayListUnmanaged([]u8), alloc: std.mem.Allocator, ui_scale: f32) void {
-    sectionLabel("Collections");
-    const clrs = [_][4]f32{
-        .{ 0.86, 0.36, 0.36, 1 }, .{ 0.90, 0.62, 0.30, 1 }, .{ 0.88, 0.78, 0.32, 1 },
-        .{ 0.42, 0.74, 0.52, 1 }, .{ 0.38, 0.62, 0.86, 1 }, .{ 0.66, 0.52, 0.86, 1 },
-        .{ 0.58, 0.58, 0.58, 1 },
-    };
-    const coll_names = [_][:0]const u8{ "Favorites", "Orange", "Yellow", "Green", "Blue", "Purple", "Gray" };
-    for (clrs, 0..) |c, i| {
-        zgui.pushStyleColor4f(.{ .idx = .text, .c = c });
-        zgui.textUnformatted("■");
-        zgui.popStyleColor(.{ .count = 1 });
-        zgui.sameLine(.{ .spacing = tokens.s(5, ui_scale) });
-        _ = zgui.selectable(coll_names[i], .{});
+        var te = dvui.textEntry(@src(), .{
+            .text = .{ .buffer = &state.browser_search },
+            .placeholder = "Search…",
+        }, .{
+            .expand = .horizontal,
+            .min_size_content = .{ .h = tokens.control_h },
+        });
+        const text = te.getText();
+        state.browser_search_len = text.len;
+        te.deinit();
     }
 
-    zgui.spacing();
-    sectionLabel("Categories");
-    const cats = [_]struct { name: [:0]const u8, tab: BrowserTab }{
-        .{ .name = "Sounds", .tab = .sounds },
-        .{ .name = "Drums", .tab = .drums },
-        .{ .name = "Bass", .tab = .bass },
-        .{ .name = "Pads", .tab = .pad },
-        .{ .name = "Leads", .tab = .lead },
-        .{ .name = "Keys", .tab = .keys },
-        .{ .name = "Noise", .tab = .noise },
-        .{ .name = "Instruments", .tab = .instruments },
-        .{ .name = "Audio Effects", .tab = .audio_effects },
-    };
-    for (cats) |cat| {
-        const sel = active_tab.* == cat.tab;
-        if (sel) zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.accent });
-        if (zgui.selectable(cat.name, .{ .selected = sel })) active_tab.* = cat.tab;
-        if (sel) zgui.popStyleColor(.{ .count = 1 });
-    }
+    var body = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .both,
+    });
+    defer body.deinit();
 
-    zgui.spacing();
-    sectionLabel("Places");
-    if (zgui.selectable("+ Add Folder...", .{})) {
-        if (file_dialog.openFolder(alloc, ui_io, "Add Audio Folder") catch null) |p| {
-            folders.append(alloc, @constCast(p)) catch {};
-        }
-    }
-    if (zgui.isItemHovered(.{})) zgui.setMouseCursor(.hand);
+    // Categories column
+    {
+        var nav = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .background = true,
+            .color_fill = theme.cell,
+            .min_size_content = .{ .w = tokens.browser_nav_w },
+            .expand = .vertical,
+            .padding = dvui.Rect.all(tokens.gap_tight),
+            .corners = .round(tokens.radius_sm),
+            .margin = .{ .x = 0, .y = 0, .w = tokens.gap_tight, .h = 0 },
+        });
+        defer nav.deinit();
 
-    for (folders.items) |f_path| {
-        var buf: [256]u8 = undefined;
-        const n = std.fs.path.basename(f_path);
-        const label = std.fmt.bufPrintSentinel(&buf, "{s}##pl_{d}", .{ n, @intFromPtr(f_path.ptr) }, 0) catch continue;
-        _ = zgui.selectable(label, .{});
-    }
-}
+        dvui.label(@src(), "Categories", .{}, .{
+            .color_text = theme.text_soft,
+            .margin = .{ .x = 0, .y = 0, .w = 0, .h = tokens.gap_xs },
+        });
 
-fn sideRight(
-    active_tab: *BrowserTab,
-    sort_asc: *bool,
-    folders: *std.ArrayListUnmanaged([]u8),
-    plugin_instrument_items: [:0]const u8,
-    plugin_instrument_indices: []const i32,
-    plugin_fx_items: [:0]const u8,
-    plugin_fx_indices: []const i32,
-    preset_entries: []const presets.PresetEntry,
-    preset_selected: *?usize,
-    plugin_selected: *?PluginSelection,
-    search_buf: [:0]const u8,
-    file_selected_buf: []u8,
-    file_selected_len: *usize,
-) void {
-    if (zgui.beginChild("sidebar_right", .{ .w = 0, .h = 0, .window_flags = .{ .menu_bar = true } })) {
-        _ = zgui.beginMenuBar();
-        const sort_label = if (sort_asc.*) " Name ^" else " Name v";
-        if (zgui.selectable(sort_label, .{})) sort_asc.* = !sort_asc.*;
-        zgui.endMenuBar();
-
-        switch (active_tab.*) {
-            .sounds, .drums, .bass, .pad, .lead, .keys, .noise => drawPresets(preset_entries, preset_selected, ""),
-            .instruments => {
-                sectionLabel("Plugins");
-                drawPluginList(plugin_instrument_items, plugin_instrument_indices, false, plugin_selected, search_buf);
-            },
-            .audio_effects => {
-                sectionLabel("Presets");
-                drawPresets(preset_entries, preset_selected, "");
-                zgui.separator();
-                sectionLabel("Plugins");
-                drawPluginList(plugin_fx_items, plugin_fx_indices, true, plugin_selected, search_buf);
-            },
-        }
-
-        for (folders.items) |f_path| listDir(f_path, file_selected_buf, file_selected_len) catch {};
-    }
-    zgui.endChild();
-}
-
-fn drawPluginList(items: [:0]const u8, indices: []const i32, is_fx: bool, plugin_selected: *?PluginSelection, filter: [:0]const u8) void {
-    var buf: [128]u8 = undefined;
-    var pos: usize = 0;
-    var idx: usize = 0;
-    while (pos < items.len and items[pos] != 0) : (pos += 1) {
-        const end = std.mem.indexOfScalarPos(u8, items, pos, 0) orelse items.len;
-        const name = items[pos..end];
-        const len = @min(name.len, buf.len - 1);
-        @memcpy(buf[0..len], name[0..len]);
-        buf[len] = 0;
-
-        if (filter[0] != 0 and !containsIgnoreCase(name, std.mem.sliceTo(filter[0..], 0))) {
-            pos = end;
-            idx += 1;
-            continue;
-        }
-
-        if (zgui.selectable(buf[0..len :0], .{})) {
-            if (idx < indices.len) plugin_selected.* = .{ .catalog_index = indices[idx], .is_fx = is_fx };
-        }
-        if (idx < indices.len and indices[idx] > 0) {
-            if (zgui.beginDragDropSource(.{ .source_no_preview_tooltip = true })) {
-                const payload = PluginDragPayload{
-                    .catalog_index = indices[idx],
-                    .is_fx = @intFromBool(is_fx),
-                };
-                _ = zgui.setDragDropPayload("FLUX_PLUGIN", std.mem.asBytes(&payload), .always);
-                zgui.textUnformatted(name);
-                zgui.endDragDropSource();
-            }
-        }
-        pos = end;
-        idx += 1;
-    }
-}
-
-fn drawPresets(entries: []const presets.PresetEntry, preset_selected: *?usize, filter: [:0]const u8) void {
-    const f: []const u8 = if (filter[0] != 0) std.mem.sliceTo(filter[0..], 0) else "";
-    var buf: [256]u8 = undefined;
-    for (entries, 0..) |entry, idx| {
-        if (f.len > 0 and !containsIgnoreCase(entry.name, f) and !containsIgnoreCase(entry.plugin_name, f)) continue;
-        const len = @min(entry.name.len, buf.len - 1);
-        @memcpy(buf[0..len], entry.name[0..len]);
-        buf[len] = 0;
-        if (zgui.selectable(buf[0..len :0], .{})) preset_selected.* = idx;
-        if (zgui.isItemHovered(.{})) {
-            if (zgui.beginTooltip()) {
-                zgui.textUnformatted(entry.plugin_name);
-                zgui.endTooltip();
+        for (categories, 0..) |cat, i| {
+            const selected = state.browser_tab == cat.tab;
+            const fill = if (selected) theme.accent else theme.panel;
+            const text = if (selected) theme.bg else theme.text;
+            if (dvui.button(@src(), cat.label, .{}, .{
+                .expand = .horizontal,
+                .color_fill = fill,
+                .color_text = text,
+                .min_size_content = .{ .h = tokens.control_h - 2 },
+                .margin = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
+                .corners = .round(tokens.radius_sm),
+                .id_extra = i,
+            })) {
+                state.setBrowserTab(cat.tab);
             }
         }
     }
-}
 
-fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0 or needle.len > haystack.len) return false;
-    var i: usize = 0;
-    while (i + needle.len <= haystack.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
-    }
-    return false;
-}
+    // Content column
+    {
+        var content = dvui.box(@src(), .{ .dir = .vertical }, .{
+            .background = true,
+            .color_fill = theme.cell,
+            .expand = .both,
+            .padding = dvui.Rect.all(tokens.pad_panel),
+            .corners = .round(tokens.radius_sm),
+        });
+        defer content.deinit();
 
-fn placehold(msg: []const u8) void {
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_soft });
-    zgui.textUnformatted(msg);
-    zgui.popStyleColor(.{ .count = 1 });
-}
+        const tab_name = categoryLabel(state.browser_tab);
+        dvui.label(@src(), "{s}", .{tab_name}, .{
+            .font = .theme(.heading),
+            .color_text = theme.text,
+        });
 
-fn sectionLabel(text: []const u8) void {
-    zgui.pushStyleColor4f(.{ .idx = .text, .c = Colors.current.text_soft });
-    zgui.textUnformatted(text);
-    zgui.popStyleColor(.{ .count = 1 });
-}
-
-fn listDir(dir_path: []const u8, file_selected_buf: []u8, file_selected_len: *usize) !void {
-    var dir = try std.Io.Dir.openDirAbsolute(ui_io, dir_path, .{ .iterate = true });
-    defer dir.close(ui_io);
-    var iter = dir.iterateAssumeFirstIteration();
-    var buf: [512]u8 = undefined;
-    var path_buf: [1024]u8 = undefined;
-    while (try iter.next(ui_io)) |entry| {
-        if (entry.kind != .file or !hasAudioMidiExt(entry.name)) continue;
-        const label = std.fmt.bufPrintSentinel(&buf, "{s}##dir", .{entry.name}, 0) catch continue;
-        const clicked = zgui.selectable(label, .{});
-        if (clicked) {
-            const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
-            const len = @min(full_path.len, file_selected_buf.len);
-            @memcpy(file_selected_buf[0..len], full_path[0..len]);
-            file_selected_len.* = len;
+        if (state.browser_search_len > 0) {
+            dvui.label(@src(), "Filter: \"{s}\"", .{state.searchSlice()}, .{
+                .color_text = theme.text_dim,
+                .margin = .{ .x = 0, .y = tokens.gap_xs, .w = 0, .h = 0 },
+            });
         }
-        if (zgui.beginDragDropSource(.{ .source_no_preview_tooltip = true })) {
-            const full_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, entry.name }) catch {
-                zgui.endDragDropSource();
-                continue;
-            };
-            _ = zgui.setDragDropPayload("AUDIO_FILE", full_path, .always);
-            zgui.textUnformatted(entry.name);
-            zgui.endDragDropSource();
+
+        switch (state.browser_tab) {
+            .instruments => drawPluginList(state, false),
+            .audio_effects => drawPluginList(state, true),
+            else => {
+                dvui.label(@src(), "Sample/preset browser not ported yet — use Instruments / Audio Effects for the CLAP catalog.", .{}, .{
+                    .color_text = theme.text_soft,
+                    .margin = .{ .x = 0, .y = tokens.gap_group, .w = 0, .h = 0 },
+                });
+            },
         }
     }
 }
 
-fn hasAudioMidiExt(name: []const u8) bool {
-    const ext = std.fs.path.extension(name);
-    inline for (.{ ".wav", ".mp3", ".mid", ".ogg", ".flac", ".aiff", ".aif", ".WAV", ".MP3", ".MID" }) |e| {
-        if (std.mem.eql(u8, ext, e)) return true;
+fn drawPluginList(state: *state_mod.State, fx: bool) void {
+    if (!plugin_host.ready() or !plugin_host.g.catalog_ready) {
+        dvui.label(@src(), "Plugin catalog not ready.", .{}, .{
+            .color_text = theme.text_soft,
+            .margin = .{ .x = 0, .y = tokens.gap_group, .w = 0, .h = 0 },
+        });
+        return;
     }
-    return false;
+
+    const ph = &plugin_host.g;
+    const choices: []const i32 = if (fx) ph.fxChoices() else ph.instrumentChoices();
+    const filter = state.searchSlice();
+    const track = state.selected_track;
+
+    var scroll = dvui.scrollArea(@src(), .{
+        .horizontal_bar = .hide,
+        .vertical_bar = .auto,
+    }, .{
+        .expand = .both,
+        .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
+    });
+    defer scroll.deinit();
+
+    var shown: usize = 0;
+    for (choices, 0..) |choice, i| {
+        if (!ph.matchesSearch(choice, filter)) continue;
+        const name = ph.entryName(choice);
+        if (name.len == 0) continue;
+        shown += 1;
+        if (dvui.button(@src(), name, .{}, .{
+            .expand = .horizontal,
+            .color_fill = theme.panel,
+            .color_text = theme.text,
+            .min_size_content = .{ .h = tokens.control_h - 2 },
+            .corners = .round(tokens.radius_sm),
+            .margin = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
+            .id_extra = i,
+        })) {
+            if (fx) {
+                if (ph.addFxSlot(track, choice)) {
+                    state.bottom_mode = .device;
+                    state.selectDeviceFx(ph.fx_counts[track] - 1);
+                }
+            } else {
+                ph.setInstrumentChoice(track, choice);
+                state.bottom_mode = .device;
+                state.selectDeviceInstrument();
+            }
+        }
+    }
+
+    if (shown == 0) {
+        dvui.label(@src(), "No matching plugins. Build clap bundles or install system CLAPs.", .{}, .{
+            .color_text = theme.text_soft,
+        });
+    } else {
+        dvui.label(@src(), "{d} plugins — click to load on selected track", .{shown}, .{
+            .color_text = theme.text_dim,
+            .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
+        });
+    }
+}
+
+fn categoryLabel(tab: state_mod.BrowserTab) []const u8 {
+    for (categories) |cat| {
+        if (cat.tab == tab) return cat.label;
+    }
+    return "Browser";
 }

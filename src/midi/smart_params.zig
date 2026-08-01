@@ -1,8 +1,8 @@
 const std = @import("std");
 const clap = @import("clap-bindings");
 
-const selection = @import("../ui/input/selection.zig");
-const state_mod = @import("../ui/state.zig");
+const selection = @import("../ui_zgui/input/selection.zig");
+const state_mod = @import("../ui_zgui/state.zig");
 
 const State = state_mod.State;
 const ControllerSmartParam = state_mod.ControllerSmartParam;

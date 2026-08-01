@@ -3,7 +3,7 @@ const std = @import("std");
 const plugins = @import("../plugin/plugins.zig");
 const plugin_runtime = @import("../plugin/plugin_runtime.zig");
 const session_constants = @import("../session/constants.zig");
-const ui_state = @import("../ui/state.zig");
+const ui_state = @import("../ui_zgui/state.zig");
 
 const track_count = session_constants.max_tracks;
 const TrackPlugin = plugin_runtime.TrackPlugin;

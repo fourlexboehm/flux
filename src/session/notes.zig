@@ -309,7 +309,7 @@ pub const PianoRollState = struct {
     automation_add_fx_index: usize = 0,
     automation_add_param_id: ?u32 = null,
 
-    // Undo requests (processed by ui/undo_requests.zig)
+    // Undo requests (processed by ui_zgui/undo_requests.zig)
     undo_requests: [16]UndoRequest = undefined,
     undo_request_count: usize = 0,
 

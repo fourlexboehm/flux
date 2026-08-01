@@ -12,10 +12,11 @@ const linux_x11 = if (builtin.os.tag == .linux) @import("linux_x11.zig") else st
 const audio_constants = @import("../audio/audio_constants.zig");
 const audio_engine = @import("../audio/audio_engine.zig");
 const plugins = @import("plugins.zig");
+const plugin_handle = @import("handle.zig");
 const plugin_call_context = @import("call_context.zig");
 const session_constants = @import("../session/constants.zig");
 const session_view = @import("../session/types.zig");
-const ui_state = @import("../ui/state.zig");
+const ui_state = @import("../ui_zgui/state.zig");
 const thread_context = @import("../util/thread_context.zig");
 const plugin_state_capture = @import("../project/runtime/plugin_state.zig");
 const zsynth = @import("../builtins/instruments/zsynth/core.zig");
@@ -26,82 +27,8 @@ const flux_builtins = @import("../builtins/root.zig");
 const track_count = session_constants.max_tracks;
 const master_track_index = session_view.master_track_index;
 
-pub const PluginHandle = struct {
-    lib: std.DynLib,
-    entry: *const clap.Entry,
-    factory: *const clap.PluginFactory,
-    plugin: *const clap.Plugin,
-    plugin_path_z: [:0]u8,
-    activated: bool,
-
-    pub fn init(
-        allocator: std.mem.Allocator,
-        host: *const clap.Host,
-        plugin_path: []const u8,
-        plugin_id: ?[]const u8,
-        max_frames: u32,
-    ) !PluginHandle {
-        const plugin_path_z = try allocator.dupeSentinel(u8, plugin_path, 0);
-        errdefer allocator.free(plugin_path_z);
-
-        var lib = try std.DynLib.open(plugin_path);
-        errdefer lib.close();
-
-        const entry = lib.lookup(*const clap.Entry, "clap_entry") orelse return error.MissingClapEntry;
-        if (!entry.init(plugin_path_z)) return error.EntryInitFailed;
-        errdefer entry.deinit();
-
-        const factory_raw = entry.getFactory(clap.PluginFactory.id) orelse return error.MissingPluginFactory;
-        const factory: *const clap.PluginFactory = @ptrCast(@alignCast(factory_raw));
-        const plugin = blk: {
-            if (plugin_id) |id| {
-                const id_z = try allocator.dupeSentinel(u8, id, 0);
-                defer allocator.free(id_z);
-                break :blk factory.createPlugin(factory, host, id_z) orelse return error.PluginCreateFailed;
-            }
-
-            const plugin_count = factory.getPluginCount(factory);
-            if (plugin_count == 0) return error.NoPluginsFound;
-            const desc = factory.getPluginDescriptor(factory, 0) orelse return error.MissingPluginDescriptor;
-            break :blk factory.createPlugin(factory, host, desc.id) orelse return error.PluginCreateFailed;
-        };
-
-        if (!plugin.init(plugin)) return error.PluginInitFailed;
-
-        if (!plugin.activate(plugin, audio_constants.sample_rate, 1, max_frames)) return error.PluginActivateFailed;
-
-        return .{
-            .lib = lib,
-            .entry = entry,
-            .factory = factory,
-            .plugin = plugin,
-            .plugin_path_z = plugin_path_z,
-            .activated = true,
-        };
-    }
-
-    pub fn deinit(self: *PluginHandle, allocator: std.mem.Allocator) void {
-        // Note: stopProcessing is called by unloadPlugin before this, using SharedState tracking
-        if (self.activated) {
-            self.plugin.deactivate(self.plugin);
-        }
-        self.plugin.destroy(self.plugin);
-        self.entry.deinit();
-        self.lib.close();
-        allocator.free(self.plugin_path_z);
-    }
-};
-
-/// Handle for a builtin (statically linked) plugin
-pub const BuiltinHandle = struct {
-    plugin: *clap.Plugin,
-
-    pub fn deinit(self: *BuiltinHandle) void {
-        self.plugin.deactivate(self.plugin);
-        // Note: destroy() calls the CLAP _destroy callback which already calls plugin.deinit()
-        self.plugin.destroy(self.plugin);
-    }
-};
+pub const PluginHandle = plugin_handle.PluginHandle;
+pub const BuiltinHandle = plugin_handle.BuiltinHandle;
 
 pub const TrackPlugin = struct {
     /// External CLAP plugin loaded from disk
@@ -129,9 +56,7 @@ pub const PluginSnapshot = struct {
 };
 
 fn pluginHasAudioInput(plugin: *const clap.Plugin) bool {
-    const ext_raw = plugin.getExtension(plugin, clap.ext.audio_ports.id) orelse return false;
-    const ports: *const clap.ext.audio_ports.Plugin = @ptrCast(@alignCast(ext_raw));
-    return ports.count(plugin, true) > 0;
+    return plugin_handle.pluginHasAudioInput(plugin);
 }
 
 pub fn collectPlugins(
@@ -740,8 +665,7 @@ fn loadBuiltinPlugin(
 }
 
 fn getGuiExt(handle: PluginHandle) ?*const clap.ext.gui.Plugin {
-    const ext_raw = handle.plugin.getExtension(handle.plugin, clap.ext.gui.id) orelse return null;
-    return @ptrCast(@alignCast(ext_raw));
+    return plugin_handle.getGuiExt(handle.plugin);
 }
 
 const plugin_window_title: [:0]const u8 = "Plugin";

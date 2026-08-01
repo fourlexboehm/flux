@@ -104,6 +104,10 @@
             .hash = "system_sdk-0.3.0-dev-alwUNnYaaAJAtIdE2fg4NQfDqEKs7QCXy_qYukAOBfmF",
             .lazy = true,
         },
+        // DVUI is NOT a root dependency: Zig 0.17 typechecks every already-fetched
+        // lazy backend package when DVUI is loaded as a package dependency, and those
+        // package scripts are not 0.17-clean. Flux (src/ui/) builds from DVUI's
+        // own package root instead (see docs/dvui-migration.md).
     },
 
     .paths = .{

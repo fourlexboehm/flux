@@ -119,7 +119,8 @@ pub fn build(b: *std.Build) void {
 
     const lib_module = rootModule(b, "src/builtins/instruments/zsynth/main.zig", target, optimize);
     const exe_module = rootModule(b, "src/builtins/instruments/zsynth/diag.zig", target, optimize);
-    const flux_module = rootModule(b, "src/main.zig", target, optimize);
+    // Host unit tests (not the app). App entry is src/main.zig → DVUI host.
+    const flux_test_module = rootModule(b, "src/tests.zig", target, optimize);
 
     const lib = if (!no_lib) blk: {
         const l = b.addLibrary(.{
@@ -138,13 +139,6 @@ pub fn build(b: *std.Build) void {
         .use_llvm = use_llvm,
     });
     exe.incremental = incremental;
-    const flux = b.addExecutable(.{
-        .name = "flux",
-        .root_module = flux_module,
-        .use_llvm = use_llvm,
-    });
-    flux.bundle_ubsan_rt = true;
-    flux.incremental = incremental;
 
     const options = b.addOptions();
     options.addOption(bool, "wait_for_debugger", wait_for_debugger);
@@ -216,20 +210,21 @@ pub fn build(b: *std.Build) void {
         run_step.dependOn(&b.addRunArtifact(exe).step);
     }
 
-    // Flux DAW
-    flux.root_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
-    flux.root_module.addImport("regex", regex.module("regex"));
-    flux.root_module.addImport("wdf", wdf.module("wdf"));
-    flux.root_module.addImport("shared", shared);
-    flux.root_module.addImport("libz_jobs", libz_jobs.module("libz_jobs"));
-    flux.root_module.addImport("xml", zig_xml.module("xml"));
-    flux.root_module.addImport("flux_param_table", flux_param_table);
-    flux.root_module.addOptions("options", options);
-    wireGui(flux.root_module, gui, .{
+    // Host unit-test module graph (src/tests.zig + modules it pulls in).
+    // Still links zgui because some tested paths import ui_zgui/state.zig.
+    flux_test_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
+    flux_test_module.addImport("regex", regex.module("regex"));
+    flux_test_module.addImport("wdf", wdf.module("wdf"));
+    flux_test_module.addImport("shared", shared);
+    flux_test_module.addImport("libz_jobs", libz_jobs.module("libz_jobs"));
+    flux_test_module.addImport("xml", zig_xml.module("xml"));
+    flux_test_module.addImport("flux_param_table", flux_param_table);
+    flux_test_module.addOptions("options", options);
+    wireGui(flux_test_module, gui, .{
         .linux_display = true,
         .frameworks = &macos_flux_frameworks,
     });
-    wireFluxNative(b, flux.root_module, .{
+    wireFluxNative(b, flux_test_module, .{
         .zaudio = zaudio,
         .sqlite3 = sqlite3,
         .emu2413 = emu2413,
@@ -241,20 +236,62 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .target_os = target_os,
     });
-    b.installArtifact(flux);
 
-    const run_flux_step = b.step("run-flux", "Run the flux application");
-    run_flux_step.dependOn(&b.addRunArtifact(flux).step);
-    const bundle_flux_app_step = b.step("bundle-flux-app", "Build Flux.app bundle (macOS)");
-    const run_flux_app_step = b.step("run-flux-app", "Build and run Flux.app (macOS)");
-    if (target_os == .macos) {
-        const create_flux_app_step = createFluxAppBundleStep(b, flux);
-        create_flux_app_step.dependOn(b.getInstallStep());
-        bundle_flux_app_step.dependOn(create_flux_app_step);
+    // Flux app = src/main.zig + full engine (DVUI). Built from DVUI's package
+    // root (not as a Flux dependency): Zig 0.17 typechecks every already-fetched
+    // lazy backend when DVUI is loaded via b.dependency(). Host module roots at
+    // flux `src/` via relative path from the DVUI package. See docs/dvui-migration.md.
+    {
+        const dvui_pkg = "zig-pkg/dvui-0.5.0-dev-AQFJmTFT_QCvZIRos5J8p0F2r2iQteaBYR00SgPYlKcY";
+        const host_bin = b.pathJoin(&.{ dvui_pkg, "zig-out", "bin", "flux-host" });
 
-        const open_flux_app = b.addSystemCommand(&.{ "open", "zig-out/Flux.app" });
-        open_flux_app.step.dependOn(create_flux_app_step);
-        run_flux_app_step.dependOn(&open_flux_app.step);
+        // Use PATH `zig` (not b.graph.zig_exe): DVUI's package scripts currently
+        // succeed under the same launcher Flux developers already use.
+        const compile = b.addSystemCommand(&.{
+            "zig",
+            "build",
+            "compile-flux-host",
+            "-Dbackend=sdl3",
+            "-Dtree-sitter=false",
+        });
+        compile.setName("compile-flux-host");
+        compile.setCwd(b.path(dvui_pkg));
+        switch (optimize) {
+            .Debug => {},
+            .ReleaseSafe => compile.addArg("-Doptimize=ReleaseSafe"),
+            .ReleaseFast => compile.addArg("-Doptimize=ReleaseFast"),
+            .ReleaseSmall => compile.addArg("-Doptimize=ReleaseSmall"),
+        }
+
+        const mkdir_out = b.addSystemCommand(&.{ "mkdir", "-p", "zig-out/bin" });
+        mkdir_out.setName("mkdir-flux-out");
+        const install_host = b.addSystemCommand(&.{ "cp", "-f", host_bin, "zig-out/bin/flux" });
+        install_host.setName("install-flux");
+        install_host.step.dependOn(&compile.step);
+        install_host.step.dependOn(&mkdir_out.step);
+
+        // Default install includes the DVUI host binary.
+        b.getInstallStep().dependOn(&install_host.step);
+
+        const run_host = b.addSystemCommand(&.{"zig-out/bin/flux"});
+        run_host.setName("run-flux-bin");
+        run_host.step.dependOn(&install_host.step);
+
+        const run_flux_step = b.step("run-flux", "Run Flux (DVUI host)");
+        run_flux_step.dependOn(&run_host.step);
+
+        // macOS .app wraps the same DVUI binary.
+        const bundle_flux_app_step = b.step("bundle-flux-app", "Build Flux.app bundle (macOS)");
+        const run_flux_app_step = b.step("run-flux-app", "Build and run Flux.app (macOS)");
+        if (target_os == .macos) {
+            const create_flux_app_step = createFluxAppBundleFromBinStep(b, "zig-out/bin/flux");
+            create_flux_app_step.dependOn(&install_host.step);
+            bundle_flux_app_step.dependOn(create_flux_app_step);
+
+            const open_flux_app = b.addSystemCommand(&.{ "open", "zig-out/Flux.app" });
+            open_flux_app.step.dependOn(create_flux_app_step);
+            run_flux_app_step.dependOn(&open_flux_app.step);
+        }
     }
 
     // Tests
@@ -280,7 +317,7 @@ pub fn build(b: *std.Build) void {
     const run_zsynth_smoke_tests = b.addRunArtifact(zsynth_smoke_tests);
 
     const flux_tests = b.addTest(.{
-        .root_module = flux_module,
+        .root_module = flux_test_module,
         .use_llvm = use_llvm,
     });
     const run_flux_tests = b.addRunArtifact(flux_tests);
@@ -495,6 +532,12 @@ fn wireFluxNative(b: *std.Build, module: *std.Build.Module, d: FluxNativeDeps) v
             .file = b.path("src/app/native_drop.m"),
             .flags = &.{"-fobjc-arc"},
         });
+        // CLAP plugin host NSWindow for DVUI gui_float (also linked into tests).
+        module.addIncludePath(b.path("src/plugin"));
+        module.addCSourceFile(.{
+            .file = b.path("src/plugin/macos_plugin_window.m"),
+            .flags = &.{ "-fobjc-arc", "-fno-sanitize=undefined" },
+        });
     }
     if (d.target_os == .linux) {
         module.linkSystemLibrary("asound", .{});
@@ -583,12 +626,9 @@ fn createClapPluginStep(
     }
 }
 
-fn createFluxAppBundleStep(b: *std.Build, flux: *Step.Compile) *Step {
+/// Assemble Flux.app around an already-built binary path (e.g. zig-out/bin/flux).
+fn createFluxAppBundleFromBinStep(b: *std.Build, bin_path: []const u8) *Step {
     const app_bundle = b.addWriteFiles();
-    _ = app_bundle.addCopyFile(
-        flux.getEmittedBin(),
-        "Flux.app/Contents/MacOS/flux",
-    );
     _ = app_bundle.add("Flux.app/Contents/Info.plist", flux_info_plist);
     _ = app_bundle.add("Flux.app/Contents/PkgInfo", "APPL????\n");
     _ = app_bundle.addCopyFile(
@@ -601,7 +641,13 @@ fn createFluxAppBundleStep(b: *std.Build, flux: *Step.Compile) *Step {
         .install_dir = .prefix,
         .install_subdir = "",
     });
-    return &install_app.step;
+
+    const mkdir_macos = b.addSystemCommand(&.{ "mkdir", "-p", "zig-out/Flux.app/Contents/MacOS" });
+    mkdir_macos.step.dependOn(&install_app.step);
+
+    const cp_bin = b.addSystemCommand(&.{ "cp", "-f", bin_path, "zig-out/Flux.app/Contents/MacOS/flux" });
+    cp_bin.step.dependOn(&mkdir_macos.step);
+    return &cp_bin.step;
 }
 
 const flux_info_plist =

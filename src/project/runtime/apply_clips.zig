@@ -4,7 +4,7 @@ const sample_store = @import("../../audio/sample_store.zig");
 const audio_clip_types = @import("../../session/audio_clip.zig");
 const piano_roll_types = @import("../../session/notes.zig");
 const session_constants = @import("../../session/constants.zig");
-const ui_state = @import("../../ui/state.zig");
+const ui_state = @import("../../ui_zgui/state.zig");
 
 const flatten = @import("../format/flatten.zig");
 const types = @import("../format/types.zig");

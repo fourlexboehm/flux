@@ -1,7 +1,7 @@
 const std = @import("std");
 const clap = @import("clap-bindings");
 const tracy = @import("tracy");
-const ui_state = @import("../ui/state.zig");
+const engine_ui = @import("engine_ui.zig");
 const session_view = @import("../session/types.zig");
 const session_constants = @import("../session/constants.zig");
 const audio_engine = @import("audio_engine.zig");
@@ -14,7 +14,8 @@ const latency_compensation = @import("latency_compensation.zig");
 
 const max_tracks = session_constants.max_tracks;
 const max_scenes = session_constants.max_scenes;
-const max_controller_param_writes = ui_state.max_controller_param_writes;
+const max_fx_slots = engine_ui.max_fx_slots;
+const max_controller_param_writes = engine_ui.max_controller_param_writes;
 const master_track_index = session_view.master_track_index;
 
 pub const ClipAudioRt = audio_clip_source.ClipAudioRt;
@@ -88,13 +89,13 @@ pub const StateSnapshot = struct {
     /// Sample PCM views indexed by SampleId; publish only after fully loaded.
     sample_table: [max_rt_samples]SampleSlotRt,
     track_plugins: [max_tracks]?*const clap.Plugin,
-    track_fx_plugins: [max_tracks][ui_state.max_fx_slots]?*const clap.Plugin,
+    track_fx_plugins: [max_tracks][max_fx_slots]?*const clap.Plugin,
     /// Device bypass: disabled instruments render silence, disabled FX pass through.
     track_instrument_enabled: [max_tracks]bool,
-    track_fx_enabled: [max_tracks][ui_state.max_fx_slots]bool,
+    track_fx_enabled: [max_tracks][max_fx_slots]bool,
     live_key_states: [max_tracks][128]bool,
     live_key_velocities: [max_tracks][128]f32,
-    controller_param_writes: [max_controller_param_writes]ui_state.ControllerParamWrite,
+    controller_param_writes: [max_controller_param_writes]engine_ui.ControllerParamWrite,
     controller_param_write_count: usize,
     track_latency: [max_tracks]u32,
     max_track_latency: u32,

@@ -3,14 +3,15 @@ const zaudio = @import("zaudio");
 
 const audio_constants = @import("audio_constants.zig");
 const audio_engine = @import("audio_engine.zig");
+const engine_ui = @import("engine_ui.zig");
 const plugin_runtime = @import("../plugin/plugin_runtime.zig");
 const session_constants = @import("../session/constants.zig");
 const thread_context = @import("../util/thread_context.zig");
 const time_utils = @import("../util/time_utils.zig");
-const ui_state = @import("../ui/state.zig");
 const clock_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 
 const track_count = session_constants.max_tracks;
+const max_fx_slots = engine_ui.max_fx_slots;
 const TrackPlugin = plugin_runtime.TrackPlugin;
 
 var worker_min_sleep_ns: std.atomic.Value(u64) = std.atomic.Value(u64).init(10_000);
@@ -79,7 +80,7 @@ pub fn applyBufferFramesChange(
     engine: *audio_engine.AudioEngine,
     shared: *audio_engine.SharedState,
     track_plugins: *[track_count]TrackPlugin,
-    track_fx: *[track_count][ui_state.max_fx_slots]TrackPlugin,
+    track_fx: *[track_count][max_fx_slots]TrackPlugin,
     new_frames: u32,
 ) !void {
     if (new_frames == engine.max_frames) return;
@@ -103,7 +104,7 @@ pub fn applyBufferFramesChange(
             }
             shared.clearPluginStarted(t);
         }
-        for (0..ui_state.max_fx_slots) |fx_index| {
+        for (0..max_fx_slots) |fx_index| {
             if (shared.isFxPluginStarted(t, fx_index)) {
                 if (plugins_for_tracks.fx[t][fx_index]) |plugin| {
                     plugin.stopProcessing(plugin);
@@ -122,7 +123,7 @@ pub fn applyBufferFramesChange(
                 shared.requestStartProcessing(t);
             }
         }
-        for (0..ui_state.max_fx_slots) |fx_index| {
+        for (0..max_fx_slots) |fx_index| {
             if (plugins_for_tracks.fx[t][fx_index]) |plugin| {
                 plugin.deactivate(plugin);
                 if (!plugin.activate(plugin, audio_constants.sample_rate, 1, new_frames)) {

@@ -1,6 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
-const colors = @import("../ui/theme/colors.zig");
+const colors = @import("../ui_zgui/theme/colors.zig");
 const objc = if (builtin.os.tag == .macos) @import("objc") else struct {};
 
 const Theme = colors.Colors.Theme;

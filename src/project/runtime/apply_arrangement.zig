@@ -10,7 +10,7 @@ const flatten = @import("../format/flatten.zig");
 const types = @import("../format/types.zig");
 const project_io = @import("../io.zig");
 const media_layout = @import("../media/layout.zig");
-const ui_state = @import("../../ui/state.zig");
+const ui_state = @import("../../ui_zgui/state.zig");
 
 /// Populate `state.arrangement` from parsed Arrangement XML (tracks, clips, colors, positions).
 pub fn applyArrangement(

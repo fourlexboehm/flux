@@ -7,7 +7,7 @@ const plugin_runtime = @import("../../plugin/plugin_runtime.zig");
 const plugins = @import("../../plugin/plugins.zig");
 const session_constants = @import("../../session/constants.zig");
 const thread_context = @import("../../util/thread_context.zig");
-const ui_state = @import("../../ui/state.zig");
+const ui_state = @import("../../ui_zgui/state.zig");
 
 const project_io = @import("../io.zig");
 const io_types = @import("../io_types.zig");

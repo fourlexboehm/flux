@@ -2,7 +2,7 @@ const std = @import("std");
 const zaudio = @import("zaudio");
 const clap = @import("clap-bindings");
 
-const ui_state = @import("../ui/state.zig");
+const engine_ui = @import("engine_ui.zig");
 const session_constants = @import("../session/constants.zig");
 const session_view = @import("../session/types.zig");
 const audio_graph = @import("audio_graph.zig");
@@ -13,9 +13,11 @@ const latency_compensation = @import("latency_compensation.zig");
 
 const max_tracks = session_constants.max_tracks;
 const max_scenes = session_constants.max_scenes;
+const max_fx_slots = engine_ui.max_fx_slots;
 const beats_per_bar = session_constants.beats_per_bar;
 const default_clip_bars = session_constants.default_clip_bars;
 const master_track_index = session_view.master_track_index;
+pub const EngineUiView = engine_ui.EngineUiView;
 
 const Channels = 2;
 pub const dsp_meter_interval: u8 = 16;
@@ -27,15 +29,15 @@ pub const SharedState = struct {
     suspend_processing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     snapshots: []audio_graph.StateSnapshot,
     track_plugins: [max_tracks]?*const clap.Plugin = @splat(null),
-    track_fx_plugins: [max_tracks][ui_state.max_fx_slots]?*const clap.Plugin =
+    track_fx_plugins: [max_tracks][max_fx_slots]?*const clap.Plugin =
         @splat(@splat(null)),
     /// Tracks which plugins need startProcessing called (done from audio thread)
     plugins_need_start: [max_tracks]std.atomic.Value(bool) = @splat(std.atomic.Value(bool).init(false)),
     /// Tracks which plugins have had startProcessing called (for stopProcessing on cleanup)
     plugins_started: [max_tracks]std.atomic.Value(bool) = @splat(std.atomic.Value(bool).init(false)),
-    plugins_need_start_fx: [max_tracks][ui_state.max_fx_slots]std.atomic.Value(bool) =
+    plugins_need_start_fx: [max_tracks][max_fx_slots]std.atomic.Value(bool) =
         @splat(@splat(std.atomic.Value(bool).init(false))),
-    plugins_started_fx: [max_tracks][ui_state.max_fx_slots]std.atomic.Value(bool) =
+    plugins_started_fx: [max_tracks][max_fx_slots]std.atomic.Value(bool) =
         @splat(@splat(std.atomic.Value(bool).init(false))),
     track_peak_left: [max_tracks]std.atomic.Value(u32) = @splat(std.atomic.Value(u32).init(0)),
     track_peak_right: [max_tracks]std.atomic.Value(u32) = @splat(std.atomic.Value(u32).init(0)),
@@ -65,19 +67,19 @@ pub const SharedState = struct {
         allocator.free(self.snapshots);
     }
 
-    pub fn updateFromUi(self: *SharedState, state: *ui_state.State) void {
+    pub fn updateFromUi(self: *SharedState, view: *EngineUiView) void {
         // Offline stretch bake before publishing RT snapshot (can allocate / CPU).
         // Only dirty *playing/queued* clips recompute — keeps load/idle frames cheap.
         {
-            const bake_tc = @min(state.session.track_count, max_tracks);
-            const bake_sc = @min(state.session.scene_count, max_scenes);
+            const bake_tc = @min(view.session.track_count, max_tracks);
+            const bake_sc = @min(view.session.scene_count, max_scenes);
             for (0..bake_tc) |t| {
                 for (0..bake_sc) |s| {
-                    const st = state.session.clips[t][s].state;
+                    const st = view.session.clips[t][s].state;
                     if (st != .playing and st != .queued) continue;
-                    const audio = state.slotAudio(t, s) orelse continue;
+                    const audio = view.slotAudio(t, s) orelse continue;
                     if (!audio.hasAudio()) continue;
-                    clip_bake.ensureBaked(audio, &state.sample_store, state.bpm, audio_constants.sample_rate) catch |err| {
+                    clip_bake.ensureBaked(audio, view.sample_store, view.bpm, audio_constants.sample_rate) catch |err| {
                         std.log.warn("Audio clip bake failed t={d} s={d}: {}", .{ t, s, err });
                     };
                 }
@@ -90,46 +92,47 @@ pub const SharedState = struct {
         const current = self.active_index.load(.acquire);
         const next: u32 = 1 - current;
         var back = &self.snapshots[next];
-        back.playing = state.playing;
-        back.metronome_enabled = state.metronome_enabled;
-        back.bpm = state.bpm;
-        back.time_signature_numerator = state.time_signature_numerator;
-        back.time_signature_denominator = state.time_signature_denominator;
-        back.playhead_beat = state.playhead_beat;
-        back.track_count = state.session.track_count;
-        back.scene_count = state.session.scene_count;
-        back.tracks = state.session.tracks;
-        back.clips = state.session.clips;
+        back.playing = view.playing;
+        back.metronome_enabled = view.metronome_enabled;
+        back.bpm = view.bpm;
+        back.time_signature_numerator = view.time_signature_numerator;
+        back.time_signature_denominator = view.time_signature_denominator;
+        back.playhead_beat = view.playhead_beat;
+        back.track_count = view.session.track_count;
+        back.scene_count = view.session.scene_count;
+        back.tracks = view.session.tracks;
+        back.clips = view.session.clips;
         back.track_plugins = self.track_plugins;
         back.track_fx_plugins = self.track_fx_plugins;
         for (0..max_tracks) |t| {
-            back.track_instrument_enabled[t] = state.track_plugins[t].enabled;
-            for (0..ui_state.max_fx_slots) |fx_index| {
-                back.track_fx_enabled[t][fx_index] = state.track_fx[t][fx_index].enabled;
+            back.track_instrument_enabled[t] = view.track_instrument_enabled[t];
+            for (0..max_fx_slots) |fx_index| {
+                back.track_fx_enabled[t][fx_index] = view.track_fx_enabled[t][fx_index];
             }
         }
-        back.live_key_states = state.live_key_states;
-        back.live_key_velocities = state.live_key_velocities;
-        back.controller_param_write_count = state.controller_param_write_count;
-        if (state.controller_param_write_count > 0) {
+        back.live_key_states = view.live_key_states.*;
+        back.live_key_velocities = view.live_key_velocities.*;
+        const write_count = @min(view.controller_param_writes.len, engine_ui.max_controller_param_writes);
+        back.controller_param_write_count = write_count;
+        if (write_count > 0) {
             @memcpy(
-                back.controller_param_writes[0..state.controller_param_write_count],
-                state.controller_param_writes[0..state.controller_param_write_count],
+                back.controller_param_writes[0..write_count],
+                view.controller_param_writes[0..write_count],
             );
         }
 
         // Sample table: immutable views; only fully loaded assets, never touch store on RT.
-        audio_graph.publishSampleTableFromStore(&back.sample_table, &state.sample_store);
+        audio_graph.publishSampleTableFromStore(&back.sample_table, view.sample_store);
 
         for (0..max_tracks) |t| {
             back.active_scene_by_track[t] = -1;
             back.playing_audio[t].clear();
-            const active_scene_count = @min(state.session.scene_count, max_scenes);
+            const active_scene_count = @min(view.session.scene_count, max_scenes);
             for (0..active_scene_count) |scene_index| {
-                const slot = state.session.clips[t][scene_index];
+                const slot = view.session.clips[t][scene_index];
                 if (slot.state == .playing) {
                     back.active_scene_by_track[t] = @intCast(scene_index);
-                    if (state.slotAudio(t, scene_index)) |audio| {
+                    if (view.slotAudio(t, scene_index)) |audio| {
                         if (audio.hasAudio()) {
                             audio_graph.copyPlayingAudioClip(&back.playing_audio[t], audio);
                         }
@@ -140,7 +143,7 @@ pub const SharedState = struct {
             for (0..max_scenes) |s| {
                 var dst = &back.piano_clips[t][s];
                 // Slots that hold audio (or are empty) contribute no MIDI notes.
-                const src = state.slotPiano(t, s) orelse {
+                const src = view.slotPiano(t, s) orelse {
                     dst.length_beats = default_clip_bars * beats_per_bar;
                     dst.count = 0;
                     dst.automation_lane_count = 0;
@@ -198,7 +201,7 @@ pub const SharedState = struct {
             if (back.track_instrument_enabled[t]) {
                 latency +|= latency_compensation.pluginFrames(self.track_plugins[t]);
             }
-            for (0..ui_state.max_fx_slots) |fx_index| {
+            for (0..max_fx_slots) |fx_index| {
                 if (back.track_fx_enabled[t][fx_index]) {
                     latency +|= latency_compensation.pluginFrames(self.track_fx_plugins[t][fx_index]);
                 }
@@ -216,10 +219,10 @@ pub const SharedState = struct {
         while (self.processing.load(.acquire) != 0) {
             std.atomic.spinLoopHint();
         }
-        state.sample_store.flushDeferredFrees();
+        view.sample_store.flushDeferredFrees();
         for (0..max_tracks) |t| {
             for (0..max_scenes) |s| {
-                if (state.slotAudio(t, s)) |audio| audio.flushDeferredBakeFrees();
+                if (view.slotAudio(t, s)) |audio| audio.flushDeferredBakeFrees();
             }
         }
     }
@@ -227,7 +230,7 @@ pub const SharedState = struct {
     pub fn updatePlugins(
         self: *SharedState,
         plugins: [max_tracks]?*const clap.Plugin,
-        fx_plugins: [max_tracks][ui_state.max_fx_slots]?*const clap.Plugin,
+        fx_plugins: [max_tracks][max_fx_slots]?*const clap.Plugin,
     ) void {
         self.track_plugins = plugins;
         self.track_fx_plugins = fx_plugins;
@@ -365,13 +368,13 @@ pub const AudioEngine = struct {
         self.shared.deinit(self.allocator);
     }
 
-    pub fn updateFromUi(self: *AudioEngine, state: *ui_state.State) void {
-        if (state.session.track_count != self.track_count) {
-            self.rebuildGraph(state.session.track_count, false) catch |err| {
+    pub fn updateFromUi(self: *AudioEngine, view: *EngineUiView) void {
+        if (view.session.track_count != self.track_count) {
+            self.rebuildGraph(view.session.track_count, false) catch |err| {
                 std.log.warn("Failed to rebuild graph: {}", .{err});
             };
         }
-        self.shared.updateFromUi(state);
+        self.shared.updateFromUi(view);
     }
 
     pub fn setMaxFrames(self: *AudioEngine, max_frames: u32) !void {
@@ -383,7 +386,7 @@ pub const AudioEngine = struct {
     pub fn updatePlugins(
         self: *AudioEngine,
         plugins: [max_tracks]?*const clap.Plugin,
-        fx_plugins: [max_tracks][ui_state.max_fx_slots]?*const clap.Plugin,
+        fx_plugins: [max_tracks][max_fx_slots]?*const clap.Plugin,
     ) void {
         self.shared.updatePlugins(plugins, fx_plugins);
     }
@@ -497,7 +500,7 @@ fn buildGraph(
         const audio_clip_id = try graph.addAudioClipSource(track_index);
 
         var prev_node = synth_nodes[track_index];
-        for (0..ui_state.max_fx_slots) |fx_index| {
+        for (0..max_fx_slots) |fx_index| {
             const fx_note_id = try graph.addNoteSource(track_index, false, @intCast(fx_index));
             const fx_id = try graph.addFx(track_index, fx_index);
             try graph.connect(fx_note_id, 0, fx_id, 0, .events);
@@ -522,7 +525,7 @@ fn buildGraph(
     }
 
     var prev_master_node = mixer_id;
-    for (0..ui_state.max_fx_slots) |fx_index| {
+    for (0..max_fx_slots) |fx_index| {
         const master_fx_id = try graph.addFx(master_track_index, fx_index);
         try graph.connect(prev_master_node, 0, master_fx_id, 0, .audio);
         prev_master_node = master_fx_id;
@@ -546,7 +549,7 @@ fn initSnapshot(snapshot: *audio_graph.StateSnapshot) void {
         // sample_id 0 is valid; zero-fill would falsely mark audio present.
         snapshot.playing_audio[t].clear();
         snapshot.track_instrument_enabled[t] = true;
-        for (0..ui_state.max_fx_slots) |fx_index| {
+        for (0..max_fx_slots) |fx_index| {
             snapshot.track_fx_enabled[t][fx_index] = true;
         }
         for (0..max_scenes) |s| {

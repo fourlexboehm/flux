@@ -2,7 +2,7 @@ const std = @import("std");
 
 const midi_input = @import("input.zig");
 const smart_params = @import("smart_params.zig");
-const ui_state = @import("../ui/state.zig");
+const ui_state = @import("../ui_zgui/state.zig");
 const session_playback = @import("../session/playback.zig");
 const session_recording = @import("../session/recording.zig");
 

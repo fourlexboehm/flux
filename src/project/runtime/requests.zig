@@ -6,7 +6,7 @@ const clap_ids = @import("../../util/clap_ids.zig");
 const plugin_runtime = @import("../../plugin/plugin_runtime.zig");
 const plugins = @import("../../plugin/plugins.zig");
 const session_constants = @import("../../session/constants.zig");
-const ui_state = @import("../../ui/state.zig");
+const ui_state = @import("../../ui_zgui/state.zig");
 
 const save = @import("save.zig");
 const load = @import("load.zig");

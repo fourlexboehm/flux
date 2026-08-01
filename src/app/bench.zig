@@ -10,7 +10,7 @@ const host_mod = @import("host.zig");
 const plugin_runtime = @import("../plugin/plugin_runtime.zig");
 const session_constants = @import("../session/constants.zig");
 const time_utils = @import("../util/time_utils.zig");
-const ui_state = @import("../ui/state.zig");
+const ui_state = @import("../ui_zgui/state.zig");
 
 const audio_mix = @import("../audio/audio_mix.zig");
 const track_count = session_constants.max_tracks;
@@ -410,13 +410,23 @@ pub fn runHeadlessBench(
             const dt = @as(f64, @floatFromInt(delta_ns)) / std.time.ns_per_s;
             state.playhead_beat += @floatCast((@as(f64, state.bpm) / 60.0) * dt);
         }
-        engine.updateFromUi(state);
+        {
+            var instrument_enabled: [track_count]bool = undefined;
+            var fx_enabled: [track_count][ui_state.max_fx_slots]bool = undefined;
+            var engine_view = state.engineView(&instrument_enabled, &fx_enabled);
+            engine.updateFromUi(&engine_view);
+        }
 
         time_utils.sleepNs(io, 5 * std.time.ns_per_ms);
     }
 
     state.playing = false;
-    engine.updateFromUi(state);
+    {
+        var instrument_enabled: [track_count]bool = undefined;
+        var fx_enabled: [track_count][ui_state.max_fx_slots]bool = undefined;
+        var engine_view = state.engineView(&instrument_enabled, &fx_enabled);
+        engine.updateFromUi(&engine_view);
+    }
 
     std.log.info("Headless bench complete: scenario={s} duration={d}s", .{ bench.scenario, bench.duration_s });
     return true;
