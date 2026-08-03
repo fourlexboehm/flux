@@ -19,6 +19,7 @@ const piano_roll = @import("views/piano_roll.zig");
 const session_view = @import("views/session.zig");
 const arrangement_view = @import("views/arrangement.zig");
 const edit_actions = @import("edit_actions.zig");
+const media_drop = @import("media_drop.zig");
 
 const sdl = dvui.backend.c;
 
@@ -62,11 +63,37 @@ pub fn init(win: *dvui.Window) !void {
     plugin_host.initGlobal(win.gpa);
     // Full AudioEngine (graph + metronome + meters + live plugins).
     audio_runtime.initGlobal(win.gpa, state_mod.g.buffer_frames);
+    preloadDevDevice();
     std.log.info("flux-dvui host ready (backend={s})", .{@tagName(dvui.backend.kind)});
     std.log.info("  document: empty session+arrangement", .{});
     std.log.info("  audio: full AudioEngine + CLAP catalog + floating plugin GUIs", .{});
     std.log.info("  MIDI: physical keyboard A–; positions (Z/X octave) + hardware portmidi", .{});
     std.log.info("  Space = play/stop, Tab = session/arrangement, Shift+Tab = device/clip, B = browser", .{});
+}
+
+/// Dev hook: `FLUX_DEV_DEVICE=<clap plugin id>` loads that plugin on track 1
+/// and opens the Device panel, so built-in editors can be eyeballed without
+/// clicking through the browser. No effect when unset.
+fn preloadDevDevice() void {
+    const wanted_z = std.c.getenv("FLUX_DEV_DEVICE") orelse return;
+    const wanted = std.mem.span(wanted_z);
+    if (!plugin_host.ready() or !plugin_host.g.catalog_ready) return;
+
+    for (plugin_host.g.catalog.entries.items, 0..) |entry, i| {
+        const id = entry.id orelse continue;
+        if (!std.mem.eql(u8, id, wanted)) continue;
+        if (entry.is_audio_effect) {
+            _ = plugin_host.g.addFxSlot(0, @intCast(i));
+            state_mod.g.selectDeviceFx(0);
+        } else {
+            plugin_host.g.setInstrumentChoice(0, @intCast(i));
+            state_mod.g.selectDeviceInstrument();
+        }
+        state_mod.g.bottom_mode = .device;
+        std.log.info("FLUX_DEV_DEVICE: preloaded {s} on track 1", .{id});
+        return;
+    }
+    std.log.warn("FLUX_DEV_DEVICE: no catalog entry for {s}", .{wanted});
 }
 
 pub fn deinit(win: *dvui.Window) void {
@@ -94,11 +121,12 @@ pub fn frame() !dvui.App.Result {
         audio_runtime.g.tick(&host_mod.g, state);
     } else if (plugin_host.ready()) {
         // No audio device: still poll MIDI / keyboard live keys for UI feedback.
-        plugin_host.g.tickLiveMidi(state.selected_track);
+        plugin_host.g.tickLiveMidi(state.selected_track, state.piano_preview_pitch);
     }
     // Project after plugin tick so device names match freshly loaded choices.
     host_mod.g.projectChrome(state);
     project_runtime.handleRequests(state);
+    media_drop.pollNativeDrops(state);
 
     // Playhead advances on the UI thread (same as zgui `ui_zgui/recording.tick`).
     // Audio thread renders graph + metronome from the published snapshot.
@@ -196,6 +224,12 @@ fn handleGlobalKeys(state: *state_mod.State) void {
         }
 
         if (state.focused_pane == .bottom and state.bottom_mode == .sequencer and piano_roll.handleKey(state, ke)) {
+            e.handle(@src(), wd);
+            dvui.refresh(null, @src(), wd.id);
+            continue;
+        }
+
+        if (state.focused_pane == .bottom and state.bottom_mode == .device and bottom.handleChainKey(state, ke)) {
             e.handle(@src(), wd);
             dvui.refresh(null, @src(), wd.id);
             continue;

@@ -228,9 +228,9 @@ pub inline fn generateSquare(sample_rate: f64, frequency: f64, phase: f64) f64 {
 
         wave += (1 / k) * std.math.sin(phase * k * 2.0 * std.math.pi) * window;
     }
-    // TODO: Resolve the Gibbs phenomenon issues more gracefully than this
-    // return wave * (4.0 / std.math.pi);
-    return wave;
+    // Normalize to ±1 like saw/triangle. Gibbs ringing overshoots slightly near
+    // the discontinuity; the rolloff window keeps it under the test tolerance.
+    return wave * (4.0 / std.math.pi);
 }
 
 pub inline fn generateTriangle(sample_rate: f64, frequency: f64, phase: f64) f64 {

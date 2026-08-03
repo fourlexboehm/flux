@@ -8,17 +8,12 @@ const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 const shared = @import("shared");
 
 const params_mod = @import("ext/params.zig");
-const ViewType = @import("ext/gui/view.zig");
 const audio = @import("audio/audio.zig");
-const extensions = shared.plugin_extensions.InstrumentExtensions(Plugin, ViewType, params_mod, struct {
+const extensions = shared.plugin_extensions.InstrumentExtensions(Plugin, params_mod, struct {
     pub fn create() clap.ext.thread_pool.Plugin {
         return shared.ext.thread_pool.createFallible(Plugin, audio.processVoice);
     }
 });
-const GUI = extensions.GUI;
-pub const View = ViewType;
-pub const font = shared.core.Core(Plugin, ViewType).font;
-const options = @import("options");
 const Voices = @import("audio/voices.zig");
 const Filter = @import("audio/filter.zig");
 
@@ -32,7 +27,6 @@ voices: Voices,
 params: params_mod.Store,
 filter_left: Filter,
 filter_right: Filter,
-gui: ?*GUI,
 
 jobs: Jobs = .{},
 job_mutex: std.Io.Mutex,
@@ -84,7 +78,6 @@ pub fn init(allocator: std.mem.Allocator, host: *const clap.Host) !*Plugin {
         .undo = .init(host),
         .voices = voices,
         .params = params_mod.Store.init(allocator),
-        .gui = null,
         .job_mutex = .init,
         .filter_left = undefined,
         .filter_right = undefined,
@@ -223,19 +216,8 @@ fn _process(clap_plugin: *const clap.Plugin, clap_process: *const clap.Process) 
     // Each frame lasts 1 / 48000 seconds. There are typically 256 frames per process call
     const frame_count = clap_process.frames_count;
 
-    const dt: f64 = @as(f64, @floatFromInt(frame_count)) / plugin.sample_rate.?;
-
     // Process parameter event changes
     extensions.Params._flush(clap_plugin, clap_process.in_events, clap_process.out_events);
-
-    // Update the GUI if ready
-    if (plugin.gui) |gui| {
-        gui.tick(dt);
-        if (gui.shouldUpdate()) {
-            // dispatch onMainThread, which calls gui.update()
-            plugin.host.requestCallback(plugin.host);
-        }
-    }
 
     // The number of events corresponds to how many are expected to occur within my 256 frame range
     const input_event_count = clap_process.in_events.size(clap_process.in_events);
@@ -333,7 +315,6 @@ const ext_audio_ports = extensions.AudioPorts.create();
 const ext_note_ports = extensions.NotePorts.create();
 const ext_params = extensions.Params.create();
 const ext_state = extensions.State.create();
-const ext_gui = extensions.GUI.create();
 const ext_voice_info = extensions.VoiceInfo.create();
 const ext_thread_pool = extensions.ThreadPool.create();
 
@@ -349,9 +330,6 @@ fn _getExtension(_: *const clap.Plugin, id: [*:0]const u8) callconv(.c) ?*const 
     }
     if (std.mem.eql(u8, std.mem.span(id), clap.ext.state.id)) {
         return &ext_state;
-    }
-    if (options.enable_gui and std.mem.eql(u8, std.mem.span(id), clap.ext.gui.id)) {
-        return &ext_gui;
     }
     if (std.mem.eql(u8, std.mem.span(id), clap.ext.voice_info.id)) {
         return &ext_voice_info;
@@ -380,12 +358,5 @@ fn _onMainThread(clap_plugin: *const clap.Plugin) callconv(.c) void {
             std.log.err("Unable to query params extension to notify params changed!", .{});
         }
         plugin.jobs.notify_host_params_changed = false;
-    }
-
-    // Update the GUI if exists
-    if (plugin.gui) |gui| {
-        gui.update() catch |err| {
-            std.log.err("Error occurred during GUI update loop: {}", .{err});
-        };
     }
 }

@@ -63,11 +63,18 @@ pub fn build(b: *std.Build) void {
 
     const options = b.addOptions();
     options.addOption(bool, "wait_for_debugger", wait_for_debugger);
-    options.addOption(bool, "enable_gui", false);
     options.addOption(bool, "enable_segfault_handler", enable_segfault_handler);
     options.addOption(bool, "use_x11", false);
 
     const flux_param_table = rootModule(b, "src/builtins/param_table.zig", target, optimize);
+    // One tracy stub instance for root + shared (Zig forbids the same file as two module roots).
+    const tracy_mod = rootModule(b, "src/util/tracy_stub.zig", target, optimize);
+    // Shared CLAP extension glue for the in-process built-ins
+    // (params / audio_ports / note_ports / state / undo / voice_info).
+    const shared_mod = rootModule(b, "shared/root.zig", target, optimize);
+    shared_mod.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
+    shared_mod.addImport("tracy", tracy_mod);
+    shared_mod.addOptions("options", options);
 
     // Host unit-test module graph (src/tests.zig + modules it pulls in).
     flux_test_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
@@ -76,8 +83,9 @@ pub fn build(b: *std.Build) void {
     flux_test_module.addImport("libz_jobs", libz_jobs.module("libz_jobs"));
     flux_test_module.addImport("xml", zig_xml.module("xml"));
     flux_test_module.addImport("flux_param_table", flux_param_table);
+    flux_test_module.addImport("shared", shared_mod);
     flux_test_module.addOptions("options", options);
-    flux_test_module.addImport("tracy", rootModule(b, "src/util/tracy_stub.zig", target, optimize));
+    flux_test_module.addImport("tracy", tracy_mod);
     if (target_os == .macos) {
         addMacosSdkPaths(b, flux_test_module, macos_sdk);
         linkFrameworks(flux_test_module, &macos_flux_frameworks);
@@ -105,7 +113,8 @@ pub fn build(b: *std.Build) void {
         flux_module.addImport("libz_jobs", libz_jobs.module("libz_jobs"));
         flux_module.addImport("xml", zig_xml.module("xml"));
         flux_module.addImport("flux_param_table", flux_param_table);
-        flux_module.addImport("tracy", rootModule(b, "src/util/tracy_stub.zig", target, optimize));
+        flux_module.addImport("shared", shared_mod);
+        flux_module.addImport("tracy", tracy_mod);
         flux_module.addOptions("options", options);
         wireFluxNative(b, flux_module, .{
             .zaudio = zaudio,
@@ -353,57 +362,6 @@ fn addMacosSdkPaths(b: *std.Build, module: *std.Build.Module, sdk_path: ?[]const
     module.addSystemIncludePath(.{ .cwd_relative = b.pathJoin(&.{ sdk, "usr/include" }) });
     if (b.lazyDependency("system_sdk", .{})) |system_sdk| {
         module.addLibraryPath(system_sdk.path("macos12/usr/lib"));
-    }
-}
-
-fn createClapPluginStep(
-    b: *std.Build,
-    lib: *Step.Compile,
-    target_os: std.Target.Os.Tag,
-    optimize: std.builtin.OptimizeMode,
-) *Step {
-    switch (target_os) {
-        .macos => {
-            const clap_bundle = b.addWriteFiles();
-            const plugin_bin = clap_bundle.addCopyFile(
-                lib.getEmittedBin(),
-                "ZSynth.clap/Contents/MacOS/ZSynth",
-            );
-            _ = clap_bundle.addCopyFile(
-                b.path("zsynth/macos/Info.plist"),
-                "ZSynth.clap/Contents/info.plist",
-            );
-            _ = clap_bundle.addCopyFile(
-                b.path("zsynth/macos/PkgInfo"),
-                "ZSynth.clap/Contents/PkgInfo",
-            );
-
-            var bundle_ready: *Step = &clap_bundle.step;
-            // dsymutil is a host macOS tool — skip when cross-compiling from Linux CI.
-            if (optimize == .debug and builtin.os.tag == .macos) {
-                const dsym = b.addSystemCommand(&.{"dsymutil"});
-                dsym.addFileArg(plugin_bin);
-                dsym.step.dependOn(&clap_bundle.step);
-                bundle_ready = &dsym.step;
-            }
-
-            const install_bundle = b.addInstallDirectory(.{
-                .source_dir = clap_bundle.getDirectory(),
-                .install_dir = .lib,
-                .install_subdir = "",
-            });
-            install_bundle.step.dependOn(bundle_ready);
-            return &install_bundle.step;
-        },
-        .linux, .windows => {
-            const install_clap = b.addInstallFileWithDir(
-                lib.getEmittedBin(),
-                .lib,
-                "zsynth.clap",
-            );
-            return &install_clap.step;
-        },
-        else => return &b.addInstallArtifact(lib, .{}).step,
     }
 }
 

@@ -101,91 +101,21 @@ pub const StateSnapshot = struct {
     max_track_latency: u32,
 };
 
-const NodeKind = enum(u8) {
-    note_source,
-    audio_clip_source,
-    synth,
-    fx,
-    gain,
-    mixer,
-    master,
-};
 
-const NodeRef = struct {
-    kind: NodeKind,
-    index: u16,
-};
-
-const AudioInputRef = struct {
-    buffer: BufferId,
-};
-
-const InputRange = struct {
-    start: u32 = 0,
-    count: u16 = 0,
-};
-
-const StereoBuffer = struct {
-    left: []f32 = &.{},
-    right: []f32 = &.{},
-    zeroed_frames: u32 = 0,
-    active: bool = false,
-};
-
-const SynthRuntime = struct {
-    track_index: u8,
-    out: BufferId,
-    event_source: NoteSourceId = invalid_id,
-    sleeping: bool = false,
-    out_events_list: audio_events.OutputEventList = .{},
-    out_events: clap.events.OutputEvents = .{
-        .context = undefined,
-        .tryPush = audio_events.outputEventsTryPush,
-    },
-};
-
-const AudioClipSourceRuntime = struct {
-    track_index: u8,
-    out: BufferId,
-    player: audio_clip_source.AudioClipSource,
-};
-
-const FxPolicy = enum(u8) {
-    track_fx_fast_skip,
-    master_fx_always_consider,
-};
-
-const FxRuntime = struct {
-    track_index: u8,
-    fx_index: u8,
-    inputs: InputRange = .{},
-    out: BufferId,
-    event_source: NoteSourceId = invalid_id,
-    policy: FxPolicy = .track_fx_fast_skip,
-    sleeping: bool = false,
-};
-
-const GainRuntime = struct {
-    track_index: u8,
-    inputs: InputRange = .{},
-    out: BufferId,
-    compensation: latency_compensation.StereoDelay = .{},
-};
-
-const MixerRuntime = struct {
-    inputs: InputRange = .{},
-    out: BufferId,
-};
-
-const MasterRuntime = struct {
-    inputs: InputRange = .{},
-    out: BufferId,
-};
-
-const AudioOutput = struct {
-    left: []f32,
-    right: []f32,
-};
+const graph_types = @import("audio_graph_types.zig");
+const NodeKind = graph_types.NodeKind;
+const NodeRef = graph_types.NodeRef;
+const AudioInputRef = graph_types.AudioInputRef;
+const InputRange = graph_types.InputRange;
+const StereoBuffer = graph_types.StereoBuffer;
+const SynthRuntime = graph_types.SynthRuntime;
+const AudioClipSourceRuntime = graph_types.AudioClipSourceRuntime;
+const FxPolicy = graph_types.FxPolicy;
+const FxRuntime = graph_types.FxRuntime;
+const GainRuntime = graph_types.GainRuntime;
+const MixerRuntime = graph_types.MixerRuntime;
+const MasterRuntime = graph_types.MasterRuntime;
+const AudioOutput = graph_types.AudioOutput;
 
 pub const Graph = struct {
     allocator: std.mem.Allocator,
@@ -409,7 +339,7 @@ pub const Graph = struct {
             .shared = shared,
             .frame_count = frame_count,
             .steady_time = steady_time,
-            .solo_active = computeSoloActive(snapshot),
+            .solo_active = graph_types.computeSoloActive(snapshot),
             .wake_requested = shared.process_requested.swap(false, .acq_rel),
         };
 
@@ -672,7 +602,7 @@ pub const Graph = struct {
             .context = &out_events_list,
             .tryPush = audio_events.outputEventsTryPush,
         };
-        var transport = makeTransport(ctx);
+        var transport = graph_types.makeTransport(ctx);
         var clap_process = clap.Process{
             .steady_time = @enumFromInt(@as(i64, @intCast(ctx.steady_time))),
             .frames_count = ctx.frame_count,
@@ -755,7 +685,7 @@ pub const Graph = struct {
         }
 
         synth.out_events_list.count = 0;
-        var transport = makeTransport(ctx);
+        var transport = graph_types.makeTransport(ctx);
         var clap_process = clap.Process{
             .steady_time = @enumFromInt(@as(i64, @intCast(ctx.steady_time))),
             .frames_count = ctx.frame_count,
@@ -1044,52 +974,3 @@ pub const Graph = struct {
     }
 };
 
-fn computeSoloActive(snapshot: *const StateSnapshot) bool {
-    const active_track_count = @min(snapshot.track_count, max_tracks);
-    for (0..active_track_count) |track_index| {
-        if (snapshot.tracks[track_index].solo) return true;
-    }
-    return false;
-}
-
-fn makeTransport(ctx: anytype) clap.events.Transport {
-    const tempo = @as(f64, ctx.snapshot.bpm);
-    const beats = @as(f64, ctx.snapshot.playhead_beat);
-    const seconds = if (tempo > 0.0) beats * 60.0 / tempo else 0.0;
-    const numerator = ctx.snapshot.time_signature_numerator;
-    const denominator = ctx.snapshot.time_signature_denominator;
-    const bar_len = @as(f64, @floatFromInt(numerator)) * 4.0 / @as(f64, @floatFromInt(denominator));
-    const bar_index = @floor(beats / bar_len);
-
-    return .{
-        .header = .{
-            .size = @sizeOf(clap.events.Transport),
-            .sample_offset = 0,
-            .space_id = clap.events.core_space_id,
-            .type = .transport,
-            .flags = .{},
-        },
-        .flags = .{
-            .has_tempo = true,
-            .has_beats_timeline = true,
-            .has_seconds_timeline = true,
-            .has_time_signature = true,
-            .is_playing = ctx.snapshot.playing,
-            .is_recording = false,
-            .is_loop_active = false,
-            .is_within_pre_roll = false,
-        },
-        .song_pos_beats = clap.BeatTime.fromBeats(beats),
-        .song_pos_seconds = clap.SecTime.fromSecs(seconds),
-        .tempo = tempo,
-        .tempo_increment = 0,
-        .loop_start_beats = clap.BeatTime.fromBeats(0),
-        .loop_end_beats = clap.BeatTime.fromBeats(0),
-        .loop_start_seconds = clap.SecTime.fromSecs(0),
-        .loop_end_seconds = clap.SecTime.fromSecs(0),
-        .bar_start = clap.BeatTime.fromBeats(bar_index * bar_len),
-        .bar_number = @as(i32, @intFromFloat(bar_index)) + 1,
-        .time_signature_numerator = numerator,
-        .time_signature_denominator = denominator,
-    };
-}

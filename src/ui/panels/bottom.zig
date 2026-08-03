@@ -9,8 +9,30 @@ const tokens = @import("../tokens.zig");
 const icons = @import("../icons.zig");
 const state_mod = @import("../state.zig");
 const plugin_host = @import("../plugin_host.zig");
+const audio_runtime = @import("../audio_runtime.zig");
 const gui_float = @import("../../plugin/gui_float.zig");
+const param_chrome = @import("param_chrome.zig");
+const editors = @import("editors/root.zig");
 const piano_roll = @import("../views/piano_roll.zig");
+const audio_clip_view = @import("../views/audio_clip.zig");
+const audio_engine_mod = @import("../../audio/audio_engine.zig");
+
+fn currentEngine() ?*audio_engine_mod.AudioEngine {
+    if (!audio_runtime.ready()) return null;
+    if (audio_runtime.g.engine == null) return null;
+    return &audio_runtime.g.engine.?;
+}
+
+/// Card `id_extra` the instrument/FX picker is for (0 = instrument, 900 = "+").
+var picker_target_id: usize = 0;
+/// Natural-space rect of that card; refreshed each frame while the picker is open.
+var picker_anchor: ?dvui.Rect.Natural = null;
+
+fn notePickerAnchor(id_extra: usize, rect_physical: dvui.Rect.Physical) void {
+    if (!plugin_host.ready() or !plugin_host.g.picker_open) return;
+    if (id_extra != picker_target_id) return;
+    picker_anchor = rect_physical.toNatural();
+}
 
 pub fn draw(state: *state_mod.State) void {
     // Device names / selected slot projected from host in root.frame.
@@ -59,8 +81,12 @@ pub fn draw(state: *state_mod.State) void {
             state.bottom_mode = .sequencer;
         }
 
+        const track_label: []const u8 = if (state.mixer_target == .master)
+            "Master"
+        else
+            state.trackName(state.selected_track);
         dvui.label(@src(), "  {s} · Sc {d}", .{
-            state.trackName(state.selected_track),
+            track_label,
             state.selected_scene + 1,
         }, .{
             .gravity_y = 0.5,
@@ -85,192 +111,120 @@ pub fn draw(state: *state_mod.State) void {
 }
 
 fn drawDeviceChain(state: *state_mod.State) void {
-    const track = state.selected_track;
-    if (plugin_host.ready() and plugin_host.g.picker_open) {
-        drawPluginPicker(state);
-        return;
+    const is_master = state.mixer_target == .master;
+    const track = state.deviceTrack();
+    if (is_master and state.device_target_kind != .fx) {
+        state.device_target_kind = .fx;
+        state.device_target_fx = 0;
     }
 
-    const fx_count = state.fx_counts[track];
-    const chain_w = tokens.device_card_w * @as(f32, @floatFromInt(fx_count + 1)) +
-        22 * @as(f32, @floatFromInt(fx_count + 1)) + tokens.device_add_w + 8;
+    // Full-height horizontal rack (zgui device panel): each card has its own
+    // width by plugin type; chain scrolls when wider than the pane.
+    //
+    // DVUI: must set `horizontal = .auto` (bar mode alone defaults scroll to
+    // none). Content must NOT expand horizontally so min_size_content width
+    // becomes virtual_size (same pattern as session grid).
+    // Master bus: FX-only chain (no instrument card), matching zgui.
+    const fx_count = if (track < state_mod.max_tracks) state.fx_counts[track] else 0;
+    const inst_plugin = if (is_master) null else pluginPtrFor(state, 0);
+    const inst_empty = if (is_master) true else state.instrument_names[track].len == 0;
 
-    {
-        var scroll = dvui.scrollArea(@src(), .{
-            .horizontal_bar = .auto,
-            .vertical_bar = .auto,
-        }, .{
-            .expand = .both,
-            .min_size_content = .{ .h = tokens.device_chain_h },
-            .background = false,
-        });
-        defer scroll.deinit();
+    var chain_w: f32 = 0;
+    if (!is_master) chain_w += cardWidthFor(inst_plugin, inst_empty);
+    var i: usize = 0;
+    while (i < fx_count) : (i += 1) {
+        if (chain_w > 0) chain_w += tokens.device_chain_gap + 12;
+        chain_w += cardWidthFor(pluginPtrFor(state, i + 1), false);
+    }
+    if (chain_w > 0) chain_w += tokens.device_chain_gap + 12;
+    chain_w += tokens.device_add_w;
 
-        var chain = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .min_size_content = .{ .w = chain_w, .h = tokens.device_chain_h },
-            .padding = .{ .x = 2, .y = 2, .w = 2, .h = 2 },
-        });
-        defer chain.deinit();
+    var scroll = dvui.scrollArea(@src(), .{
+        .horizontal = .auto,
+        .horizontal_bar = .auto,
+        .vertical = .auto,
+        .vertical_bar = .auto,
+    }, .{
+        .expand = .both,
+        .background = false,
+    });
+    defer scroll.deinit();
 
+    var chain = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        // No horizontal expand — that would fill the viewport and hide overflow.
+        .expand = .vertical,
+        .min_size_content = .{ .w = chain_w, .h = tokens.device_card_min_h },
+        .padding = .{ .x = 2, .y = 2, .w = 2, .h = 2 },
+    });
+    defer chain.deinit();
+
+    var cards_before: usize = 0;
+    if (!is_master) {
         const inst_name = state.instrument_names[track];
-        const has_inst = inst_name.len > 0;
-        drawDeviceChip(state, .{
-            .title = if (has_inst) inst_name else "Instrument",
-            .kind_label = if (has_inst) "Inst" else "Empty",
+        drawDeviceCard(state, .{
+            .title = if (inst_empty) "Instrument" else inst_name,
+            .kind_label = if (inst_empty) "Empty" else "Inst",
             .selected = state.device_target_kind == .instrument,
             .enabled = state.instrument_enabled[track],
-            .empty = !has_inst,
+            .empty = inst_empty,
             .id_extra = 0,
+            .card_w = cardWidthFor(inst_plugin, inst_empty),
+            .plugin = inst_plugin,
         });
+        cards_before += 1;
+    }
 
-        var i: usize = 0;
-        while (i < fx_count) : (i += 1) {
-            chainChevron(i);
-            drawDeviceChip(state, .{
-                .title = state.fx_names[track][i],
-                .kind_label = "FX",
-                .selected = state.device_target_kind == .fx and state.device_target_fx == i,
-                .enabled = state.fx_enabled[track][i],
-                .empty = false,
-                .id_extra = i + 1,
-            });
-        }
+    i = 0;
+    while (i < fx_count) : (i += 1) {
+        if (cards_before > 0) chainChevron(i);
+        const p = pluginPtrFor(state, i + 1);
+        drawDeviceCard(state, .{
+            .title = state.fx_names[track][i],
+            .kind_label = "FX",
+            .selected = state.device_target_kind == .fx and state.device_target_fx == i,
+            .enabled = state.fx_enabled[track][i],
+            .empty = false,
+            .id_extra = i + 1,
+            .card_w = cardWidthFor(p, false),
+            .plugin = p,
+        });
+        cards_before += 1;
+    }
 
-        chainChevron(fx_count + 50);
-        drawAddCard(state, track, fx_count);
+    if (cards_before > 0) chainChevron(fx_count + 50);
+    drawAddCard(state);
+
+    // Picker is a fixed-width floating panel (not a full-pane replacement).
+    if (plugin_host.ready() and plugin_host.g.picker_open) {
+        drawPluginPicker(state);
     }
 }
 
-/// Fills remaining bottom-pane height under the chip strip: name, enable, GUI.
-fn drawSelectedDeviceDetail(state: *state_mod.State) void {
-    const track = state.selected_track;
-
-    var detail = dvui.box(@src(), .{ .dir = .vertical }, .{
-        .expand = .both,
-        .background = true,
-        .color_fill = theme.panel,
-        .padding = dvui.Rect.all(tokens.pad_panel),
-        .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
-        .corners = .round(tokens.radius_sm),
-        .border = dvui.Rect.all(1),
-        .color_border = theme.grid,
-    });
-    defer detail.deinit();
-
-    const kind_label: []const u8 = switch (state.device_target_kind) {
-        .instrument => "Instrument",
-        .fx => "FX",
-    };
-    const name: []const u8 = switch (state.device_target_kind) {
-        .instrument => if (state.instrument_names[track].len > 0)
-            state.instrument_names[track]
-        else
-            "(empty)",
-        .fx => blk: {
-            const fx = state.device_target_fx;
-            if (fx < state.fx_counts[track] and state.fx_names[track][fx].len > 0)
-                break :blk state.fx_names[track][fx];
-            break :blk "(empty)";
-        },
-    };
-    const enabled = switch (state.device_target_kind) {
-        .instrument => state.instrument_enabled[track],
-        .fx => if (state.device_target_fx < state_mod.max_fx_slots)
-            state.fx_enabled[track][state.device_target_fx]
-        else
-            true,
-    };
-
-    {
-        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .expand = .horizontal,
-            .margin = .{ .x = 0, .y = 0, .w = 0, .h = tokens.gap_tight },
-        });
-        defer row.deinit();
-
-        dvui.label(@src(), "{s} · {s}", .{ kind_label, name }, .{
-            .color_text = theme.text,
-            .gravity_y = 0.5,
-        });
-
-        if (dvui.button(@src(), if (enabled) "Enabled" else "Bypassed", .{}, .{
-            .color_fill = if (enabled) theme.accent_dim else theme.cell,
-            .color_text = theme.text,
-            .min_size_content = .{ .h = tokens.control_h },
-            .corners = .round(tokens.radius_sm),
-            .padding = .{ .x = 6, .y = 1, .w = 6, .h = 1 },
-            .margin = .{ .x = tokens.gap_group, .y = 0, .w = 0, .h = 0 },
-            .gravity_y = 0.5,
-        })) {
-            const id_extra: usize = switch (state.device_target_kind) {
-                .instrument => 0,
-                .fx => state.device_target_fx + 1,
-            };
-            toggleDeviceEnabled(state, id_extra);
-        }
-    }
-
-    const has_plugin = name.len > 0 and !std.mem.eql(u8, name, "(empty)");
-    if (!has_plugin) {
-        dvui.label(@src(), "Select a device or use + to load a CLAP from the catalog.", .{}, .{
-            .color_text = theme.text_soft,
-        });
-        return;
-    }
-
-    var gui_open = false;
-    var can_float = false;
-    if (plugin_host.ready()) {
-        if (plugin_host.g.selectedSlot(state)) |slot| {
-            gui_open = slot.gui_open;
-            if (slot.getPlugin()) |p| {
-                can_float = gui_float.hasFloatingGui(p);
-            }
-        }
-    }
-
-    {
-        var actions = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .expand = .horizontal,
-        });
-        defer actions.deinit();
-
-        const gui_label: []const u8 = if (gui_open) "Close GUI" else "Open GUI";
-        const gui_fill = if (gui_open) theme.accent else theme.cell;
-        const gui_text = if (gui_open) theme.bg else theme.text;
-        if (dvui.button(@src(), gui_label, .{}, .{
-            .color_fill = gui_fill,
-            .color_text = gui_text,
-            .min_size_content = .{ .h = tokens.control_h },
-            .corners = .round(tokens.radius_sm),
-            .padding = .{ .x = 8, .y = 2, .w = 8, .h = 2 },
-            .gravity_y = 0.5,
-        })) {
-            if (plugin_host.ready()) {
-                plugin_host.g.toggleSelectedGui(state);
-            }
-        }
-
-        if (!can_float and !gui_open) {
-            dvui.label(@src(), "  (no GUI extension)", .{}, .{
-                .color_text = theme.text_soft,
-                .gravity_y = 0.5,
-            });
-        } else if (gui_open) {
-            dvui.label(@src(), "  plugin window open", .{}, .{
-                .color_text = theme.text_dim,
-                .gravity_y = 0.5,
-            });
-        }
-    }
-
-    dvui.label(@src(), "Plugin params / embedded UI — free height under the chip strip.", .{}, .{
-        .color_text = theme.text_soft,
-        .margin = .{ .x = 0, .y = tokens.gap_group, .w = 0, .h = 0 },
-    });
+/// Per-plugin card width: hug param-chrome columns for embedded UIs; compact
+/// for empty/external floating-GUI slots.
+fn cardWidthFor(plugin: ?*const @import("clap-bindings").Plugin, empty: bool) f32 {
+    if (empty) return tokens.device_w_empty;
+    const p = plugin orelse return tokens.device_w_external;
+    // Built-ins have bespoke editors with their own natural widths.
+    if (editors.cardWidth(p)) |w| return w;
+    if (gui_float.hasFloatingGui(p)) return tokens.device_w_external;
+    return param_chrome.preferredCardWidth(p);
 }
 
-const ChipDraw = struct {
+fn pluginPtrFor(state: *const state_mod.State, id_extra: usize) ?*const @import("clap-bindings").Plugin {
+    if (!plugin_host.ready()) return null;
+    const t = state.deviceTrack();
+    if (t >= plugin_host.track_count) return null;
+    if (id_extra == 0) {
+        if (state.mixer_target == .master) return null;
+        return plugin_host.g.instruments[t].getPlugin();
+    }
+    const fx = id_extra - 1;
+    if (fx >= plugin_host.max_fx_slots) return null;
+    return plugin_host.g.fx[t][fx].getPlugin();
+}
+
+const CardDraw = struct {
     title: []const u8,
     kind_label: []const u8,
     selected: bool,
@@ -278,11 +232,12 @@ const ChipDraw = struct {
     empty: bool,
     /// 0 = instrument, 1.. = fx_index + 1
     id_extra: usize,
+    card_w: f32,
+    plugin: ?*const @import("clap-bindings").Plugin,
 };
 
-/// Full-height rack card, preserving the original device pane's horizontal
-/// signal-flow layout. External plugin editors still open in native windows.
-fn drawDeviceChip(state: *state_mod.State, opts: ChipDraw) void {
+/// Full-height rack card: header + body with multi-column params or external summary.
+fn drawDeviceCard(state: *state_mod.State, opts: CardDraw) void {
     const fill = if (opts.selected)
         theme.accent_dim
     else if (opts.empty)
@@ -295,22 +250,23 @@ fn drawDeviceChip(state: *state_mod.State, opts: ChipDraw) void {
     var card = dvui.box(@src(), .{ .dir = .vertical }, .{
         .background = true,
         .color_fill = fill,
-        .min_size_content = .{ .w = tokens.device_card_w, .h = tokens.device_card_h },
+        .min_size_content = .{ .w = opts.card_w, .h = tokens.device_card_min_h },
+        .max_size_content = .{ .w = opts.card_w, .h = std.math.floatMax(f32) },
+        .expand = .vertical,
         .corners = .round(tokens.radius_sm),
         .border = dvui.Rect.all(if (opts.selected) 1.5 else 1),
         .color_border = border_col,
         .padding = .{ .x = tokens.gap_group, .y = tokens.gap_tight, .w = tokens.gap_group, .h = tokens.gap_tight },
         .margin = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
-        .gravity_y = 0.5,
         .id_extra = opts.id_extra,
     });
     defer card.deinit();
 
+    // Header: LED + name + window/remove
     {
         var header = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .expand = .horizontal,
             .min_size_content = .{ .h = tokens.device_header_h },
-            .gravity_y = 0.5,
             .id_extra = opts.id_extra,
         });
         defer header.deinit();
@@ -330,13 +286,57 @@ fn drawDeviceChip(state: *state_mod.State, opts: ChipDraw) void {
             .color_fill = theme.colorFA(0, 0, 0, 0),
             .color_text = title_col,
             .padding = .{ .x = tokens.gap_tight, .y = 0, .w = 0, .h = 0 },
+            .gravity_y = 0.5,
             .id_extra = opts.id_extra,
         })) {
             selectDevice(state, opts.id_extra);
-            if (opts.id_extra == 0 and opts.empty) openPicker(state, false);
+            if (opts.id_extra == 0 and opts.empty) openPicker(state, false, opts.id_extra, card.data().rectScale().r);
+        }
+
+        if (!opts.empty) {
+            var can_float = false;
+            var gui_open = false;
+            if (plugin_host.ready()) {
+                if (slotForCard(state, opts.id_extra)) |slot| {
+                    gui_open = slot.gui_open;
+                    if (slot.getPlugin()) |p| can_float = gui_float.hasFloatingGui(p);
+                }
+            }
+            if (can_float) {
+                if (dvui.button(@src(), if (gui_open) "✕" else "⧉", .{}, .{
+                    .min_size_content = .{ .w = tokens.device_header_h - 8, .h = tokens.device_header_h - 8 },
+                    .color_fill = if (gui_open) theme.accent else theme.cell,
+                    .color_text = if (gui_open) theme.bg else theme.text,
+                    .corners = .round(tokens.radius_sm),
+                    .gravity_y = 0.5,
+                    .id_extra = opts.id_extra,
+                })) {
+                    selectDevice(state, opts.id_extra);
+                    if (plugin_host.ready()) plugin_host.g.toggleSelectedGui(state);
+                }
+            }
+            if (dvui.button(@src(), "×", .{}, .{
+                .min_size_content = .{ .w = tokens.device_header_h - 8, .h = tokens.device_header_h - 8 },
+                .color_fill = theme.cell,
+                .color_text = theme.text_dim,
+                .corners = .round(tokens.radius_sm),
+                .margin = .{ .x = tokens.gap_xs, .y = 0, .w = 0, .h = 0 },
+                .gravity_y = 0.5,
+                .id_extra = opts.id_extra,
+            })) {
+                if (plugin_host.ready()) {
+                    const t = state.deviceTrack();
+                    if (opts.id_extra == 0) {
+                        plugin_host.g.clearInstrument(t);
+                    } else {
+                        removeFxAt(state, t, opts.id_extra - 1);
+                    }
+                }
+            }
         }
     }
 
+    // Body
     var body = dvui.box(@src(), .{ .dir = .vertical }, .{
         .expand = .both,
         .background = true,
@@ -349,56 +349,38 @@ fn drawDeviceChip(state: *state_mod.State, opts: ChipDraw) void {
     });
     defer body.deinit();
 
-    const sub: []const u8 = if (!opts.empty and !opts.enabled) "Bypassed" else opts.kind_label;
-    dvui.label(@src(), "{s}", .{sub}, .{
-        .color_text = if (!opts.enabled and !opts.empty) theme.solo_on else theme.text_soft,
-        .id_extra = opts.id_extra,
-    });
-
     if (opts.empty) {
-        dvui.label(@src(), "Drop a device here or click Choose.", .{}, .{
+        dvui.label(@src(), "Instrument", .{}, .{
             .color_text = theme.text_soft,
-            .margin = .{ .x = 0, .y = tokens.gap_group, .w = 0, .h = 0 },
+            .id_extra = opts.id_extra,
         });
-        if (dvui.button(@src(), "Choose instrument", .{}, .{
+        if (dvui.button(@src(), "Choose…", .{}, .{
             .expand = .none,
-            .min_size_content = .{ .w = 132, .h = tokens.control_h + 4 },
+            .min_size_content = .{ .h = tokens.control_h + 4 },
             .color_fill = theme.panel,
             .color_text = theme.text,
             .margin = .{ .x = 0, .y = tokens.gap_group, .w = 0, .h = 0 },
             .corners = .round(tokens.radius_sm),
-        })) openPicker(state, false);
+            .id_extra = opts.id_extra,
+        })) openPicker(state, false, opts.id_extra, card.data().rectScale().r);
+    } else if (!opts.enabled) {
+        dvui.label(@src(), "Bypassed", .{}, .{
+            .color_text = theme.solo_on,
+            .id_extra = opts.id_extra,
+        });
+        if (opts.plugin) |p| {
+            drawDeviceBody(state, p, opts.id_extra);
+        }
+    } else if (opts.plugin) |p| {
+        drawDeviceBody(state, p, opts.id_extra);
     } else {
-        var gui_open = false;
-        if (plugin_host.ready() and opts.selected) {
-            if (plugin_host.g.selectedSlot(state)) |slot| gui_open = slot.gui_open;
-        }
-        if (dvui.button(@src(), if (gui_open) "Close plugin window" else "Open plugin window", .{}, .{
-            .color_fill = if (gui_open) theme.accent else theme.panel,
-            .color_text = if (gui_open) theme.bg else theme.text,
-            .margin = .{ .x = 0, .y = tokens.gap_group, .w = 0, .h = 0 },
-            .corners = .round(tokens.radius_sm),
-        })) {
-            selectDevice(state, opts.id_extra);
-            if (plugin_host.ready()) plugin_host.g.toggleSelectedGui(state);
-        }
-
-        if (dvui.button(@src(), if (opts.id_extra == 0) "Remove instrument" else "Remove effect", .{}, .{
-            .color_fill = theme.cell,
-            .color_text = theme.text_dim,
-            .gravity_y = 1.0,
-            .corners = .round(tokens.radius_sm),
-        })) {
-            if (plugin_host.ready()) {
-                if (opts.id_extra == 0) {
-                    plugin_host.g.clearInstrument(state.selected_track);
-                } else {
-                    plugin_host.g.removeFx(state.selected_track, opts.id_extra - 1);
-                    state.selectDeviceInstrument();
-                }
-            }
-        }
+        dvui.label(@src(), "Loading…", .{}, .{
+            .color_text = theme.text_soft,
+            .id_extra = opts.id_extra,
+        });
     }
+
+    notePickerAnchor(opts.id_extra, card.data().rectScale().r);
 
     for (dvui.events()) |*e| {
         if (!dvui.eventMatchSimple(e, card.data())) continue;
@@ -419,6 +401,117 @@ fn selectDevice(state: *state_mod.State, id_extra: usize) void {
     }
 }
 
+fn removeFxAt(state: *state_mod.State, track: usize, fx_index: usize) void {
+    if (!plugin_host.ready()) return;
+    plugin_host.g.removeFx(track, fx_index, currentEngine());
+    // Keep selection on a valid slot after compact.
+    if (state.device_target_kind == .fx) {
+        const n = plugin_host.g.fx_counts[track];
+        if (n == 0) {
+            if (state.mixer_target == .master) {
+                state.device_target_fx = 0;
+            } else {
+                state.selectDeviceInstrument();
+            }
+        } else if (state.device_target_fx >= n) {
+            state.device_target_fx = n - 1;
+        } else if (state.device_target_fx > fx_index) {
+            state.device_target_fx -= 1;
+        }
+    }
+}
+
+/// Device-chain keyboard shortcuts (zgui `handleChainShortcuts` parity).
+/// Returns true when the key was consumed.
+pub fn handleChainKey(state: *state_mod.State, ke: dvui.Event.Key) bool {
+    if (state.focused_pane != .bottom or state.bottom_mode != .device) return false;
+    if (ke.action != .down and ke.action != .repeat) return false;
+    if (!plugin_host.ready()) return false;
+    if (plugin_host.g.picker_open) return false;
+
+    const is_master = state.mixer_target == .master;
+    const track = state.deviceTrack();
+    if (track >= plugin_host.track_count) return false;
+    const fx_count = plugin_host.g.fx_counts[track];
+    const fx_selected = state.device_target_kind == .fx and fx_count > 0;
+    const mod = ke.mod.control() or ke.mod.command();
+
+    switch (ke.code) {
+        .delete, .backspace => {
+            if (fx_selected) {
+                removeFxAt(state, track, state.device_target_fx);
+                return true;
+            }
+            if (!is_master and state.device_target_kind == .instrument) {
+                plugin_host.g.clearInstrument(track);
+                return true;
+            }
+            return false;
+        },
+        .d => {
+            if (!mod or !fx_selected) return false;
+            if (plugin_host.g.duplicateFx(track, state.device_target_fx, currentEngine())) {
+                state.selectDeviceFx(state.device_target_fx + 1);
+            }
+            return true;
+        },
+        .left => {
+            if (mod) {
+                if (fx_selected and state.device_target_fx > 0) {
+                    const from = state.device_target_fx;
+                    const to = from - 1;
+                    plugin_host.g.moveFx(track, from, to, currentEngine());
+                    state.device_target_fx = to;
+                }
+                return fx_selected;
+            }
+            if (fx_selected) {
+                if (state.device_target_fx > 0) {
+                    state.selectDeviceFx(state.device_target_fx - 1);
+                } else if (!is_master) {
+                    state.selectDeviceInstrument();
+                }
+                return true;
+            }
+            return false;
+        },
+        .right => {
+            if (mod) {
+                if (fx_selected and state.device_target_fx + 1 < fx_count) {
+                    const from = state.device_target_fx;
+                    const to = from + 1;
+                    plugin_host.g.moveFx(track, from, to, currentEngine());
+                    state.device_target_fx = to;
+                }
+                return fx_selected;
+            }
+            if (state.device_target_kind == .instrument and fx_count > 0) {
+                state.selectDeviceFx(0);
+                return true;
+            }
+            if (fx_selected and state.device_target_fx + 1 < fx_count) {
+                state.selectDeviceFx(state.device_target_fx + 1);
+                return true;
+            }
+            return false;
+        },
+        else => return false,
+    }
+}
+
+fn slotForCard(state: *const state_mod.State, id_extra: usize) ?*plugin_host.LoadedPlugin {
+    if (!plugin_host.ready()) return null;
+    const t = state.deviceTrack();
+    if (t >= plugin_host.track_count) return null;
+    if (id_extra == 0) {
+        if (state.mixer_target == .master) return null;
+        return &plugin_host.g.instruments[t];
+    }
+    const fx = id_extra - 1;
+    if (fx >= plugin_host.max_fx_slots) return null;
+    return &plugin_host.g.fx[t][fx];
+}
+
 fn toggleDeviceEnabled(state: *state_mod.State, id_extra: usize) void {
     selectDevice(state, id_extra);
     const host_mod = @import("../host.zig");
@@ -431,8 +524,9 @@ fn toggleDeviceEnabled(state: *state_mod.State, id_extra: usize) void {
 
 fn chainChevron(id_extra: usize) void {
     var wrap = dvui.box(@src(), .{}, .{
-        .min_size_content = .{ .w = 20, .h = tokens.device_card_h },
-        .margin = .{ .x = 1, .y = 0, .w = 1, .h = 0 },
+        .min_size_content = .{ .w = 12, .h = tokens.device_card_min_h },
+        .expand = .vertical,
+        .margin = .{ .x = tokens.device_chain_gap * 0.5, .y = 0, .w = tokens.device_chain_gap * 0.5, .h = 0 },
         .gravity_y = 0.5,
         .id_extra = id_extra,
     });
@@ -444,26 +538,47 @@ fn chainChevron(id_extra: usize) void {
     });
 }
 
-fn drawAddCard(state: *state_mod.State, track: usize, fx_count: usize) void {
-    _ = track;
-    _ = fx_count;
-    if (dvui.button(@src(), "+  Add effect", .{}, .{
-        .min_size_content = .{ .w = tokens.device_add_w, .h = tokens.device_card_h },
+const picker_add_id: usize = 900;
+
+/// Bespoke built-in editor when one exists, else generic CLAP param chrome.
+fn drawDeviceBody(state: *state_mod.State, plugin: *const @import("clap-bindings").Plugin, id_extra: usize) void {
+    const fx_index: i8 = if (id_extra == 0) -1 else @intCast(id_extra - 1);
+    const target = param_chrome.Target{ .track = state.deviceTrack(), .fx_index = fx_index };
+    if (editors.draw(plugin, target, id_extra)) return;
+    param_chrome.draw(plugin, target, id_extra);
+}
+
+fn drawAddCard(state: *state_mod.State) void {
+    // Box wraps the + so we have a stable rect to center the picker on.
+    var wrap = dvui.box(@src(), .{}, .{
+        .min_size_content = .{ .w = tokens.device_add_w, .h = tokens.device_card_min_h },
+        .max_size_content = .{ .w = tokens.device_add_w, .h = std.math.floatMax(f32) },
+        .expand = .vertical,
+        .id_extra = picker_add_id,
+    });
+    defer wrap.deinit();
+    notePickerAnchor(picker_add_id, wrap.data().rectScale().r);
+
+    if (dvui.button(@src(), "+", .{}, .{
+        .expand = .both,
         .color_fill = theme.panel,
         .color_text = theme.text_dim,
         .border = dvui.Rect.all(1),
         .color_border = theme.grid,
         .corners = .round(tokens.radius_sm),
-        .id_extra = 900,
+        .id_extra = picker_add_id,
     })) {
-        openPicker(state, true);
+        openPicker(state, true, picker_add_id, wrap.data().rectScale().r);
     }
 }
 
-fn openPicker(state: *state_mod.State, for_fx: bool) void {
+fn openPicker(state: *state_mod.State, for_fx: bool, target_id: usize, anchor_physical: dvui.Rect.Physical) void {
     if (!plugin_host.ready()) return;
     plugin_host.g.picker_open = true;
     plugin_host.g.picker_for_fx = for_fx;
+    picker_target_id = target_id;
+    // center_on is applied once (auto_pos); capture the card rect at click time.
+    picker_anchor = anchor_physical.toNatural();
     if (for_fx) {
         // Target will be the next free FX slot after pick.
         state.bottom_mode = .device;
@@ -474,46 +589,33 @@ fn openPicker(state: *state_mod.State, for_fx: bool) void {
 
 fn drawPluginPicker(state: *state_mod.State) void {
     const ph = &plugin_host.g;
-    const track = state.selected_track;
+    const track = state.deviceTrack();
     const for_fx = ph.picker_for_fx;
 
-    var overlay = dvui.box(@src(), .{ .dir = .vertical }, .{
-        .min_size_content = .{ .w = tokens.plugin_list_w, .h = 160 },
-        .max_size_content = .width(tokens.plugin_list_w),
+    // Fixed-width floating panel centered on the card being chosen (instrument
+    // empty slot or "+" add). Does not stretch the device pane.
+    var fw = dvui.floatingWindow(@src(), .{
+        .open_flag = &ph.picker_open,
+        .modal = false,
+        .resize = .none,
+        .stay_above_parent_window = true,
+        .center_on = picker_anchor,
+        .window_avoid = .nudge,
+    }, .{
+        .min_size_content = .{ .w = tokens.plugin_list_w, .h = 280 },
+        .max_size_content = .{ .w = tokens.plugin_list_w, .h = 400 },
         .background = true,
         .color_fill = theme.panel,
-        .padding = dvui.Rect.all(tokens.pad_panel),
-        .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
-        .corners = .round(tokens.radius_md),
         .border = dvui.Rect.all(1),
         .color_border = theme.accent,
+        .corners = .round(tokens.radius_md),
+        .padding = dvui.Rect.all(tokens.pad_panel),
     });
-    defer overlay.deinit();
+    defer fw.deinit();
 
     {
-        var header = dvui.box(@src(), .{ .dir = .horizontal }, .{
-            .expand = .horizontal,
-            .margin = .{ .x = 0, .y = 0, .w = 0, .h = tokens.gap_tight },
-        });
-        defer header.deinit();
-
         const title: []const u8 = if (for_fx) "Add audio FX" else "Choose instrument";
-        dvui.label(@src(), "{s}", .{title}, .{
-            .font = .theme(.heading),
-            .color_text = theme.text,
-            .gravity_y = 0.5,
-        });
-
-        if (dvui.button(@src(), "Close", .{}, .{
-            .color_fill = theme.cell,
-            .color_text = theme.text,
-            .min_size_content = .{ .h = tokens.control_h },
-            .corners = .round(tokens.radius_sm),
-            .gravity_x = 1.0,
-            .gravity_y = 0.5,
-        })) {
-            ph.picker_open = false;
-        }
+        fw.dragAreaSet(dvui.windowHeader(title, "", &ph.picker_open));
     }
 
     // None option for instruments
@@ -532,11 +634,14 @@ fn drawPluginPicker(state: *state_mod.State) void {
     }
 
     var scroll = dvui.scrollArea(@src(), .{
+        .horizontal = .none,
         .horizontal_bar = .hide,
+        .vertical = .auto,
         .vertical_bar = .auto,
     }, .{
         .expand = .both,
-        .min_size_content = .{ .h = 120 },
+        .min_size_content = .{ .h = 160 },
+        .max_size_content = .width(tokens.plugin_list_w - 8),
     });
     defer scroll.deinit();
 
@@ -556,6 +661,7 @@ fn drawPluginPicker(state: *state_mod.State) void {
             .color_fill = theme.cell,
             .color_text = theme.text,
             .min_size_content = .{ .h = tokens.control_h - 2 },
+            .max_size_content = .width(tokens.plugin_list_w - 16),
             .corners = .round(tokens.radius_sm),
             .margin = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
             .id_extra = i,
@@ -584,49 +690,14 @@ fn drawClipEditor(state: *state_mod.State) void {
         return;
     }
 
-    if (slot.kind == .midi) {
-        dvui.label(@src(), "{s} · {d:.0} bars", .{ if (slot.name.len > 0) slot.name else "Untitled MIDI", slot.bars }, .{
-            .color_text = theme.text_dim,
-        });
-        piano_roll.draw(state);
-        return;
-    }
-
-    dvui.label(@src(), "Clip editor", .{}, .{
-        .font = .theme(.heading),
-        .color_text = theme.text,
-    });
-
-    const kind_label: []const u8 = switch (slot.kind) {
-        .empty => "Empty",
-        .midi => "MIDI",
-        .audio => "Audio",
-    };
-    const play_label: []const u8 = switch (slot.play) {
-        .empty => "-",
-        .stopped => "Stopped",
-        .queued => "Queued",
-        .playing => "Playing",
-    };
-
-    dvui.label(@src(), "{s}  ·  {s}  ·  {d:.0} bars", .{
-        if (slot.name.len > 0) slot.name else "Untitled",
-        kind_label,
-        slot.bars,
-    }, .{
-        .color_text = theme.text_dim,
-        .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
-    });
-    dvui.label(@src(), "State: {s}", .{play_label}, .{
-        .color_text = theme.text_soft,
-        .margin = .{ .x = 0, .y = tokens.gap_xs, .w = 0, .h = 0 },
-    });
     switch (slot.kind) {
-        .midi => unreachable,
-        .audio => dvui.label(@src(), "Audio viewer — port from ui_zgui/views/", .{}, .{
-            .color_text = theme.text_soft,
-            .margin = .{ .x = 0, .y = tokens.gap_group, .w = 0, .h = 0 },
-        }),
         .empty => {},
+        .midi => {
+            dvui.label(@src(), "{s} · {d:.0} bars", .{ if (slot.name.len > 0) slot.name else "Untitled MIDI", slot.bars }, .{
+                .color_text = theme.text_dim,
+            });
+            piano_roll.draw(state);
+        },
+        .audio => audio_clip_view.draw(state),
     }
 }

@@ -232,6 +232,12 @@ fn tableFlush(comptime PluginType: type) *const fn (*const clap.Plugin, *const c
                 const ev: *const clap.events.ParamValue = @ptrCast(@alignCast(hdr));
                 p.params.set(@intFromEnum(ev.param_id), ev.value);
             }
+            // Host param chrome flushes on the main thread; push values into DSP
+            // immediately so FX respond before the next process block.
+            if (@hasDecl(PluginType, "applyParamsToDsp") and p.params.dirty) {
+                p.applyParamsToDsp();
+                p.params.dirty = false;
+            }
         }
     }.f;
 }

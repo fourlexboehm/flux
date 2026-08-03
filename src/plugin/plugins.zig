@@ -298,43 +298,15 @@ fn appendCachedPluginEntries(
     }
 }
 
-pub fn defaultPluginPath() ![]const u8 {
-    return switch (builtin.os.tag) {
-        .macos => "zig-out/lib/ZSynth.clap/Contents/MacOS/ZSynth",
-        .linux => "zig-out/lib/zsynth.clap",
-        else => error.UnsupportedOs,
-    };
-}
-
-pub fn zminimoogPluginPath() ![]const u8 {
-    return switch (builtin.os.tag) {
-        .macos => "zig-out/lib/ZMinimoog.clap/Contents/MacOS/ZMinimoog",
-        .linux => "zig-out/lib/zminimoog.clap",
-        else => error.UnsupportedOs,
-    };
-}
-
-pub fn zportafmPluginPath() ![]const u8 {
-    return switch (builtin.os.tag) {
-        .macos => "zig-out/lib/ZPortaFM.clap/Contents/MacOS/ZPortaFM",
-        .linux => "zig-out/lib/zportafm.clap",
-        else => error.UnsupportedOs,
-    };
-}
-
 pub fn discover(allocator: std.mem.Allocator, io: Io) !PluginCatalog {
     var catalog = PluginCatalog{ .allocator = allocator };
 
     try appendStaticEntry(&catalog, .none, "None", null, null);
 
-    const builtin_path = try defaultPluginPath();
-    try appendStaticEntry(&catalog, .builtin, "ZSynth", builtin_path, "com.juge.zsynth");
-
-    const zminimoog_path = try zminimoogPluginPath();
-    try appendStaticEntry(&catalog, .builtin, "ZMinimoog", zminimoog_path, "com.fourlex.zminimoog");
-
-    const zportafm_path = try zportafmPluginPath();
-    try appendStaticEntry(&catalog, .builtin, "ZPortaFM", zportafm_path, "com.fourlex.zportafm");
+    // Built-in instruments — linked in-process, so no `.clap` bundle path.
+    try appendStaticEntryInstrument(&catalog, "ZSynth", "com.juge.zsynth");
+    try appendStaticEntryInstrument(&catalog, "ZMinimoog", "com.fourlex.zminimoog");
+    try appendStaticEntryInstrument(&catalog, "ZPortaFM", "com.fourlex.zportafm");
 
     // Stock DAWproject-portable audio FX.
     try appendStaticEntryFx(&catalog, "Equalizer", "com.flux.builtin.equalizer");
@@ -373,6 +345,17 @@ fn appendStaticEntry(
         .kind = kind,
         .name = name_copy,
         .path = path_copy,
+        .id = id_copy,
+    });
+}
+
+fn appendStaticEntryInstrument(catalog: *PluginCatalog, name: []const u8, id: []const u8) !void {
+    const name_copy = try catalog.allocator.dupe(u8, name);
+    const id_copy = try catalog.allocator.dupe(u8, id);
+    try catalog.entries.append(catalog.allocator, .{
+        .kind = .builtin,
+        .name = name_copy,
+        .path = null,
         .id = id_copy,
     });
 }
@@ -594,7 +577,8 @@ fn scanClapDir(
 
         const is_clap = std.mem.endsWith(u8, entry.name, ".clap");
         if (is_clap) {
-            if (std.mem.eql(u8, entry.name, "ZSynth.clap")) continue;
+            // Flux built-ins are linked in-process; skip stale installed bundles.
+            if (isFluxBuiltinBundleName(entry.name)) continue;
             if (full_scan) {
                 discoverPluginEntries(allocator, io, entries, entry_path, .clap, cache) catch {};
             } else {
@@ -607,6 +591,14 @@ fn scanClapDir(
             scanClapDir(allocator, io, entries, entry_path, full_scan, cache) catch {};
         }
     }
+}
+
+/// Bundle names produced by older Flux builds of the now in-process built-ins.
+fn isFluxBuiltinBundleName(name: []const u8) bool {
+    for ([_][]const u8{ "ZSynth.clap", "ZMinimoog.clap", "ZPortaFM.clap" }) |stale| {
+        if (std.mem.eql(u8, name, stale)) return true;
+    }
+    return false;
 }
 
 fn discoverPluginEntries(

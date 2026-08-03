@@ -42,7 +42,7 @@ pub const AudioRuntime = struct {
     /// Fallback when plugin_host is not ready (tests).
     live_key_states: [max_tracks][128]bool = @splat(@splat(false)),
     live_key_velocities: [max_tracks][128]f32 = @splat(@splat(0)),
-    /// Empty until controller mapping lands on DVUI.
+    /// Host param chrome + (future) controller mapping → RT param events.
     controller_writes: [engine_ui.max_controller_param_writes]engine_ui.ControllerParamWrite = undefined,
     controller_write_count: usize = 0,
 
@@ -58,6 +58,25 @@ pub const AudioRuntime = struct {
             .allocator = allocator,
             .buffer_frames = if (buffer_frames == 0) chrome.default_buffer_frames else buffer_frames,
         };
+    }
+
+    /// Queue a main-thread parameter write for the next engine publish.
+    /// Dedupes by track/fx/param_id (last value wins).
+    pub fn pushControllerParamWrite(self: *AudioRuntime, write: engine_ui.ControllerParamWrite) void {
+        var i: usize = 0;
+        while (i < self.controller_write_count) : (i += 1) {
+            const existing = &self.controller_writes[i];
+            if (existing.track_index == write.track_index and
+                existing.target_fx_index == write.target_fx_index and
+                existing.param_id == write.param_id)
+            {
+                existing.value = write.value;
+                return;
+            }
+        }
+        if (self.controller_write_count >= self.controller_writes.len) return;
+        self.controller_writes[self.controller_write_count] = write;
+        self.controller_write_count += 1;
     }
 
     pub fn deinit(self: *AudioRuntime) void {
@@ -246,7 +265,7 @@ pub const AudioRuntime = struct {
 
         // Load/unload CLAPs to match device-chain choices; feed engine plugin ptrs.
         if (plugin_host_mod.ready()) {
-            plugin_host_mod.g.tickLiveMidi(state.selected_track);
+            plugin_host_mod.g.tickLiveMidi(state.selected_track, state.piano_preview_pitch);
             const eng: ?*AudioEngine = if (self.engine != null) &self.engine.? else null;
             plugin_host_mod.g.tick(eng, self.buffer_frames);
             plugin_host_mod.g.projectToDocumentHost(host);

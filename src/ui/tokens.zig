@@ -2,8 +2,8 @@
 //! Values are **natural** pixels — DVUI already multiplies by content scale
 //! for Retina/HiDPI. Do not multiply these by DPI again.
 //!
-//! Tuned dense for DAW chrome: transport + device chain stay thin so the
-//! bottom pane has room for real plugin UIs.
+//! Tuned dense for DAW chrome: transport stays thin; the device chain uses
+//! full-height horizontal rack cards with per-plugin widths (zgui parity).
 
 /// Control / button height (transport, tabs, compact tools).
 pub const control_h: f32 = 16;
@@ -38,14 +38,42 @@ pub const arr_lane_h: f32 = 30;
 pub const arr_ruler_h: f32 = 16;
 /// Pixels per beat on arrangement timeline.
 pub const arr_beat_w: f32 = 12;
+/// Right-side arrangement mixer strip (natural px; zgui 560÷2 content-scale).
+pub const arr_mixer_w: f32 = 280;
+/// Hide arrangement mixer when the pane is narrower than this.
+pub const arr_mixer_min_body_w: f32 = 520;
 
-/// Device chain — full-height rack cards, matching the original zgui pane.
-pub const device_card_w: f32 = 300;
-pub const device_card_h: f32 = 210;
-pub const device_header_h: f32 = 30;
-pub const device_add_w: f32 = 150;
+// ── Device rack (zgui card_width table ÷ 2: DVUI already applies content scale) ─
+
+/// Empty instrument slot.
+pub const device_w_empty: f32 = 140;
+/// External CLAP without embedded UI (compact info + open-window).
+pub const device_w_external: f32 = 240;
+/// Stock equalizer (multi-band layout room).
+pub const device_w_equalizer: f32 = 435;
+/// Stock dynamics FX (compressor / gate / limiter).
+pub const device_w_dynamics: f32 = 425;
+/// Legacy reserved widths (prefer `param_chrome.preferredCardWidth` for embedded UIs).
+pub const device_w_zsynth: f32 = 520;
+pub const device_w_zminimoog: f32 = 520;
+pub const device_w_zportafm: f32 = 520;
+/// Fallback width for other plugins with many params.
+pub const device_w_params: f32 = 320;
+/// "+" add-device card.
+pub const device_add_w: f32 = 48;
+/// Card header row height.
+pub const device_header_h: f32 = 34;
+/// Enable LED size.
 pub const device_led: f32 = 9;
-pub const device_chain_h: f32 = 220;
+/// Minimum rack card height (fills remaining bottom pane when larger).
+pub const device_card_min_h: f32 = 120;
+/// Gap between cards / chevrons.
+pub const device_chain_gap: f32 = 8;
+
+/// Legacy aliases used by older call sites.
+pub const device_card_w: f32 = device_w_empty;
+pub const device_card_h: f32 = device_card_min_h;
+pub const device_chain_h: f32 = device_card_min_h;
 
 /// Bounded catalog/picker column; plugin rows should not span the whole pane.
 pub const plugin_list_w: f32 = 320;

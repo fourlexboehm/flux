@@ -12,6 +12,8 @@ const edit_actions = @import("../edit_actions.zig");
 const host_mod = @import("../host.zig");
 const document_model = @import("../../document/model.zig");
 const document_commands = @import("../../document/commands.zig");
+const audio_clip_view = @import("audio_clip.zig");
+const peaks_mod = @import("../../session/peaks.zig");
 
 const add_track_col_w: f32 = 84;
 
@@ -205,15 +207,17 @@ pub fn draw(state: *state_mod.State) void {
         }
     }
 
+    drawSessionBoxSelection(state);
     drawMixer(state);
 }
 
 fn drawMixer(state: *state_mod.State) void {
     var strip = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
         .background = true,
         .color_fill = theme.header,
         .min_size_content = .{ .h = tokens.session_mixer_h },
-        .padding = .{ .x = tokens.scene_col_w, .y = 4, .w = 0, .h = 4 },
+        .padding = .{ .x = tokens.scene_col_w, .y = 4, .w = 4, .h = 4 },
         .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
         .border = .{ .x = 0, .y = 1, .w = 0, .h = 0 },
         .color_border = theme.grid,
@@ -221,15 +225,35 @@ fn drawMixer(state: *state_mod.State) void {
     defer strip.deinit();
 
     var t: usize = 0;
-    while (t < state.track_count) : (t += 1) drawMixerChannel(state, t);
+    while (t < state.track_count) : (t += 1) drawMixerChannel(state, t, false);
+
+    // Stretch spacer pins Master to the right edge (zgui session mixer parity).
+    var spacer = dvui.box(@src(), .{}, .{
+        .expand = .horizontal,
+        .min_size_content = .{ .w = add_track_col_w, .h = 1 },
+    });
+    spacer.deinit();
+
+    drawMixerChannel(state, state_mod.master_track_index, true);
 }
 
-fn drawMixerChannel(state: *state_mod.State, track: usize) void {
-    const selected = state.selected_track == track;
+fn drawMixerChannel(state: *state_mod.State, track: usize, is_master: bool) void {
+    const selected = if (is_master)
+        state.mixer_target == .master
+    else
+        state.mixer_target == .track and state.selected_track == track;
+
+    const mute = if (is_master) state.master_mute else state.track_mute[track];
+    const volume_ptr = if (is_master) &state.master_volume else &state.track_volume[track];
+    const pan_ptr = if (is_master) &state.master_pan else &state.track_pan[track];
+    const levels: [2]f32 = if (is_master) .{ 0, 0 } else state.track_levels[track];
+    const name: []const u8 = if (is_master) "Master" else state.trackName(track);
+    const id = if (is_master) state_mod.master_track_index else track;
+
     var track_cell = dvui.box(@src(), .{}, .{
         .min_size_content = .{ .w = tokens.track_col_w },
         .max_size_content = .width(tokens.track_col_w),
-        .id_extra = track,
+        .id_extra = id,
     });
     defer track_cell.deinit();
 
@@ -243,98 +267,115 @@ fn drawMixerChannel(state: *state_mod.State, track: usize) void {
         .corners = .round(tokens.radius_sm),
         .padding = dvui.Rect.all(tokens.gap_tight),
         .margin = .{ .x = 1, .y = 0, .w = 1, .h = 0 },
-        .id_extra = track,
+        .id_extra = id,
     });
     defer channel.deinit();
 
     {
-        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .id_extra = track });
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .id_extra = id });
         defer row.deinit();
 
         const button_w: f32 = 16;
         const button_padding = dvui.Rect{ .x = 2, .y = 0, .w = 2, .h = 0 };
         if (dvui.button(@src(), "M", .{}, .{
-            .color_fill = if (state.track_mute[track]) theme.mute_on else theme.panel,
+            .color_fill = if (mute) theme.mute_on else theme.panel,
             .color_text = theme.text,
+            .expand = if (is_master) .horizontal else .none,
             .min_size_content = .{ .w = button_w, .h = tokens.control_h },
             .margin = .{},
             .padding = button_padding,
             .corners = .round(tokens.radius_sm),
-            .id_extra = track,
+            .id_extra = id,
         })) {
             if (document_model.ready()) document_commands.toggleTrackMute(&document_model.g, track);
-            state.selectTrack(track);
-        }
-        if (dvui.button(@src(), "S", .{}, .{
-            .color_fill = if (state.track_solo[track]) theme.solo_on else theme.panel,
-            .color_text = theme.text,
-            .min_size_content = .{ .w = button_w, .h = tokens.control_h },
-            .margin = .{ .x = tokens.gap_tight, .y = 0, .w = 0, .h = 0 },
-            .padding = button_padding,
-            .corners = .round(tokens.radius_sm),
-            .id_extra = track,
-        })) {
-            if (document_model.ready()) document_commands.toggleTrackSolo(&document_model.g, track);
-            state.selectTrack(track);
-        }
-
-        const armed = state.armed_track == track;
-        if (dvui.button(@src(), "R", .{}, .{
-            .color_fill = if (armed) theme.arm_on else theme.panel,
-            .color_text = theme.text,
-            .min_size_content = .{ .w = button_w, .h = tokens.control_h },
-            .margin = .{ .x = tokens.gap_tight, .y = 0, .w = 0, .h = 0 },
-            .padding = button_padding,
-            .corners = .round(tokens.radius_sm),
-            .id_extra = track,
-        })) {
-            if (document_model.ready()) {
-                document_commands.toggleTrackArm(&document_model.g, track);
-                if (host_mod.ready()) host_mod.g.projectChrome(state);
+            if (is_master) {
+                state.master_mute = !state.master_mute;
+                state.selectMaster();
             } else {
-                state.armed_track = if (armed) null else track;
+                state.selectTrack(track);
             }
-            state.selectTrack(track);
         }
 
-        drawMeter(state.track_levels[track], track);
+        if (!is_master) {
+            if (dvui.button(@src(), "S", .{}, .{
+                .color_fill = if (state.track_solo[track]) theme.solo_on else theme.panel,
+                .color_text = theme.text,
+                .min_size_content = .{ .w = button_w, .h = tokens.control_h },
+                .margin = .{ .x = tokens.gap_tight, .y = 0, .w = 0, .h = 0 },
+                .padding = button_padding,
+                .corners = .round(tokens.radius_sm),
+                .id_extra = id,
+            })) {
+                if (document_model.ready()) document_commands.toggleTrackSolo(&document_model.g, track);
+                state.selectTrack(track);
+            }
+
+            const armed = state.armed_track == track;
+            if (dvui.button(@src(), "R", .{}, .{
+                .color_fill = if (armed) theme.arm_on else theme.panel,
+                .color_text = theme.text,
+                .min_size_content = .{ .w = button_w, .h = tokens.control_h },
+                .margin = .{ .x = tokens.gap_tight, .y = 0, .w = 0, .h = 0 },
+                .padding = button_padding,
+                .corners = .round(tokens.radius_sm),
+                .id_extra = id,
+            })) {
+                if (document_model.ready()) {
+                    document_commands.toggleTrackArm(&document_model.g, track);
+                    if (host_mod.ready()) host_mod.g.projectChrome(state);
+                } else {
+                    state.armed_track = if (armed) null else track;
+                }
+                state.selectTrack(track);
+            }
+
+            drawMeter(levels, id);
+        }
     }
 
     if (dvui.sliderEntry(@src(), "Vol {d:.2}", .{
-        .value = &state.track_volume[track],
+        .value = volume_ptr,
         .min = 0,
         .max = 1.5,
         .interval = 0.01,
     }, .{
         .expand = .horizontal,
         .min_size_content = .{ .h = tokens.control_h },
-        .id_extra = track,
+        .id_extra = id,
     })) {
-        if (document_model.ready()) document_commands.setTrackVolume(&document_model.g, track, state.track_volume[track]);
-        state.selected_track = track;
+        if (document_model.ready()) document_commands.setTrackVolume(&document_model.g, track, volume_ptr.*);
+        if (is_master) state.selectMaster() else {
+            state.selected_track = track;
+            state.mixer_target = .track;
+        }
     }
 
     if (dvui.sliderEntry(@src(), "Pan {d:.2}", .{
-        .value = &state.track_pan[track],
+        .value = pan_ptr,
         .min = -1,
         .max = 1,
         .interval = 0.01,
     }, .{
         .expand = .horizontal,
         .min_size_content = .{ .h = tokens.control_h },
-        .id_extra = track,
+        .id_extra = id,
     })) {
-        if (document_model.ready()) document_commands.setTrackPan(&document_model.g, track, state.track_pan[track]);
-        state.selected_track = track;
+        if (document_model.ready()) document_commands.setTrackPan(&document_model.g, track, pan_ptr.*);
+        if (is_master) state.selectMaster() else {
+            state.selected_track = track;
+            state.mixer_target = .track;
+        }
     }
 
-    if (dvui.button(@src(), state.trackName(track), .{}, .{
+    if (dvui.button(@src(), name, .{}, .{
         .expand = .horizontal,
         .color_fill = theme.colorFA(0, 0, 0, 0),
         .color_text = if (selected) theme.text else theme.text_dim,
         .min_size_content = .{ .h = tokens.control_h },
-        .id_extra = track,
-    })) state.selectTrack(track);
+        .id_extra = id,
+    })) {
+        if (is_master) state.selectMaster() else state.selectTrack(track);
+    }
 }
 
 fn drawMeter(levels: [2]f32, id_extra: usize) void {
@@ -359,6 +400,14 @@ fn drawMeter(levels: [2]f32, id_extra: usize) void {
         .h = area.h,
     };
     fill.fill(.all(0), .{ .color = if (amount > 0.9) theme.mute_on else theme.solo_on });
+}
+
+fn slotSamplePeaks(track: usize, scene: usize) ?[]const peaks_mod.PeakBin {
+    if (!document_model.ready()) return null;
+    const audio = document_model.g.slotAudioClipConst(track, scene) orelse return null;
+    const sample_id = audio.sample_id orelse return null;
+    const asset = document_model.g.sample_store.get(sample_id) orelse return null;
+    return asset.peaks[0..];
 }
 
 fn sceneHasClip(state: *const state_mod.State, scene: usize) bool {
@@ -434,18 +483,33 @@ fn drawClipSlot(state: *state_mod.State, track: usize, scene: usize) void {
     const cell_area = cell.data().borderRectScale().r;
     state.session_slot_rects[track][scene] = .{ cell_area.x, cell_area.y, cell_area.w, cell_area.h };
 
-    // Track color strip on filled clips
+    // Track color strip, optional audio waveform thumbnail, then name label.
     if (slot.kind != .empty) {
         const rs = cell.data().contentRectScale();
         const area = rs.r;
         if (area.w > 0 and area.h > 0) {
+            const strip_w = @max(2.0, tokens.strip_w * rs.s);
             const strip: dvui.Rect.Physical = .{
                 .x = area.x,
                 .y = area.y,
-                .w = @max(2.0, tokens.strip_w * rs.s),
+                .w = strip_w,
                 .h = area.h,
             };
             strip.fill(.all(0), .{ .color = theme.trackColor(track) });
+
+            if (slot.kind == .audio) {
+                if (slotSamplePeaks(track, scene)) |peaks| {
+                    const pad = 2.0 * rs.s;
+                    const wave: dvui.Rect.Physical = .{
+                        .x = area.x + strip_w + pad,
+                        .y = area.y + pad,
+                        .w = @max(1.0, area.w - strip_w - 2 * pad),
+                        .h = @max(1.0, area.h - 2 * pad),
+                    };
+                    const wave_col = theme.colorFA(0.95, 0.95, 0.96, 0.35);
+                    audio_clip_view.drawPeaks(wave, peaks, wave_col, 0.88, 0);
+                }
+            }
         }
     }
 
@@ -505,25 +569,49 @@ fn handleSlotEvents(
     wd: *dvui.WidgetData,
 ) void {
     for (dvui.events()) |*event| {
-        if (!dvui.eventMatchSimple(event, wd) or event.evt != .mouse) continue;
+        if (event.evt != .mouse) continue;
         const mouse = event.evt.mouse;
+        const captured = dvui.captured(wd.id);
+        // Captured box/clip gestures receive motion/release outside the cell.
+        if (!captured and !dvui.eventMatchSimple(event, wd)) continue;
+
         switch (mouse.action) {
             .press => if (mouse.button.pointer()) {
                 event.handle(@src(), wd);
                 state.focused_pane = .session;
-                focusSlot(state, track, scene, mouse.mod.shift());
-                state.session_drag_active = slot.kind != .empty;
-                state.session_drag_started = false;
-                state.session_drag_source_track = track;
-                state.session_drag_source_scene = scene;
-                state.session_drag_target_track = track;
-                state.session_drag_target_scene = scene;
-                state.session_drag_target_valid = slot.kind != .empty;
-                dvui.captureMouse(wd, event.num);
-                dvui.dragPreStart(mouse.button, mouse.p, .{ .name = "session_clip" });
+                if (slot.kind != .empty) {
+                    focusSlot(state, track, scene, mouse.mod.shift());
+                    state.session_box_pending = false;
+                    state.session_box_select = false;
+                    state.session_drag_active = true;
+                    state.session_drag_started = false;
+                    state.session_drag_source_track = track;
+                    state.session_drag_source_scene = scene;
+                    state.session_drag_target_track = track;
+                    state.session_drag_target_scene = scene;
+                    state.session_drag_target_valid = true;
+                    dvui.captureMouse(wd, event.num);
+                    dvui.dragPreStart(mouse.button, mouse.p, .{ .name = "session_clip" });
+                } else {
+                    // Empty cell: pending box multi-select (zgui drag_select).
+                    focusSlot(state, track, scene, false);
+                    if (!mouse.mod.shift() and document_model.ready()) {
+                        document_commands.setSessionAnchor(&document_model.g, track, scene, true);
+                    }
+                    state.session_drag_active = false;
+                    state.session_box_pending = true;
+                    state.session_box_select = false;
+                    state.session_box_additive = mouse.mod.shift();
+                    state.session_box_start_x = mouse.p.x;
+                    state.session_box_start_y = mouse.p.y;
+                    state.session_box_current_x = mouse.p.x;
+                    state.session_box_current_y = mouse.p.y;
+                    dvui.captureMouse(wd, event.num);
+                    dvui.dragPreStart(mouse.button, mouse.p, .{ .name = "session_box" });
+                }
                 dvui.refresh(null, @src(), wd.id);
             },
-            .motion => if (dvui.captured(wd.id)) {
+            .motion => if (captured) {
                 event.handle(@src(), wd);
                 if (state.session_drag_active and dvui.dragging(mouse.p, null) != null) {
                     state.session_drag_started = true;
@@ -535,20 +623,30 @@ fn handleSlotEvents(
                         state.session_drag_target_valid = false;
                     }
                     dvui.refresh(null, @src(), wd.id);
+                } else if (state.session_box_pending or state.session_box_select) {
+                    updateSessionBoxSelect(state, mouse.p);
+                    dvui.refresh(null, @src(), wd.id);
                 }
             },
-            .release => if (mouse.button.pointer() and dvui.captured(wd.id)) {
+            .release => if (mouse.button.pointer() and captured) {
                 event.handle(@src(), wd);
-                if (state.session_drag_started and state.session_drag_target_valid) {
+                if (state.session_box_select) {
+                    applySessionBoxSelect(state);
+                } else if (state.session_drag_started and state.session_drag_target_valid) {
                     const dt = @as(i32, @intCast(state.session_drag_target_track)) - @as(i32, @intCast(state.session_drag_source_track));
                     const ds = @as(i32, @intCast(state.session_drag_target_scene)) - @as(i32, @intCast(state.session_drag_source_scene));
                     _ = moveSelection(state, state.session_drag_source_track, state.session_drag_source_scene, dt, ds);
-                } else if (!state.session_drag_started) {
+                } else if (!state.session_drag_started and !state.session_box_pending) {
+                    activateSlot(state, track, scene, slot);
+                } else if (state.session_box_pending and !state.session_box_select) {
+                    // Click empty without drag: anchor only.
                     activateSlot(state, track, scene, slot);
                 }
                 state.session_drag_active = false;
                 state.session_drag_started = false;
                 state.session_drag_target_valid = false;
+                state.session_box_pending = false;
+                state.session_box_select = false;
                 dvui.captureMouse(null, event.num);
                 dvui.dragEnd();
                 dvui.refresh(null, @src(), wd.id);
@@ -557,6 +655,85 @@ fn handleSlotEvents(
             else => {},
         }
     }
+}
+
+const box_threshold_px: f32 = 4;
+
+fn updateSessionBoxSelect(state: *state_mod.State, point: dvui.Point.Physical) void {
+    state.session_box_current_x = point.x;
+    state.session_box_current_y = point.y;
+    if (!state.session_box_select) {
+        const dx = point.x - state.session_box_start_x;
+        const dy = point.y - state.session_box_start_y;
+        if (@abs(dx) >= box_threshold_px or @abs(dy) >= box_threshold_px) {
+            state.session_box_select = true;
+            state.session_box_pending = false;
+        }
+    }
+}
+
+fn applySessionBoxSelect(state: *state_mod.State) void {
+    if (!document_model.ready()) return;
+    const x0 = @min(state.session_box_start_x, state.session_box_current_x);
+    const y0 = @min(state.session_box_start_y, state.session_box_current_y);
+    const x1 = @max(state.session_box_start_x, state.session_box_current_x);
+    const y1 = @max(state.session_box_start_y, state.session_box_current_y);
+
+    var t_min: usize = state.track_count;
+    var t_max: usize = 0;
+    var s_min: usize = state.scene_count;
+    var s_max: usize = 0;
+    var any = false;
+    for (0..state.track_count) |t| {
+        for (0..state.scene_count) |s| {
+            const r = state.session_slot_rects[t][s];
+            if (r[2] <= 0 or r[3] <= 0) continue;
+            const cx = r[0] + r[2] * 0.5;
+            const cy = r[1] + r[3] * 0.5;
+            if (cx < x0 or cx > x1 or cy < y0 or cy > y1) continue;
+            t_min = @min(t_min, t);
+            t_max = @max(t_max, t);
+            s_min = @min(s_min, s);
+            s_max = @max(s_max, s);
+            any = true;
+        }
+    }
+    if (!any) return;
+    document_commands.selectSessionSlotsInRange(
+        &document_model.g,
+        t_min,
+        t_max,
+        s_min,
+        s_max,
+        state.session_box_additive,
+    );
+    state.selected_track = document_model.g.session.primary_track;
+    state.selected_scene = document_model.g.session.primary_scene;
+}
+
+fn drawSessionBoxSelection(state: *const state_mod.State) void {
+    if (!state.session_box_select) return;
+    const x0 = @min(state.session_box_start_x, state.session_box_current_x);
+    const y0 = @min(state.session_box_start_y, state.session_box_current_y);
+    const x1 = @max(state.session_box_start_x, state.session_box_current_x);
+    const y1 = @max(state.session_box_start_y, state.session_box_current_y);
+    const rect: dvui.Rect.Physical = .{
+        .x = x0,
+        .y = y0,
+        .w = @max(1, x1 - x0),
+        .h = @max(1, y1 - y0),
+    };
+    rect.fill(.all(0), .{ .color = theme.colorFA(0.35, 0.55, 0.95, 0.18) });
+    const t = 1.5;
+    const top: dvui.Rect.Physical = .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = t };
+    const bot: dvui.Rect.Physical = .{ .x = rect.x, .y = rect.y + rect.h - t, .w = rect.w, .h = t };
+    const left: dvui.Rect.Physical = .{ .x = rect.x, .y = rect.y, .w = t, .h = rect.h };
+    const right: dvui.Rect.Physical = .{ .x = rect.x + rect.w - t, .y = rect.y, .w = t, .h = rect.h };
+    const border = theme.colorFA(0.45, 0.65, 1.0, 0.85);
+    top.fill(.all(0), .{ .color = border });
+    bot.fill(.all(0), .{ .color = border });
+    left.fill(.all(0), .{ .color = border });
+    right.fill(.all(0), .{ .color = border });
 }
 
 fn hitSlot(state: *const state_mod.State, point: dvui.Point.Physical) ?[2]usize {
@@ -649,6 +826,7 @@ pub fn applyEditAction(state: *state_mod.State, action: edit_actions.Action) boo
         .move_right => moveSelection(state, state.selected_track, state.selected_scene, 1, 0),
         .move_up => moveSelection(state, state.selected_track, state.selected_scene, 0, -1),
         .move_down => moveSelection(state, state.selected_track, state.selected_scene, 0, 1),
+        .undo, .redo, .quantize => false,
     };
     if (changed) syncAfterEdit(state);
     return changed;

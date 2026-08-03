@@ -14,6 +14,9 @@ pub const Action = enum {
     duplicate,
     delete,
     select_all,
+    undo,
+    redo,
+    quantize,
     move_left,
     move_right,
     move_up,
@@ -27,6 +30,9 @@ pub const Availability = packed struct {
     duplicate: bool = false,
     delete: bool = false,
     select_all: bool = true,
+    undo: bool = false,
+    redo: bool = false,
+    quantize: bool = false,
     move_left: bool = false,
     move_right: bool = false,
     move_up: bool = false,
@@ -46,12 +52,15 @@ const Entry = struct {
 };
 
 const entries = [_]Entry{
-    .{ .action = .copy, .label = "Copy                 Cmd/Ctrl+C" },
+    .{ .action = .undo, .label = "Undo                 Cmd/Ctrl+Z" },
+    .{ .action = .redo, .label = "Redo          Cmd/Ctrl+Shift+Z" },
+    .{ .action = .copy, .label = "Copy                 Cmd/Ctrl+C", .starts_group = true },
     .{ .action = .cut, .label = "Cut                    Cmd/Ctrl+X" },
     .{ .action = .paste, .label = "Paste                Cmd/Ctrl+V" },
     .{ .action = .duplicate, .label = "Duplicate          Cmd/Ctrl+D" },
     .{ .action = .delete, .label = "Delete                         Del" },
     .{ .action = .select_all, .label = "Select All          Cmd/Ctrl+A", .starts_group = true },
+    .{ .action = .quantize, .label = "Quantize                          Q" },
     .{ .action = .move_left, .label = "Move Left", .starts_group = true },
     .{ .action = .move_right, .label = "Move Right" },
     .{ .action = .move_up, .label = "Move Up" },
@@ -84,14 +93,18 @@ pub fn drawMenu(available: Availability) ?Action {
 pub fn fromKey(key: dvui.Event.Key) ?Action {
     if (key.action != .down and key.action != .repeat) return null;
     const command = key.mod.control() or key.mod.command();
-    if (command) return switch (key.code) {
-        .a => .select_all,
-        .c => .copy,
-        .x => .cut,
-        .v => .paste,
-        .d => .duplicate,
-        else => null,
-    };
+    if (command) {
+        if (key.code == .z) return if (key.mod.shift()) .redo else .undo;
+        if (key.code == .y and !key.mod.shift()) return .redo;
+        return switch (key.code) {
+            .a => .select_all,
+            .c => .copy,
+            .x => .cut,
+            .v => .paste,
+            .d => .duplicate,
+            else => null,
+        };
+    }
     return switch (key.code) {
         .delete, .backspace => .delete,
         else => null,

@@ -46,6 +46,28 @@ pub const DeviceTargetKind = enum {
     fx,
 };
 
+/// Which mixer strip owns the device chain (zgui: `session.mixer_target`).
+pub const MixerTarget = enum {
+    track,
+    master,
+};
+
+/// In-flight browser drag payload (DVUI has drag names, not typed payloads).
+pub const BrowserDragKind = enum {
+    none,
+    audio_file,
+    plugin_instrument,
+    plugin_fx,
+};
+
+/// Target kind when creating a piano-roll automation lane (zgui `AutomationAddTarget`).
+pub const AutomationAddTarget = enum {
+    track_volume,
+    track_pan,
+    instrument_param,
+    fx_param,
+};
+
 // ── Session chrome snapshot types (projected from host; not domain ownership) ─
 
 pub const ClipKind = enum {
@@ -62,9 +84,16 @@ pub const SlotPlayState = enum {
 };
 
 pub const max_tracks: usize = 16;
+/// Matches session domain: master lives at the last track slot (not in `track_count`).
+pub const master_track_index: usize = max_tracks - 1;
 pub const max_scenes: usize = 16;
 pub const max_fx_slots: usize = 8;
-pub const max_arr_clips: usize = 32;
+/// Dense arrangement chrome budget (was 32; raised for multi-clip projects).
+pub const max_arr_clips: usize = 256;
+/// Max user sample folders in the browser Places list.
+pub const max_browser_folders: usize = 8;
+/// Max path length for a browser drag payload / folder path.
+pub const browser_path_cap: usize = 512;
 pub const max_piano_notes: usize = 4096;
 
 pub const ClipSlot = struct {
@@ -80,6 +109,14 @@ pub const ArrClip = struct {
     length_beats: f32,
     kind: ClipKind,
     name: []const u8,
+    selected: bool = false,
+};
+
+pub const ArrDragMode = enum {
+    none,
+    move,
+    resize_left,
+    resize_right,
 };
 
 pub const PianoClipboardNote = struct {
@@ -141,11 +178,48 @@ pub const State = struct {
     browser_tab: BrowserTab = .sounds,
     browser_search: [64]u8 = @splat(0),
     browser_search_len: usize = 0,
+    browser_sort_asc: bool = true,
+    /// User-added Places folders (absolute paths).
+    browser_folders: [max_browser_folders][browser_path_cap]u8 = @splat(@splat(0)),
+    browser_folder_lens: [max_browser_folders]usize = @splat(0),
+    browser_folder_count: usize = 0,
+    /// Selected Places folder index, or null = show all folders' files.
+    browser_folder_selected: ?usize = null,
+    /// Drag payload while `dvui.dragName("browser_item")` is active.
+    browser_drag_kind: BrowserDragKind = .none,
+    browser_drag_path: [browser_path_cap]u8 = @splat(0),
+    browser_drag_path_len: usize = 0,
+    browser_drag_catalog_index: i32 = 0,
 
     // Selection chrome
     selected_track: usize = 0,
     selected_scene: usize = 0,
     selected_arr_clip: ?usize = null,
+    /// Arrangement timeline zoom (natural pixels per beat).
+    arr_pixels_per_beat: f32 = 12,
+    arr_last_clip_click_ns: i128 = 0,
+    arr_last_clip_click_index: ?usize = null,
+    /// Live arrangement clip drag/resize (document mutated in place; revision on release).
+    arr_drag_mode: ArrDragMode = .none,
+    arr_drag_clip: ?usize = null,
+    arr_drag_mouse_x: f32 = 0,
+    arr_drag_mouse_y: f32 = 0,
+    arr_drag_orig_start_tick: i64 = 0,
+    arr_drag_orig_duration_ticks: i64 = 0,
+    arr_drag_orig_track: usize = 0,
+    arr_drag_changed: bool = false,
+    arr_drag_ctrl: bool = false,
+    arr_drag_duplicated: bool = false,
+    /// Box multi-select on the arrangement timeline.
+    arr_box_select: bool = false,
+    arr_box_pending: bool = false,
+    arr_box_additive: bool = false,
+    arr_box_start_x: f32 = 0,
+    arr_box_start_y: f32 = 0,
+    arr_box_current_x: f32 = 0,
+    arr_box_current_y: f32 = 0,
+    /// Physical lane rects (x,y,w,h) for track hit-testing during cross-lane drag.
+    arr_lane_rects: [max_tracks][4]f32 = @splat(@splat(0)),
     // Dense-canvas piano-roll interaction state. Notes remain in the document.
     piano_scroll_beat: f32 = 0,
     /// Pitch at the vertical center of the piano-roll viewport.
@@ -188,6 +262,24 @@ pub const State = struct {
     piano_last_grid_click_y: f32 = 0,
     piano_clipboard: [512]PianoClipboardNote = @splat(.{}),
     piano_clipboard_len: usize = 0,
+    /// Pitch auditioned while dragging notes or holding a keyboard key.
+    piano_preview_pitch: ?u8 = null,
+    /// Row under the pointer (grid or keyboard strip).
+    piano_hover_pitch: ?u8 = null,
+    /// Keyboard-strip press (click-to-play). Held until pointer release.
+    piano_key_held: ?u8 = null,
+    /// Piano-roll automation overlay (zgui `automation_*` chrome).
+    piano_automation_edit: bool = false,
+    piano_automation_lane_index: ?usize = null,
+    piano_automation_selected_point: ?usize = null,
+    piano_automation_drag_active: bool = false,
+    piano_automation_drag_lane: usize = 0,
+    piano_automation_drag_point: usize = 0,
+    piano_automation_drag_changed: bool = false,
+    piano_automation_add_open: bool = false,
+    piano_automation_add_target: AutomationAddTarget = .instrument_param,
+    piano_automation_add_fx_index: usize = 0,
+    piano_automation_add_param_id: ?u32 = null,
     session_last_slot_click_ns: i128 = 0,
     session_last_slot_click_track: usize = std.math.maxInt(usize),
     session_last_slot_click_scene: usize = std.math.maxInt(usize),
@@ -202,6 +294,14 @@ pub const State = struct {
     session_drag_target_valid: bool = false,
     /// Physical x/y/w/h for hit-testing while the pointer is captured.
     session_slot_rects: [max_tracks][max_scenes][4]f32 = @splat(@splat(@splat(0))),
+    /// Session box multi-select (empty-cell drag; zgui `drag_select` parity).
+    session_box_select: bool = false,
+    session_box_pending: bool = false,
+    session_box_additive: bool = false,
+    session_box_start_x: f32 = 0,
+    session_box_start_y: f32 = 0,
+    session_box_current_x: f32 = 0,
+    session_box_current_y: f32 = 0,
     /// Defaults match `session_ops.init` (projected over by host each frame).
     track_count: usize = 4,
     scene_count: usize = 8,
@@ -209,6 +309,8 @@ pub const State = struct {
     // Device chain target chrome
     device_target_kind: DeviceTargetKind = .instrument,
     device_target_fx: usize = 0,
+    /// Master strip vs selected track (affects device rack + mixer highlight).
+    mixer_target: MixerTarget = .track,
 
     // ── Projected domain snapshot (filled by host.projectChrome) ───────────
     slots: [max_tracks][max_scenes]ClipSlot = @splat(@splat(.{})),
@@ -218,6 +320,10 @@ pub const State = struct {
     track_pan: [max_tracks]f32 = @splat(0),
     track_mute: [max_tracks]bool = @splat(false),
     track_solo: [max_tracks]bool = @splat(false),
+    /// Master bus (session index `master_track_index`); not counted in `track_count`.
+    master_volume: f32 = 0.9,
+    master_pan: f32 = 0,
+    master_mute: bool = false,
     armed_track: ?usize = null,
     scene_names: [max_scenes][24]u8 = undefined,
     scene_name_lens: [max_scenes]usize = @splat(0),
@@ -228,6 +334,9 @@ pub const State = struct {
     fx_counts: [max_tracks]usize = @splat(0),
     arr_clips: [max_arr_clips]ArrClip = undefined,
     arr_clip_count: usize = 0,
+    /// Last arrangement draw cost (µs) and clips actually painted (viewport-culled).
+    arr_draw_us: u32 = 0,
+    arr_clips_drawn: u32 = 0,
 
     /// Last frame timestamp for playhead animation (ns); DVUI frame loop only.
     last_frame_time_ns: i128 = 0,
@@ -286,6 +395,11 @@ pub const State = struct {
         return self.selected_track;
     }
 
+    /// Track index used by the device rack (master bus when mixer targets master).
+    pub fn deviceTrack(self: *const State) usize {
+        return if (self.mixer_target == .master) master_track_index else self.selected_track;
+    }
+
     pub fn selectedScene(self: *const State) usize {
         return self.selected_scene;
     }
@@ -307,6 +421,47 @@ pub const State = struct {
         return self.browser_search[0..self.browser_search_len];
     }
 
+    pub fn browserFolder(self: *const State, index: usize) []const u8 {
+        if (index >= self.browser_folder_count) return "";
+        return self.browser_folders[index][0..self.browser_folder_lens[index]];
+    }
+
+    pub fn addBrowserFolder(self: *State, path: []const u8) bool {
+        if (path.len == 0 or self.browser_folder_count >= max_browser_folders) return false;
+        for (0..self.browser_folder_count) |i| {
+            if (std.mem.eql(u8, self.browserFolder(i), path)) return false;
+        }
+        const n = @min(path.len, browser_path_cap);
+        @memcpy(self.browser_folders[self.browser_folder_count][0..n], path[0..n]);
+        self.browser_folder_lens[self.browser_folder_count] = n;
+        self.browser_folder_count += 1;
+        return true;
+    }
+
+    pub fn clearBrowserDrag(self: *State) void {
+        self.browser_drag_kind = .none;
+        self.browser_drag_path_len = 0;
+        self.browser_drag_catalog_index = 0;
+    }
+
+    pub fn setBrowserAudioDrag(self: *State, path: []const u8) void {
+        const n = @min(path.len, browser_path_cap);
+        @memcpy(self.browser_drag_path[0..n], path[0..n]);
+        self.browser_drag_path_len = n;
+        self.browser_drag_kind = .audio_file;
+        self.browser_drag_catalog_index = 0;
+    }
+
+    pub fn setBrowserPluginDrag(self: *State, catalog_index: i32, is_fx: bool) void {
+        self.browser_drag_kind = if (is_fx) .plugin_fx else .plugin_instrument;
+        self.browser_drag_catalog_index = catalog_index;
+        self.browser_drag_path_len = 0;
+    }
+
+    pub fn browserDragPath(self: *const State) []const u8 {
+        return self.browser_drag_path[0..self.browser_drag_path_len];
+    }
+
     /// Beats per bar from time signature (zgui transport helper parity).
     pub fn beatsPerBar(self: *const State) f32 {
         return @as(f32, @floatFromInt(self.time_signature_numerator)) * 4.0 /
@@ -316,7 +471,10 @@ pub const State = struct {
     // ── Selection mutators ─────────────────────────────────────────────────
 
     pub fn selectSlot(self: *State, track: usize, scene: usize) void {
-        if (track < self.track_count) self.selected_track = track;
+        if (track < self.track_count) {
+            self.selected_track = track;
+            self.mixer_target = .track;
+        }
         if (scene < self.scene_count) self.selected_scene = scene;
         self.selectDeviceInstrument();
         self.focused_pane = .session;
@@ -325,7 +483,17 @@ pub const State = struct {
     pub fn selectTrack(self: *State, track: usize) void {
         if (track >= self.track_count) return;
         self.selected_track = track;
+        self.mixer_target = .track;
         self.selectDeviceInstrument();
+        self.selected_arr_clip = null;
+        self.focused_pane = .session;
+    }
+
+    /// Select the master bus strip (device rack becomes master FX only).
+    pub fn selectMaster(self: *State) void {
+        self.mixer_target = .master;
+        self.device_target_kind = .fx;
+        self.device_target_fx = 0;
         self.selected_arr_clip = null;
         self.focused_pane = .session;
     }
@@ -337,6 +505,12 @@ pub const State = struct {
     }
 
     pub fn selectDeviceInstrument(self: *State) void {
+        if (self.mixer_target == .master) {
+            self.device_target_kind = .fx;
+            self.device_target_fx = 0;
+            self.focused_pane = .bottom;
+            return;
+        }
         self.device_target_kind = .instrument;
         self.device_target_fx = 0;
         self.focused_pane = .bottom;
@@ -349,9 +523,13 @@ pub const State = struct {
     }
 
     pub fn toggleDeviceEnabled(self: *State) void {
-        const t = self.selected_track;
+        const t = self.deviceTrack();
+        if (t >= max_tracks) return;
         switch (self.device_target_kind) {
-            .instrument => self.instrument_enabled[t] = !self.instrument_enabled[t],
+            .instrument => {
+                if (self.mixer_target == .master) return;
+                self.instrument_enabled[t] = !self.instrument_enabled[t];
+            },
             .fx => {
                 if (self.device_target_fx < self.fx_counts[t]) {
                     self.fx_enabled[t][self.device_target_fx] = !self.fx_enabled[t][self.device_target_fx];
@@ -502,6 +680,23 @@ test "toggleBrowser and toggleMetronome" {
     try std.testing.expect(!s.metronome_enabled);
     s.toggleMetronome();
     try std.testing.expect(s.metronome_enabled);
+}
+
+test "browser folders and drag payload chrome" {
+    var s: State = .{};
+    try std.testing.expect(s.addBrowserFolder("/tmp/samples"));
+    try std.testing.expect(!s.addBrowserFolder("/tmp/samples")); // dedupe
+    try std.testing.expectEqual(@as(usize, 1), s.browser_folder_count);
+    try std.testing.expectEqualStrings("/tmp/samples", s.browserFolder(0));
+
+    s.setBrowserAudioDrag("/tmp/samples/kick.wav");
+    try std.testing.expect(s.browser_drag_kind == .audio_file);
+    try std.testing.expectEqualStrings("/tmp/samples/kick.wav", s.browserDragPath());
+    s.setBrowserPluginDrag(3, true);
+    try std.testing.expect(s.browser_drag_kind == .plugin_fx);
+    try std.testing.expectEqual(@as(i32, 3), s.browser_drag_catalog_index);
+    s.clearBrowserDrag();
+    try std.testing.expect(s.browser_drag_kind == .none);
 }
 
 test "selectTrack and selectScene clamp and reset device target" {

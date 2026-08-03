@@ -6,13 +6,7 @@ const shared = @import("shared");
 const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 
 const params_mod = @import("ext/params.zig");
-const ViewType = @import("ext/gui/view.zig");
 const bridge = @import("bridge.zig");
-
-const options = @import("options");
-
-pub const View = ViewType;
-pub const font = shared.core.Core(Plugin, ViewType).font;
 
 const tail_seconds = 24.0;
 
@@ -354,7 +348,6 @@ fn _getExtension(_: *const clap.Plugin, id: [*:0]const u8) callconv(.c) ?*const 
     if (std.mem.eql(u8, std.mem.span(id), clap.ext.note_ports.id)) return &ext_note_ports;
     if (std.mem.eql(u8, std.mem.span(id), clap.ext.params.id)) return &ext_params;
     if (std.mem.eql(u8, std.mem.span(id), clap.ext.state.id)) return &ext_state;
-    _ = options;
     return null;
 }
 

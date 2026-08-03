@@ -147,6 +147,11 @@ pub const Host = struct {
             state.track_mute[t] = store.session.tracks[t].mute;
             state.track_solo[t] = store.session.tracks[t].solo;
         }
+
+        const master = store.session.tracks[chrome.master_track_index];
+        state.master_volume = master.volume;
+        state.master_pan = master.pan;
+        state.master_mute = master.mute;
         for (0..state.scene_count) |s| {
             const sn = store.session.scenes[s].getName();
             const n = @min(sn.len, state.scene_names[s].len);
@@ -185,6 +190,7 @@ pub const Host = struct {
                     .length_beats = length_beats,
                     .kind = kind,
                     .name = name,
+                    .selected = placement.selected,
                 };
                 global_i += 1;
             }
@@ -210,6 +216,16 @@ pub const Host = struct {
                 state.fx_names[track][fx] = self.fx_names[track][fx];
                 state.fx_enabled[track][fx] = self.fx_enabled[track][fx];
             }
+        }
+
+        // Master bus FX live at master_track_index (outside track_count).
+        const mi = chrome.master_track_index;
+        state.instrument_names[mi] = "";
+        state.instrument_enabled[mi] = true;
+        state.fx_counts[mi] = self.fx_counts[mi];
+        for (0..self.fx_counts[mi]) |fx| {
+            state.fx_names[mi][fx] = self.fx_names[mi][fx];
+            state.fx_enabled[mi][fx] = self.fx_enabled[mi][fx];
         }
     }
 
@@ -246,10 +262,11 @@ pub const Host = struct {
     }
 
     pub fn toggleDeviceEnabled(self: *Host, state: *chrome.State) void {
-        const t = state.selected_track;
+        const t = state.deviceTrack();
         if (t >= chrome.max_tracks) return;
         switch (state.device_target_kind) {
             .instrument => {
+                if (state.mixer_target == .master) return;
                 self.instrument_enabled[t] = !self.instrument_enabled[t];
                 state.instrument_enabled[t] = self.instrument_enabled[t];
             },

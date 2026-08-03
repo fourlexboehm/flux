@@ -13,6 +13,7 @@ test {
     // Document host (session + arrangement + clip pool projection)
     _ = @import("ui/host.zig");
     _ = @import("document/model.zig");
+    _ = @import("document/midi_history.zig");
     _ = @import("document/commands.zig");
     // UI-neutral DAWproject save/load adapter for the document host.
     _ = @import("document/project_view.zig");
@@ -21,6 +22,8 @@ test {
     _ = @import("ui/audio_runtime.zig");
     // DynLib CLAP handle primitives (no device)
     _ = @import("plugin/handle.zig");
+    // Static stock FX load path (no DynLib)
+    _ = @import("plugin/builtin_load.zig");
     // DVUI plugin host (catalog optional; no device)
     _ = @import("ui/plugin_host.zig");
 }

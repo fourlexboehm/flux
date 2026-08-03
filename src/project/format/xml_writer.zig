@@ -1,6 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
-const param_table = @import("../../builtins/param_table.zig");
+const param_table = @import("flux_param_table");
 const BuiltinKind = param_table.Kind;
 
 const Unit = types.Unit;

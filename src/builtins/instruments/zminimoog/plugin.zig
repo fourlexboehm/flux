@@ -8,17 +8,12 @@ const mutex_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 const shared = @import("shared");
 
 const params_mod = @import("ext/params.zig");
-const ViewType = @import("ext/gui/view.zig");
 const audio = @import("audio/audio.zig");
-const extensions = shared.plugin_extensions.InstrumentExtensions(Plugin, ViewType, params_mod, struct {
+const extensions = shared.plugin_extensions.InstrumentExtensions(Plugin, params_mod, struct {
     pub fn create() clap.ext.thread_pool.Plugin {
         return shared.ext.thread_pool.create(Plugin, audio.processVoice);
     }
 });
-const GUI = extensions.GUI;
-pub const View = ViewType;
-pub const font = shared.core.Core(Plugin, ViewType).font;
-const options = @import("options");
 const dsp = @import("dsp/dsp.zig");
 const Voices = @import("audio/voices.zig");
 const Filter = @import("audio/filter.zig");
@@ -34,7 +29,6 @@ voices: Voices,
 params: params_mod.Store,
 filter_left: Filter,
 filter_right: Filter,
-gui: ?*GUI,
 
 jobs: Jobs = .{},
 job_mutex: std.Io.Mutex,
@@ -84,7 +78,6 @@ pub fn init(allocator: std.mem.Allocator, host: *const clap.Host) !*Plugin {
         .host = host,
         .voices = voices,
         .params = params_mod.Store.init(allocator),
-        .gui = null,
         .job_mutex = .init,
         .filter_left = .{},
         .filter_right = .{},
@@ -258,16 +251,8 @@ fn _reset(clap_plugin: *const clap.Plugin) callconv(.c) void {
 fn _process(clap_plugin: *const clap.Plugin, clap_process: *const clap.Process) callconv(.c) clap.Process.Status {
     const plugin = fromClapPlugin(clap_plugin);
     const frame_count = clap_process.frames_count;
-    const dt: f64 = @as(f64, @floatFromInt(frame_count)) / plugin.sample_rate.?;
 
     extensions.Params._flush(clap_plugin, clap_process.in_events, clap_process.out_events);
-
-    if (plugin.gui) |gui| {
-        gui.tick(dt);
-        if (gui.shouldUpdate()) {
-            plugin.host.requestCallback(plugin.host);
-        }
-    }
 
     const input_event_count = clap_process.in_events.size(clap_process.in_events);
     const output_left = clap_process.audio_outputs[0].data32.?[0];
@@ -339,7 +324,6 @@ const ext_audio_ports = extensions.AudioPorts.create();
 const ext_note_ports = extensions.NotePorts.create();
 const ext_params = extensions.Params.create();
 const ext_state = extensions.State.create();
-const ext_gui = extensions.GUI.create();
 const ext_voice_info = extensions.VoiceInfo.create();
 const ext_thread_pool = extensions.ThreadPool.create();
 
@@ -348,7 +332,6 @@ fn _getExtension(_: *const clap.Plugin, id: [*:0]const u8) callconv(.c) ?*const 
     if (std.mem.eql(u8, std.mem.span(id), clap.ext.note_ports.id)) return &ext_note_ports;
     if (std.mem.eql(u8, std.mem.span(id), clap.ext.params.id)) return &ext_params;
     if (std.mem.eql(u8, std.mem.span(id), clap.ext.state.id)) return &ext_state;
-    if (options.enable_gui and std.mem.eql(u8, std.mem.span(id), clap.ext.gui.id)) return &ext_gui;
     if (std.mem.eql(u8, std.mem.span(id), clap.ext.voice_info.id)) return &ext_voice_info;
     if (std.mem.eql(u8, std.mem.span(id), clap.ext.thread_pool.id)) return &ext_thread_pool;
     return null;
@@ -365,9 +348,5 @@ fn _onMainThread(clap_plugin: *const clap.Plugin) callconv(.c) void {
             params_host.rescan(plugin.host, .{ .text = true, .values = true });
         }
         plugin.jobs.notify_host_params_changed = false;
-    }
-
-    if (plugin.gui) |gui| {
-        gui.update() catch {};
     }
 }

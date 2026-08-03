@@ -11,7 +11,7 @@ const plugins = @import("../plugin/plugins.zig");
 const types = @import("format/types.zig");
 const io_types = @import("io_types.zig");
 const parse = @import("format/parse.zig");
-const param_table = @import("../builtins/param_table.zig");
+const param_table = @import("flux_param_table");
 const BuiltinKind = param_table.Kind;
 
 const RealParameter = types.RealParameter;
