@@ -7,12 +7,18 @@
 //! External system CLAPs use DynLib. Plugin GUIs open via `plugin/gui_float.zig`
 //! (floating preferred; macOS NSWindow / Linux X11 parent fallbacks).
 //! Hardware MIDI (portmidi) merges into live keys with the computer-keyboard piano map.
+//!
+//! Full CLAP host extensions (thread_pool, params, latency, timer, posix_fd,
+//! undo, requestProcess/Callback) live here — restored from pre-DVUI `app/host.zig`.
+//! Plugin undo blobs push onto `document.Store.undo_history`.
 
+const builtin = @import("builtin");
 const std = @import("std");
 const clap = @import("clap-bindings");
 
 const chrome = @import("state.zig");
 const host_mod = @import("host.zig");
+const document_model = @import("../document/model.zig");
 const plugins = @import("../plugin/plugins.zig");
 const presets_mod = @import("../plugin/presets.zig");
 const plugin_handle = @import("../plugin/handle.zig");
@@ -22,6 +28,9 @@ const plugin_call_context = @import("../plugin/call_context.zig");
 const clap_ids = @import("../util/clap_ids.zig");
 const midi_input = @import("../midi/input.zig");
 const audio_engine_mod = @import("../audio/audio_engine.zig");
+const audio_graph = @import("../audio/audio_graph.zig");
+const audio_constants = @import("../audio/audio_constants.zig");
+const audio_events = @import("../audio/audio_events.zig");
 const thread_context = @import("../util/thread_context.zig");
 const project_plugin_state = @import("../project/runtime/plugin_state.zig");
 
@@ -36,6 +45,23 @@ pub const max_fx_slots = plugin_handle.max_fx_slots;
 const AudioEngine = audio_engine_mod.AudioEngine;
 
 const clock_io: std.Io = std.Io.Threaded.global_single_threaded.io();
+const max_gui_timers = 64;
+const max_gui_fds = 64;
+
+const GuiTimer = struct {
+    plugin: *const clap.Plugin,
+    timer_id: clap.Id,
+    period_ms: u32,
+    next_fire_ns: u64,
+    active: bool = false,
+};
+
+const GuiFd = struct {
+    plugin: *const clap.Plugin,
+    fd: c_int,
+    flags: clap.ext.posix_fd_support.Flags,
+    active: bool = false,
+};
 
 /// UI choice for one device slot (instrument or FX).
 pub const SlotChoice = struct {
@@ -67,6 +93,16 @@ pub const PluginHost = struct {
 
     clap_host: clap.Host = undefined,
     main_thread_id: std.Thread.Id = undefined,
+
+    /// Shared with `audio_runtime` JobQueue (CLAP thread_pool + graph parallel).
+    jobs: ?*audio_graph.JobQueue = null,
+    /// Max worker fan-out for `thread_pool.requestExec` (from FLUX_AUDIO tuning).
+    jobs_fanout: u32 = 0,
+    /// Engine shared state for `requestProcess` / buffer reconfigure.
+    shared_state: ?*audio_engine_mod.SharedState = null,
+
+    callback_requested: std.atomic.Value(bool) = .init(false),
+    flush_requested: std.atomic.Value(bool) = .init(false),
 
     instruments: [track_count]LoadedPlugin = @splat(.{}),
     fx: [track_count][max_fx_slots]LoadedPlugin = @splat(@splat(.{})),
@@ -104,6 +140,38 @@ pub const PluginHost = struct {
     /// Picker open in device chain ("+" or empty instrument).
     picker_open: bool = false,
     picker_for_fx: bool = false,
+
+    // ── CLAP host extension state ──────────────────────────────────────────
+    gui_timers: [max_gui_timers]GuiTimer = @splat(.{
+        .plugin = undefined,
+        .timer_id = .invalid_id,
+        .period_ms = 0,
+        .next_fire_ns = 0,
+    }),
+    next_gui_timer_id: u32 = 1,
+    gui_fds: [max_gui_fds]GuiFd = @splat(.{
+        .plugin = undefined,
+        .fd = -1,
+        .flags = .{ ._ = 0 },
+    }),
+
+    undo_change_in_progress: bool = false,
+    undo_track_index: ?usize = null,
+    undo_fx_index: ?usize = null,
+    undo_pre_state: ?[]u8 = null,
+
+    /// Last undo-context snapshot pushed to subscribed plugins (dirty compare).
+    undo_ctx_last_can_undo: bool = false,
+    undo_ctx_last_can_redo: bool = false,
+    undo_ctx_last_undo_name: [64]u8 = @splat(0),
+    undo_ctx_last_undo_name_len: usize = 0,
+    undo_ctx_last_redo_name: [64]u8 = @splat(0),
+    undo_ctx_last_redo_name_len: usize = 0,
+    /// Force a context push even if can_undo/names match (new subscriber).
+    undo_ctx_force: bool = false,
+    /// Scratch null-terminated name buffers for PluginContext callbacks.
+    undo_ctx_name_buf: [64]u8 = @splat(0),
+    redo_ctx_name_buf: [64]u8 = @splat(0),
 
     pub fn init(allocator: std.mem.Allocator) PluginHost {
         return .{
@@ -159,9 +227,12 @@ pub const PluginHost = struct {
     }
 
     pub fn deinit(self: *PluginHost) void {
+        clearUndoChange(self);
         self.clearPendingProjectStates();
         self.closeAllGuis();
         self.unloadAll(null);
+        self.jobs = null;
+        self.shared_state = null;
         if (self.midi_active) {
             self.midi.deinit();
             self.midi_active = false;
@@ -498,6 +569,7 @@ pub const PluginHost = struct {
 
     /// Sync DynLib instances to choices and publish pointers to the engine.
     pub fn tick(self: *PluginHost, engine: ?*AudioEngine, max_frames: u32) void {
+        if (engine) |e| self.shared_state = &e.shared;
         const shared = if (engine) |e| &e.shared else null;
         self.syncInstruments(shared, max_frames);
         self.syncFx(shared, max_frames);
@@ -507,7 +579,76 @@ pub const PluginHost = struct {
             const snap = plugin_handle.collectLoaded(&self.instruments, &self.fx);
             e.updatePlugins(snap.instruments, snap.fx);
         }
+        // Host services: all loaded plugins (not only open GUIs), then GUI windows.
+        pumpMainThreadCallbacks(self);
+        pumpParamFlushes(self);
+        pumpPluginGuiEvents(self, clock_io);
+        pumpUndoContextUpdates(self);
         self.pumpOpenGuis();
+    }
+
+    /// Stop/deactivate/reactivate every loaded plugin at a new max block size.
+    /// Caller must stop the device and wait for the audio callback to go idle.
+    pub fn reconfigureMaxFrames(self: *PluginHost, shared: *audio_engine_mod.SharedState, new_frames: u32) void {
+        const was_audio = thread_context.is_audio_thread;
+        thread_context.is_audio_thread = true;
+        defer thread_context.is_audio_thread = was_audio;
+
+        for (0..track_count) |t| {
+            if (shared.isPluginStarted(t)) {
+                if (self.instruments[t].getPlugin()) |plugin| {
+                    plugin.stopProcessing(plugin);
+                }
+                shared.clearPluginStarted(t);
+            }
+            for (0..max_fx_slots) |fx_index| {
+                if (shared.isFxPluginStarted(t, fx_index)) {
+                    if (self.fx[t][fx_index].getPlugin()) |plugin| {
+                        plugin.stopProcessing(plugin);
+                    }
+                    shared.clearFxPluginStarted(t, fx_index);
+                }
+            }
+        }
+
+        for (0..track_count) |t| {
+            if (self.instruments[t].getPlugin()) |plugin| {
+                plugin.deactivate(plugin);
+                if (!plugin.activate(plugin, audio_constants.sample_rate, 1, new_frames)) {
+                    std.log.warn("Failed to re-activate instrument track {d} at {d} frames", .{ t, new_frames });
+                } else {
+                    shared.requestStartProcessing(t);
+                }
+            }
+            for (0..max_fx_slots) |fx_index| {
+                if (self.fx[t][fx_index].getPlugin()) |plugin| {
+                    plugin.deactivate(plugin);
+                    if (!plugin.activate(plugin, audio_constants.sample_rate, 1, new_frames)) {
+                        std.log.warn("Failed to re-activate fx track {d} slot {d} at {d} frames", .{ t, fx_index, new_frames });
+                    } else {
+                        shared.requestStartProcessingFx(t, fx_index);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Apply a serialized CLAP state blob to a slot (document undo/redo).
+    pub fn applyPluginStateBlob(self: *PluginHost, track: usize, fx_index: ?usize, data: []const u8) bool {
+        if (track >= track_count) return false;
+        const plugin = if (fx_index) |fx| blk: {
+            if (fx >= max_fx_slots) return false;
+            break :blk self.fx[track][fx].getPlugin();
+        } else self.instruments[track].getPlugin();
+        const p = plugin orelse return false;
+        project_plugin_state.loadPluginStateFromData(p, data);
+        return true;
+    }
+
+    /// CLAP plugin for the device-chain chrome target (instrument or FX slot).
+    pub fn deviceTargetPlugin(self: *PluginHost, state: *const chrome.State) ?*const clap.Plugin {
+        const slot = self.selectedSlot(state) orelse return null;
+        return slot.getPlugin();
     }
 
     /// Retain serialized CLAP state until the selected plugin has been loaded.
@@ -648,15 +789,21 @@ pub const PluginHost = struct {
 
     fn pumpOpenGuis(self: *PluginHost) void {
         for (&self.instruments) |*slot| {
-            if (slot.gui_open) {
-                if (slot.getPlugin()) |p| gui_float.pumpOnMainThread(p);
+            if (!slot.gui_open) continue;
+            if (gui_float.pumpHostWindow(slot)) {
+                self.closeSlotGui(slot);
+                continue;
             }
+            if (slot.getPlugin()) |p| gui_float.pumpOnMainThread(p);
         }
         for (&self.fx) |*row| {
             for (row) |*slot| {
-                if (slot.gui_open) {
-                    if (slot.getPlugin()) |p| gui_float.pumpOnMainThread(p);
+                if (!slot.gui_open) continue;
+                if (gui_float.pumpHostWindow(slot)) {
+                    self.closeSlotGui(slot);
+                    continue;
                 }
+                if (slot.getPlugin()) |p| gui_float.pumpOnMainThread(p);
             }
         }
     }
@@ -861,11 +1008,15 @@ pub const PluginHost = struct {
     }
 };
 
-// ── Minimal CLAP host callbacks ──────────────────────────────────────────────
+// ── CLAP host callbacks (full extension surface) ─────────────────────────────
 
 const thread_check_ext = clap.ext.thread_check.Host{
     .isMainThread = hostIsMainThread,
     .isAudioThread = hostIsAudioThread,
+};
+
+const thread_pool_ext = clap.ext.thread_pool.Host{
+    .requestExec = hostRequestExec,
 };
 
 const gui_host_ext = clap.ext.gui.Host{
@@ -874,6 +1025,36 @@ const gui_host_ext = clap.ext.gui.Host{
     .requestShow = hostGuiRequestShow,
     .requestHide = hostGuiRequestHide,
     .closed = hostGuiClosed,
+};
+
+const undo_host_ext = clap.ext.undo.Host{
+    .begin_change = hostUndoBeginChange,
+    .cancel_change = hostUndoCancelChange,
+    .change_made = hostUndoChangeMade,
+    .request_undo = hostUndoRequestUndo,
+    .request_redo = hostUndoRequestRedo,
+    .set_wants_context_updates = hostUndoSetWantsContextUpdates,
+};
+
+const params_host_ext = clap.ext.params.Host{
+    .rescan = hostParamsRescan,
+    .clear = hostParamsClear,
+    .requestFlush = hostParamsRequestFlush,
+};
+
+const latency_host_ext = clap.ext.latency.Host{
+    .changed = hostLatencyChanged,
+};
+
+const timer_support_ext = clap.ext.timer_support.Host{
+    .registerTimer = hostTimerRegister,
+    .unregisterTimer = hostTimerUnregister,
+};
+
+const posix_fd_support_ext = clap.ext.posix_fd_support.Host{
+    .registerFd = hostPosixFdRegister,
+    .modifyFd = hostPosixFdModify,
+    .unregiserFd = hostPosixFdUnregister,
 };
 
 const preset_load_host_ext = clap.ext.preset_load.Host{
@@ -925,7 +1106,13 @@ fn hostGetExtension(host: *const clap.Host, extension_id: [*:0]const u8) callcon
     _ = host;
     const id = std.mem.span(extension_id);
     if (std.mem.eql(u8, id, clap.ext.thread_check.id)) return &thread_check_ext;
+    if (std.mem.eql(u8, id, clap.ext.thread_pool.id)) return &thread_pool_ext;
     if (std.mem.eql(u8, id, clap.ext.gui.id)) return &gui_host_ext;
+    if (std.mem.eql(u8, id, clap.ext.undo.id)) return &undo_host_ext;
+    if (std.mem.eql(u8, id, clap.ext.params.id)) return &params_host_ext;
+    if (std.mem.eql(u8, id, clap.ext.latency.id)) return &latency_host_ext;
+    if (std.mem.eql(u8, id, clap.ext.timer_support.id)) return &timer_support_ext;
+    if (std.mem.eql(u8, id, clap.ext.posix_fd_support.id)) return &posix_fd_support_ext;
     if (std.mem.eql(u8, id, clap.ext.preset_load.id) or
         std.mem.eql(u8, id, clap_ids.preset_load_compat_id))
     {
@@ -935,8 +1122,18 @@ fn hostGetExtension(host: *const clap.Host, extension_id: [*:0]const u8) callcon
 }
 
 fn hostRequestRestart(_: *const clap.Host) callconv(.c) void {}
-fn hostRequestProcess(_: *const clap.Host) callconv(.c) void {}
-fn hostRequestCallback(_: *const clap.Host) callconv(.c) void {}
+
+fn hostRequestProcess(host: *const clap.Host) callconv(.c) void {
+    const self = hostFromData(host);
+    if (self.shared_state) |shared| {
+        shared.process_requested.store(true, .release);
+    }
+}
+
+fn hostRequestCallback(host: *const clap.Host) callconv(.c) void {
+    const self = hostFromData(host);
+    self.callback_requested.store(true, .release);
+}
 
 fn hostIsMainThread(host: *const clap.Host) callconv(.c) bool {
     const self = hostFromData(host);
@@ -945,6 +1142,77 @@ fn hostIsMainThread(host: *const clap.Host) callconv(.c) bool {
 
 fn hostIsAudioThread(_: *const clap.Host) callconv(.c) bool {
     return thread_context.is_audio_thread;
+}
+
+fn hostRequestExec(host: *const clap.Host, task_count: u32) callconv(.c) bool {
+    if (task_count == 0) return true;
+
+    const self = hostFromData(host);
+    const plugin = audio_graph.current_processing_plugin orelse return false;
+
+    const ext_raw = plugin.getExtension(plugin, clap.ext.thread_pool.id) orelse return false;
+    const ext: *const clap.ext.thread_pool.Plugin = @ptrCast(@alignCast(ext_raw));
+
+    // Cap nesting to avoid pathological recursion; fall back to sync exec.
+    const max_depth: u32 = 4;
+    if (thread_context.clap_threadpool_depth >= max_depth) {
+        for (0..task_count) |i| ext.exec(plugin, @intCast(i));
+        return true;
+    }
+
+    if (self.jobs) |job_queue| {
+        thread_context.clap_threadpool_depth += 1;
+        defer thread_context.clap_threadpool_depth -= 1;
+
+        const base_fanout: u32 = if (self.jobs_fanout > 0) self.jobs_fanout else 1;
+        const desired_fanout: u32 = if (thread_context.in_jobs_worker) @max(1, base_fanout / 2) else base_fanout;
+        const job_count: u32 = @min(task_count, desired_fanout);
+
+        const Shared = struct {
+            plugin: *const clap.Plugin,
+            exec_fn: *const fn (*const clap.Plugin, u32) callconv(.c) void,
+            task_count: u32,
+            next_task: std.atomic.Value(u32) = .init(0),
+        };
+
+        var shared = Shared{
+            .plugin = plugin,
+            .exec_fn = ext.exec,
+            .task_count = task_count,
+            .next_task = .init(0),
+        };
+
+        const RootJob = struct {
+            pub fn exec(_: *@This()) void {}
+        };
+        const root = job_queue.allocate(RootJob{});
+
+        const WorkerJob = struct {
+            shared: *Shared,
+            pub fn exec(job: *@This()) void {
+                thread_context.is_audio_thread = true;
+                thread_context.in_jobs_worker = true;
+                defer thread_context.in_jobs_worker = false;
+
+                while (true) {
+                    const idx = job.shared.next_task.fetchAdd(1, .acq_rel);
+                    if (idx >= job.shared.task_count) break;
+                    job.shared.exec_fn(job.shared.plugin, idx);
+                }
+            }
+        };
+
+        for (0..job_count) |_| {
+            const worker = job_queue.allocate(WorkerJob{ .shared = &shared });
+            job_queue.finishWith(worker, root);
+            job_queue.schedule(worker);
+        }
+
+        job_queue.schedule(root);
+        job_queue.waitRealtime(root);
+        return true;
+    }
+    return false;
 }
 
 fn hostGuiResizeHintsChanged(_: *const clap.Host) callconv(.c) void {}
@@ -981,6 +1249,557 @@ fn hostGuiClosed(host: *const clap.Host, _: bool) callconv(.c) void {
     }
 }
 
+fn hostLatencyChanged(_: *const clap.Host) callconv(.c) void {
+    // Soft: graph latency compensation recomputes from plugin latency queries
+    // on the next process; no hard restart required.
+}
+
+fn hostParamsRescan(_: *const clap.Host, _: clap.ext.params.Host.RescanFlags) callconv(.c) void {
+    // Param chrome rebuilds from count/getInfo on the next frame when needed.
+}
+
+fn hostParamsClear(_: *const clap.Host, _: clap.Id, _: clap.ext.params.Host.ClearFlags) callconv(.c) void {
+    // Automation not implemented yet.
+}
+
+fn hostParamsRequestFlush(host: *const clap.Host) callconv(.c) void {
+    const self = hostFromData(host);
+    self.flush_requested.store(true, .release);
+}
+
+// ── Main-thread pumps ────────────────────────────────────────────────────────
+
+fn callPluginOnMainThread(plugin: *const clap.Plugin) void {
+    const previous = plugin_call_context.enter(plugin);
+    defer plugin_call_context.restore(previous);
+    plugin.onMainThread(plugin);
+}
+
+fn pumpMainThreadCallbacks(self: *PluginHost) void {
+    if (!self.callback_requested.swap(false, .acq_rel)) return;
+    for (&self.instruments) |*slot| {
+        if (slot.getPlugin()) |p| callPluginOnMainThread(p);
+    }
+    for (&self.fx) |*row| {
+        for (row) |*slot| {
+            if (slot.getPlugin()) |p| callPluginOnMainThread(p);
+        }
+    }
+}
+
+fn pumpParamFlushes(self: *PluginHost) void {
+    if (!self.flush_requested.swap(false, .acq_rel)) return;
+    // Flush all loaded plugins with empty event lists (host-side param flush path).
+    for (&self.instruments) |*slot| {
+        if (slot.getPlugin()) |p| flushPluginParams(p);
+    }
+    for (&self.fx) |*row| {
+        for (row) |*slot| {
+            if (slot.getPlugin()) |p| flushPluginParams(p);
+        }
+    }
+}
+
+fn flushPluginParams(plugin: *const clap.Plugin) void {
+    const ext_raw = plugin.getExtension(plugin, clap.ext.params.id) orelse return;
+    const params: *const clap.ext.params.Plugin = @ptrCast(@alignCast(ext_raw));
+    var in_list: audio_events.EventList = .{};
+    var in_events = audio_events.emptyInputEvents(&in_list);
+    var out_list: audio_events.OutputEventList = .{};
+    var out_events = clap.events.OutputEvents{
+        .context = &out_list,
+        .tryPush = audio_events.outputEventsTryPush,
+    };
+    const previous = plugin_call_context.enter(plugin);
+    defer plugin_call_context.restore(previous);
+    params.flush(plugin, &in_events, &out_events);
+}
+
+fn pumpPluginGuiEvents(self: *PluginHost, io: std.Io) void {
+    pumpPluginTimers(self, io);
+    pumpPluginFds(self);
+}
+
+fn hostTimerRegister(host: *const clap.Host, period_ms: u32, timer_id: *clap.Id) callconv(.c) bool {
+    if (thread_context.is_audio_thread) return false;
+    const plugin = plugin_call_context.current() orelse return false;
+    const self = hostFromData(host);
+    const now_ns = nowNs(clock_io);
+
+    for (&self.gui_timers) |*timer| {
+        if (!timer.active) {
+            const id: clap.Id = @enumFromInt(self.next_gui_timer_id);
+            self.next_gui_timer_id +%= 1;
+            if (self.next_gui_timer_id == @intFromEnum(clap.Id.invalid_id)) {
+                self.next_gui_timer_id = 1;
+            }
+            timer.* = .{
+                .plugin = plugin,
+                .timer_id = id,
+                .period_ms = @max(period_ms, 1),
+                .next_fire_ns = now_ns + msToNs(@max(period_ms, 1)),
+                .active = true,
+            };
+            timer_id.* = id;
+            return true;
+        }
+    }
+    return false;
+}
+
+fn hostTimerUnregister(host: *const clap.Host, timer_id: clap.Id) callconv(.c) bool {
+    if (thread_context.is_audio_thread) return false;
+    const self = hostFromData(host);
+    for (&self.gui_timers) |*timer| {
+        if (timer.active and timer.timer_id == timer_id) {
+            timer.active = false;
+            return true;
+        }
+    }
+    return false;
+}
+
+fn hostPosixFdRegister(host: *const clap.Host, fd: c_int, flags: clap.ext.posix_fd_support.Flags) callconv(.c) bool {
+    if (thread_context.is_audio_thread) return false;
+    const plugin = plugin_call_context.current() orelse return false;
+    const self = hostFromData(host);
+
+    for (&self.gui_fds) |*entry| {
+        if (entry.active and entry.fd == fd) return false;
+    }
+    for (&self.gui_fds) |*entry| {
+        if (!entry.active) {
+            entry.* = .{
+                .plugin = plugin,
+                .fd = fd,
+                .flags = flags,
+                .active = true,
+            };
+            return true;
+        }
+    }
+    return false;
+}
+
+fn hostPosixFdModify(host: *const clap.Host, fd: c_int, flags: clap.ext.posix_fd_support.Flags) callconv(.c) bool {
+    if (thread_context.is_audio_thread) return false;
+    const self = hostFromData(host);
+    for (&self.gui_fds) |*entry| {
+        if (entry.active and entry.fd == fd) {
+            entry.flags = flags;
+            return true;
+        }
+    }
+    return false;
+}
+
+fn hostPosixFdUnregister(host: *const clap.Host, fd: c_int) callconv(.c) bool {
+    if (thread_context.is_audio_thread) return false;
+    const self = hostFromData(host);
+    for (&self.gui_fds) |*entry| {
+        if (entry.active and entry.fd == fd) {
+            entry.active = false;
+            return true;
+        }
+    }
+    return false;
+}
+
+fn pumpPluginTimers(self: *PluginHost, io: std.Io) void {
+    const now_ns = nowNs(io);
+    for (&self.gui_timers) |*timer| {
+        if (!timer.active) continue;
+        if (!pluginIsLoaded(self, timer.plugin)) {
+            timer.active = false;
+            continue;
+        }
+        if (now_ns < timer.next_fire_ns) continue;
+
+        const ext_raw = timer.plugin.getExtension(timer.plugin, clap.ext.timer_support.id) orelse {
+            timer.active = false;
+            continue;
+        };
+        const ext: *const clap.ext.timer_support.Plugin = @ptrCast(@alignCast(ext_raw));
+        {
+            const previous = plugin_call_context.enter(timer.plugin);
+            defer plugin_call_context.restore(previous);
+            ext.onTimer(timer.plugin, timer.timer_id);
+        }
+        timer.next_fire_ns = now_ns + msToNs(timer.period_ms);
+    }
+}
+
+fn pumpPluginFds(self: *PluginHost) void {
+    if (comptime builtin.os.tag != .linux) return;
+
+    var poll_fds: [max_gui_fds]std.posix.pollfd = undefined;
+    var sources: [max_gui_fds]*GuiFd = undefined;
+    var count: usize = 0;
+    for (&self.gui_fds) |*entry| {
+        if (!entry.active) continue;
+        if (!pluginIsLoaded(self, entry.plugin)) {
+            entry.active = false;
+            continue;
+        }
+        poll_fds[count] = .{
+            .fd = entry.fd,
+            .events = posixEventsFromFlags(entry.flags),
+            .revents = 0,
+        };
+        sources[count] = entry;
+        count += 1;
+    }
+    if (count == 0) return;
+
+    const ready_count = std.posix.poll(poll_fds[0..count], 0) catch return;
+    if (ready_count == 0) return;
+
+    for (poll_fds[0..count], sources[0..count]) |poll_fd, entry| {
+        if (poll_fd.revents == 0) continue;
+        const flags = flagsFromPosixEvents(poll_fd.revents);
+        const ext_raw = entry.plugin.getExtension(entry.plugin, clap.ext.posix_fd_support.id) orelse {
+            entry.active = false;
+            continue;
+        };
+        const ext: *const clap.ext.posix_fd_support.Plugin = @ptrCast(@alignCast(ext_raw));
+        {
+            const previous = plugin_call_context.enter(entry.plugin);
+            defer plugin_call_context.restore(previous);
+            ext.onFd(entry.plugin, entry.fd, flags);
+        }
+    }
+}
+
+fn pluginIsLoaded(self: *PluginHost, plugin: *const clap.Plugin) bool {
+    for (&self.instruments) |*slot| {
+        if (slot.getPlugin() == plugin) return true;
+    }
+    for (&self.fx) |*row| {
+        for (row) |*slot| {
+            if (slot.getPlugin() == plugin) return true;
+        }
+    }
+    return false;
+}
+
+fn nowNs(io: std.Io) u64 {
+    const now = std.Io.Clock.awake.now(io);
+    const ns = now.toNanoseconds();
+    return if (ns > 0) @intCast(ns) else 0;
+}
+
+fn msToNs(ms: u32) u64 {
+    return @as(u64, ms) * std.time.ns_per_ms;
+}
+
+fn posixEventsFromFlags(flags: clap.ext.posix_fd_support.Flags) @FieldType(std.posix.pollfd, "events") {
+    var events: @FieldType(std.posix.pollfd, "events") = 0;
+    if (flags.read) events |= std.posix.POLL.IN;
+    if (flags.write) events |= std.posix.POLL.OUT;
+    if (flags.@"error") events |= std.posix.POLL.ERR;
+    return events;
+}
+
+fn flagsFromPosixEvents(events: @FieldType(std.posix.pollfd, "revents")) clap.ext.posix_fd_support.Flags {
+    return .{
+        .read = (events & std.posix.POLL.IN) != 0,
+        .write = (events & std.posix.POLL.OUT) != 0,
+        .@"error" = (events & std.posix.POLL.ERR) != 0,
+        ._ = 0,
+    };
+}
+
+// ── Undo host extension → document undo history ──────────────────────────────
+
+const UndoTarget = struct {
+    track_index: usize,
+    fx_index: ?usize,
+    plugin: *const clap.Plugin,
+};
+
+fn getActivePluginForUndo(self: *PluginHost, state: *const chrome.State) ?UndoTarget {
+    const track_idx = state.deviceTrack();
+    if (track_idx >= track_count) return null;
+
+    switch (state.device_target_kind) {
+        .instrument => {
+            const plugin = self.instruments[track_idx].getPlugin() orelse return null;
+            return .{ .track_index = track_idx, .fx_index = null, .plugin = plugin };
+        },
+        .fx => {
+            const fx_idx = state.device_target_fx;
+            if (fx_idx >= max_fx_slots) return null;
+            const plugin = self.fx[track_idx][fx_idx].getPlugin() orelse return null;
+            return .{ .track_index = track_idx, .fx_index = fx_idx, .plugin = plugin };
+        },
+    }
+}
+
+fn getPluginForUndoSlot(self: *PluginHost, track_idx: usize, fx_index: ?usize) ?*const clap.Plugin {
+    if (track_idx >= track_count) return null;
+    if (fx_index) |fx| {
+        if (fx >= max_fx_slots) return null;
+        return self.fx[track_idx][fx].getPlugin();
+    }
+    return self.instruments[track_idx].getPlugin();
+}
+
+fn clearUndoChange(self: *PluginHost) void {
+    if (self.undo_pre_state) |pre| {
+        self.allocator.free(pre);
+    }
+    self.undo_pre_state = null;
+    self.undo_track_index = null;
+    self.undo_fx_index = null;
+    self.undo_change_in_progress = false;
+}
+
+fn hostUndoBeginChange(host: *const clap.Host) callconv(.c) void {
+    const self = hostFromData(host);
+    if (self.undo_change_in_progress) {
+        std.log.warn("Plugin called begin_change while change already in progress", .{});
+        return;
+    }
+    // Chrome global is always present in the product path.
+    const state = &chrome.g;
+    const target = getActivePluginForUndo(self, state) orelse return;
+
+    if (project_plugin_state.capturePluginStateForUndo(self.allocator, target.plugin)) |pre_state| {
+        self.undo_pre_state = pre_state;
+        self.undo_track_index = target.track_index;
+        self.undo_fx_index = target.fx_index;
+        self.undo_change_in_progress = true;
+    }
+}
+
+fn hostUndoCancelChange(host: *const clap.Host) callconv(.c) void {
+    const self = hostFromData(host);
+    clearUndoChange(self);
+}
+
+fn hostUndoChangeMade(
+    host: *const clap.Host,
+    name: [*:0]const u8,
+    delta: ?*const anyopaque,
+    delta_size: usize,
+    delta_can_undo: bool,
+) callconv(.c) void {
+    _ = delta;
+    _ = delta_size;
+    _ = delta_can_undo;
+
+    const self = hostFromData(host);
+    const state = &chrome.g;
+
+    const track_idx = self.undo_track_index orelse state.deviceTrack();
+    const fx_index = self.undo_fx_index orelse switch (state.device_target_kind) {
+        .instrument => null,
+        .fx => state.device_target_fx,
+    };
+
+    const old_state = self.undo_pre_state orelse {
+        std.log.debug("Plugin change_made without begin_change: {s}", .{name});
+        clearUndoChange(self);
+        return;
+    };
+    // Ownership of old_state transfers to history; clear pre pointer first.
+    self.undo_pre_state = null;
+    self.undo_change_in_progress = false;
+    self.undo_track_index = null;
+    self.undo_fx_index = null;
+
+    const plugin = getPluginForUndoSlot(self, track_idx, fx_index) orelse {
+        self.allocator.free(old_state);
+        return;
+    };
+
+    const new_state = project_plugin_state.capturePluginStateForUndo(self.allocator, plugin) orelse {
+        self.allocator.free(old_state);
+        return;
+    };
+
+    if (!document_model.ready()) {
+        self.allocator.free(old_state);
+        self.allocator.free(new_state);
+        return;
+    }
+    document_model.g.undo_history.push(.{
+        .plugin_state = .{
+            .track_index = track_idx,
+            .fx_index = fx_index,
+            .old_state = old_state,
+            .new_state = new_state,
+        },
+    });
+    std.log.debug("Plugin undo entry: {s} track={d} fx={?}", .{ name, track_idx, fx_index });
+    // History changed — push context to subscribed plugins immediately.
+    pumpUndoContextUpdates(self);
+}
+
+fn hostUndoRequestUndo(host: *const clap.Host) callconv(.c) void {
+    if (!document_model.ready()) return;
+    const document_commands = @import("../document/commands.zig");
+    _ = document_commands.undo(&document_model.g);
+    pumpUndoContextUpdates(hostFromData(host));
+}
+
+fn hostUndoRequestRedo(host: *const clap.Host) callconv(.c) void {
+    if (!document_model.ready()) return;
+    const document_commands = @import("../document/commands.zig");
+    _ = document_commands.redo(&document_model.g);
+    pumpUndoContextUpdates(hostFromData(host));
+}
+
+fn hostUndoSetWantsContextUpdates(host: *const clap.Host, is_subscribed: bool) callconv(.c) void {
+    if (thread_context.is_audio_thread) return;
+    const self = hostFromData(host);
+    const plugin = resolveCallingPlugin(self) orelse {
+        std.log.debug("set_wants_context_updates({any}): no calling plugin context", .{is_subscribed});
+        return;
+    };
+    const slot = findSlotForPlugin(self, plugin) orelse {
+        std.log.debug("set_wants_context_updates({any}): plugin not in host slots", .{is_subscribed});
+        return;
+    };
+    slot.wants_undo_context = is_subscribed;
+    if (is_subscribed) {
+        // Immediate push so the plugin GUI can enable undo/redo chrome right away.
+        self.undo_ctx_force = true;
+        pumpUndoContextUpdates(self);
+    }
+}
+
+fn resolveCallingPlugin(self: *PluginHost) ?*const clap.Plugin {
+    if (plugin_call_context.current()) |p| return p;
+    // Same fallback as undo capture: device-panel target when context is unset
+    // (plugin GUI thread calling host without an enter/restore nest).
+    const state = &chrome.g;
+    if (getActivePluginForUndo(self, state)) |t| return t.plugin;
+    return null;
+}
+
+fn findSlotForPlugin(self: *PluginHost, plugin: *const clap.Plugin) ?*LoadedPlugin {
+    for (&self.instruments) |*slot| {
+        if (slot.getPlugin() == plugin) return slot;
+    }
+    for (&self.fx) |*row| {
+        for (row) |*slot| {
+            if (slot.getPlugin() == plugin) return slot;
+        }
+    }
+    return null;
+}
+
+fn hasUndoContextSubscriber(self: *const PluginHost) bool {
+    for (&self.instruments) |*slot| {
+        if (slot.wants_undo_context and slot.isLoaded()) return true;
+    }
+    for (&self.fx) |*row| {
+        for (row) |*slot| {
+            if (slot.wants_undo_context and slot.isLoaded()) return true;
+        }
+    }
+    return false;
+}
+
+fn copyNameZ(buf: *[64]u8, name: ?[]const u8) ?[*:0]const u8 {
+    const s = name orelse return null;
+    if (s.len == 0) return null;
+    const n = @min(s.len, buf.len - 1);
+    @memcpy(buf[0..n], s[0..n]);
+    buf[n] = 0;
+    return buf[0..n :0].ptr;
+}
+
+fn namesEqual(stored: []const u8, current: ?[]const u8) bool {
+    const cur = current orelse return stored.len == 0;
+    return std.mem.eql(u8, stored, cur);
+}
+
+/// Push can_undo / can_redo / step names to plugins that subscribed via
+/// `set_wants_context_updates`. Dirty-compared so UI-side undo (Ctrl+Z) is
+/// reflected on the next host tick without redundant extension calls.
+fn pumpUndoContextUpdates(self: *PluginHost) void {
+    if (!hasUndoContextSubscriber(self)) {
+        self.undo_ctx_force = false;
+        return;
+    }
+    if (!document_model.ready()) return;
+
+    const can_undo = document_model.g.undo_history.canUndo();
+    const can_redo = document_model.g.undo_history.canRedo();
+    const undo_desc = document_model.g.undo_history.getUndoDescription();
+    const redo_desc = document_model.g.undo_history.getRedoDescription();
+
+    const last_undo = self.undo_ctx_last_undo_name[0..self.undo_ctx_last_undo_name_len];
+    const last_redo = self.undo_ctx_last_redo_name[0..self.undo_ctx_last_redo_name_len];
+    if (!self.undo_ctx_force and
+        self.undo_ctx_last_can_undo == can_undo and
+        self.undo_ctx_last_can_redo == can_redo and
+        namesEqual(last_undo, undo_desc) and
+        namesEqual(last_redo, redo_desc))
+    {
+        return;
+    }
+
+    const undo_z = copyNameZ(&self.undo_ctx_name_buf, undo_desc);
+    const redo_z = copyNameZ(&self.redo_ctx_name_buf, redo_desc);
+
+    for (&self.instruments) |*slot| {
+        notifyUndoContextSlot(slot, can_undo, can_redo, undo_z, redo_z);
+    }
+    for (&self.fx) |*row| {
+        for (row) |*slot| {
+            notifyUndoContextSlot(slot, can_undo, can_redo, undo_z, redo_z);
+        }
+    }
+
+    self.undo_ctx_last_can_undo = can_undo;
+    self.undo_ctx_last_can_redo = can_redo;
+    if (undo_desc) |d| {
+        const n = @min(d.len, self.undo_ctx_last_undo_name.len);
+        @memcpy(self.undo_ctx_last_undo_name[0..n], d[0..n]);
+        self.undo_ctx_last_undo_name_len = n;
+    } else {
+        self.undo_ctx_last_undo_name_len = 0;
+    }
+    if (redo_desc) |d| {
+        const n = @min(d.len, self.undo_ctx_last_redo_name.len);
+        @memcpy(self.undo_ctx_last_redo_name[0..n], d[0..n]);
+        self.undo_ctx_last_redo_name_len = n;
+    } else {
+        self.undo_ctx_last_redo_name_len = 0;
+    }
+    self.undo_ctx_force = false;
+}
+
+fn notifyUndoContextSlot(
+    slot: *LoadedPlugin,
+    can_undo: bool,
+    can_redo: bool,
+    undo_name: ?[*:0]const u8,
+    redo_name: ?[*:0]const u8,
+) void {
+    if (!slot.wants_undo_context) return;
+    const plugin = slot.getPlugin() orelse {
+        slot.wants_undo_context = false;
+        return;
+    };
+    const ext_raw = plugin.getExtension(plugin, clap.ext.undo.context_id) orelse {
+        // Plugin asked for updates but does not implement clap.undo_context — drop.
+        slot.wants_undo_context = false;
+        std.log.debug("plugin subscribed to undo context without clap.undo_context extension", .{});
+        return;
+    };
+    const ctx: *const clap.ext.undo.PluginContext = @ptrCast(@alignCast(ext_raw));
+    const previous = plugin_call_context.enter(plugin);
+    defer plugin_call_context.restore(previous);
+    ctx.set_can_undo(plugin, can_undo);
+    ctx.set_can_redo(plugin, can_redo);
+    ctx.set_undo_name(plugin, undo_name);
+    ctx.set_redo_name(plugin, redo_name);
+}
+
 // ── Process-wide ─────────────────────────────────────────────────────────────
 
 pub var g: PluginHost = undefined;
@@ -1008,6 +1827,36 @@ test "plugin host init without discover still deinit" {
     var ph = PluginHost.init(std.testing.allocator);
     // Don't call start — catalog optional.
     ph.deinit();
+}
+
+test "undo context name helpers and dirty compare" {
+    var buf: [64]u8 = undefined;
+    try std.testing.expect(copyNameZ(&buf, null) == null);
+    try std.testing.expect(copyNameZ(&buf, "") == null);
+    const z = copyNameZ(&buf, "Change Plugin") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("Change Plugin", std.mem.span(z));
+
+    try std.testing.expect(namesEqual("", null));
+    try std.testing.expect(namesEqual("Edit Notes", "Edit Notes"));
+    try std.testing.expect(!namesEqual("Edit Notes", "Create Clip"));
+    try std.testing.expect(!namesEqual("x", null));
+}
+
+test "LoadedPlugin clearHostFlags clears undo context subscription" {
+    var slot: LoadedPlugin = .{};
+    slot.wants_undo_context = true;
+    slot.gui_open = true;
+    slot.clearHostFlags();
+    try std.testing.expect(!slot.wants_undo_context);
+    try std.testing.expect(!slot.gui_open);
+}
+
+test "pumpUndoContextUpdates no-ops without subscribers" {
+    var ph = PluginHost.init(std.testing.allocator);
+    defer ph.deinit();
+    ph.undo_ctx_force = true;
+    pumpUndoContextUpdates(&ph);
+    try std.testing.expect(!ph.undo_ctx_force);
 }
 
 test "set instrument choice updates name projection" {

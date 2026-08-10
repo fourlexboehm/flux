@@ -23,6 +23,7 @@ const edit_actions = @import("edit_actions.zig");
 const media_drop = @import("media_drop.zig");
 const recording = @import("recording.zig");
 const midi_input = @import("../midi/input.zig");
+const controller_mapping = @import("../midi/controller_mapping.zig");
 
 const sdl = dvui.backend.c;
 const clock_io: std.Io = std.Io.Threaded.global_single_threaded.io();
@@ -92,6 +93,7 @@ pub fn init(win: *dvui.Window) !void {
     // XInitThreads before any CLAP opens an X11 parent (Linux only).
     const gui_float = @import("../plugin/gui_float.zig");
     gui_float.initPlatform();
+    logDisplayScale(win);
     // Empty document (session_ops.init + matching arr lanes). No demo seed.
     document_model.initGlobal(win.gpa);
     host_mod.initGlobal(win.gpa);
@@ -106,6 +108,31 @@ pub fn init(win: *dvui.Window) !void {
     std.log.info("  audio: full AudioEngine + CLAP catalog + floating/parented plugin GUIs", .{});
     std.log.info("  MIDI: physical keyboard A–; positions (Z/X octave) + hardware portmidi", .{});
     std.log.info("  Space = play/stop, Tab = session/arrangement, Shift+Tab = device/clip, B = browser", .{});
+}
+
+/// One-shot HiDPI / Wayland scale dump so blurry UI is diagnosable without a debugger.
+fn logDisplayScale(win: *dvui.Window) void {
+    const be = win.backend;
+    const win_sz = be.windowSize();
+    const px_sz = be.pixelSize();
+    const content = be.contentScale();
+    const px_ratio = if (win_sz.w > 0) px_sz.w / win_sz.w else 0;
+    std.log.info("display scale: window {d:.0}x{d:.0}  pixels {d:.0}x{d:.0}  pixel_ratio={d:.2}  content_scale={d:.2}  natural_scale={d:.2}", .{
+        win_sz.w,
+        win_sz.h,
+        px_sz.w,
+        px_sz.h,
+        px_ratio,
+        content,
+        win.natural_scale,
+    });
+    if (px_ratio < 1.5 and content >= 1.5) {
+        std.log.warn("HiDPI: content_scale={d:.2} but pixel buffer ~1x — compositor may blur the UI", .{content});
+    } else if (px_ratio >= 1.5) {
+        std.log.info("HiDPI: sharp pixel buffer (ratio {d:.2}); system content_scale={d:.2}", .{ px_ratio, content });
+    } else if (comptime builtin.os.tag == .linux) {
+        std.log.warn("HiDPI: pixel_ratio≈1 — use native Wayland SDL (unset SDL_VIDEODRIVER=x11). Expect ~2 on this panel.", .{});
+    }
 }
 
 /// Dev hook: `FLUX_DEV_DEVICE=<clap plugin id>` loads that plugin on track 1
@@ -183,13 +210,15 @@ pub fn frame() !dvui.App.Result {
         plugin_host.g.tickLiveMidi(midi_track, state.piano_preview_pitch);
     }
 
-    // Drain hardware MIDI every frame (queue capacity is finite). Capture into
-    // the armed clip only while a take is active.
+    // Drain hardware MIDI every frame (queue capacity is finite).
+    // Control-surface CCs → document/session + RT param writes; notes → recording.
     if (plugin_host.ready() and plugin_host.g.midi_active) {
         var midi_events: [256]midi_input.MidiEvent = undefined;
         while (true) {
             const n = plugin_host.g.midi.drainEvents(midi_events[0..]);
             if (n == 0) break;
+            const device_plugin = plugin_host.g.deviceTargetPlugin(state);
+            controller_mapping.applyMidiEvents(state, midi_events[0..n], device_plugin);
             const now = std.Io.Clock.awake.now(clock_io);
             recording.processMidiEvents(state, midi_events[0..n], now);
             if (n < midi_events.len) break;
@@ -269,6 +298,11 @@ fn drawTop(state: *state_mod.State) void {
 
 fn handleGlobalKeys(state: *state_mod.State) void {
     const wd = dvui.currentWindow().data();
+    // Text fields own the keyboard (last frame flag — rect is wiped in Window.begin).
+    // Without this, piano capture + device-chain backspace/delete steal keys from
+    // the preset search box and similar entries.
+    const typing = text_input_was_active;
+
     for (dvui.events()) |*e| {
         if (e.handled) continue;
         if (e.evt != .key) continue;
@@ -276,19 +310,19 @@ fn handleGlobalKeys(state: *state_mod.State) void {
 
         // The computer piano owns its physical key positions before any
         // layout-dependent editor/global shortcuts see the translated key.
-        if (plugin_host.ready() and !ke.mod.control() and !ke.mod.command() and !ke.mod.alt() and isPhysicalPianoKey(ke.code)) {
+        if (!typing and plugin_host.ready() and !ke.mod.control() and !ke.mod.command() and !ke.mod.alt() and isPhysicalPianoKey(ke.code)) {
             e.handle(@src(), wd);
             dvui.refresh(null, @src(), wd.id);
             continue;
         }
 
-        if (state.focused_pane == .bottom and state.bottom_mode == .sequencer and piano_roll.handleKey(state, ke)) {
+        if (!typing and state.focused_pane == .bottom and state.bottom_mode == .sequencer and piano_roll.handleKey(state, ke)) {
             e.handle(@src(), wd);
             dvui.refresh(null, @src(), wd.id);
             continue;
         }
 
-        if (state.focused_pane == .bottom and state.bottom_mode == .device and bottom.handleChainKey(state, ke)) {
+        if (!typing and state.focused_pane == .bottom and state.bottom_mode == .device and bottom.handleChainKey(state, ke)) {
             e.handle(@src(), wd);
             dvui.refresh(null, @src(), wd.id);
             continue;

@@ -646,8 +646,15 @@ fn executeCommand(store: *model.Store, cmd: *const undo_mod.Command, comptime di
             const name = if (direction == .undo) c.old_name else c.new_name;
             if (store.slotClip(c.track, c.scene)) |clip| clip.name = name;
         },
-        .bpm_change, .quantize_change, .plugin_state => {
-            // Owned by chrome / plugin host — not applied from the document layer.
+        .bpm_change, .quantize_change => {
+            // Owned by chrome transport — not applied from the document layer.
+        },
+        .plugin_state => |c| {
+            // Blobs live in undo history; restore via plugin host (UI-adjacent).
+            const plugin_host = @import("../ui/plugin_host.zig");
+            if (!plugin_host.ready()) return;
+            const data = if (direction == .undo) c.old_state else c.new_state;
+            _ = plugin_host.g.applyPluginStateBlob(c.track_index, c.fx_index, data);
         },
         .clip_move => |c| {
             moveClipPayloads(store, c.moves, direction == .undo);

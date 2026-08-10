@@ -29,7 +29,10 @@ pub const publishSampleTableFromStore = audio_clip_source.publishSampleTable;
 pub const JobQueue = libz_jobs.JobQueue(.{
     .max_jobs_per_thread = 64,
     .max_threads = 16,
-    .idle_sleep_ns = 1_500_000,
+    // Must stay << quantum budget. 1.5ms was half of a 128-frame period at 44.1k
+    // and made parallel synth jobs late (workers still asleep when work landed).
+    // Adaptive sleep in audio_runtime raises this when DSP load is low.
+    .idle_sleep_ns = 50_000,
 });
 
 var parallel_threshold_cfg: std.atomic.Value(u32) = std.atomic.Value(u32).init(3);
@@ -318,6 +321,19 @@ pub const Graph = struct {
         wake_requested: bool,
     };
 
+    /// Optional per-stage wall times (ns) for serial RT profiling. Null = no timing.
+    pub const StageNs = struct {
+        clear_active: u64 = 0,
+        notes: u64 = 0,
+        clips: u64 = 0,
+        synths: u64 = 0,
+        fx: u64 = 0,
+        gains: u64 = 0,
+        mixers: u64 = 0,
+        master: u64 = 0,
+        total: u64 = 0,
+    };
+
     pub fn process(
         self: *Graph,
         snapshot: *const StateSnapshot,
@@ -326,12 +342,32 @@ pub const Graph = struct {
         frame_count: u32,
         steady_time: u64,
     ) void {
+        self.processProfiled(snapshot, shared, jobs, frame_count, steady_time, null);
+    }
+
+    pub fn processProfiled(
+        self: *Graph,
+        snapshot: *const StateSnapshot,
+        shared: *audio_engine.SharedState,
+        jobs: ?*JobQueue,
+        frame_count: u32,
+        steady_time: u64,
+        stage_ns: ?*StageNs,
+    ) void {
         const zone = tracy.ZoneN(@src(), "Graph.process");
         defer zone.End();
 
+        const profile = stage_ns != null;
+        const io = std.Io.Threaded.global_single_threaded.io();
+        var t0: std.Io.Timestamp = undefined;
+        var t_stage: std.Io.Timestamp = undefined;
+        if (profile) t0 = std.Io.Clock.awake.now(io);
+
+        if (profile) t_stage = std.Io.Clock.awake.now(io);
         for (self.buffers.items) |*buffer| {
             buffer.active = false;
         }
+        if (profile) stage_ns.?.clear_active = nsBetween(t_stage, io);
 
         var ctx = ProcessContext{
             .graph = self,
@@ -343,13 +379,41 @@ pub const Graph = struct {
             .wake_requested = shared.process_requested.swap(false, .acq_rel),
         };
 
+        if (profile) t_stage = std.Io.Clock.awake.now(io);
         self.processNoteSources(snapshot, frame_count);
+        if (profile) stage_ns.?.notes = nsBetween(t_stage, io);
+
+        if (profile) t_stage = std.Io.Clock.awake.now(io);
         self.processAudioClipSources(snapshot, frame_count);
+        if (profile) stage_ns.?.clips = nsBetween(t_stage, io);
+
+        if (profile) t_stage = std.Io.Clock.awake.now(io);
         self.processSynths(&ctx, jobs);
+        if (profile) stage_ns.?.synths = nsBetween(t_stage, io);
+
+        if (profile) t_stage = std.Io.Clock.awake.now(io);
         self.processFx(&ctx);
+        if (profile) stage_ns.?.fx = nsBetween(t_stage, io);
+
+        if (profile) t_stage = std.Io.Clock.awake.now(io);
         self.processGains(&ctx);
+        if (profile) stage_ns.?.gains = nsBetween(t_stage, io);
+
+        if (profile) t_stage = std.Io.Clock.awake.now(io);
         self.processMixers(&ctx);
+        if (profile) stage_ns.?.mixers = nsBetween(t_stage, io);
+
+        if (profile) t_stage = std.Io.Clock.awake.now(io);
         self.processMaster(&ctx);
+        if (profile) stage_ns.?.master = nsBetween(t_stage, io);
+
+        if (profile) stage_ns.?.total = nsBetween(t0, io);
+    }
+
+    fn nsBetween(from: std.Io.Timestamp, io: std.Io) u64 {
+        const to = std.Io.Clock.awake.now(io);
+        const ns = from.durationTo(to).toNanoseconds();
+        return if (ns > 0) @intCast(ns) else 0;
     }
 
     fn processNoteSources(self: *Graph, snapshot: *const StateSnapshot, frame_count: u32) void {
@@ -415,8 +479,11 @@ pub const Graph = struct {
         if (active_count == 0) return;
 
         const configured_threshold = parallel_threshold_cfg.load(.acquire);
+        // At ≤128 frames the job fan-out + steal latency often exceeds the
+        // serial process cost for a few light instruments (see rt-bench). Require
+        // more concurrent synths before parallelizing short quanta.
         const parallel_threshold: usize = @intCast(if (ctx.frame_count <= 128)
-            @max(@as(u32, 2), configured_threshold -| 1)
+            @max(@as(u32, 4), configured_threshold + 1)
         else
             configured_threshold);
 

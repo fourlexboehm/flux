@@ -222,23 +222,29 @@ pub const SharedState = struct {
 
         self.active_index.store(next, .release);
 
-        // After publish, wait until any in-flight callback finishes so no reader
-        // still holds the previous snapshot, then free retired sample/bake buffers.
-        while (self.processing.load(.acquire) != 0) {
-            std.atomic.spinLoopHint();
-        }
-        if (document_changed) {
-            // Both buffers must carry the same immutable document payload so
-            // subsequent runtime-only publications can safely alternate.
-            self.snapshots[current] = self.snapshots[next];
-            self.published_document_revision = view.document_revision;
-            self.published_document_bpm = view.bpm;
-            self.document_compile_count += 1;
-        }
-        view.sample_store.flushDeferredFrees();
-        for (0..max_tracks) |t| {
-            for (0..max_scenes) |s| {
-                if (view.slotAudio(t, s)) |audio| audio.flushDeferredBakeFrees();
+        // Retire deferred sample/bake frees only when the document payload
+        // changed (or frees are pending). Live-key / transport publishes every
+        // frame must NOT spin-wait on the audio callback — that freezes the UI
+        // (and mouse) whenever notes make process() take a buffer length.
+        const frees_pending = view.sample_store.deferred_free.items.len > 0 or
+            audioClipBakeFreesPending(view);
+        if (document_changed or frees_pending) {
+            // Wait until no reader still holds the previous snapshot.
+            // Prefer sleep over a tight spin so the UI can still schedule work.
+            self.waitForIdle(std.Io.Threaded.global_single_threaded.io());
+            if (document_changed) {
+                // Both buffers must carry the same immutable document payload so
+                // subsequent runtime-only publications can safely alternate.
+                self.snapshots[current] = self.snapshots[next];
+                self.published_document_revision = view.document_revision;
+                self.published_document_bpm = view.bpm;
+                self.document_compile_count += 1;
+            }
+            view.sample_store.flushDeferredFrees();
+            for (0..max_tracks) |t| {
+                for (0..max_scenes) |s| {
+                    if (view.slotAudio(t, s)) |audio| audio.flushDeferredBakeFrees();
+                }
             }
         }
     }
@@ -254,20 +260,19 @@ pub const SharedState = struct {
 
     pub fn setTrackPlugin(self: *SharedState, track_index: usize, plugin: ?*const clap.Plugin) void {
         self.track_plugins[track_index] = plugin;
+        // Patch both double-buffer slots. Do NOT assign entire StateSnapshot
+        // (~4.6MB of piano clip tables) — that memcpy alone was ~100µs and could
+        // stall the UI next to waitForIdle / document publishes.
         const current = self.active_index.load(.acquire);
-        const next: u32 = 1 - current;
-        self.snapshots[next] = self.snapshots[current];
-        self.snapshots[next].track_plugins[track_index] = plugin;
-        self.active_index.store(next, .release);
+        self.snapshots[current].track_plugins[track_index] = plugin;
+        self.snapshots[1 - current].track_plugins[track_index] = plugin;
     }
 
     pub fn setTrackFxPlugin(self: *SharedState, track_index: usize, fx_index: usize, plugin: ?*const clap.Plugin) void {
         self.track_fx_plugins[track_index][fx_index] = plugin;
         const current = self.active_index.load(.acquire);
-        const next: u32 = 1 - current;
-        self.snapshots[next] = self.snapshots[current];
-        self.snapshots[next].track_fx_plugins[track_index][fx_index] = plugin;
-        self.active_index.store(next, .release);
+        self.snapshots[current].track_fx_plugins[track_index][fx_index] = plugin;
+        self.snapshots[1 - current].track_fx_plugins[track_index][fx_index] = plugin;
     }
 
     /// Request that startProcessing be called for a track plugin from the audio thread
@@ -329,8 +334,15 @@ pub const SharedState = struct {
     }
 
     pub fn waitForIdle(self: *SharedState, io: std.Io) void {
+        // Cap wait so a stuck audio callback cannot freeze the UI forever.
+        var spins: u32 = 0;
         while (self.processing.load(.acquire) != 0) {
             _ = io.sleep(std.Io.Duration.fromMilliseconds(1), .awake) catch {};
+            spins += 1;
+            if (spins >= 250) {
+                std.log.warn("waitForIdle: audio still processing after 250ms; continuing", .{});
+                break;
+            }
         }
     }
 
@@ -342,6 +354,19 @@ pub const SharedState = struct {
         return self.suspend_processing.load(.acquire);
     }
 };
+
+fn audioClipBakeFreesPending(view: *EngineUiView) bool {
+    const tc = @min(view.session.track_count, max_tracks);
+    const sc = @min(view.session.scene_count, max_scenes);
+    for (0..tc) |t| {
+        for (0..sc) |s| {
+            if (view.slotAudio(t, s)) |audio| {
+                if (audio.deferred_bake_free.items.len > 0) return true;
+            }
+        }
+    }
+    return false;
+}
 
 pub const AudioEngine = struct {
     allocator: std.mem.Allocator,
@@ -397,6 +422,11 @@ pub const AudioEngine = struct {
         if (max_frames == self.max_frames) return;
         self.max_frames = max_frames;
         try self.rebuildGraph(self.track_count, true);
+    }
+
+    /// Rebuild the graph for a specific instrument track count (tests / benches).
+    pub fn rebuildTracks(self: *AudioEngine, track_count_in: usize) !void {
+        try self.rebuildGraph(track_count_in, true);
     }
 
     pub fn updatePlugins(

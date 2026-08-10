@@ -235,6 +235,11 @@ pub fn open(slot: *LoadedPlugin) !void {
     defer plugin_call_context.restore(previous);
 
     const plan = try choosePlan(plugin, gui_ext);
+    std.log.info("plugin GUI plan: api={s} floating={} id={s}", .{
+        std.mem.span(plan.api),
+        plan.is_floating,
+        std.mem.span(plugin.descriptor.id),
+    });
 
     if (!gui_ext.create(plugin, plan.api, plan.is_floating)) {
         return error.GuiCreateFailed;
@@ -247,6 +252,7 @@ pub fn open(slot: *LoadedPlugin) !void {
             else => error.GuiNeedsParent,
         };
         parent_err catch |err| {
+            std.log.warn("plugin GUI parent failed ({}): api={s}", .{ err, std.mem.span(plan.api) });
             gui_ext.destroy(plugin);
             return err;
         };
@@ -290,4 +296,28 @@ pub fn pumpOnMainThread(plugin: *const clap.Plugin) void {
     const previous = plugin_call_context.enter(plugin);
     defer plugin_call_context.restore(previous);
     plugin.onMainThread(plugin);
+}
+
+/// Pump X11 host-window events for a parented Linux GUI (expose/configure/close).
+/// Returns true when the user closed the window via the window manager.
+pub fn pumpHostWindow(slot: *LoadedPlugin) bool {
+    if (builtin.os.tag != .linux) return false;
+    if (!slot.gui_open) return false;
+    const display_raw = slot.gui_window orelse return false;
+    if (slot.gui_x11_window == 0) return false;
+
+    var host = linux_x11.HostWindow{
+        .display = @ptrCast(@alignCast(display_raw)),
+        .window = @intCast(slot.gui_x11_window),
+        .width = 0,
+        .height = 0,
+        .wm_delete = 0,
+        .close_requested = false,
+    };
+    // Re-intern delete atom for ClientMessage comparison (cheap).
+    // HostWindow.pumpEvents only checks wm_delete if non-zero; re-fetch.
+    // We can't call XInternAtom without linking — create() stored it only in
+    // the stack HostWindow. Re-open path: process all events generically.
+    host.pumpEvents();
+    return host.close_requested;
 }

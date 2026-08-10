@@ -111,6 +111,8 @@ pub const LoadedPlugin = struct {
     gui_view: ?*anyopaque = null,
     /// Linux X11: parent Window id (0 = none). Display lives in `gui_window`.
     gui_x11_window: u64 = 0,
+    /// Plugin subscribed via host `set_wants_context_updates` (CLAP undo context).
+    wants_undo_context: bool = false,
 
     pub fn getPlugin(self: *const LoadedPlugin) ?*const clap.Plugin {
         if (self.handle) |h| return h.plugin;
@@ -128,6 +130,11 @@ pub const LoadedPlugin = struct {
         self.gui_window = null;
         self.gui_view = null;
         self.gui_x11_window = 0;
+    }
+
+    pub fn clearHostFlags(self: *LoadedPlugin) void {
+        self.clearGuiFlags();
+        self.wants_undo_context = false;
     }
 };
 
@@ -169,7 +176,7 @@ pub fn unloadInstrument(
     }
     slot.handle = null;
     slot.builtin = null;
-    slot.clearGuiFlags();
+    slot.clearHostFlags();
 }
 
 pub fn unloadFx(
@@ -198,7 +205,7 @@ pub fn unloadFx(
     }
     slot.handle = null;
     slot.builtin = null;
-    slot.clearGuiFlags();
+    slot.clearHostFlags();
 }
 
 pub const PluginSnapshot = struct {

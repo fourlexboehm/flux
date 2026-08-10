@@ -151,6 +151,39 @@ pub const buffer_labels = [_][]const u8{ "16", "32", "64", "128", "256", "512", 
 pub const default_buffer_frames: u32 = 128;
 pub const default_quantize_index: usize = 3; // 1/4
 
+// ── MIDI control-surface chrome (Axiom-class; mapping lives in midi/) ────────
+
+pub const controller_smart_slots: usize = 8;
+pub const max_controller_smart_params: usize = 256;
+
+pub const ControllerSmartParam = struct {
+    param_id: u32 = 0,
+    min_value: f64 = 0.0,
+    max_value: f64 = 1.0,
+    label: [96]u8 = @splat(0),
+    label_len: usize = 0,
+};
+
+pub const ControllerProfile = enum {
+    axiom_49_g2,
+};
+
+/// Draw-facing controller tables. Plugin identity for smart-param rebuild is
+/// track/kind/fx (not a live CLAP pointer) so this module stays clap-free.
+pub const ControllerState = struct {
+    profile: ControllerProfile = .axiom_49_g2,
+    smart_page: usize = 0,
+    smart_param_count: usize = 0,
+    smart_params: [max_controller_smart_params]ControllerSmartParam = @splat(.{}),
+    smart_target_track: usize = 0,
+    smart_target_kind: DeviceTargetKind = .instrument,
+    smart_target_fx: usize = 0,
+    /// Opaque plugin identity token (pointer address); 0 = none.
+    smart_target_token: usize = 0,
+    cc_button_down: [128]bool = @splat(false),
+    last_cc_values: [128]u8 = @splat(0),
+};
+
 // ── State ────────────────────────────────────────────────────────────────────
 
 pub const State = struct {
@@ -314,6 +347,9 @@ pub const State = struct {
     device_target_fx: usize = 0,
     /// Master strip vs selected track (affects device rack + mixer highlight).
     mixer_target: MixerTarget = .track,
+
+    /// MIDI control surface (CC mapping + smart param pages).
+    controller: ControllerState = .{},
 
     // ── Projected domain snapshot (filled by host.projectChrome) ───────────
     slots: [max_tracks][max_scenes]ClipSlot = @splat(@splat(.{})),

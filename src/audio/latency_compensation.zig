@@ -42,6 +42,16 @@ pub const StereoDelay = struct {
         // fluttered or a clip/plugin enabled state changed mid-playback.
         self.delay = @min(requested_delay, max_frames);
         const delay = self.delay;
+
+        // True passthrough: do not touch the 128k-sample ring. Filling it on every
+        // silent/zero-delay callback was pure serial RT tax for the common case
+        // (no PDC plugins). When delay becomes non-zero later, cold-start history
+        // emits silence until the ring refills — same as a fresh delay line.
+        if (delay == 0) {
+            self.history = 0;
+            return;
+        }
+
         const n: u32 = @intCast(left.len);
         const write = self.write_pos;
 
@@ -49,12 +59,11 @@ pub const StereoDelay = struct {
         // cold-start / sub-block / max-delay-alias branches don't apply, so the
         // whole block is two contiguous ring spans (≤2 @memcpy each, vectorized
         // by the backend) instead of a per-sample masked loop.
-        //   - delay == 0: passthrough, ring still advances.
         //   - warm && n <= delay < max_frames: read region is entirely in the
         //     past (no overlap with the write region, no wrap-alias), so input
         //     can be stored first and the delayed span copied straight out.
         const warm = self.history >= delay;
-        const fast = n <= max_frames and (delay == 0 or (warm and delay >= n and delay < max_frames));
+        const fast = n <= max_frames and warm and delay >= n and delay < max_frames;
         if (!fast) {
             self.processScalar(left, right);
             return;
@@ -63,11 +72,9 @@ pub const StereoDelay = struct {
         const start = write & ring_mask;
         copyToRing(self.left, start, left);
         copyToRing(self.right, start, right);
-        if (delay != 0) {
-            const read = (write -% delay) & ring_mask;
-            copyFromRing(left, self.left, read);
-            copyFromRing(right, self.right, read);
-        }
+        const read = (write -% delay) & ring_mask;
+        copyFromRing(left, self.left, read);
+        copyFromRing(right, self.right, read);
 
         self.write_pos = write +% n;
         self.history = @min(self.history + n, max_frames);
@@ -128,17 +135,19 @@ pub const StereoDelay = struct {
 };
 
 test "block-copy fast path matches per-sample reference" {
-    // Independent oracle: a naive per-sample delay line on its own ring.
+    // Independent oracle: matches StereoDelay (delay 0 = pure passthrough, no ring).
     const Ref = struct {
         buf: [max_frames]f32 = @splat(0),
         write: u32 = 0,
         history: u32 = 0,
         fn process(self: *@This(), sig: []f32, delay: u32) void {
+            if (delay == 0) {
+                self.history = 0;
+                return;
+            }
             for (sig) |*s| {
                 const in = s.*;
-                if (delay == 0) {
-                    // passthrough
-                } else if (self.history < delay) {
+                if (self.history < delay) {
                     s.* = 0;
                 } else {
                     s.* = self.buf[(self.write -% delay) & ring_mask];
@@ -187,44 +196,61 @@ test "stereo delay compensates by exact frame count" {
     try std.testing.expectEqualSlices(f32, &.{ 0, 0, 1, 2 }, &left);
 }
 
-test "delay change does not insert silence hole" {
+test "delay 0 is pure passthrough without ring traffic" {
     var delay = try StereoDelay.init(std.testing.allocator);
     defer delay.deinit(std.testing.allocator);
 
-    // Prime history at delay 0 (pass-through, ring still fills).
+    var left = [_]f32{ 10, 11, 12, 13 };
+    var right = left;
+    delay.process(&left, &right, 0);
+    try std.testing.expectEqualSlices(f32, &.{ 10, 11, 12, 13 }, &left);
+    try std.testing.expectEqual(@as(u32, 0), delay.history);
+}
+
+test "enabling delay after zero-delay cold-starts cleanly" {
+    var delay = try StereoDelay.init(std.testing.allocator);
+    defer delay.deinit(std.testing.allocator);
+
+    // Zero-delay path does not fill the ring (serial RT optimization).
     var prime = [_]f32{ 10, 11, 12, 13, 14, 15, 16, 17 };
     var prime_r = prime;
     delay.process(&prime, &prime_r, 0);
 
-    // Switch to delay 2: must NOT zero the whole block (old bug).
+    // First non-zero delay block: cold-start silence for `delay` samples, then
+    // delayed output of the current block (no hole / reset of an already-delayed stream).
     var left = [_]f32{ 20, 21, 22, 23 };
     var right = left;
     delay.process(&left, &right, 2);
-    // Ring had 10..17 then 20..; read is 2 behind write → 16,17,20,21 after writing 20..23
-    // write positions after prime: 8 samples. Then write 20 at pos 8, read pos 6 → 16
-    try std.testing.expectEqual(@as(f32, 16), left[0]);
-    try std.testing.expectEqual(@as(f32, 17), left[1]);
-    try std.testing.expectEqual(@as(f32, 20), left[2]);
-    try std.testing.expectEqual(@as(f32, 21), left[3]);
+    try std.testing.expectEqualSlices(f32, &.{ 0, 0, 20, 21 }, &left);
+
+    // Steady state continues without a hole.
+    var next = [_]f32{ 24, 25, 26, 27 };
+    var next_r = next;
+    delay.process(&next, &next_r, 2);
+    try std.testing.expectEqualSlices(f32, &.{ 22, 23, 24, 25 }, &next);
 }
 
 test "maximum delay does not alias current input" {
     var delay = try StereoDelay.init(std.testing.allocator);
     defer delay.deinit(std.testing.allocator);
 
+    // Seed the ring with a non-zero delay so history is kept (delay 0 skips the ring).
     var first = [_]f32{42};
     var first_r = first;
-    delay.process(&first, &first_r, 0);
+    delay.process(&first, &first_r, 1); // outputs silence, stores 42
 
     var zeros: [256]f32 = @splat(0);
     var zeros_r = zeros;
+    // Fill remaining max_frames-1 slots at delay 1 so history saturates.
     var remaining = max_frames - 1;
     while (remaining > 0) {
         const count = @min(remaining, zeros.len);
-        delay.process(zeros[0..count], zeros_r[0..count], 0);
+        delay.process(zeros[0..count], zeros_r[0..count], 1);
         remaining -= @intCast(count);
     }
 
+    // At max_frames delay, read slot is the same as write: must return the
+    // value stored one full ring ago (42), not the current input (7).
     var current = [_]f32{7};
     var current_r = current;
     delay.process(&current, &current_r, max_frames);

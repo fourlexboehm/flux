@@ -428,6 +428,8 @@ pub fn handleChainKey(state: *state_mod.State, ke: dvui.Event.Key) bool {
     if (ke.action != .down and ke.action != .repeat) return false;
     if (!plugin_host.ready()) return false;
     if (plugin_host.g.picker_open) return false;
+    // Never steal backspace/delete/arrows from an active text field (preset search).
+    if (dvui.currentWindow().textInputRequested() != null) return false;
 
     const is_master = state.mixer_target == .master;
     const track = state.deviceTrack();
@@ -553,19 +555,23 @@ fn drawDeviceBody(state: *state_mod.State, plugin: *const @import("clap-bindings
 
 // ── Per-device preset combo (instrument cards) ────────────────────────────────
 
-const max_preset_combo: usize = 48;
+const max_preset_combo: usize = 256;
 const preset_placeholder = "(Preset)";
+/// Max height of the open preset list (scrolls when content exceeds this).
+const preset_list_max_h: f32 = 220;
 
-/// Search buffer + rebuilt label table for the instrument preset dropdown.
-var preset_search_buf: [48]u8 = @splat(0);
+/// Search buffer + rebuilt label table for the instrument preset list.
+var preset_search_buf: [64]u8 = @splat(0);
 var preset_search_len: usize = 0;
 var preset_filter_choice: i32 = -1;
 var preset_filter_plugin_id: [128]u8 = undefined;
 var preset_filter_plugin_id_len: usize = 0;
 var preset_label_storage: [max_preset_combo][96]u8 = undefined;
-var preset_labels: [max_preset_combo + 1][]const u8 = undefined;
+var preset_labels: [max_preset_combo][]const u8 = undefined;
 var preset_entry_indices: [max_preset_combo]usize = undefined;
-var preset_label_count: usize = 1; // includes placeholder at [0]
+var preset_label_count: usize = 0;
+var preset_menu_open: bool = false;
+var preset_menu_track: usize = 0;
 
 fn presetSearchText() []const u8 {
     return preset_search_buf[0..preset_search_len];
@@ -585,19 +591,17 @@ fn rebuildPresetCombo(plugin_id: []const u8, choice_index: i32) void {
     @memcpy(preset_filter_plugin_id[0..copy_len], plugin_id[0..copy_len]);
     preset_filter_plugin_id_len = copy_len;
 
-    preset_labels[0] = preset_placeholder;
-    preset_label_count = 1;
+    preset_label_count = 0;
     if (!plugin_host.ready()) return;
 
     const entries = plugin_host.g.queryPresets(presetSearchText(), "", true);
     for (entries, 0..) |entry, idx| {
-        if (preset_label_count > max_preset_combo) break;
+        if (preset_label_count >= max_preset_combo) break;
         if (!std.mem.eql(u8, entry.plugin_id, plugin_id)) continue;
         const clean = sanitizePresetName(entry.name);
-        const slot = preset_label_count - 1;
-        const written = std.fmt.bufPrint(&preset_label_storage[slot], "{s}", .{clean}) catch continue;
+        const written = std.fmt.bufPrint(&preset_label_storage[preset_label_count], "{s}", .{clean}) catch continue;
         preset_labels[preset_label_count] = written;
-        preset_entry_indices[slot] = idx;
+        preset_entry_indices[preset_label_count] = idx;
         preset_label_count += 1;
     }
 }
@@ -616,7 +620,7 @@ fn drawInstrumentPresetRow(state: *state_mod.State, plugin: *const @import("clap
     if (need_rebuild) rebuildPresetCombo(plugin_id, choice);
 
     // Nothing in the DB for this plugin — omit the row (built-ins often empty).
-    if (preset_label_count <= 1 and presetSearchText().len == 0) return;
+    if (preset_label_count == 0 and presetSearchText().len == 0) return;
 
     var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .expand = .horizontal,
@@ -644,41 +648,129 @@ fn drawInstrumentPresetRow(state: *state_mod.State, plugin: *const @import("clap
         if (text.len != preset_search_len or !std.mem.eql(u8, text, presetSearchText())) {
             preset_search_len = text.len;
             rebuildPresetCombo(plugin_id, choice);
+            // Keep the list open while filtering.
+            if (preset_menu_open and preset_menu_track == track) {
+                // no-op; open flag stays
+            } else if (presetSearchText().len > 0) {
+                preset_menu_open = true;
+                preset_menu_track = track;
+            }
         }
         te.deinit();
     }
 
-    var list_choice: usize = 0;
-    if (plugin_host.g.instrument_preset_list_index[track]) |stored| {
-        // stored is index into the filtered preset rows (0..label_count-2);
-        // dropdown choice is stored+1 because [0] is the placeholder.
-        if (stored + 1 < preset_label_count) list_choice = stored + 1;
+    // Current selection label for the trigger button.
+    const selected_label: []const u8 = blk: {
+        if (plugin_host.g.instrument_preset_list_index[track]) |stored| {
+            if (stored < preset_label_count) break :blk preset_labels[stored];
+        }
+        break :blk preset_placeholder;
+    };
+
+    // Dropdown trigger: open a max-height floating list with a scroll area
+    // (stock `dvui.dropdown` does not clamp height, so long lists fall off-screen).
+    var trigger_box = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .margin = .{ .x = tokens.gap_tight, .y = 0, .w = 0, .h = 0 },
+        .id_extra = track,
+    });
+    defer trigger_box.deinit();
+
+    if (dvui.button(@src(), selected_label, .{}, .{
+        .expand = .horizontal,
+        .min_size_content = .{ .h = tokens.control_h },
+        .color_fill = theme.cell,
+        .color_text = theme.text,
+        .border = dvui.Rect.all(1),
+        .color_border = theme.grid,
+        .corners = .round(tokens.radius_sm),
+        .id_extra = track,
+    })) {
+        if (preset_menu_open and preset_menu_track == track) {
+            preset_menu_open = false;
+        } else {
+            preset_menu_open = true;
+            preset_menu_track = track;
+            rebuildPresetCombo(plugin_id, choice);
+        }
     }
 
-    if (dvui.dropdown(
-        @src(),
-        preset_labels[0..preset_label_count],
-        .{ .choice = &list_choice },
-        .{},
-        .{
-            .expand = .horizontal,
-            .min_size_content = .{ .h = tokens.control_h },
-            .margin = .{ .x = tokens.gap_tight, .y = 0, .w = 0, .h = 0 },
+    if (!(preset_menu_open and preset_menu_track == track)) return;
+
+    // Floating window with open_flag so click-X / focus loss can clear the flag.
+    // Explicit max height + scrollArea — stock `dropdown` grows unbounded.
+    const list_w: f32 = 260;
+    var fw = dvui.floatingWindow(@src(), .{
+        .open_flag = &preset_menu_open,
+        .modal = false,
+        .resize = .none,
+        .stay_above_parent_window = true,
+    }, .{
+        .min_size_content = .{ .w = list_w, .h = 100 },
+        .max_size_content = .{ .w = list_w, .h = preset_list_max_h },
+        .background = true,
+        .color_fill = theme.panel,
+        .border = dvui.Rect.all(1),
+        .color_border = theme.accent,
+        .corners = .round(tokens.radius_sm),
+        .padding = dvui.Rect.all(tokens.gap_tight),
+        .id_extra = track,
+    });
+    defer fw.deinit();
+    fw.dragAreaSet(dvui.windowHeader("Presets", "", &preset_menu_open));
+
+    var scroll = dvui.scrollArea(@src(), .{
+        .horizontal = .none,
+        .horizontal_bar = .hide,
+        .vertical = .auto,
+        .vertical_bar = .auto,
+    }, .{
+        .expand = .both,
+        .min_size_content = .{ .w = list_w - 8, .h = 60 },
+        .max_size_content = .{ .w = list_w - 8, .h = preset_list_max_h - 36 },
+        .id_extra = track,
+    });
+    defer scroll.deinit();
+
+    if (dvui.button(@src(), preset_placeholder, .{}, .{
+        .expand = .horizontal,
+        .min_size_content = .{ .h = tokens.control_h - 2 },
+        .color_fill = theme.cell,
+        .color_text = theme.text_soft,
+        .corners = .round(tokens.radius_sm),
+        .margin = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
+        .id_extra = track,
+    })) {
+        plugin_host.g.instrument_preset_list_index[track] = null;
+        preset_menu_open = false;
+    }
+
+    if (preset_label_count == 0) {
+        dvui.label(@src(), "No matching presets", .{}, .{
+            .color_text = theme.text_soft,
             .id_extra = track,
-        },
-    )) {
-        if (list_choice == 0) {
-            plugin_host.g.instrument_preset_list_index[track] = null;
-        } else {
-            const row_i = list_choice - 1;
-            if (row_i < preset_label_count - 1) {
-                const entry_idx = preset_entry_indices[row_i];
-                if (plugin_host.g.preset_catalog) |*catalog| {
-                    if (catalog.resolve(entry_idx) catch null) |entry| {
-                        plugin_host.g.loadPresetOnTrackFromList(track, row_i, entry);
-                    }
+        });
+        return;
+    }
+
+    for (0..preset_label_count) |row_i| {
+        const name = preset_labels[row_i];
+        if (dvui.button(@src(), name, .{}, .{
+            .expand = .horizontal,
+            .min_size_content = .{ .h = tokens.control_h - 2 },
+            .color_fill = theme.cell,
+            .color_text = theme.text,
+            .corners = .round(tokens.radius_sm),
+            .margin = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
+            .id_extra = row_i + 1 + track * 1000,
+        })) {
+            const entry_idx = preset_entry_indices[row_i];
+            if (plugin_host.g.preset_catalog) |*catalog| {
+                if (catalog.resolve(entry_idx) catch null) |entry| {
+                    plugin_host.g.loadPresetOnTrackFromList(track, row_i, entry);
                 }
             }
+            preset_menu_open = false;
         }
     }
 }

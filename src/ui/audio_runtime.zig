@@ -6,7 +6,11 @@
 //!
 //! Hardware MIDI + computer-keyboard live keys come from `plugin_host`.
 //! DAWproject load/save is adapted by `ui/project_runtime.zig`.
+//!
+//! Runtime tuning (`FLUX_AUDIO_*`) and JobQueue ownership live here; the CLAP
+//! host `thread_pool` extension shares the same queue via `plugin_host`.
 
+const builtin = @import("builtin");
 const std = @import("std");
 const zaudio = @import("zaudio");
 const chrome = @import("state.zig");
@@ -19,6 +23,8 @@ const engine_ui = @import("../audio/engine_ui.zig");
 const thread_context = @import("../util/thread_context.zig");
 const time_utils = @import("../util/time_utils.zig");
 
+const audio_graph = @import("../audio/audio_graph.zig");
+
 const AudioEngine = audio_engine_mod.AudioEngine;
 const EngineUiView = engine_ui.EngineUiView;
 const max_tracks = engine_ui.max_tracks;
@@ -29,12 +35,82 @@ pub const channels: u32 = audio_constants.channels;
 const dsp_meter_interval: u8 = audio_engine_mod.dsp_meter_interval;
 const clock_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 
+/// Adaptive worker idle sleep bounds (copied from pre-DVUI audio_device).
+var worker_min_sleep_ns: std.atomic.Value(u64) = .init(10_000);
+var worker_max_sleep_ns: std.atomic.Value(u64) = .init(2_000_000);
+
+pub fn setWorkerSleepBounds(min_sleep_ns: u64, max_sleep_ns: u64) void {
+    const min_ns = @max(min_sleep_ns, 1_000);
+    const max_ns = @max(max_sleep_ns, min_ns);
+    worker_min_sleep_ns.store(min_ns, .release);
+    worker_max_sleep_ns.store(max_ns, .release);
+}
+
+fn envBool(name: [:0]const u8) bool {
+    const v = std.c.getenv(name.ptr) orelse return false;
+    const s = std.mem.span(v);
+    if (s.len == 0) return false;
+    return s[0] == '1' or s[0] == 'y' or s[0] == 'Y' or s[0] == 't' or s[0] == 'T';
+}
+
+fn envU32(name: [:0]const u8, default_value: u32) u32 {
+    const v = std.c.getenv(name.ptr) orelse return default_value;
+    return std.fmt.parseInt(u32, std.mem.span(v), 10) catch default_value;
+}
+
+fn envU64(name: [:0]const u8, default_value: u64) u64 {
+    const v = std.c.getenv(name.ptr) orelse return default_value;
+    return std.fmt.parseInt(u64, std.mem.span(v), 10) catch default_value;
+}
+
+fn envF32(name: [:0]const u8, default_value: f32) f32 {
+    const v = std.c.getenv(name.ptr) orelse return default_value;
+    return std.fmt.parseFloat(f32, std.mem.span(v)) catch default_value;
+}
+
+/// Apply `FLUX_AUDIO_*` tuning: worker sleep bounds, parallel threshold, and
+/// CLAP thread_pool fan-out on `plugin_host` (pre-DVUI `bench.configureRuntimeTuning`).
+pub fn configureRuntimeTuning() void {
+    const cpu_count = std.Thread.getCpuCount() catch 1;
+    const is_arm = switch (builtin.cpu.arch) {
+        .arm, .armeb, .thumb, .thumbeb, .aarch64, .aarch64_be => true,
+        else => false,
+    };
+    const arm_default_scale: f32 = if (is_arm) 0.75 else 1.0;
+    const fanout_scale = envF32("FLUX_AUDIO_ARM_FANOUT_SCALE", arm_default_scale);
+    const base_fanout: usize = if (cpu_count > 1) @min(cpu_count - 1, 16) else 0;
+    const clamped_scale = std.math.clamp(fanout_scale, 0.0, 1.0);
+    const scaled_fanout = @as(usize, @intFromFloat(@floor(@as(f32, @floatFromInt(base_fanout)) * clamped_scale)));
+    const jobs_fanout: u32 = @intCast(@min(base_fanout, scaled_fanout));
+
+    if (plugin_host_mod.ready()) {
+        plugin_host_mod.g.jobs_fanout = jobs_fanout;
+    }
+
+    const min_sleep_ns = envU64("FLUX_AUDIO_WORKER_MIN_SLEEP_NS", 10_000);
+    const max_sleep_ns = envU64("FLUX_AUDIO_WORKER_MAX_SLEEP_NS", 2_000_000);
+    setWorkerSleepBounds(min_sleep_ns, max_sleep_ns);
+
+    const parallel_threshold = envU32("FLUX_AUDIO_PARALLEL_THRESHOLD", 3);
+    audio_graph.setParallelThreshold(parallel_threshold);
+
+    std.log.info("audio tuning: fanout={d} sleep=[{d},{d}]ns parallel_threshold={d}", .{
+        jobs_fanout,
+        min_sleep_ns,
+        max_sleep_ns,
+        parallel_threshold,
+    });
+}
+
 pub const AudioRuntime = struct {
     allocator: std.mem.Allocator,
     engine: ?AudioEngine = null,
     device: ?*zaudio.Device = null,
     device_config: zaudio.Device.Config = undefined,
     buffer_frames: u32 = chrome.default_buffer_frames,
+
+    /// Work-stealing queue for parallel synth process (null if FLUX_SINGLE_THREAD=1).
+    jobs_storage: ?audio_graph.JobQueue = null,
 
     /// Bypass flags fed to the engine (host instrument/fx enable).
     instrument_enabled: [max_tracks]bool = @splat(true),
@@ -81,7 +157,9 @@ pub const AudioRuntime = struct {
 
     pub fn deinit(self: *AudioRuntime) void {
         self.stopDevice();
+        self.stopJobs();
         if (self.engine) |*eng| {
+            eng.jobs = null;
             eng.deinit();
             self.engine = null;
         }
@@ -91,6 +169,56 @@ pub const AudioRuntime = struct {
             self.zaudio_ready = false;
         }
         self.* = undefined;
+    }
+
+    fn stopJobs(self: *AudioRuntime) void {
+        if (self.jobs_storage) |*jobs| {
+            if (self.engine) |*eng| eng.jobs = null;
+            if (plugin_host_mod.ready()) plugin_host_mod.g.jobs = null;
+            jobs.stop();
+            jobs.join();
+            jobs.deinit();
+            self.jobs_storage = null;
+        }
+    }
+
+    fn wireJobsToPluginHost(self: *AudioRuntime) void {
+        if (!plugin_host_mod.ready()) return;
+        if (self.jobs_storage) |*jobs| {
+            plugin_host_mod.g.jobs = jobs;
+        } else {
+            plugin_host_mod.g.jobs = null;
+        }
+        if (self.engine) |*eng| {
+            plugin_host_mod.g.shared_state = &eng.shared;
+        } else {
+            plugin_host_mod.g.shared_state = null;
+        }
+    }
+
+    fn startJobs(self: *AudioRuntime) void {
+        if (self.jobs_storage != null) return;
+        if (envBool("FLUX_SINGLE_THREAD")) {
+            std.log.info("audio jobs: single-threaded (FLUX_SINGLE_THREAD=1)", .{});
+            self.wireJobsToPluginHost();
+            return;
+        }
+        const jobs = audio_graph.JobQueue.init(self.allocator, clock_io) catch |err| {
+            std.log.warn("audio JobQueue init failed: {} (serial synth process)", .{err});
+            self.wireJobsToPluginHost();
+            return;
+        };
+        self.jobs_storage = jobs;
+        self.jobs_storage.?.start() catch |err| {
+            std.log.warn("audio JobQueue start failed: {} (serial synth process)", .{err});
+            self.jobs_storage.?.deinit();
+            self.jobs_storage = null;
+            self.wireJobsToPluginHost();
+            return;
+        };
+        if (self.engine) |*eng| eng.jobs = &self.jobs_storage.?;
+        self.wireJobsToPluginHost();
+        std.log.info("audio jobs: work-stealing queue started", .{});
     }
 
     /// Open playback device + construct engine (best-effort). Host chrome still
@@ -113,6 +241,10 @@ pub const AudioRuntime = struct {
                 return;
             };
             self.engine_ready = true;
+            self.startJobs();
+            if (self.jobs_storage) |*jobs| {
+                if (self.engine) |*eng| eng.jobs = jobs;
+            }
         }
 
         self.openDevice() catch |err| {
@@ -230,6 +362,8 @@ pub const AudioRuntime = struct {
     }
 
     /// Recreate the device if chrome buffer size changed.
+    /// Pre-DVUI parity: stop device → wait idle → deactivate/activate plugins
+    /// at the new max frames → resize engine → reopen device.
     pub fn applyBufferFramesIfNeeded(self: *AudioRuntime, state: *chrome.State) void {
         if (state.buffer_frames == 0) return;
         if (state.buffer_frames == self.buffer_frames) return;
@@ -241,12 +375,20 @@ pub const AudioRuntime = struct {
         const requested = state.buffer_frames;
         const eng = &self.engine.?;
 
-        // Stop device, resize graph, reopen.
         self.stopDevice();
+        eng.shared.waitForIdle(clock_io);
+
+        if (plugin_host_mod.ready()) {
+            plugin_host_mod.g.reconfigureMaxFrames(&eng.shared, requested);
+        }
+
         eng.setMaxFrames(requested) catch |err| {
             std.log.warn("failed to set engine max frames {d}: {}", .{ requested, err });
             state.buffer_frames = self.buffer_frames;
-            // Try to reopen with old size.
+            // Roll plugins back to the previous size if possible.
+            if (plugin_host_mod.ready()) {
+                plugin_host_mod.g.reconfigureMaxFrames(&eng.shared, self.buffer_frames);
+            }
             self.openDevice() catch {};
             return;
         };
@@ -304,6 +446,29 @@ fn dataCallback(
     if (budget_us == 0) return;
     const usage_pct = elapsed_us * 100 / budget_us;
     engine.dsp_load_pct.store(@intCast(@min(usage_pct, 999)), .release);
+
+    // Keep worker idle sleep short under load so parallel synth jobs wake in time
+    // for the next quantum (critical at 64/128 frames).
+    if (engine.jobs) |jobs| {
+        const current_sleep = jobs.dynamic_sleep_ns.load(.monotonic);
+        const is_playing = engine.shared.snapshot().playing;
+        const configured_min = worker_min_sleep_ns.load(.acquire);
+        const configured_max = worker_max_sleep_ns.load(.acquire);
+        const budget_ns = budget_us * 1000;
+        const max_sleep = @min(configured_max, budget_ns / 2);
+        const min_sleep = @max(configured_min, @max(@as(u64, 1_000), budget_ns / 200));
+        const mid_sleep = @min(max_sleep, @max(min_sleep, budget_ns / 10));
+        const mid_threshold: u64 = if (is_playing) 5 else 20;
+        const next: u64 = if (usage_pct >= 40)
+            min_sleep
+        else if (usage_pct >= mid_threshold)
+            mid_sleep
+        else if (usage_pct < 5 and current_sleep < max_sleep)
+            @min(current_sleep * 2, max_sleep)
+        else
+            current_sleep;
+        jobs.setSleepNs(@max(min_sleep, @min(next, max_sleep)));
+    }
 }
 
 // ── Process-wide runtime for the DVUI app binary ─────────────────────────────
@@ -315,10 +480,17 @@ pub fn initGlobal(allocator: std.mem.Allocator, buffer_frames: u32) void {
     g = AudioRuntime.init(allocator, buffer_frames);
     g.start();
     g_ready = true;
+    // Plugin host must already be up so fan-out / shared_state wire correctly.
+    configureRuntimeTuning();
+    g.wireJobsToPluginHost();
 }
 
 pub fn deinitGlobal() void {
     if (!g_ready) return;
+    if (plugin_host_mod.ready()) {
+        plugin_host_mod.g.jobs = null;
+        plugin_host_mod.g.shared_state = null;
+    }
     g.deinit();
     g_ready = false;
 }

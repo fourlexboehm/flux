@@ -27,7 +27,11 @@ pub fn build(b: *std.Build) void {
         "Path to MacOSX*.sdk (cross-compile framework/include/lib search roots)",
     ) orelse b.graph.environ_map.get("SDKROOT");
 
-    const use_llvm = b.option(bool, "use-llvm", "Use LLVM backend (slower builds, required for some optimizations)") orelse (target_os == .macos);
+    // Self-hosted backend is incomplete/unreliable on aarch64; macOS also needs LLVM
+    // for framework/codegen paths. Default on for those; x86_64 Linux can stay self-hosted.
+    const use_llvm = b.option(bool, "use-llvm", "Use LLVM backend (slower builds; required on aarch64 and macOS)") orelse
+        (target_os == .macos or target.result.cpu.arch.isAARCH64());
+
     const incremental = b.option(bool, "incremental", "Enable incremental linking (faster rebuilds, but always re-links even when nothing changed)") orelse false;
     const enable_segfault_handler = b.option(
         bool,
@@ -193,6 +197,43 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_dsp_tests.step);
     test_step.dependOn(&run_flux_tests.step);
     test_step.dependOn(&run_clap_load.step);
+
+    // Headless RT microbench (idle graph / PDC / note sources at given quantum).
+    {
+        const bench_module = rootModule(b, "src/rt_bench.zig", target, optimize);
+        bench_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
+        bench_module.addImport("libz_jobs", libz_jobs.module("libz_jobs"));
+        bench_module.addImport("tracy", tracy_mod);
+        bench_module.addImport("options", options_mod);
+        bench_module.addImport("wdf", wdf.module("wdf"));
+        bench_module.addImport("regex", regex.module("regex"));
+        bench_module.addImport("flux_param_table", flux_param_table);
+        bench_module.addImport("shared", shared_mod);
+        wireFluxNative(b, bench_module, .{
+            .zaudio = zaudio,
+            .sqlite3 = sqlite3,
+            .emu2413 = emu2413,
+            .portmidi_zig = portmidi_zig,
+            .signalsmith_stretch = signalsmith_stretch,
+            .signalsmith_linear = signalsmith_linear,
+            .target = target,
+            .optimize = optimize,
+            .target_os = target_os,
+        });
+        if (target_os == .macos) {
+            addMacosSdkPaths(b, bench_module, macos_sdk);
+            linkFrameworks(bench_module, &macos_flux_frameworks);
+        }
+        const bench_exe = b.addExecutable(.{
+            .name = "rt-bench",
+            .root_module = bench_module,
+            .use_llvm = use_llvm,
+        });
+        b.installArtifact(bench_exe);
+        const run_bench = b.addRunArtifact(bench_exe);
+        const rt_bench_step = b.step("rt-bench", "Run audio RT microbench (idle graph budget)");
+        rt_bench_step.dependOn(&run_bench.step);
+    }
 }
 
 // --- helpers -----------------------------------------------------------------
