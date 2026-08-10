@@ -5,6 +5,7 @@ const session_ops = @import("../session/ops.zig");
 const arr_ops = @import("../arrangement/ops.zig");
 const audio_clip_mod = @import("../session/audio_clip.zig");
 const arr_timeline = @import("../arrangement/timeline.zig");
+const cmd_undo = @import("cmd_undo.zig");
 
 pub const ArrangementLocation = struct {
     track: usize,
@@ -34,6 +35,10 @@ pub fn selectAllArrangementClips(store: *model.Store) void {
 
 pub fn deleteArrangementClip(store: *model.Store, global_index: usize) bool {
     const location = arrangementLocation(store, global_index) orelse return false;
+    // Mark only this clip selected for a clean before-snapshot, then delete.
+    store.arrangement.clearSelection();
+    store.arrangement.tracks.items[location.track].clips.items[location.clip].selected = true;
+    cmd_undo.pushArrangementDeleteSelected(store);
     arr_ops.deleteClip(&store.arrangement, location.track, location.clip);
     store.markChanged();
     return true;
@@ -47,6 +52,7 @@ pub fn duplicateArrangementClip(store: *model.Store, global_index: usize) ?usize
     clip.start_tick = source.endTick();
     store.arrangement.clearSelection();
     clip.selected = true;
+    cmd_undo.pushArrangementCreate(store, location.track, duplicate);
     store.markChanged();
     return arrangementGlobalIndex(store, location.track, duplicate);
 }
@@ -56,12 +62,24 @@ pub fn moveArrangementClip(store: *model.Store, global_index: usize, delta_track
     const target_track_i = @as(i32, @intCast(location.track)) + delta_track;
     if (target_track_i < 0 or target_track_i >= @as(i32, @intCast(store.arrangement.tracks.items.len))) return null;
     const target_track: usize = @intCast(target_track_i);
+    const orig_start = store.arrangement.tracks.items[location.track].clips.items[location.clip].start_tick;
+    const orig_dur = store.arrangement.tracks.items[location.track].clips.items[location.clip].duration_ticks;
     var clip_index = location.clip;
     if (target_track != location.track) {
         clip_index = arr_ops.moveClipToTrack(&store.arrangement, location.track, location.clip, target_track) catch return null;
     }
     const clip = &store.arrangement.tracks.items[target_track].clips.items[clip_index];
     arr_ops.moveClip(clip, clip.start_tick + delta_ticks, store.arrangement.snap_division_ticks);
+    cmd_undo.pushArrangementDrag(
+        store,
+        target_track,
+        clip_index,
+        location.track,
+        location.clip,
+        orig_start,
+        orig_dur,
+        false,
+    );
     store.markChanged();
     return arrangementGlobalIndex(store, target_track, clip_index);
 }
@@ -125,6 +143,30 @@ pub fn commitArrangementEdit(store: *model.Store) void {
     store.markChanged();
 }
 
+/// Commit a pointer drag/resize/duplicate with one undo entry + revision.
+pub fn commitArrangementDrag(
+    store: *model.Store,
+    track: usize,
+    clip_index: usize,
+    orig_track: usize,
+    orig_clip_index: usize,
+    orig_start_tick: i64,
+    orig_duration_ticks: i64,
+    duplicated: bool,
+) void {
+    cmd_undo.pushArrangementDrag(
+        store,
+        track,
+        clip_index,
+        orig_track,
+        orig_clip_index,
+        orig_start_tick,
+        orig_duration_ticks,
+        duplicated,
+    );
+    store.markChanged();
+}
+
 /// Duplicate in place (same start) for Ctrl/Cmd+drag. No revision until commit.
 pub fn duplicateArrangementClipInPlace(store: *model.Store, global_index: usize) ?usize {
     const location = arrangementLocation(store, global_index) orelse return null;
@@ -141,6 +183,7 @@ pub fn createArrangementMidiClip(store: *model.Store, track: usize, start_tick: 
     const default_dur = arr_timeline.ppq * 4 * 4; // 4 bars
     const clip_index = arr_ops.createClip(&store.arrangement, track, .midi, snapped, default_dur, "MIDI") catch return null;
     arr_ops.selectClip(&store.arrangement, track, clip_index, false);
+    cmd_undo.pushArrangementCreate(store, track, clip_index);
     store.markChanged();
     return arrangementGlobalIndex(store, track, clip_index);
 }
@@ -219,6 +262,7 @@ pub fn loadAudioFileIntoArrangement(
         return null;
     }
     arr_ops.selectClip(&store.arrangement, track, clip_index, false);
+    cmd_undo.pushArrangementCreate(store, track, clip_index);
     store.markChanged();
     return arrangementGlobalIndex(store, track, clip_index);
 }
@@ -246,6 +290,17 @@ fn ensureSlotAudio(store: *model.Store, track: usize, scene: usize) ?*audio_clip
 
 pub fn deleteSelectedArrangementClips(store: *model.Store) bool {
     var any = false;
+    for (store.arrangement.tracks.items) |track| {
+        for (track.clips.items) |clip| {
+            if (clip.selected) {
+                any = true;
+                break;
+            }
+        }
+        if (any) break;
+    }
+    if (!any) return false;
+    cmd_undo.pushArrangementDeleteSelected(store);
     var ti = store.arrangement.tracks.items.len;
     while (ti > 0) {
         ti -= 1;
@@ -254,12 +309,11 @@ pub fn deleteSelectedArrangementClips(store: *model.Store) bool {
             ci -= 1;
             if (store.arrangement.tracks.items[ti].clips.items[ci].selected) {
                 arr_ops.deleteClip(&store.arrangement, ti, ci);
-                any = true;
             }
         }
     }
-    if (any) store.markChanged();
-    return any;
+    store.markChanged();
+    return true;
 }
 
 pub fn setArrangementSelection(store: *model.Store, selected_globals: []const usize, additive: bool) void {

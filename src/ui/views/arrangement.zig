@@ -23,9 +23,13 @@ const min_ppb: f32 = 4;
 const max_ppb: f32 = 80;
 const default_timeline_beats: f32 = 64;
 const clock_io: std.Io = std.Io.Threaded.global_single_threaded.io();
-/// Per-frame peak cache so dense audio clips avoid O(n²) pool walks.
+
+/// Peak pointers keyed by document revision (not rebuilt every paint).
 var peak_cache: [state_mod.max_arr_clips]?[]const peaks_mod.PeakBin = @splat(null);
-var peak_cache_valid = false;
+var peak_cache_revision: u64 = std.math.maxInt(u64);
+/// CSR-style per-track index into `state.arr_clips` (rebuilt each paint).
+var track_clip_starts: [state_mod.max_tracks + 1]u16 = @splat(0);
+var track_clip_indices: [state_mod.max_arr_clips]u16 = undefined;
 
 pub fn draw(state: *state_mod.State) void {
     // Chrome arr_clips projected each frame from host in root.frame.
@@ -34,7 +38,7 @@ pub fn draw(state: *state_mod.State) void {
         arrangement_gestures.syncArrClipsChrome(state);
     }
 
-    peak_cache_valid = false;
+    rebuildTrackClipIndex(state);
     // Header shows previous-frame stats; reset drawn counter after display.
     const prev_drawn = state.arr_clips_drawn;
     const prev_us = state.arr_draw_us;
@@ -104,7 +108,7 @@ pub fn draw(state: *state_mod.State) void {
         }
     }
 
-    var body = dvui.box(@src(), .{ .dir = .horizontal }, .{
+    var body = dvui.box(@src(), .{ .dir = .vertical }, .{
         .expand = .both,
         .background = true,
         .color_fill = theme.cell,
@@ -112,84 +116,202 @@ pub fn draw(state: *state_mod.State) void {
     });
     defer body.deinit();
 
-    const body_w = body.data().contentRectScale().r.w / @max(body.data().contentRectScale().s, 0.001);
+    const body_rs = body.data().contentRectScale();
+    const body_w = body_rs.r.w / @max(body_rs.s, 0.001);
     const show_mixer = body_w >= tokens.arr_mixer_min_body_w;
+    const timeline_w = timelineWidth(state);
+    const lanes_h = @as(f32, @floatFromInt(state.track_count)) * tokens.arr_lane_h;
 
-    // Track headers
+    // Linked scroll: main timeline owns both axes; track headers + mixer share
+    // vertical offset; ruler shares horizontal offset (DVUI linked-scroll pattern).
+    const si_main = dvui.dataGetPtrDefault(null, body.data().id, "si_main", dvui.ScrollInfo, .{
+        .horizontal = .auto,
+        .vertical = .auto,
+    });
+    const si_left = dvui.dataGetPtrDefault(null, body.data().id, "si_left", dvui.ScrollInfo, .{
+        .horizontal = .none,
+        .vertical = .auto,
+    });
+    const si_mixer = dvui.dataGetPtrDefault(null, body.data().id, "si_mixer", dvui.ScrollInfo, .{
+        .horizontal = .none,
+        .vertical = .auto,
+    });
+    const si_ruler = dvui.dataGetPtrDefault(null, body.data().id, "si_ruler", dvui.ScrollInfo, .{
+        .horizontal = .auto,
+        .vertical = .none,
+    });
+    const fv = si_main.viewport.topLeft();
+
+    var main_area: dvui.ScrollAreaWidget = undefined;
+    main_area.init(@src(), .{
+        .scroll_info = si_main,
+        .frame_viewport = fv,
+        .container = false,
+    }, .{
+        .expand = .both,
+        .background = false,
+    });
+    defer main_area.deinit();
+
+    // ── Fixed top: corner | horizontally linked ruler | mixer header ────────
     {
-        var headers = dvui.box(@src(), .{ .dir = .vertical }, .{
-            .background = true,
-            .color_fill = theme.panel,
-            .min_size_content = .{ .w = tokens.arr_track_w },
-            .expand = .vertical,
-            .border = .{ .x = 0, .y = 0, .w = 1, .h = 0 },
-            .color_border = theme.grid,
-        });
-        defer headers.deinit();
-
-        var spacer = dvui.box(@src(), .{}, .{
-            .min_size_content = .{ .h = tokens.arr_ruler_h },
+        var top = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .expand = .horizontal,
-            .background = true,
-            .color_fill = theme.header,
-            .border = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
-            .color_border = theme.grid,
+            .min_size_content = .{ .h = tokens.arr_ruler_h },
+            .max_size_content = .height(tokens.arr_ruler_h),
         });
-        spacer.deinit();
+        defer top.deinit();
 
-        var t: usize = 0;
-        while (t < state.track_count) : (t += 1) {
-            const selected = t == state.selected_track and state.mixer_target == .track;
-            const name = state.trackName(t);
-            if (dvui.button(@src(), name, .{}, .{
-                .expand = .horizontal,
-                .min_size_content = .{ .h = tokens.arr_lane_h - 4 },
-                .color_fill = if (selected) theme.accent else theme.cell,
-                .color_text = if (selected) theme.bg else theme.text,
-                .margin = .{ .x = tokens.gap_xs, .y = 1, .w = tokens.gap_xs, .h = 1 },
-                .corners = .round(tokens.radius_sm),
-                .id_extra = t,
-            })) {
-                state.selectTrack(t);
+        {
+            var corner = dvui.box(@src(), .{}, .{
+                .min_size_content = .{ .w = tokens.arr_track_w, .h = tokens.arr_ruler_h },
+                .max_size_content = .{ .w = tokens.arr_track_w, .h = tokens.arr_ruler_h },
+                .background = true,
+                .color_fill = theme.header,
+                .border = .{ .x = 0, .y = 0, .w = 1, .h = 1 },
+                .color_border = theme.grid,
+            });
+            defer corner.deinit();
+        }
+
+        {
+            var ruler_scroll = dvui.scrollArea(@src(), .{
+                .scroll_info = si_ruler,
+                .frame_viewport = .{ .x = fv.x },
+                .horizontal_bar = .hide,
+                .vertical_bar = .hide,
+                .process_events_after = false,
+            }, .{
+                .expand = .both,
+                .background = false,
+            });
+            defer ruler_scroll.deinit();
+            drawRuler(state, timeline_w);
+        }
+
+        if (show_mixer) {
+            arrangement_mixer.drawHeader();
+        }
+    }
+
+    // ── Scrollable body: headers | lanes | mixer rows ───────────────────────
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+            .expand = .both,
+        });
+        defer row.deinit();
+
+        // Track name headers (vertical scroll linked to main).
+        {
+            var headers_scroll = dvui.scrollArea(@src(), .{
+                .scroll_info = si_left,
+                .frame_viewport = .{ .y = fv.y },
+                .horizontal_bar = .hide,
+                .vertical_bar = .hide,
+                .process_events_after = false,
+            }, .{
+                .min_size_content = .{ .w = tokens.arr_track_w },
+                .max_size_content = .width(tokens.arr_track_w),
+                .expand = .vertical,
+                .background = true,
+                .color_fill = theme.panel,
+                .border = .{ .x = 0, .y = 0, .w = 1, .h = 0 },
+                .color_border = theme.grid,
+            });
+            defer headers_scroll.deinit();
+
+            var headers = dvui.box(@src(), .{ .dir = .vertical }, .{
+                .min_size_content = .{ .w = tokens.arr_track_w, .h = lanes_h },
+            });
+            defer headers.deinit();
+
+            var t: usize = 0;
+            while (t < state.track_count) : (t += 1) {
+                drawTrackHeader(state, t);
             }
         }
-    }
 
-    // Timeline
-    {
-        var scroll = dvui.scrollArea(@src(), .{
-            .horizontal_bar = .auto,
-            .vertical_bar = .auto,
-        }, .{
-            .expand = .both,
-            .background = false,
-        });
-        defer scroll.deinit();
+        // Timeline lanes (owns scroll interaction for both axes).
+        {
+            var scontainer: dvui.ScrollContainerWidget = undefined;
+            scontainer.init(@src(), si_main, .{
+                .scroll_area = &main_area,
+                .frame_viewport = fv,
+                .event_rect = main_area.data().borderRectScale().r,
+            }, .{
+                .expand = .both,
+                .background = false,
+            });
+            defer scontainer.deinit();
+            scontainer.processEvents();
 
-        const timeline_w = timelineWidth(state);
-        var timeline = dvui.box(@src(), .{ .dir = .vertical }, .{
-            .expand = .horizontal,
-            .min_size_content = .{ .w = timeline_w },
-        });
-        defer timeline.deinit();
+            var timeline = dvui.box(@src(), .{ .dir = .vertical }, .{
+                .min_size_content = .{ .w = timeline_w, .h = lanes_h },
+            });
+            defer timeline.deinit();
 
-        drawRuler(state, timeline_w);
+            var t: usize = 0;
+            while (t < state.track_count) : (t += 1) {
+                drawLane(state, t, timeline_w);
+            }
 
-        var t: usize = 0;
-        while (t < state.track_count) : (t += 1) {
-            drawLane(state, t, timeline_w);
+            drawBoxSelection(state);
         }
 
-        drawBoxSelection(state);
+        // Mixer strip: track rows scroll with lanes; master stays pinned below.
+        if (show_mixer) {
+            arrangement_mixer.draw(state, si_mixer, fv.y, lanes_h);
+        }
     }
 
-    if (show_mixer) {
-        arrangement_mixer.draw(state);
-    }
+    // Sync linked viewports after all scroll areas have processed input.
+    var new_x = fv.x;
+    if (si_ruler.viewport.x != fv.x) new_x = si_ruler.viewport.x;
+    if (si_main.viewport.x != fv.x) new_x = si_main.viewport.x;
+    si_main.viewport.x = new_x;
+    si_ruler.viewport.x = new_x;
+
+    var new_y = fv.y;
+    if (si_left.viewport.y != fv.y) new_y = si_left.viewport.y;
+    if (si_mixer.viewport.y != fv.y) new_y = si_mixer.viewport.y;
+    if (si_main.viewport.y != fv.y) new_y = si_main.viewport.y;
+    si_main.viewport.y = new_y;
+    si_left.viewport.y = new_y;
+    si_mixer.viewport.y = new_y;
 
     const t1 = std.Io.Clock.awake.now(clock_io);
     const us = time_utils.nsSince(t0, t1) / 1000;
     state.arr_draw_us = @intCast(@min(us, std.math.maxInt(u32)));
+}
+
+fn drawTrackHeader(state: *state_mod.State, track: usize) void {
+    const selected = track == state.selected_track and state.mixer_target == .track;
+    const name = state.trackName(track);
+
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .min_size_content = .{ .h = tokens.arr_lane_h },
+        .max_size_content = .height(tokens.arr_lane_h),
+        .background = true,
+        .color_fill = if (selected) theme.cell_hover else if (track % 2 == 0) theme.cell else theme.header,
+        .border = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
+        .color_border = theme.grid,
+        .padding = .{ .x = tokens.gap_xs, .y = 0, .w = tokens.gap_xs, .h = 0 },
+        .id_extra = track,
+    });
+    defer row.deinit();
+
+    if (dvui.button(@src(), name, .{}, .{
+        .expand = .horizontal,
+        .min_size_content = .{ .h = tokens.arr_lane_h - 4 },
+        .color_fill = if (selected) theme.accent else theme.panel,
+        .color_text = if (selected) theme.bg else theme.text,
+        .corners = .round(tokens.radius_sm),
+        .gravity_y = 0.5,
+        .id_extra = track,
+    })) {
+        state.selectTrack(track);
+    }
 }
 
 fn timelineWidth(state: *const state_mod.State) f32 {
@@ -254,13 +376,14 @@ fn drawRuler(state: *state_mod.State, timeline_w: f32) void {
 }
 
 fn drawLane(state: *state_mod.State, track: usize, timeline_w: f32) void {
-    const selected = track == state.selected_track;
+    const selected = track == state.selected_track and state.mixer_target == .track;
     const beat_w = ppb(state);
     var lane = dvui.box(@src(), .{}, .{
         .expand = .horizontal,
         .background = true,
         .color_fill = if (selected) theme.panel else theme.cell,
         .min_size_content = .{ .h = tokens.arr_lane_h, .w = timeline_w },
+        .max_size_content = .height(tokens.arr_lane_h),
         .border = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
         .color_border = theme.grid,
         .id_extra = track,
@@ -289,11 +412,14 @@ fn drawLane(state: *state_mod.State, track: usize, timeline_w: f32) void {
         line.fill(.all(0), .{ .color = theme.grid });
     }
 
-    var i: usize = 0;
-    while (i < state.arr_clip_count) : (i += 1) {
-        const clip = state.arr_clips[i];
-        if (clip.track != track) continue;
-        drawArrClip(state, i, clip, area, rs.s, beat_w);
+    if (track < state_mod.max_tracks) {
+        const start = track_clip_starts[track];
+        const end = track_clip_starts[track + 1];
+        var k: u16 = start;
+        while (k < end) : (k += 1) {
+            const i = track_clip_indices[k];
+            drawArrClip(state, i, state.arr_clips[i], area, rs.s, beat_w);
+        }
     }
 
     if (state.playing or state.playhead_beat > 0) {
@@ -372,6 +498,8 @@ fn drawContextMenu(state: *state_mod.State, rect: dvui.Rect.Physical, track: usi
         .duplicate = selected,
         .delete = selected,
         .select_all = true,
+        .undo = document_model.ready() and document_commands.canUndo(&document_model.g),
+        .redo = document_model.ready() and document_commands.canRedo(&document_model.g),
         .move_left = selected,
         .move_right = selected,
         .move_up = selected,
@@ -425,6 +553,8 @@ pub fn applyEditAction(state: *state_mod.State, action: edit_actions.Action) boo
                 changed = true;
             }
         },
+        .undo => changed = document_commands.undo(store),
+        .redo => changed = document_commands.redo(store),
         else => {},
     }
     if (changed and host_mod.ready()) host_mod.g.projectChrome(state);
@@ -468,7 +598,7 @@ fn drawArrClip(
     };
     strip.fill(.all(0), .{ .color = theme.trackColor(clip.track) });
 
-    // Audio waveform thumbnail when peaks are available (cached per frame).
+    // Audio waveform thumbnail when peaks are available (revision-cached).
     if (clip.kind == .audio) {
         if (arrClipPeaksCached(index)) |peaks| {
             const pad = 2.0 * scale;
@@ -514,13 +644,43 @@ fn drawArrClip(
     }
 }
 
-fn ensurePeakCache() void {
-    if (peak_cache_valid) return;
-    peak_cache = @splat(null);
-    if (!document_model.ready()) {
-        peak_cache_valid = true;
-        return;
+fn rebuildTrackClipIndex(state: *const state_mod.State) void {
+    var counts: [state_mod.max_tracks]u16 = @splat(0);
+    var i: usize = 0;
+    while (i < state.arr_clip_count) : (i += 1) {
+        const t = state.arr_clips[i].track;
+        if (t < state_mod.max_tracks and counts[t] < std.math.maxInt(u16)) {
+            counts[t] += 1;
+        }
     }
+    var off: u16 = 0;
+    var t: usize = 0;
+    while (t < state_mod.max_tracks) : (t += 1) {
+        track_clip_starts[t] = off;
+        off +%= counts[t];
+    }
+    track_clip_starts[state_mod.max_tracks] = off;
+
+    var cursors = track_clip_starts;
+    i = 0;
+    while (i < state.arr_clip_count) : (i += 1) {
+        const tr = state.arr_clips[i].track;
+        if (tr >= state_mod.max_tracks) continue;
+        const slot = cursors[tr];
+        if (slot >= track_clip_indices.len) continue;
+        track_clip_indices[slot] = @intCast(i);
+        cursors[tr] = slot + 1;
+    }
+}
+
+fn ensurePeakCache() void {
+    const revision: u64 = if (document_model.ready()) document_model.g.revision else 0;
+    // Live drag can move clips without a revision bump; peaks only depend on
+    // sample identity, so revision is enough for the pointer table.
+    if (peak_cache_revision == revision) return;
+    peak_cache = @splat(null);
+    peak_cache_revision = revision;
+    if (!document_model.ready()) return;
     const document = &document_model.g;
     var global_i: usize = 0;
     for (document.arrangement.tracks.items) |*atrack| {
@@ -540,7 +700,6 @@ fn ensurePeakCache() void {
             global_i += 1;
         }
     }
-    peak_cache_valid = true;
 }
 
 fn arrClipPeaksCached(index: usize) ?[]const peaks_mod.PeakBin {

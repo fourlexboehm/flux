@@ -12,7 +12,9 @@ pub fn midiClip(store: *model.Store, track: usize, scene: usize) ?*notes.PianoRo
 }
 
 fn recordMidiReplace(store: *model.Store, track: usize, scene: usize, clip: *const notes.PianoRollClip, old_notes: []const notes.Note, old_timing: notes.ClipTiming) void {
-    store.midi_history.recordReplace(
+    const cmd_undo = @import("cmd_undo.zig");
+    cmd_undo.pushNotesReplace(
+        store,
         track,
         scene,
         old_notes,
@@ -87,43 +89,47 @@ pub fn removeMidiNotes(store: *model.Store, track: usize, scene: usize, indices:
 
 /// End an in-place gesture: push one history entry when content changed, bump revision.
 pub fn commitMidiNoteEdit(store: *model.Store, track: usize, scene: usize) void {
-    if (midiClip(store, track, scene) == null) return;
-    store.midi_history.endGesture(track, scene, midiClip(store, track, scene).?);
+    const clip = midiClip(store, track, scene) orelse return;
+    // Capture via midi_history pending, then move ownership into the global stack.
+    store.midi_history.endGesture(track, scene, clip);
+    if (store.midi_history.popUndo()) |entry| {
+        if (!store.suppress_undo_capture) {
+            // Transfer owned note slices into UndoHistory (no re-dupe).
+            store.undo_history.push(.{
+                .notes_replace = .{
+                    .track = entry.track,
+                    .scene = entry.scene,
+                    .old_notes = entry.old_notes,
+                    .new_notes = entry.new_notes,
+                    .old_timing = entry.old_timing,
+                    .new_timing = entry.new_timing,
+                },
+            });
+        } else {
+            store.midi_history.freeEntry(entry);
+        }
+    }
     store.markChanged();
 }
 
 pub fn canUndoMidi(store: *const model.Store) bool {
-    return store.midi_history.canUndo();
+    const cmd_undo = @import("cmd_undo.zig");
+    return cmd_undo.canUndo(store);
 }
 
 pub fn canRedoMidi(store: *const model.Store) bool {
-    return store.midi_history.canRedo();
+    const cmd_undo = @import("cmd_undo.zig");
+    return cmd_undo.canRedo(store);
 }
 
 pub fn undoMidi(store: *model.Store) bool {
-    const entry = store.midi_history.popUndo() orelse return false;
-    const clip = midiClip(store, entry.track, entry.scene) orelse {
-        store.midi_history.freeEntry(entry);
-        return false;
-    };
-    midi_history.replaceNotes(clip, entry.old_notes);
-    midi_history.applyTiming(clip, entry.old_timing);
-    store.midi_history.confirmUndo(entry);
-    store.markChanged();
-    return true;
+    const cmd_undo = @import("cmd_undo.zig");
+    return cmd_undo.undo(store);
 }
 
 pub fn redoMidi(store: *model.Store) bool {
-    const entry = store.midi_history.popRedo() orelse return false;
-    const clip = midiClip(store, entry.track, entry.scene) orelse {
-        store.midi_history.freeEntry(entry);
-        return false;
-    };
-    midi_history.replaceNotes(clip, entry.new_notes);
-    midi_history.applyTiming(clip, entry.new_timing);
-    store.midi_history.confirmRedo(entry);
-    store.markChanged();
-    return true;
+    const cmd_undo = @import("cmd_undo.zig");
+    return cmd_undo.redo(store);
 }
 
 pub const MidiTransform = enum { quantize, duplicate, reverse, invert, legato, resolve_overlaps, humanize, half_time, double_time };

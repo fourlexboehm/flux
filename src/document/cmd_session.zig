@@ -194,7 +194,10 @@ pub fn setTrackVolume(store: *model.Store, track: usize, volume: f32) void {
     if (!isMixableTrack(store, track)) return;
     const value = std.math.clamp(volume, 0, 1.5);
     if (store.session.tracks[track].volume == value) return;
+    const old = store.session.tracks[track].volume;
     store.session.tracks[track].volume = value;
+    const cmd_undo = @import("cmd_undo.zig");
+    cmd_undo.pushTrackVolume(store, track, old, value);
     store.markChanged();
 }
 
@@ -208,17 +211,25 @@ pub fn setTrackPan(store: *model.Store, track: usize, pan: f32) void {
 
 pub fn toggleTrackMute(store: *model.Store, track: usize) void {
     if (!isMixableTrack(store, track)) return;
-    store.session.tracks[track].mute = !store.session.tracks[track].mute;
+    const old = store.session.tracks[track].mute;
+    store.session.tracks[track].mute = !old;
+    const cmd_undo = @import("cmd_undo.zig");
+    cmd_undo.pushTrackMute(store, track, old, !old);
     store.markChanged();
 }
 
 pub fn toggleTrackSolo(store: *model.Store, track: usize) void {
     if (track >= store.session.track_count) return;
-    store.session.tracks[track].solo = !store.session.tracks[track].solo;
+    const old = store.session.tracks[track].solo;
+    store.session.tracks[track].solo = !old;
+    const cmd_undo = @import("cmd_undo.zig");
+    cmd_undo.pushTrackSolo(store, track, old, !old);
     store.markChanged();
 }
 
-pub fn toggleTrackArm(store: *model.Store, track: usize) void {
+/// Prefer `document/cmd_recording.toggleTrackArm` (stops active take). Kept so
+/// older call sites that only imported session commands still compile if any.
+pub fn toggleTrackArmPlain(store: *model.Store, track: usize) void {
     if (track >= store.session.track_count) return;
     store.session.armed_track = if (store.session.armed_track == track) null else track;
     store.markChanged();
@@ -226,16 +237,17 @@ pub fn toggleTrackArm(store: *model.Store, track: usize) void {
 
 pub const PlaybackRequests = struct {
     start: bool,
+    /// Always false here: `reset_playhead_request` is owned by `ui/recording.tick`
+    /// so held notes can be seeded at the recording start boundary.
     reset_playhead: bool,
 };
 
 pub fn takePlaybackRequests(store: *model.Store) PlaybackRequests {
     const requests: PlaybackRequests = .{
         .start = store.session.start_playback_request,
-        .reset_playhead = store.session.reset_playhead_request,
+        .reset_playhead = false,
     };
     store.session.start_playback_request = false;
-    store.session.reset_playhead_request = false;
     return requests;
 }
 

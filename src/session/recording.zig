@@ -15,7 +15,7 @@ pub fn startRecording(self: *session_view.SessionView, track: usize, scene: usiz
     self.claim_midi_slot_request = .{ .track = track, .scene = scene };
 
     // Create clip if empty, set to recording state. The pooled MIDI clip is
-    // materialized by the `claim_midi_slot_request` handling (ui_zgui/draw.zig ->
+    // materialized by the `claim_midi_slot_request` handling (document/cmd_recording +
     // State.claimSlotForMidi); the slot here only carries launch state.
     const was_empty = self.clips[track][scene].state == .empty;
     if (was_empty) {
@@ -67,7 +67,7 @@ pub fn startRecording(self: *session_view.SessionView, track: usize, scene: usiz
 pub fn stopRecording(self: *session_view.SessionView, mode: session_view.StopRecordingMode) void {
     if (self.recording.track) |track| {
         if (self.recording.scene) |scene| {
-            // Request finalization of held notes (handled in ui_zgui/recording.zig tick)
+            // Request finalization of held notes (handled in ui/recording.zig tick)
             if (self.clips[track][scene].state == .recording) {
                 self.finalize_recording_track = track;
                 self.finalize_recording_scene = scene;

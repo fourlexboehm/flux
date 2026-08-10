@@ -1,6 +1,6 @@
 //! DVUI editor for the stock Flux FX (EQ / compressor / gate / limiter).
 //!
-//! Ports the zgui `src/builtins/view.zig` body: an EQ magnitude-response curve
+//! Stock FX editors: EQ magnitude-response curve
 //! with band chips and per-band controls, and a grouped dynamics layout.
 //!
 //! The response curve is computed from the *parameter* values into a scratch

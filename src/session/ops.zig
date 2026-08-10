@@ -172,7 +172,7 @@ pub fn deleteClip(self: *session_view.SessionView, track: usize, scene: usize) v
     if (track >= self.track_count or scene >= self.scene_count) return;
     // Capture old state before deleting. The pooled clip is left alive here:
     // undo-request processing reads its content for the undo snapshot and then
-    // releases it (see ui_zgui/undo_requests.zig `.clip_delete`).
+    // releases it (see document/cmd_undo.zig clip_delete).
     const old_clip = self.clips[track][scene];
     if (old_clip.state == .empty) return; // Don't record deleting empty slots
     self.clips[track][scene] = .{};
@@ -548,7 +548,7 @@ pub fn moveSelectedClips(self: *session_view.SessionView, delta_track: i32, delt
     self.drag_start_track = self.primary_track;
     self.drag_start_scene = self.primary_scene;
 
-    // Emit undo request for clip moves (also signals ui_zgui/undo_requests.zig to move piano clips)
+    // Emit undo request for clip moves (also signals document undo to move piano clips)
     self.clip_move_count = 0;
     for (moves[0..move_count]) |m| {
         if (self.clip_move_count < self.clip_move_requests.len) {
@@ -562,7 +562,7 @@ pub fn moveSelectedClips(self: *session_view.SessionView, delta_track: i32, delt
         }
     }
     // Content travels with the ClipId held in each moved slot, so no separate
-    // piano/audio content shuffle is needed (see ui_zgui/undo_requests.zig).
+    // piano/audio content shuffle is needed (see document/cmd_undo.zig).
     self.pending_piano_moves = false;
 }
 

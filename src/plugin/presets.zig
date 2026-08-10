@@ -272,12 +272,12 @@ const PresetMetadataCollector = struct {
     fn addFeature(receiver: *const clap.preset_discovery.MetadataReceiver, feature: [*:0]const u8) callconv(.c) void {
         const self: *PresetMetadataCollector = @ptrCast(@alignCast(receiver.receiver_data));
         const value = std.mem.span(feature);
-        if (std.ascii.indexOfIgnoreCase(value, "drum") != null or std.ascii.indexOfIgnoreCase(value, "percussion") != null) self.current_category = "drums"
-        else if (std.ascii.indexOfIgnoreCase(value, "bass") != null) self.current_category = "bass"
-        else if (std.ascii.indexOfIgnoreCase(value, "pad") != null) self.current_category = "pad"
-        else if (std.ascii.indexOfIgnoreCase(value, "lead") != null) self.current_category = "lead"
-        else if (std.ascii.indexOfIgnoreCase(value, "piano") != null or std.ascii.indexOfIgnoreCase(value, "keyboard") != null) self.current_category = "keys"
-        else if (std.ascii.indexOfIgnoreCase(value, "noise") != null) self.current_category = "noise";
+        if (std.ascii.findIgnoreCase(value, "drum") != null or std.ascii.findIgnoreCase(value, "percussion") != null) self.current_category = "drums"
+        else if (std.ascii.findIgnoreCase(value, "bass") != null) self.current_category = "bass"
+        else if (std.ascii.findIgnoreCase(value, "pad") != null) self.current_category = "pad"
+        else if (std.ascii.findIgnoreCase(value, "lead") != null) self.current_category = "lead"
+        else if (std.ascii.findIgnoreCase(value, "piano") != null or std.ascii.findIgnoreCase(value, "keyboard") != null) self.current_category = "keys"
+        else if (std.ascii.findIgnoreCase(value, "noise") != null) self.current_category = "noise";
     }
     fn addExtraInfo(_: *const clap.preset_discovery.MetadataReceiver, _: [*:0]const u8, _: [*:0]const u8) callconv(.c) void {}
 };
@@ -405,7 +405,7 @@ fn scanPresetsForBinary(
             .location_kind = @intFromEnum(preset.location_kind),
             .location = location_copy,
             .load_key = load_key_copy,
-            .category = presetCategory(preset.name, preset.location, preset.category),
+            .category = presetCategory(preset.name, preset.location_z, preset.category),
         });
     }
 
@@ -474,20 +474,100 @@ fn scanPresetDir(
     }
 }
 
+/// Open the preset SQLite cache and refresh it from the plugin catalog.
+///
+/// Scans each CLAP/builtin binary that has an on-disk path (same discovery
+/// path as the old zgui host). Cache hits skip DynLib work; set
+/// `FLUX_PRESET_RESCAN=1` to force a full re-index, `FLUX_PRESET_DEBUG=1`
+/// for per-binary scan logs. Browser categories then query the DB on demand.
 pub fn build(
     allocator: std.mem.Allocator,
     io: Io,
     catalog: *const plugins.PluginCatalog,
-    environ_map: *std.process.Environ.Map,
 ) !PresetCatalog {
-    _ = environ_map;
     var db = try preset_db.Db.open(allocator, io);
     errdefer db.deinit();
+
+    const debug = envFlag("FLUX_PRESET_DEBUG");
+    const rescan_all = envFlag("FLUX_PRESET_RESCAN");
+
+    var seen_paths: std.StringHashMapUnmanaged(void) = .{};
+    defer {
+        var it = seen_paths.iterator();
+        while (it.next()) |entry| {
+            allocator.free(entry.key_ptr.*);
+        }
+        seen_paths.deinit(allocator);
+    }
+
+    // Scratch arena for intermediate discovery allocations; reset per binary.
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+
+    var total_presets: usize = 0;
+    var total_providers: usize = 0;
+    var cache_hits: usize = 0;
+
+    for (catalog.entries.items) |entry| {
+        if (entry.kind != .clap and entry.kind != .builtin) continue;
+        const path = entry.path orelse continue;
+
+        var resolved_path: ?[]const u8 = null;
+        const scan_path = if (entry.kind == .clap) blk: {
+            resolved_path = plugins.resolveClapBinaryPath(allocator, io, path) catch break :blk path;
+            break :blk resolved_path.?;
+        } else path;
+        defer if (resolved_path) |value| allocator.free(value);
+
+        if (seen_paths.contains(scan_path)) continue;
+        try seen_paths.put(allocator, try allocator.dupe(u8, scan_path), {});
+
+        const mtime_ns = plugins.statMtimeNs(io, scan_path) orelse continue;
+        if (!rescan_all) {
+            if (try db.matches(scan_path, mtime_ns)) {
+                cache_hits += 1;
+                if (debug) {
+                    std.log.info("Preset cache hit: {s}", .{scan_path});
+                }
+                continue;
+            }
+        }
+
+        _ = scratch.reset(.retain_capacity);
+        var throwaway_entries: std.ArrayListUnmanaged(PresetEntry) = .empty;
+        const scanned = try scanPresetsForBinary(
+            scratch.allocator(),
+            io,
+            catalog,
+            &throwaway_entries,
+            scan_path,
+        );
+        total_providers += 1;
+        total_presets += scanned.len;
+        if (debug) {
+            std.log.info("Preset scan: {s} ({d} presets)", .{ scan_path, scanned.len });
+        }
+        try db.replace(scan_path, mtime_ns, scanned);
+    }
+
     try db.classifyLegacyRows();
     for (catalog.entries.items) |entry| {
         if (entry.is_audio_effect) if (entry.id) |id| try db.markEffectPlugin(id);
     }
+
+    if (debug or total_providers > 0) {
+        std.log.info(
+            "preset index: scanned {d} binaries ({d} presets), {d} cache hits",
+            .{ total_providers, total_presets, cache_hits },
+        );
+    }
+
     return .{ .arena = std.heap.ArenaAllocator.init(allocator), .db = db, .plugins = catalog };
+}
+
+fn envFlag(name: [*:0]const u8) bool {
+    const val = std.c.getenv(name) orelse return false;
+    return val[0] == '1';
 }
 
 fn presetCategory(name: []const u8, location: []const u8, metadata_category: []const u8) []const u8 {
@@ -502,7 +582,7 @@ fn presetCategory(name: []const u8, location: []const u8, metadata_category: []c
     };
     for (categories) |category| {
         for (category.terms) |term| {
-            if (std.ascii.indexOfIgnoreCase(name, term) != null or std.ascii.indexOfIgnoreCase(location, term) != null) return category.name;
+            if (std.ascii.findIgnoreCase(name, term) != null or std.ascii.findIgnoreCase(location, term) != null) return category.name;
         }
     }
     return "sounds";

@@ -1,5 +1,5 @@
 //! Bottom-panel audio clip viewer for the DVUI host.
-//! Ports behavior from `ui_zgui/views/audio_clip/` (waveform, zoom/pan, markers).
+//! Waveform zoom/pan, markers, and peak thumbnails for the Clip panel.
 
 const std = @import("std");
 const dvui = @import("dvui");
@@ -372,6 +372,9 @@ fn drawPcmRange(
 }
 
 /// Draw classic DAW column peaks into a physical rect (session thumbnails + detail view).
+///
+/// Sparse peak tables (e.g. 128 bins) are not supersampled to one fill per pixel —
+/// column count is capped at `2 * peaks.len` and columns span the full width.
 pub fn drawPeaks(
     wave: dvui.Rect.Physical,
     peaks: []const PeakBin,
@@ -385,8 +388,12 @@ pub fn drawPeaks(
     const inv = 1.0 / peak;
     const mid_y = wave.y + wave.h * 0.5;
     const amp = wave.h * 0.5 * amp_frac;
-    const cols: usize = @intFromFloat(@floor(wave.w));
+    var cols: usize = @intFromFloat(@floor(wave.w));
     if (cols == 0) return;
+    // Cap supersampling: dense multi-clip arrangements were O(pixels) fills.
+    const col_cap = peaks.len * 2;
+    if (cols > col_cap) cols = col_cap;
+    const col_w = wave.w / @as(f32, @floatFromInt(cols));
     const use_direct = peaks.len == cols or peaks.len == cols + 1;
 
     var x: usize = 0;
@@ -409,9 +416,9 @@ pub fn drawPeaks(
             bot = mid_y + 0.5;
         }
         const col_rect: dvui.Rect.Physical = .{
-            .x = wave.x + @as(f32, @floatFromInt(x)),
+            .x = wave.x + @as(f32, @floatFromInt(x)) * col_w,
             .y = top,
-            .w = 1,
+            .w = @max(1.0, col_w),
             .h = bot - top,
         };
         col_rect.fill(.all(0), .{ .color = col });
@@ -464,7 +471,7 @@ fn drawMarkers(
     // Clip-relative playhead when this slot is playing (session launcher position).
     if (state.playing) {
         const slot = state.selectedSlot();
-        if (slot.play == .playing and state.playhead_beat >= 0 and state.playhead_beat <= length) {
+        if ((slot.play == .playing or slot.play == .recording) and state.playhead_beat >= 0 and state.playhead_beat <= length) {
             if (beatToX(state.playhead_beat, length, wave.x, wave.w)) |px| {
                 verticalLine(px, wave.y, wave.h, @max(2.0, 2.0 * scale), theme.play);
             }

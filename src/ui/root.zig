@@ -1,7 +1,8 @@
 //! Host shell frame: transport + browser + main + bottom panel.
-//! Entry: `src/main.zig`. Port from `src/ui_zgui/` incrementally.
+//! Entry: `src/main.zig`.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const dvui = @import("dvui");
 const theme = @import("theme.zig");
 const state_mod = @import("state.zig");
@@ -20,41 +21,77 @@ const session_view = @import("views/session.zig");
 const arrangement_view = @import("views/arrangement.zig");
 const edit_actions = @import("edit_actions.zig");
 const media_drop = @import("media_drop.zig");
+const recording = @import("recording.zig");
+const midi_input = @import("../midi/input.zig");
 
 const sdl = dvui.backend.c;
+const clock_io: std.Io = std.Io.Threaded.global_single_threaded.io();
 
 const PianoKeyBinding = struct {
     scancode: c_int,
+    /// macOS ANSI virtual keycode (kVK_ANSI_*), used when a plugin window
+    /// steals OS focus and SDL keyboard state stops updating.
+    mac_keycode: u16,
     offset: u8,
 };
 
 /// Physical positions of the QWERTY A–; piano rows. SDL scancodes are layout
 /// independent, so these positions stay put under Dvorak and other layouts.
+/// mac_keycode values match Carbon/HIToolbox ANSI layout (same as zgui's
+/// `forwardMacosPluginKey` table).
 const piano_key_bindings = [_]PianoKeyBinding{
-    .{ .scancode = sdl.SDL_SCANCODE_A, .offset = 0 },
-    .{ .scancode = sdl.SDL_SCANCODE_W, .offset = 1 },
-    .{ .scancode = sdl.SDL_SCANCODE_S, .offset = 2 },
-    .{ .scancode = sdl.SDL_SCANCODE_E, .offset = 3 },
-    .{ .scancode = sdl.SDL_SCANCODE_D, .offset = 4 },
-    .{ .scancode = sdl.SDL_SCANCODE_F, .offset = 5 },
-    .{ .scancode = sdl.SDL_SCANCODE_T, .offset = 6 },
-    .{ .scancode = sdl.SDL_SCANCODE_G, .offset = 7 },
-    .{ .scancode = sdl.SDL_SCANCODE_Y, .offset = 8 },
-    .{ .scancode = sdl.SDL_SCANCODE_H, .offset = 9 },
-    .{ .scancode = sdl.SDL_SCANCODE_U, .offset = 10 },
-    .{ .scancode = sdl.SDL_SCANCODE_J, .offset = 11 },
-    .{ .scancode = sdl.SDL_SCANCODE_K, .offset = 12 },
-    .{ .scancode = sdl.SDL_SCANCODE_O, .offset = 13 },
-    .{ .scancode = sdl.SDL_SCANCODE_L, .offset = 14 },
-    .{ .scancode = sdl.SDL_SCANCODE_P, .offset = 15 },
-    .{ .scancode = sdl.SDL_SCANCODE_SEMICOLON, .offset = 16 },
+    .{ .scancode = sdl.SDL_SCANCODE_A, .mac_keycode = 0, .offset = 0 },
+    .{ .scancode = sdl.SDL_SCANCODE_W, .mac_keycode = 13, .offset = 1 },
+    .{ .scancode = sdl.SDL_SCANCODE_S, .mac_keycode = 1, .offset = 2 },
+    .{ .scancode = sdl.SDL_SCANCODE_E, .mac_keycode = 14, .offset = 3 },
+    .{ .scancode = sdl.SDL_SCANCODE_D, .mac_keycode = 2, .offset = 4 },
+    .{ .scancode = sdl.SDL_SCANCODE_F, .mac_keycode = 3, .offset = 5 },
+    .{ .scancode = sdl.SDL_SCANCODE_T, .mac_keycode = 17, .offset = 6 },
+    .{ .scancode = sdl.SDL_SCANCODE_G, .mac_keycode = 5, .offset = 7 },
+    .{ .scancode = sdl.SDL_SCANCODE_Y, .mac_keycode = 16, .offset = 8 },
+    .{ .scancode = sdl.SDL_SCANCODE_H, .mac_keycode = 4, .offset = 9 },
+    .{ .scancode = sdl.SDL_SCANCODE_U, .mac_keycode = 32, .offset = 10 },
+    .{ .scancode = sdl.SDL_SCANCODE_J, .mac_keycode = 38, .offset = 11 },
+    .{ .scancode = sdl.SDL_SCANCODE_K, .mac_keycode = 40, .offset = 12 },
+    .{ .scancode = sdl.SDL_SCANCODE_O, .mac_keycode = 31, .offset = 13 },
+    .{ .scancode = sdl.SDL_SCANCODE_L, .mac_keycode = 37, .offset = 14 },
+    .{ .scancode = sdl.SDL_SCANCODE_P, .mac_keycode = 35, .offset = 15 },
+    .{ .scancode = sdl.SDL_SCANCODE_SEMICOLON, .mac_keycode = 41, .offset = 16 },
 };
+
+/// Octave shift keys (Z/X). Separate from note bindings so edge detection stays
+/// independent of the note-offset table.
+const mac_keycode_z: u16 = 6;
+const mac_keycode_x: u16 = 7;
+const mac_keycode_lctrl: u16 = 59;
+const mac_keycode_rctrl: u16 = 62;
+const mac_keycode_lalt: u16 = 58;
+const mac_keycode_ralt: u16 = 61;
+const mac_keycode_lcmd: u16 = 55;
+const mac_keycode_rcmd: u16 = 54;
+
+const flux_keyboard_physical_down = if (builtin.os.tag == .macos)
+    struct {
+        extern fn flux_keyboard_physical_down(mac_keycode: u16) bool;
+    }.flux_keyboard_physical_down
+else
+    struct {
+        fn f(_: u16) bool {
+            return false;
+        }
+    }.f;
 
 var octave_down_was_down = false;
 var octave_up_was_down = false;
+/// Previous-frame `wantTextInput` — `textInputRect` is cleared at Window.begin,
+/// so we only learn about typing after widgets draw; suppress piano next frame.
+var text_input_was_active = false;
 
 pub fn init(win: *dvui.Window) !void {
     theme.apply(win);
+    // XInitThreads before any CLAP opens an X11 parent (Linux only).
+    const gui_float = @import("../plugin/gui_float.zig");
+    gui_float.initPlatform();
     // Empty document (session_ops.init + matching arr lanes). No demo seed.
     document_model.initGlobal(win.gpa);
     host_mod.initGlobal(win.gpa);
@@ -66,7 +103,7 @@ pub fn init(win: *dvui.Window) !void {
     preloadDevDevice();
     std.log.info("flux-dvui host ready (backend={s})", .{@tagName(dvui.backend.kind)});
     std.log.info("  document: empty session+arrangement", .{});
-    std.log.info("  audio: full AudioEngine + CLAP catalog + floating plugin GUIs", .{});
+    std.log.info("  audio: full AudioEngine + CLAP catalog + floating/parented plugin GUIs", .{});
     std.log.info("  MIDI: physical keyboard A–; positions (Z/X octave) + hardware portmidi", .{});
     std.log.info("  Space = play/stop, Tab = session/arrangement, Shift+Tab = device/clip, B = browser", .{});
 }
@@ -113,38 +150,57 @@ pub fn frame() !dvui.App.Result {
     const state = &state_mod.g;
     std.debug.assert(host_mod.ready());
     host_mod.g.drainPlaybackRequests(state);
+    recording.drainUiRequests(state);
+
+    // Playhead + recording quantize/finalize.
+    // Runs before live-key refresh so keyboard edge capture sees last frame's baseline.
+    const win = dvui.currentWindow();
+    const frame_ns = win.frame_time_ns;
+    var dt: f64 = 0;
+    if (state.playing) {
+        if (state.last_frame_time_ns != 0 and frame_ns > state.last_frame_time_ns) {
+            const dt_ns = frame_ns - state.last_frame_time_ns;
+            dt = @as(f64, @floatFromInt(dt_ns)) / 1e9;
+            if (dt < 0 or dt >= 0.25) dt = 0;
+        }
+        state.last_frame_time_ns = frame_ns;
+        dvui.refresh(null, @src(), win.data().id);
+    } else {
+        state.last_frame_time_ns = 0;
+    }
+    recording.tick(state, dt);
+
     pollPhysicalPiano(state);
     handleGlobalKeys(state);
+
+    const midi_track = recording.midiTargetTrack(state);
 
     // Full engine: buffer, MIDI, plugin sync, publish host+chrome → RT, pull meters.
     if (audio_runtime.ready()) {
         audio_runtime.g.tick(&host_mod.g, state);
     } else if (plugin_host.ready()) {
         // No audio device: still poll MIDI / keyboard live keys for UI feedback.
-        plugin_host.g.tickLiveMidi(state.selected_track, state.piano_preview_pitch);
+        plugin_host.g.tickLiveMidi(midi_track, state.piano_preview_pitch);
     }
+
+    // Drain hardware MIDI every frame (queue capacity is finite). Capture into
+    // the armed clip only while a take is active.
+    if (plugin_host.ready() and plugin_host.g.midi_active) {
+        var midi_events: [256]midi_input.MidiEvent = undefined;
+        while (true) {
+            const n = plugin_host.g.midi.drainEvents(midi_events[0..]);
+            if (n == 0) break;
+            const now = std.Io.Clock.awake.now(clock_io);
+            recording.processMidiEvents(state, midi_events[0..n], now);
+            if (n < midi_events.len) break;
+        }
+    }
+    recording.processKeyboardEvents(state);
+
     // Project after plugin tick so device names match freshly loaded choices.
     host_mod.g.projectChrome(state);
     project_runtime.handleRequests(state);
     media_drop.pollNativeDrops(state);
-
-    // Playhead advances on the UI thread (same as zgui `ui_zgui/recording.tick`).
-    // Audio thread renders graph + metronome from the published snapshot.
-    if (state.playing) {
-        const win = dvui.currentWindow();
-        const now = win.frame_time_ns;
-        if (state.last_frame_time_ns != 0 and now > state.last_frame_time_ns) {
-            const dt_ns = now - state.last_frame_time_ns;
-            const dt = @as(f32, @floatFromInt(dt_ns)) / 1e9;
-            if (dt > 0 and dt < 0.25) {
-                state.playhead_beat += dt * (state.bpm / 60.0);
-            }
-        }
-        state.last_frame_time_ns = now;
-        dvui.refresh(null, @src(), win.data().id);
-    } else {
-        state.last_frame_time_ns = 0;
-    }
 
     {
         var root = dvui.box(@src(), .{ .dir = .vertical }, .{
@@ -178,6 +234,9 @@ pub fn frame() !dvui.App.Result {
             bottom.draw(state);
         }
     }
+
+    // Capture for next frame's piano poll (cleared again in Window.begin).
+    text_input_was_active = dvui.currentWindow().textInputRequested() != null;
 
     return .ok;
 }
@@ -236,6 +295,22 @@ fn handleGlobalKeys(state: *state_mod.State) void {
         }
 
         if (ke.action != .down and ke.action != .repeat) continue;
+
+        // Global document undo/redo (any focused pane).
+        if (edit_actions.fromKey(ke)) |action| {
+            if (action == .undo or action == .redo) {
+                if (document_model.ready()) {
+                    const store = &document_model.g;
+                    const did = if (action == .undo) document_commands.undo(store) else document_commands.redo(store);
+                    if (did) {
+                        e.handle(@src(), wd);
+                        if (host_mod.ready()) host_mod.g.projectChrome(state);
+                        dvui.refresh(null, @src(), wd.id);
+                        continue;
+                    }
+                }
+            }
+        }
 
         if (state.focused_pane == .session) {
             if (edit_actions.fromKey(ke)) |action| {
@@ -343,16 +418,41 @@ fn keyboardModifierDown(keys: [*c]const bool, count: c_int) bool {
     return false;
 }
 
-/// Poll SDL's physical key state instead of DVUI's layout-translated key names.
+fn macModifierDown() bool {
+    return flux_keyboard_physical_down(mac_keycode_lctrl) or
+        flux_keyboard_physical_down(mac_keycode_rctrl) or
+        flux_keyboard_physical_down(mac_keycode_lalt) or
+        flux_keyboard_physical_down(mac_keycode_ralt) or
+        flux_keyboard_physical_down(mac_keycode_lcmd) or
+        flux_keyboard_physical_down(mac_keycode_rcmd);
+}
+
+/// Poll physical piano keys. On macOS, HID system key state is used so notes
+/// keep routing when a floating/parented CLAP window holds OS focus (SDL only
+/// updates keyboard state for its own key window). Elsewhere: SDL scancodes.
 fn pollPhysicalPiano(state: *const state_mod.State) void {
     if (!plugin_host.ready()) return;
     const ph = &plugin_host.g;
+    ph.clearKeyboardNotes();
+
+    // Typing in a text field owns the keyboard — release any held piano notes.
+    // (Uses last frame's wantTextInput; rect is wiped in Window.begin.)
+    if (text_input_was_active) {
+        octave_down_was_down = false;
+        octave_up_was_down = false;
+        return;
+    }
+
+    if (builtin.os.tag == .macos) {
+        pollMacosPhysicalPiano(state, ph);
+        return;
+    }
+
     var count: c_int = 0;
     const keys = sdl.SDL_GetKeyboardState(&count);
     const octave_down = keyboardDown(keys, count, sdl.SDL_SCANCODE_Z);
     const octave_up = keyboardDown(keys, count, sdl.SDL_SCANCODE_X);
 
-    ph.clearKeyboardNotes();
     if (!keyboardModifierDown(keys, count)) {
         if (octave_down and !octave_down_was_down) {
             ph.keyboard_octave = @max(ph.keyboard_octave - 1, -5);
@@ -361,9 +461,34 @@ fn pollPhysicalPiano(state: *const state_mod.State) void {
             ph.keyboard_octave = @min(ph.keyboard_octave + 1, 5);
         }
 
+        const midi_track = recording.midiTargetTrack(state);
         for (piano_key_bindings) |binding| {
             if (keyboardDown(keys, count, binding.scancode)) {
-                ph.applyKeyboardNote(state.selected_track, binding.offset, true);
+                ph.applyKeyboardNote(midi_track, binding.offset, true);
+            }
+        }
+    }
+    octave_down_was_down = octave_down;
+    octave_up_was_down = octave_up;
+}
+
+/// macOS path: CGEventSourceKeyState / HID, works with plugin child focus.
+fn pollMacosPhysicalPiano(state: *const state_mod.State, ph: *plugin_host.PluginHost) void {
+    const octave_down = flux_keyboard_physical_down(mac_keycode_z);
+    const octave_up = flux_keyboard_physical_down(mac_keycode_x);
+
+    if (!macModifierDown()) {
+        if (octave_down and !octave_down_was_down) {
+            ph.keyboard_octave = @max(ph.keyboard_octave - 1, -5);
+        }
+        if (octave_up and !octave_up_was_down) {
+            ph.keyboard_octave = @min(ph.keyboard_octave + 1, 5);
+        }
+
+        const midi_track = recording.midiTargetTrack(state);
+        for (piano_key_bindings) |binding| {
+            if (flux_keyboard_physical_down(binding.mac_keycode)) {
+                ph.applyKeyboardNote(midi_track, binding.offset, true);
             }
         }
     }

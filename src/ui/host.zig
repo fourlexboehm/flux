@@ -67,6 +67,7 @@ pub const Host = struct {
     }
 
     /// Apply session requests raised by playback ops (start play, reset playhead).
+    /// Quantize boundaries and recording finalization live in `ui/recording.tick`.
     pub fn drainPlaybackRequests(self: *Host, state: *chrome.State) void {
         const requests = document_commands.takePlaybackRequests(self.document_store);
         if (requests.start) {
@@ -77,15 +78,6 @@ pub const Host = struct {
         }
         if (requests.reset_playhead) {
             state.playhead_beat = 0;
-        }
-        if (state.playing) {
-            const bpb = state.beatsPerBar();
-            if (bpb > 0) {
-                const beat_in_bar = @mod(state.playhead_beat, bpb);
-                if (beat_in_bar < 0.05) {
-                    document_commands.processQuantizedSwitches(self.document_store);
-                }
-            }
         }
     }
 
@@ -250,8 +242,10 @@ pub const Host = struct {
         const play: chrome.SlotPlayState = switch (slot.state) {
             .empty => .empty,
             .stopped => .stopped,
-            .queued, .record_queued => .queued,
-            .playing, .recording => .playing,
+            .queued => .queued,
+            .record_queued => .record_queued,
+            .playing => .playing,
+            .recording => .recording,
         };
         return .{
             .kind = kind,

@@ -1,7 +1,7 @@
 //! UI-neutral mutations for the editable document.
 //!
-//! Split across cmd_session / cmd_arrangement / cmd_midi; this file re-exports
-//! the public API and holds command unit tests.
+//! Split across cmd_session / cmd_arrangement / cmd_midi / cmd_recording; this
+//! file re-exports the public API and holds command unit tests.
 
 const std = @import("std");
 const model = @import("model.zig");
@@ -10,6 +10,8 @@ const arr_ops = @import("../arrangement/ops.zig");
 const session_cmd = @import("cmd_session.zig");
 const arr_cmd = @import("cmd_arrangement.zig");
 const midi_cmd = @import("cmd_midi.zig");
+const rec_cmd = @import("cmd_recording.zig");
+const undo_cmd = @import("cmd_undo.zig");
 
 pub const syncArrangementTracks = session_cmd.syncArrangementTracks;
 pub const createClip = session_cmd.createClip;
@@ -36,12 +38,28 @@ pub const setTrackVolume = session_cmd.setTrackVolume;
 pub const setTrackPan = session_cmd.setTrackPan;
 pub const toggleTrackMute = session_cmd.toggleTrackMute;
 pub const toggleTrackSolo = session_cmd.toggleTrackSolo;
-pub const toggleTrackArm = session_cmd.toggleTrackArm;
+pub const toggleTrackArm = rec_cmd.toggleTrackArm;
 pub const PlaybackRequests = session_cmd.PlaybackRequests;
 pub const takePlaybackRequests = session_cmd.takePlaybackRequests;
 pub const processQuantizedSwitches = session_cmd.processQuantizedSwitches;
 pub const setPrimarySelection = session_cmd.setPrimarySelection;
 pub const selectSessionSlotsInRange = session_cmd.selectSessionSlotsInRange;
+pub const StopRecordingMode = rec_cmd.StopRecordingMode;
+pub const OpenClipRequest = rec_cmd.OpenClipRequest;
+pub const slotLengthBeats = rec_cmd.slotLengthBeats;
+pub const ensureSlotPiano = rec_cmd.ensureSlotPiano;
+pub const claimSlotForMidi = rec_cmd.claimSlotForMidi;
+pub const startRecording = rec_cmd.startRecording;
+pub const stopRecording = rec_cmd.stopRecording;
+pub const cancelRecording = rec_cmd.cancelRecording;
+pub const takeOpenClipRequest = rec_cmd.takeOpenClipRequest;
+pub const isRecording = rec_cmd.isRecording;
+pub const isActivelyRecording = rec_cmd.isActivelyRecording;
+pub const hasQueuedRecording = rec_cmd.hasQueuedRecording;
+pub const processRecordingQuantize = rec_cmd.processRecordingQuantize;
+pub const lockSelectionToRecording = rec_cmd.lockSelectionToRecording;
+pub const recordNote = rec_cmd.recordNote;
+pub const setRecordingClipLength = rec_cmd.setRecordingClipLength;
 pub const ArrangementLocation = arr_cmd.ArrangementLocation;
 pub const arrangementLocation = arr_cmd.arrangementLocation;
 pub const selectArrangementClip = arr_cmd.selectArrangementClip;
@@ -56,6 +74,7 @@ pub const setArrangementClipGeometry = arr_cmd.setArrangementClipGeometry;
 pub const resizeArrangementClipLeft = arr_cmd.resizeArrangementClipLeft;
 pub const resizeArrangementClipRight = arr_cmd.resizeArrangementClipRight;
 pub const commitArrangementEdit = arr_cmd.commitArrangementEdit;
+pub const commitArrangementDrag = arr_cmd.commitArrangementDrag;
 pub const duplicateArrangementClipInPlace = arr_cmd.duplicateArrangementClipInPlace;
 pub const createArrangementMidiClip = arr_cmd.createArrangementMidiClip;
 pub const loadAudioFileIntoSession = arr_cmd.loadAudioFileIntoSession;
@@ -73,6 +92,12 @@ pub const canUndoMidi = midi_cmd.canUndoMidi;
 pub const canRedoMidi = midi_cmd.canRedoMidi;
 pub const undoMidi = midi_cmd.undoMidi;
 pub const redoMidi = midi_cmd.redoMidi;
+pub const canUndo = undo_cmd.canUndo;
+pub const canRedo = undo_cmd.canRedo;
+pub const undo = undo_cmd.undo;
+pub const redo = undo_cmd.redo;
+pub const undoDescription = undo_cmd.undoDescription;
+pub const redoDescription = undo_cmd.redoDescription;
 pub const MidiTransform = midi_cmd.MidiTransform;
 pub const transformMidiNotes = midi_cmd.transformMidiNotes;
 pub const nudgeMidiNotes = midi_cmd.nudgeMidiNotes;
@@ -158,6 +183,65 @@ test "piano-roll bulk transforms preserve a single revision boundary" {
     try std.testing.expectEqual(@as(usize, 4), midiClip(&store, 0, 0).?.notes.items.len);
 }
 
+test "startRecording materializes MIDI and arms record_queued when playing" {
+    var store = model.Store.init(std.testing.allocator);
+    defer store.deinit();
+    store.wireInternalRefs();
+
+    const before = store.revision;
+    startRecording(&store, 0, 0, true, 1.5, 4.0);
+    try std.testing.expect(store.revision > before);
+    try std.testing.expectEqual(@as(?usize, 0), store.session.recording.track);
+    try std.testing.expectEqual(@as(?usize, 0), store.session.recording.scene);
+    try std.testing.expect(store.session.clips[0][0].state == .record_queued);
+    try std.testing.expect(store.slotMidiClip(0, 0) != null);
+    try std.testing.expect(store.session.recording.is_new_clip);
+
+    processRecordingQuantize(&store, 2.0);
+    try std.testing.expect(store.session.clips[0][0].state == .recording);
+    try std.testing.expectEqual(@as(f32, 2.0), store.session.recording.start_beat);
+
+    recordNote(&store, 0, 0, 60, 0.0, 0.5, 0.9);
+    try std.testing.expectEqual(@as(usize, 1), store.slotMidiClip(0, 0).?.notes.items.len);
+
+    stopRecording(&store, .loop);
+    // Active recording defers finalize; clip leaves recording state.
+    try std.testing.expect(store.session.clips[0][0].state == .playing);
+    try std.testing.expectEqual(@as(?usize, 0), store.session.finalize_recording_track);
+}
+
+test "startRecording when stopped begins immediately and requests playback" {
+    var store = model.Store.init(std.testing.allocator);
+    defer store.deinit();
+    store.wireInternalRefs();
+
+    startRecording(&store, 1, 2, false, 0, 4.0);
+    try std.testing.expect(store.session.clips[1][2].state == .recording);
+    try std.testing.expect(store.session.start_playback_request);
+    try std.testing.expect(store.session.reset_playhead_request);
+    try std.testing.expectEqual(@as(?usize, 1), store.session.recording.track);
+    try std.testing.expectEqual(@as(?usize, 2), store.session.recording.scene);
+    const open = takeOpenClipRequest(&store);
+    try std.testing.expect(open != null);
+    try std.testing.expectEqual(@as(usize, 1), open.?.track);
+    try std.testing.expectEqual(@as(usize, 2), open.?.scene);
+}
+
+test "toggleTrackArm stops active recording" {
+    var store = model.Store.init(std.testing.allocator);
+    defer store.deinit();
+    store.wireInternalRefs();
+
+    store.session.armed_track = 0;
+    startRecording(&store, 0, 0, false, 0, 4.0);
+    try std.testing.expect(isRecording(&store));
+    toggleTrackArm(&store, 0);
+    // Disarm + stop: finalize is staged for the UI tick.
+    try std.testing.expectEqual(@as(?usize, null), store.session.armed_track);
+    try std.testing.expectEqual(@as(?usize, 0), store.session.finalize_recording_track);
+    try std.testing.expect(store.session.clips[0][0].state == .stopped);
+}
+
 test "piano-roll midi undo and redo restore notes" {
     var store = model.Store.init(std.testing.allocator);
     defer store.deinit();
@@ -177,6 +261,25 @@ test "piano-roll midi undo and redo restore notes" {
     try std.testing.expectEqual(@as(u8, 72), midiClip(&store, 0, 0).?.notes.items[0].pitch);
     try std.testing.expect(undoMidi(&store));
     try std.testing.expectEqual(@as(u8, 60), midiClip(&store, 0, 0).?.notes.items[0].pitch);
+}
+
+test "global undo covers session clips and mixer" {
+    var store = model.Store.init(std.testing.allocator);
+    defer store.deinit();
+    store.wireInternalRefs();
+    createClip(&store, 0, 0, 4);
+    try std.testing.expect(canUndo(&store));
+    try std.testing.expect(undo(&store));
+    try std.testing.expect(store.session.clips[0][0].clip.isNone());
+    try std.testing.expect(redo(&store));
+    try std.testing.expect(!store.session.clips[0][0].clip.isNone());
+
+    setTrackVolume(&store, 0, 0.33);
+    toggleTrackMute(&store, 0);
+    try std.testing.expect(undo(&store));
+    try std.testing.expect(!store.session.tracks[0].mute);
+    try std.testing.expect(undo(&store));
+    try std.testing.expectApproxEqAbs(@as(f32, 0.8), store.session.tracks[0].volume, 0.0001);
 }
 
 test "piano-roll automation lanes and points advance revision" {

@@ -1,5 +1,5 @@
 //! Bottom detail panel: Device / Clip tabs + content.
-//! Device chain chrome ports layout from `ui_zgui/panels/device.zig`.
+//! Bottom Device/Clip panel and horizontal device rack.
 //! Plugin pick loads via `ui/plugin_host` (CLAP catalog + DynLib).
 
 const std = @import("std");
@@ -542,10 +542,145 @@ const picker_add_id: usize = 900;
 
 /// Bespoke built-in editor when one exists, else generic CLAP param chrome.
 fn drawDeviceBody(state: *state_mod.State, plugin: *const @import("clap-bindings").Plugin, id_extra: usize) void {
+    // Instruments get a per-device preset combo (zgui device panel parity).
+    if (id_extra == 0) drawInstrumentPresetRow(state, plugin);
+
     const fx_index: i8 = if (id_extra == 0) -1 else @intCast(id_extra - 1);
     const target = param_chrome.Target{ .track = state.deviceTrack(), .fx_index = fx_index };
     if (editors.draw(plugin, target, id_extra)) return;
     param_chrome.draw(plugin, target, id_extra);
+}
+
+// ── Per-device preset combo (instrument cards) ────────────────────────────────
+
+const max_preset_combo: usize = 48;
+const preset_placeholder = "(Preset)";
+
+/// Search buffer + rebuilt label table for the instrument preset dropdown.
+var preset_search_buf: [48]u8 = @splat(0);
+var preset_search_len: usize = 0;
+var preset_filter_choice: i32 = -1;
+var preset_filter_plugin_id: [128]u8 = undefined;
+var preset_filter_plugin_id_len: usize = 0;
+var preset_label_storage: [max_preset_combo][96]u8 = undefined;
+var preset_labels: [max_preset_combo + 1][]const u8 = undefined;
+var preset_entry_indices: [max_preset_combo]usize = undefined;
+var preset_label_count: usize = 1; // includes placeholder at [0]
+
+fn presetSearchText() []const u8 {
+    return preset_search_buf[0..preset_search_len];
+}
+
+fn sanitizePresetName(name: []const u8) []const u8 {
+    // Some factory presets embed path junk; show the leaf-ish tail.
+    if (std.mem.lastIndexOfScalar(u8, name, '/')) |slash| {
+        if (slash + 1 < name.len) return name[slash + 1 ..];
+    }
+    return name;
+}
+
+fn rebuildPresetCombo(plugin_id: []const u8, choice_index: i32) void {
+    preset_filter_choice = choice_index;
+    const copy_len = @min(plugin_id.len, preset_filter_plugin_id.len);
+    @memcpy(preset_filter_plugin_id[0..copy_len], plugin_id[0..copy_len]);
+    preset_filter_plugin_id_len = copy_len;
+
+    preset_labels[0] = preset_placeholder;
+    preset_label_count = 1;
+    if (!plugin_host.ready()) return;
+
+    const entries = plugin_host.g.queryPresets(presetSearchText(), "", true);
+    for (entries, 0..) |entry, idx| {
+        if (preset_label_count > max_preset_combo) break;
+        if (!std.mem.eql(u8, entry.plugin_id, plugin_id)) continue;
+        const clean = sanitizePresetName(entry.name);
+        const slot = preset_label_count - 1;
+        const written = std.fmt.bufPrint(&preset_label_storage[slot], "{s}", .{clean}) catch continue;
+        preset_labels[preset_label_count] = written;
+        preset_entry_indices[slot] = idx;
+        preset_label_count += 1;
+    }
+}
+
+fn drawInstrumentPresetRow(state: *state_mod.State, plugin: *const @import("clap-bindings").Plugin) void {
+    if (!plugin_host.ready() or plugin_host.g.preset_catalog == null) return;
+    const track = state.deviceTrack();
+    if (track >= plugin_host.track_count) return;
+
+    const plugin_id = std.mem.span(plugin.descriptor.id);
+    if (plugin_id.len == 0) return;
+
+    const choice = plugin_host.g.instrument_choice[track].choice_index;
+    const need_rebuild = choice != preset_filter_choice or
+        !std.mem.eql(u8, plugin_id, preset_filter_plugin_id[0..preset_filter_plugin_id_len]);
+    if (need_rebuild) rebuildPresetCombo(plugin_id, choice);
+
+    // Nothing in the DB for this plugin — omit the row (built-ins often empty).
+    if (preset_label_count <= 1 and presetSearchText().len == 0) return;
+
+    var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .expand = .horizontal,
+        .margin = .{ .x = 0, .y = 0, .w = 0, .h = tokens.gap_tight },
+        .id_extra = track,
+    });
+    defer row.deinit();
+
+    dvui.label(@src(), "Preset", .{}, .{
+        .color_text = theme.text_dim,
+        .gravity_y = 0.5,
+        .id_extra = track,
+    });
+
+    {
+        var te = dvui.textEntry(@src(), .{
+            .text = .{ .buffer = &preset_search_buf },
+            .placeholder = "Search…",
+        }, .{
+            .min_size_content = .{ .w = 72, .h = tokens.control_h },
+            .margin = .{ .x = tokens.gap_tight, .y = 0, .w = 0, .h = 0 },
+            .id_extra = track,
+        });
+        const text = te.getText();
+        if (text.len != preset_search_len or !std.mem.eql(u8, text, presetSearchText())) {
+            preset_search_len = text.len;
+            rebuildPresetCombo(plugin_id, choice);
+        }
+        te.deinit();
+    }
+
+    var list_choice: usize = 0;
+    if (plugin_host.g.instrument_preset_list_index[track]) |stored| {
+        // stored is index into the filtered preset rows (0..label_count-2);
+        // dropdown choice is stored+1 because [0] is the placeholder.
+        if (stored + 1 < preset_label_count) list_choice = stored + 1;
+    }
+
+    if (dvui.dropdown(
+        @src(),
+        preset_labels[0..preset_label_count],
+        .{ .choice = &list_choice },
+        .{},
+        .{
+            .expand = .horizontal,
+            .min_size_content = .{ .h = tokens.control_h },
+            .margin = .{ .x = tokens.gap_tight, .y = 0, .w = 0, .h = 0 },
+            .id_extra = track,
+        },
+    )) {
+        if (list_choice == 0) {
+            plugin_host.g.instrument_preset_list_index[track] = null;
+        } else {
+            const row_i = list_choice - 1;
+            if (row_i < preset_label_count - 1) {
+                const entry_idx = preset_entry_indices[row_i];
+                if (plugin_host.g.preset_catalog) |*catalog| {
+                    if (catalog.resolve(entry_idx) catch null) |entry| {
+                        plugin_host.g.loadPresetOnTrackFromList(track, row_i, entry);
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn drawAddCard(state: *state_mod.State) void {

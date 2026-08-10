@@ -3,8 +3,7 @@
 //! Built in Flux's root build graph with full AudioEngine.
 //! `zig build run-flux` → `zig-out/bin/flux`.
 //!
-//! UI lives under `src/ui/`. Legacy zgui host: `src/main_zgui.zig` + `src/ui_zgui/`
-//! (reference only; recover a runnable build from git worktree if needed).
+//! UI lives under `src/ui/`.
 
 const std = @import("std");
 const dvui = @import("dvui");

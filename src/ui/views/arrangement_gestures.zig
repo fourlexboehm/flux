@@ -196,6 +196,7 @@ fn beginClipInteraction(
     state.arr_drag_orig_start_tick = clip.start_tick;
     state.arr_drag_orig_duration_ticks = clip.duration_ticks;
     state.arr_drag_orig_track = loc.track;
+    state.arr_drag_orig_clip_index = loc.clip;
     state.arr_drag_changed = false;
     state.arr_drag_ctrl = me.mod.control() or me.mod.command();
     state.arr_drag_duplicated = false;
@@ -376,7 +377,24 @@ fn applyBoxSelection(state: *state_mod.State) void {
 pub fn finishGestures(state: *state_mod.State) void {
     if (state.arr_drag_mode != .none) {
         if (state.arr_drag_changed and document_model.ready()) {
-            document_commands.commitArrangementEdit(&document_model.g);
+            if (state.arr_drag_clip) |global_index| {
+                if (document_commands.arrangementLocation(&document_model.g, global_index)) |loc| {
+                    document_commands.commitArrangementDrag(
+                        &document_model.g,
+                        loc.track,
+                        loc.clip,
+                        state.arr_drag_orig_track,
+                        state.arr_drag_orig_clip_index,
+                        state.arr_drag_orig_start_tick,
+                        state.arr_drag_orig_duration_ticks,
+                        state.arr_drag_duplicated,
+                    );
+                } else {
+                    document_commands.commitArrangementEdit(&document_model.g);
+                }
+            } else {
+                document_commands.commitArrangementEdit(&document_model.g);
+            }
             if (host_mod.ready()) host_mod.g.projectChrome(state);
         } else {
             // Click without drag: selection already applied; re-sync selected flags.

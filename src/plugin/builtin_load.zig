@@ -2,7 +2,7 @@
 //!
 //! Stock Flux FX (equalizer / compressor / gate / limiter) ship without a
 //! `.clap` bundle path in the catalog; the DVUI host loads them here, matching
-//! the zgui `plugin_runtime.loadBuiltinPlugin` path for FX only.
+//! in-process CLAP instances without DynLib.
 //!
 //! Instrument builtins (ZSynth / ZMinimoog / ZPortaFM) load the same way now
 //! that they carry no plugin-side GUI: the DVUI host draws their editors

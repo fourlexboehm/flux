@@ -1,6 +1,6 @@
 //! Session view — Ableton-style clip grid (tracks as columns, scenes as rows).
 //! Slot content projects from `ui/host.zig` (real session + clip pool).
-//! Full behavior reference: `ui_zgui/views/session/`.
+//! Session clip launcher grid.
 
 const std = @import("std");
 const dvui = @import("dvui");
@@ -14,6 +14,7 @@ const document_model = @import("../../document/model.zig");
 const document_commands = @import("../../document/commands.zig");
 const audio_clip_view = @import("audio_clip.zig");
 const peaks_mod = @import("../../session/peaks.zig");
+const recording_ui = @import("../recording.zig");
 
 const add_track_col_w: f32 = 84;
 
@@ -435,7 +436,7 @@ fn launchScene(state: *state_mod.State, scene: usize) void {
             if (slot.kind == .empty) continue;
             if (sc == scene) {
                 slot.play = .playing;
-            } else if (slot.play == .playing or slot.play == .queued) {
+            } else if (slot.play == .playing or slot.play == .queued or slot.play == .recording or slot.play == .record_queued) {
                 slot.play = .stopped;
             }
         }
@@ -537,9 +538,10 @@ fn drawClipSlot(state: *state_mod.State, track: usize, scene: usize) void {
         body.deinit();
     }
 
-    const kind = playIconKind(slot);
-    const play_fill = playButtonFill(slot);
-    const play_col = if (slot.kind == .empty) theme.text_soft else theme.text_on_fill;
+    const is_armed = state.armed_track == track;
+    const kind = playIconKind(slot, is_armed);
+    const play_fill = playButtonFill(slot, is_armed);
+    const play_col = if (slot.kind == .empty and !is_armed) theme.text_soft else theme.text_on_fill;
     if (icons.button(@src(), kind, .{
         .fill = play_fill,
         .color = play_col,
@@ -548,9 +550,7 @@ fn drawClipSlot(state: *state_mod.State, track: usize, scene: usize) void {
         .margin = .{ .x = 0, .y = 0, .w = 1, .h = 0 },
         .id_extra = id + 10000,
     })) {
-        if (slot.kind != .empty) {
-            toggleSlotPlay(state, track, scene);
-        }
+        handlePlayButton(state, track, scene, slot);
     }
 }
 
@@ -797,6 +797,8 @@ fn editAvailability() edit_actions.Availability {
         .duplicate = selected,
         .delete = selected,
         .select_all = true,
+        .undo = document_commands.canUndo(store),
+        .redo = document_commands.canRedo(store),
         .move_left = document_commands.canMoveSessionSelection(store, -1, 0),
         .move_right = document_commands.canMoveSessionSelection(store, 1, 0),
         .move_up = document_commands.canMoveSessionSelection(store, 0, -1),
@@ -826,7 +828,9 @@ pub fn applyEditAction(state: *state_mod.State, action: edit_actions.Action) boo
         .move_right => moveSelection(state, state.selected_track, state.selected_scene, 1, 0),
         .move_up => moveSelection(state, state.selected_track, state.selected_scene, 0, -1),
         .move_down => moveSelection(state, state.selected_track, state.selected_scene, 0, 1),
-        .undo, .redo, .quantize => false,
+        .undo => document_commands.undo(store),
+        .redo => document_commands.redo(store),
+        .quantize => false,
     };
     if (changed) syncAfterEdit(state);
     return changed;
@@ -881,18 +885,31 @@ fn toggleSlotPlay(state: *state_mod.State, track: usize, scene: usize) void {
     state.toggleSlotPlay(track, scene);
 }
 
+fn handlePlayButton(state: *state_mod.State, track: usize, scene: usize, slot: state_mod.ClipSlot) void {
+    switch (recording_ui.handlePlayButton(state, track, scene, slot)) {
+        .recording_action => {
+            if (host_mod.ready()) host_mod.g.projectChrome(state);
+        },
+        .play_toggle => toggleSlotPlay(state, track, scene),
+        .none => {},
+    }
+}
+
 fn slotFill(slot: state_mod.ClipSlot) dvui.Color {
     return switch (slot.kind) {
         .empty => theme.empty_slot_fill,
         .midi => switch (slot.play) {
             .empty, .stopped => theme.clip_stopped,
             .queued => theme.clip_queued,
+            .record_queued => theme.clip_queued,
             .playing => theme.clip_playing,
+            .recording => theme.clip_recording,
         },
         .audio => switch (slot.play) {
             .empty, .stopped => theme.clip_audio_stopped,
-            .queued => theme.clip_queued,
+            .queued, .record_queued => theme.clip_queued,
             .playing => theme.clip_audio_playing,
+            .recording => theme.clip_recording,
         },
     };
 }
@@ -909,18 +926,26 @@ fn slotLabel(slot: state_mod.ClipSlot) []const u8 {
     };
 }
 
-fn playIconKind(slot: state_mod.ClipSlot) icons.IconKind {
+fn playIconKind(slot: state_mod.ClipSlot, is_armed: bool) icons.IconKind {
     return switch (slot.play) {
         .playing => .stop,
+        .recording, .record_queued => .record,
         .queued => .play,
-        .empty, .stopped => if (slot.kind == .empty) .plus else .play,
+        .empty, .stopped => blk: {
+            if (is_armed and (slot.kind == .empty or slot.play == .stopped)) break :blk .record;
+            break :blk if (slot.kind == .empty) .plus else .play;
+        },
     };
 }
 
-fn playButtonFill(slot: state_mod.ClipSlot) dvui.Color {
+fn playButtonFill(slot: state_mod.ClipSlot, is_armed: bool) dvui.Color {
     return switch (slot.play) {
         .playing => theme.clip_playing,
+        .recording, .record_queued => theme.arm_on,
         .queued => theme.clip_queued,
-        .empty, .stopped => if (slot.kind == .empty) theme.empty_slot_fill else theme.cell,
+        .empty, .stopped => blk: {
+            if (is_armed and (slot.kind == .empty or slot.play == .stopped)) break :blk theme.arm_on;
+            break :blk if (slot.kind == .empty) theme.empty_slot_fill else theme.cell;
+        },
     };
 }

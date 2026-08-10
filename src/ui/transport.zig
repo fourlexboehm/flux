@@ -1,4 +1,4 @@
-//! Transport bar — chrome port of `ui_zgui/draw.zig` `drawTransport`.
+//! Transport bar.
 //! Dense icon-first chrome so content panes keep vertical space.
 //! DSP % / meters come from full `AudioEngine` via `ui/audio_runtime.zig`.
 

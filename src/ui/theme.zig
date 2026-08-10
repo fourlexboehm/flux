@@ -1,5 +1,4 @@
-//! Flux-ish palette for the DVUI host.
-//! Values mirror `src/ui_zgui/theme/colors.zig` dark theme (zgui path still uses that).
+//! Flux-ish palette for the DVUI host (dark theme).
 
 const dvui = @import("dvui");
 

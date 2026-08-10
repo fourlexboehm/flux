@@ -3,12 +3,10 @@
 //! Discovers plugins at init, owns choice indices and DynLib instances, and
 //! publishes loaded CLAP pointers into the audio engine each frame.
 //!
-//! Builtins: stock Flux FX load statically (`plugin/builtin_load.zig`, same as
-//! zgui `loadBuiltinPlugin` for FX). Instrument builtins (ZSynth, …) load from
-//! on-disk `.clap` bundles via DynLib when present under `zig-out/lib/`.
-//! External system CLAPs use DynLib. Floating plugin GUIs open via
-//! `plugin/gui_float.zig`. Hardware MIDI (portmidi) merges into live keys with
-//! the computer-keyboard piano map.
+//! Builtins: stock Flux FX + instruments load statically (`plugin/builtin_load.zig`).
+//! External system CLAPs use DynLib. Plugin GUIs open via `plugin/gui_float.zig`
+//! (floating preferred; macOS NSWindow / Linux X11 parent fallbacks).
+//! Hardware MIDI (portmidi) merges into live keys with the computer-keyboard piano map.
 
 const std = @import("std");
 const clap = @import("clap-bindings");
@@ -87,6 +85,10 @@ pub const PluginHost = struct {
     /// Preset requests waiting for their instrument instance (see `PendingPreset`).
     pending_preset: [track_count]?PendingPreset = @splat(null),
 
+    /// Device-card preset combo selection (list index into the filtered preset
+    /// dropdown for that track's current instrument). Null = none / placeholder.
+    instrument_preset_list_index: [track_count]?usize = @splat(null),
+
     /// Computer-keyboard MIDI (physical A–; positions) → merged into live keys.
     keyboard_octave: i8 = 0,
     keyboard_notes: [128]bool = @splat(false),
@@ -136,11 +138,9 @@ pub const PluginHost = struct {
             self.catalog.fx_indices.len,
         });
 
-        // Preset DB is best-effort; browser categories fall back to samples only.
-        // `presets.build` currently ignores the environ map (API keeps the param).
-        var empty_env = std.process.Environ.Map.init(self.allocator);
-        defer empty_env.deinit();
-        self.preset_catalog = presets_mod.build(self.allocator, clock_io, &self.catalog, &empty_env) catch |err| blk: {
+        // Best-effort CLAP preset discovery → SQLite; Sounds/Drums/… query it.
+        // Samples still come from user Places folders when the index is empty.
+        self.preset_catalog = presets_mod.build(self.allocator, clock_io, &self.catalog) catch |err| blk: {
             std.log.warn("preset catalog disabled: {}", .{err});
             break :blk null;
         };
@@ -199,6 +199,14 @@ pub const PluginHost = struct {
         self.queuePresetLoad(track, entry) catch |err| {
             std.log.warn("preset load request dropped: {}", .{err});
         };
+    }
+
+    /// Apply a preset from the device-card combo and remember the list index
+    /// so the dropdown stays on the chosen row after rebuild.
+    pub fn loadPresetOnTrackFromList(self: *PluginHost, track: usize, list_index: usize, entry: PresetEntry) void {
+        if (track >= track_count) return;
+        self.instrument_preset_list_index[track] = list_index;
+        self.loadPresetOnTrack(track, entry);
     }
 
     fn queuePresetLoad(self: *PluginHost, track: usize, entry: PresetEntry) !void {
@@ -279,6 +287,10 @@ pub const PluginHost = struct {
         self.clearPendingInstrumentState(track);
         // A queued preset belongs to the previous selection.
         self.clearPendingPreset(track);
+        // Device-card combo selection is per-instrument; reset on swap.
+        if (self.instrument_choice[track].choice_index != choice) {
+            self.instrument_preset_list_index[track] = null;
+        }
         self.instrument_choice[track].choice_index = choice;
     }
 

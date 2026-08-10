@@ -3,6 +3,7 @@
 
 #import "macos_plugin_window.h"
 #import <AppKit/AppKit.h>
+#import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
 
 bool flux_plugin_window_create(FluxPluginWindow *out, uint32_t width, uint32_t height, const char *title) {
@@ -74,4 +75,11 @@ void flux_plugin_window_hide(FluxPluginWindow *win) {
         [window setIsVisible:NO];
         [window orderOut:nil];
     }
+}
+
+bool flux_keyboard_physical_down(uint16_t mac_keycode) {
+    // HID system state reflects the physical keyboard regardless of key window.
+    // That is what lets the computer piano keep routing when a plugin child
+    // NSWindow (or plugin-owned floating window) has focus.
+    return (bool)CGEventSourceKeyState(kCGEventSourceStateHIDSystemState, (CGKeyCode)mac_keycode);
 }

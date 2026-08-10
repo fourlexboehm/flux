@@ -10,6 +10,7 @@ const clip_pool = @import("../session/clip_pool.zig");
 const sample_store = @import("../audio/sample_store.zig");
 const arrangement = @import("../arrangement/types.zig");
 const midi_history = @import("midi_history.zig");
+const undo = @import("../undo/root.zig");
 
 pub const Store = struct {
     allocator: std.mem.Allocator,
@@ -17,8 +18,12 @@ pub const Store = struct {
     arrangement: arrangement.ArrangementView,
     clip_pool: clip_pool.ClipPool,
     sample_store: sample_store.SampleStore,
-    /// Piano-roll note undo/redo (notes_replace snapshots).
+    /// Gesture capture for piano-roll (pending only); stack lives in `undo_history`.
     midi_history: midi_history.History,
+    /// Global document undo/redo (session, arrangement, mixer, MIDI notes).
+    undo_history: undo.UndoHistory,
+    /// When true, session/MIDI capture paths do not push history (undo/redo apply).
+    suppress_undo_capture: bool = false,
     /// Monotonic main-thread mutation generation for derived projections.
     revision: u64 = 0,
 
@@ -30,6 +35,7 @@ pub const Store = struct {
             .clip_pool = clip_pool.ClipPool.init(allocator),
             .sample_store = sample_store.SampleStore.init(allocator),
             .midi_history = midi_history.History.init(allocator),
+            .undo_history = undo.UndoHistory.init(allocator),
         };
     }
 
@@ -43,6 +49,7 @@ pub const Store = struct {
 
     pub fn deinit(self: *Store) void {
         self.midi_history.deinit();
+        self.undo_history.deinit();
         session_ops.deinit(&self.session);
         self.arrangement.deinit();
         self.clip_pool.deinit(&self.sample_store);
@@ -58,6 +65,10 @@ pub const Store = struct {
     }
 
     pub fn markChanged(self: *Store) void {
+        // Drain session-domain undo_requests into the global history before
+        // advancing revision so projections see a consistent document.
+        const cmd_undo = @import("cmd_undo.zig");
+        cmd_undo.flushSessionRequests(self);
         self.revision +%= 1;
         if (self.revision == 0) self.revision = 1;
     }

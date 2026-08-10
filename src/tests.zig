@@ -15,6 +15,7 @@ test {
     _ = @import("document/model.zig");
     _ = @import("document/midi_history.zig");
     _ = @import("document/commands.zig");
+    _ = @import("document/cmd_undo.zig");
     // UI-neutral DAWproject save/load adapter for the document host.
     _ = @import("document/project_view.zig");
     _ = @import("ui/piano_roll_math.zig");

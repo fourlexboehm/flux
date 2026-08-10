@@ -2,7 +2,7 @@
 //! DSP %, track peak meters, live plugin pointers from `ui/plugin_host`.
 //!
 //! Chrome adapter: each frame projects `ui/host` document + chrome transport into
-//! `audio/engine_ui.EngineUiView` (engine no longer imports `ui_zgui/state`).
+//! `audio/engine_ui.EngineUiView`.
 //!
 //! Hardware MIDI + computer-keyboard live keys come from `plugin_host`.
 //! DAWproject load/save is adapted by `ui/project_runtime.zig`.
@@ -265,7 +265,9 @@ pub const AudioRuntime = struct {
 
         // Load/unload CLAPs to match device-chain choices; feed engine plugin ptrs.
         if (plugin_host_mod.ready()) {
-            plugin_host_mod.g.tickLiveMidi(state.selected_track, state.piano_preview_pitch);
+            // Armed track owns live MIDI (zgui keyboard_midi parity).
+            const midi_track = state.armed_track orelse state.selected_track;
+            plugin_host_mod.g.tickLiveMidi(midi_track, state.piano_preview_pitch);
             const eng: ?*AudioEngine = if (self.engine != null) &self.engine.? else null;
             plugin_host_mod.g.tick(eng, self.buffer_frames);
             plugin_host_mod.g.projectToDocumentHost(host);

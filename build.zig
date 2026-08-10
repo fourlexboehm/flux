@@ -64,7 +64,10 @@ pub fn build(b: *std.Build) void {
     const options = b.addOptions();
     options.addOption(bool, "wait_for_debugger", wait_for_debugger);
     options.addOption(bool, "enable_segfault_handler", enable_segfault_handler);
-    options.addOption(bool, "use_x11", false);
+    // Linux CLAP host parenting needs Xlib; keep off on other platforms.
+    options.addOption(bool, "use_x11", target_os == .linux);
+    // One options module instance — Zig forbids the same generated file as two roots.
+    const options_mod = options.createModule();
 
     const flux_param_table = rootModule(b, "src/builtins/param_table.zig", target, optimize);
     // One tracy stub instance for root + shared (Zig forbids the same file as two module roots).
@@ -74,7 +77,7 @@ pub fn build(b: *std.Build) void {
     const shared_mod = rootModule(b, "shared/root.zig", target, optimize);
     shared_mod.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
     shared_mod.addImport("tracy", tracy_mod);
-    shared_mod.addOptions("options", options);
+    shared_mod.addImport("options", options_mod);
 
     // Host unit-test module graph (src/tests.zig + modules it pulls in).
     flux_test_module.addImport("clap-bindings", clap_bindings.module("clap-bindings"));
@@ -84,7 +87,7 @@ pub fn build(b: *std.Build) void {
     flux_test_module.addImport("xml", zig_xml.module("xml"));
     flux_test_module.addImport("flux_param_table", flux_param_table);
     flux_test_module.addImport("shared", shared_mod);
-    flux_test_module.addOptions("options", options);
+    flux_test_module.addImport("options", options_mod);
     flux_test_module.addImport("tracy", tracy_mod);
     if (target_os == .macos) {
         addMacosSdkPaths(b, flux_test_module, macos_sdk);
@@ -115,7 +118,7 @@ pub fn build(b: *std.Build) void {
         flux_module.addImport("flux_param_table", flux_param_table);
         flux_module.addImport("shared", shared_mod);
         flux_module.addImport("tracy", tracy_mod);
-        flux_module.addOptions("options", options);
+        flux_module.addImport("options", options_mod);
         wireFluxNative(b, flux_module, .{
             .zaudio = zaudio,
             .sqlite3 = sqlite3,
@@ -332,6 +335,8 @@ fn wireFluxNative(b: *std.Build, module: *std.Build.Module, d: FluxNativeDeps) v
     if (d.target_os == .linux) {
         module.linkSystemLibrary("asound", .{});
         module.linkSystemLibrary("pthread", .{});
+        // X11 parent windows for non-floating CLAP GUIs (`plugin/linux_x11.zig`).
+        module.linkSystemLibrary("X11", .{});
         module.addCSourceFiles(.{
             .root = d.portmidi_zig.path(""),
             .files = &.{

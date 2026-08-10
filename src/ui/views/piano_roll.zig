@@ -48,10 +48,10 @@ pub fn draw(state: *state_mod.State) void {
         if (dvui.button(@src(), "Paste", .{}, .{})) edit.pasteClipboard(state, clip);
         if (dvui.button(@src(), "Dup", .{}, .{})) edit.transform(state, clip, .duplicate);
         if (dvui.button(@src(), "Undo", .{}, .{})) {
-            if (document_model.ready()) _ = document_commands.undoMidi(&document_model.g);
+            if (document_model.ready()) _ = document_commands.undo(&document_model.g);
         }
         if (dvui.button(@src(), "Redo", .{}, .{})) {
-            if (document_model.ready()) _ = document_commands.redoMidi(&document_model.g);
+            if (document_model.ready()) _ = document_commands.redo(&document_model.g);
         }
         if (dvui.button(@src(), if (state.piano_velocity_open) "Notes" else "Vel", .{}, .{})) state.piano_velocity_open = !state.piano_velocity_open;
         if (dvui.button(@src(), if (state.piano_tools_open) "Less" else "Tools", .{}, .{})) state.piano_tools_open = !state.piano_tools_open;
@@ -126,8 +126,8 @@ fn drawContextMenu(state: *state_mod.State, clip: *notes_mod.PianoRollClip, rect
     state.focused_pane = .bottom;
 
     const has_selection = layout.selectionCount(state, clip.notes.items.len) > 0;
-    const can_undo = document_model.ready() and document_commands.canUndoMidi(&document_model.g);
-    const can_redo = document_model.ready() and document_commands.canRedoMidi(&document_model.g);
+    const can_undo = document_model.ready() and document_commands.canUndo(&document_model.g);
+    const can_redo = document_model.ready() and document_commands.canRedo(&document_model.g);
     var menu = dvui.floatingMenu(@src(), .{ .from = dvui.Rect.Natural.fromPoint(point) }, .{});
     defer menu.deinit();
     const action = edit_actions.drawMenu(.{
@@ -152,10 +152,10 @@ fn drawContextMenu(state: *state_mod.State, clip: *notes_mod.PianoRollClip, rect
         .delete => edit.deleteSelection(state, clip),
         .select_all => layout.selectAll(state, clip.notes.items.len),
         .undo => {
-            if (document_model.ready()) _ = document_commands.undoMidi(&document_model.g);
+            if (document_model.ready()) _ = document_commands.undo(&document_model.g);
         },
         .redo => {
-            if (document_model.ready()) _ = document_commands.redoMidi(&document_model.g);
+            if (document_model.ready()) _ = document_commands.redo(&document_model.g);
         },
         .quantize => edit.transform(state, clip, .quantize),
         else => return,
@@ -201,10 +201,10 @@ pub fn handleKey(state: *state_mod.State, key: dvui.Event.Key) bool {
         .duplicate => edit.transform(state, clip, .duplicate),
         .delete => edit.deleteSelection(state, clip),
         .undo => {
-            if (!document_model.ready() or !document_commands.undoMidi(&document_model.g)) return false;
+            if (!document_model.ready() or !document_commands.undo(&document_model.g)) return false;
         },
         .redo => {
-            if (!document_model.ready() or !document_commands.redoMidi(&document_model.g)) return false;
+            if (!document_model.ready() or !document_commands.redo(&document_model.g)) return false;
         },
         .quantize => edit.transform(state, clip, .quantize),
         else => return false,
@@ -376,7 +376,18 @@ fn drawRuler(state: *const state_mod.State, _: *const notes_mod.PianoRollClip, a
 
 fn drawNotes(state: *const state_mod.State, clip: *const notes_mod.PianoRollClip, area: dvui.Rect.Physical, scale: f32) usize {
     var visible: usize = 0;
+    // Cheap pitch/time pre-cull before noteRect for dense clips (4k+ notes).
+    const bottom_pitch = layout.bottomVisiblePitch(state, area, scale);
+    const row_h = state.piano_row_height * scale;
+    const top_pitch = bottom_pitch + area.h / @max(row_h, 1);
+    const beat_lo = state.piano_scroll_beat - 1;
+    const key_w = layout.keyboard_w * scale;
+    const beat_w = state.piano_pixels_per_beat * scale;
+    const beat_hi = state.piano_scroll_beat + (area.w - key_w) / @max(beat_w, 1) + 1;
+
     for (clip.notes.items, 0..) |note, index| {
+        if (note.pitch < bottom_pitch - 1 or @as(f32, @floatFromInt(note.pitch)) > top_pitch + 1) continue;
+        if (note.start + note.duration < beat_lo or note.start > beat_hi) continue;
         const rect = layout.noteRect(state, note, area, scale);
         if (!layout.intersects(rect, area)) continue;
         visible += 1;

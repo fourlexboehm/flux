@@ -1,8 +1,8 @@
 //! DynLib CLAP load/unload primitives — no UI, builtins, or GUI window deps.
 //!
-//! Used by the full `plugin_runtime` (zgui path) and by the slim DVUI
-//! `ui/plugin_host.zig` so the host binary can load instruments/FX without
-//! pulling `ui_zgui` / zgui / statically-linked builtins.
+//! Used by the DVUI `ui/plugin_host.zig` so the host binary can load
+//! instruments/FX without pulling statically-linked builtins into every
+//! translation unit.
 
 const std = @import("std");
 const clap = @import("clap-bindings");
@@ -103,9 +103,14 @@ pub const LoadedPlugin = struct {
     /// CLAP gui extension while a host GUI is open (DVUI host).
     gui_ext: ?*const clap.ext.gui.Plugin = null,
     gui_open: bool = false,
-    /// Host-owned window/view (macOS NSWindow / NSView as *anyopaque).
+    /// Host-owned window handle:
+    /// - macOS: NSWindow *
+    /// - Linux X11: Display *
     gui_window: ?*anyopaque = null,
+    /// macOS: NSView * content view for setParent.
     gui_view: ?*anyopaque = null,
+    /// Linux X11: parent Window id (0 = none). Display lives in `gui_window`.
+    gui_x11_window: u64 = 0,
 
     pub fn getPlugin(self: *const LoadedPlugin) ?*const clap.Plugin {
         if (self.handle) |h| return h.plugin;
@@ -122,6 +127,7 @@ pub const LoadedPlugin = struct {
         self.gui_open = false;
         self.gui_window = null;
         self.gui_view = null;
+        self.gui_x11_window = 0;
     }
 };
 

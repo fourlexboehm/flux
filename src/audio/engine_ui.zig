@@ -1,8 +1,7 @@
-//! Engine-facing UI feed — decouples `AudioEngine` from zgui / DVUI chrome.
+//! Engine-facing UI feed — decouples `AudioEngine` from DVUI chrome.
 //!
-//! Both hosts (legacy `ui_zgui/state` and DVUI `ui/host` + chrome) project into
-//! `EngineUiView` each frame. The engine only reads this view + session/sample
-//! data; it never imports UI modules.
+//! `ui/host` + chrome project into `EngineUiView` each frame. The engine only
+//! reads this view + session/sample data; it never imports UI modules.
 
 const std = @import("std");
 const session_view = @import("../session/types.zig");
@@ -14,7 +13,7 @@ const sample_store_mod = @import("sample_store.zig");
 
 pub const max_tracks = session_constants.max_tracks;
 pub const max_scenes = session_constants.max_scenes;
-/// Engine / graph FX chain depth (zgui path used 4).
+/// Engine / graph FX chain depth.
 pub const max_fx_slots: usize = 4;
 pub const max_controller_param_writes: usize = 64;
 

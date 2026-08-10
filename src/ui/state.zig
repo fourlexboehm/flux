@@ -80,7 +80,9 @@ pub const SlotPlayState = enum {
     empty,
     stopped,
     queued,
+    record_queued,
     playing,
+    recording,
 };
 
 pub const max_tracks: usize = 16;
@@ -207,6 +209,7 @@ pub const State = struct {
     arr_drag_orig_start_tick: i64 = 0,
     arr_drag_orig_duration_ticks: i64 = 0,
     arr_drag_orig_track: usize = 0,
+    arr_drag_orig_clip_index: usize = 0,
     arr_drag_changed: bool = false,
     arr_drag_ctrl: bool = false,
     arr_drag_duplicated: bool = false,
@@ -543,8 +546,8 @@ pub const State = struct {
         const s = self.slotPtr(track, scene);
         if (s.kind == .empty) return;
         s.play = switch (s.play) {
-            .empty, .stopped => .playing,
-            .playing => .stopped,
+            .empty, .stopped, .record_queued => .playing,
+            .playing, .recording => .stopped,
             .queued => .playing,
         };
         self.selectSlot(track, scene);

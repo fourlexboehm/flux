@@ -54,9 +54,8 @@ See `docs/code-style.md` for the 1000-line source file limit and split conventio
 - `src/ui/`: host UI — views, panels, device rack, built-in editors
 - `src/document/`: UI-neutral document store + commands (session, arrangement, clips, MIDI history)
 - `src/audio/`: audio engine, graph, and DSP support
-- `src/plugin/`: CLAP hosting primitives (`DynLib` handles, built-in load, param flush)
+- `src/plugin/`: CLAP hosting primitives (`DynLib` handles, built-in load, param flush, floating/parented GUIs)
 - `src/builtins/`: in-process instruments and stock FX
 - `src/project/`: DAWproject read/write
 - `shared/`: CLAP entry/extension scaffolding shared by the built-in plugins
-- `src/main_zgui.zig`, `src/ui_zgui/`: legacy zgui host, kept as an unbuilt reference
 - `assets/`: shared assets (fonts, etc.)
