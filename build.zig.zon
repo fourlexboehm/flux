@@ -16,7 +16,7 @@
     // This field is optional.
     // This is currently advisory only; Zig does not yet do anything
     // with this value.
-    .minimum_zig_version = "0.17.0-dev.1509+bb296ab9b",
+    .minimum_zig_version = "0.17.0-dev.1662+cc6f42302",
 
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
@@ -44,8 +44,8 @@
         },
         // DAWproject support
         .@"zig-xml" = .{
-            .url = "git+https://github.com/ianprime0509/zig-xml#6a446191d2509788959766b60a13b8626d9ad078",
-            .hash = "xml-0.2.0-ZTbP3x07AgAwDNgFEj9liF24YjojTKyznD3-Njf9w5HT",
+            .url = "git+https://github.com/carlmontanari/zig-xml#13934ee5fa8337523f8caae2f5de0263a67c70c3",
+            .hash = "xml-0.2.0-ZTbP35N4AgCLKY1YU0TFz0pRvLiGWnEWAoO6Ugjk-RRE",
         },
         .@"portmidi-zig" = .{
             .url = "git+https://github.com/fourlexboehm/portmidi-zig#30786177bf45301da33f756f340ed431af7a7cd7",
