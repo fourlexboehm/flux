@@ -12,6 +12,10 @@ const arrangement = @import("../arrangement/types.zig");
 const midi_history = @import("midi_history.zig");
 const undo = @import("../undo/root.zig");
 
+/// Hook for restoring serialized CLAP plugin state during undo/redo.
+/// Set by the UI/plugin-host layer; `document/` never imports UI code.
+pub const PluginStateApplier = *const fn (track_index: usize, fx_index: ?usize, data: []const u8) bool;
+
 pub const Store = struct {
     allocator: std.mem.Allocator,
     session: session_types.SessionView,
@@ -24,6 +28,8 @@ pub const Store = struct {
     undo_history: undo.UndoHistory,
     /// When true, session/MIDI capture paths do not push history (undo/redo apply).
     suppress_undo_capture: bool = false,
+    /// Optional plugin-state restorer installed by `ui/plugin_host`.
+    plugin_state_applier: ?PluginStateApplier = null,
     /// Monotonic main-thread mutation generation for derived projections.
     revision: u64 = 0,
 

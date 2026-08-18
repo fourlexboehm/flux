@@ -75,6 +75,28 @@ fn isApi(api: [*:0]const u8, expected: [*:0]const u8) bool {
     return std.mem.eql(u8, std.mem.span(api), std.mem.span(expected));
 }
 
+fn envValue(name: [*:0]const u8) ?[]const u8 {
+    const raw = std.c.getenv(name) orelse return null;
+    return std.mem.span(raw);
+}
+
+/// SDL is forced to native Wayland by `src/main.zig` whenever
+/// WAYLAND_DISPLAY/WAYLAND_SOCKET is present and no X11 driver override is set.
+/// Native Wayland cannot host XEmbed/X11 child plugin windows; they must be
+/// floating Wayland or floating X11/XWayland windows instead.
+fn isNativeWaylandSession() bool {
+    if (comptime builtin.os.tag != .linux) return false;
+    if (envValue("WAYLAND_DISPLAY") == null and envValue("WAYLAND_SOCKET") == null) return false;
+
+    if (envValue("SDL_VIDEO_DRIVER")) |driver| {
+        if (driver.len > 0 and !std.mem.eql(u8, driver, "wayland")) return false;
+    }
+    if (envValue("SDL_VIDEODRIVER")) |driver| {
+        if (driver.len > 0 and !std.mem.eql(u8, driver, "wayland")) return false;
+    }
+    return true;
+}
+
 fn choosePlan(plugin: *const clap.Plugin, gui_ext: *const clap.ext.gui.Plugin) !GuiPlan {
     var preferred_api: [*:0]const u8 = switch (builtin.os.tag) {
         .linux => clap.ext.gui.window_api.wayland,
@@ -107,7 +129,29 @@ fn choosePlan(plugin: *const clap.Plugin, gui_ext: *const clap.ext.gui.Plugin) !
             return error.GuiUnsupported;
         },
         .linux => {
-            // Parent first: most CLAPs only support non-floating X11.
+            const native_wayland = isNativeWaylandSession();
+            if (native_wayland) {
+                // Wayland has no cross-client surface embedding, so X11
+                // setParent creates an XWayland toplevel that cannot be made a
+                // child of the native Wayland host window. It renders as a
+                // black/unmanaged window on several compositors. Prefer
+                // floating windows, and never choose non-floating X11 here.
+                if (gui_ext.isApiSupported(plugin, clap.ext.gui.window_api.wayland, true)) {
+                    return .{ .api = clap.ext.gui.window_api.wayland, .is_floating = true };
+                }
+                if (linux_x11.isAvailable() and gui_ext.isApiSupported(plugin, clap.ext.gui.window_api.x11, true)) {
+                    return .{ .api = clap.ext.gui.window_api.x11, .is_floating = true };
+                }
+                if (has_preferred and preferred_floating and
+                    gui_ext.isApiSupported(plugin, preferred_api, true))
+                {
+                    return .{ .api = preferred_api, .is_floating = true };
+                }
+                return error.GuiNeedsParent;
+            }
+
+            // X11/XWayland session (or an explicit X11 driver override): XEmbed
+            // parent windows work, and most stock CLAPs only support embedded X11.
             if (linux_x11.isAvailable() and gui_ext.isApiSupported(plugin, clap.ext.gui.window_api.x11, false)) {
                 return .{ .api = clap.ext.gui.window_api.x11, .is_floating = false };
             }
@@ -214,6 +258,7 @@ fn createLinuxParentWindow(
     // Stack copy is abandoned — do not call destroy after this.
     slot.gui_window = @ptrCast(host_window.display);
     slot.gui_x11_window = @intCast(host_window.window);
+    slot.gui_x11_wm_delete = @intCast(host_window.wm_delete);
     slot.gui_view = null;
 }
 
@@ -311,13 +356,9 @@ pub fn pumpHostWindow(slot: *LoadedPlugin) bool {
         .window = @intCast(slot.gui_x11_window),
         .width = 0,
         .height = 0,
-        .wm_delete = 0,
+        .wm_delete = @intCast(slot.gui_x11_wm_delete),
         .close_requested = false,
     };
-    // Re-intern delete atom for ClientMessage comparison (cheap).
-    // HostWindow.pumpEvents only checks wm_delete if non-zero; re-fetch.
-    // We can't call XInternAtom without linking — create() stored it only in
-    // the stack HostWindow. Re-open path: process all events generically.
     host.pumpEvents();
     return host.close_requested;
 }

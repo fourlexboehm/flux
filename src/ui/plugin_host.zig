@@ -103,6 +103,7 @@ pub const PluginHost = struct {
 
     callback_requested: std.atomic.Value(bool) = .init(false),
     flush_requested: std.atomic.Value(bool) = .init(false),
+    params_rescan_requested: std.atomic.Value(bool) = .init(false),
 
     instruments: [track_count]LoadedPlugin = @splat(.{}),
     fx: [track_count][max_fx_slots]LoadedPlugin = @splat(@splat(.{})),
@@ -581,6 +582,7 @@ pub const PluginHost = struct {
         }
         // Host services: all loaded plugins (not only open GUIs), then GUI windows.
         pumpMainThreadCallbacks(self);
+        pumpParamRescans(self);
         pumpParamFlushes(self);
         pumpPluginGuiEvents(self, clock_io);
         pumpUndoContextUpdates(self);
@@ -1254,12 +1256,24 @@ fn hostLatencyChanged(_: *const clap.Host) callconv(.c) void {
     // on the next process; no hard restart required.
 }
 
-fn hostParamsRescan(_: *const clap.Host, _: clap.ext.params.Host.RescanFlags) callconv(.c) void {
-    // Param chrome rebuilds from count/getInfo on the next frame when needed.
+fn hostParamsRescan(host: *const clap.Host, _: clap.ext.params.Host.RescanFlags) callconv(.c) void {
+    const self = hostFromData(host);
+    self.params_rescan_requested.store(true, .release);
 }
 
-fn hostParamsClear(_: *const clap.Host, _: clap.Id, _: clap.ext.params.Host.ClearFlags) callconv(.c) void {
-    // Automation not implemented yet.
+fn hostParamsClear(host: *const clap.Host, param_id: clap.Id, _: clap.ext.params.Host.ClearFlags) callconv(.c) void {
+    const self = hostFromData(host);
+    const plugin = resolveCallingPlugin(self) orelse return;
+    const slot = findPluginSlot(self, plugin) orelse return;
+    if (!document_model.ready()) return;
+
+    const document_commands = @import("../document/commands.zig");
+    _ = document_commands.clearParameterAutomation(
+        &document_model.g,
+        slot.track_index,
+        slot.fx_index,
+        @backingInt(param_id),
+    );
 }
 
 fn hostParamsRequestFlush(host: *const clap.Host) callconv(.c) void {
@@ -1285,6 +1299,15 @@ fn pumpMainThreadCallbacks(self: *PluginHost) void {
             if (slot.getPlugin()) |p| callPluginOnMainThread(p);
         }
     }
+}
+
+fn pumpParamRescans(self: *PluginHost) void {
+    if (!self.params_rescan_requested.swap(false, .acq_rel)) return;
+    if (!document_model.ready()) return;
+    // Smart-param tables cache params by plugin pointer; force a rebuild.
+    chrome.g.controller.smart_target_token = 0;
+    chrome.g.controller.smart_param_count = 0;
+    chrome.g.controller.smart_page = 0;
 }
 
 fn pumpParamFlushes(self: *PluginHost) void {
@@ -1328,9 +1351,9 @@ fn hostTimerRegister(host: *const clap.Host, period_ms: u32, timer_id: *clap.Id)
 
     for (&self.gui_timers) |*timer| {
         if (!timer.active) {
-            const id: clap.Id = @enumFromInt(self.next_gui_timer_id);
+            const id: clap.Id = @fromBackingInt(@intCast(self.next_gui_timer_id));
             self.next_gui_timer_id +%= 1;
-            if (self.next_gui_timer_id == @intFromEnum(clap.Id.invalid_id)) {
+            if (self.next_gui_timer_id == @backingInt(clap.Id.invalid_id)) {
                 self.next_gui_timer_id = 1;
             }
             timer.* = .{
@@ -1504,7 +1527,7 @@ fn flagsFromPosixEvents(events: @FieldType(std.posix.pollfd, "revents")) clap.ex
     return .{
         .read = (events & std.posix.POLL.IN) != 0,
         .write = (events & std.posix.POLL.OUT) != 0,
-        .@"error" = (events & std.posix.POLL.ERR) != 0,
+        .@"error" = (events & (std.posix.POLL.ERR | std.posix.POLL.HUP | std.posix.POLL.NVAL)) != 0,
         ._ = 0,
     };
 }
@@ -1591,8 +1614,14 @@ fn hostUndoChangeMade(
     const self = hostFromData(host);
     const state = &chrome.g;
 
-    const track_idx = self.undo_track_index orelse state.deviceTrack();
-    const fx_index = self.undo_fx_index orelse switch (state.device_target_kind) {
+    const has_begin_change = self.undo_track_index != null;
+    const track_idx = if (has_begin_change)
+        self.undo_track_index.?
+    else
+        state.deviceTrack();
+    const fx_index = if (has_begin_change)
+        self.undo_fx_index
+    else switch (state.device_target_kind) {
         .instrument => null,
         .fx => state.device_target_fx,
     };
@@ -1685,6 +1714,23 @@ fn findSlotForPlugin(self: *PluginHost, plugin: *const clap.Plugin) ?*LoadedPlug
     for (&self.fx) |*row| {
         for (row) |*slot| {
             if (slot.getPlugin() == plugin) return slot;
+        }
+    }
+    return null;
+}
+
+const PluginSlot = struct {
+    track_index: usize,
+    fx_index: ?usize,
+};
+
+fn findPluginSlot(self: *PluginHost, plugin: *const clap.Plugin) ?PluginSlot {
+    for (&self.instruments, 0..) |*slot, track_index| {
+        if (slot.getPlugin() == plugin) return .{ .track_index = track_index, .fx_index = null };
+    }
+    for (&self.fx, 0..) |*row, track_index| {
+        for (row, 0..) |*slot, fx_index| {
+            if (slot.getPlugin() == plugin) return .{ .track_index = track_index, .fx_index = fx_index };
         }
     }
     return null;
@@ -1808,17 +1854,28 @@ pub var g_ready: bool = false;
 pub fn initGlobal(allocator: std.mem.Allocator) void {
     g = PluginHost.init(allocator);
     g.start();
+    if (document_model.ready()) {
+        document_model.g.plugin_state_applier = applyPluginStateBlobFromDocument;
+    }
     g_ready = true;
 }
 
 pub fn deinitGlobal() void {
     if (!g_ready) return;
+    if (document_model.ready()) {
+        document_model.g.plugin_state_applier = null;
+    }
     g.deinit();
     g_ready = false;
 }
 
 pub fn ready() bool {
     return g_ready;
+}
+
+fn applyPluginStateBlobFromDocument(track_index: usize, fx_index: ?usize, data: []const u8) bool {
+    if (!g_ready) return false;
+    return g.applyPluginStateBlob(track_index, fx_index, data);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

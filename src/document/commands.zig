@@ -109,6 +109,7 @@ pub const addAutomationPoint = midi_cmd.addAutomationPoint;
 pub const removeAutomationPoint = midi_cmd.removeAutomationPoint;
 pub const setAutomationPointInPlace = midi_cmd.setAutomationPointInPlace;
 pub const commitAutomationEdit = midi_cmd.commitAutomationEdit;
+pub const clearParameterAutomation = midi_cmd.clearParameterAutomation;
 
 test "commands mutate the store and advance its revision" {
     var store = model.Store.init(std.testing.allocator);

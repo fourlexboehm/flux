@@ -111,6 +111,8 @@ pub const LoadedPlugin = struct {
     gui_view: ?*anyopaque = null,
     /// Linux X11: parent Window id (0 = none). Display lives in `gui_window`.
     gui_x11_window: u64 = 0,
+    /// Linux X11: cached WM_DELETE_WINDOW atom from window creation.
+    gui_x11_wm_delete: u64 = 0,
     /// Plugin subscribed via host `set_wants_context_updates` (CLAP undo context).
     wants_undo_context: bool = false,
 
@@ -130,6 +132,7 @@ pub const LoadedPlugin = struct {
         self.gui_window = null;
         self.gui_view = null;
         self.gui_x11_window = 0;
+        self.gui_x11_wm_delete = 0;
     }
 
     pub fn clearHostFlags(self: *LoadedPlugin) void {

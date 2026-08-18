@@ -472,3 +472,57 @@ fn findPointIndex(points: *const std.ArrayListUnmanaged(notes.AutomationPoint), 
     return 0;
 }
 
+/// Clear all document automation lanes that target a specific plugin parameter.
+/// Used by the CLAP `params.clear` host callback (plugin requests removal of
+/// host automation/modulation for that param).
+pub fn clearParameterAutomation(store: *model.Store, track_index: usize, fx_index: ?usize, param_id: u32) bool {
+    var changed = false;
+
+    if (track_index < store.session.track_count) {
+        for (0..store.session.scene_count) |scene| {
+            if (midiClip(store, track_index, scene)) |clip| {
+                if (clearParameterLane(clip, fx_index, param_id)) changed = true;
+            }
+        }
+    }
+
+    if (track_index < store.arrangement.tracks.items.len) {
+        for (store.arrangement.tracks.items[track_index].clips.items) |*placement| {
+            if (store.arrangement.placementMidi(placement)) |clip| {
+                if (clearParameterLane(clip, fx_index, param_id)) changed = true;
+            }
+        }
+    }
+
+    if (changed) store.markChanged();
+    return changed;
+}
+
+fn clearParameterLane(clip: *notes.PianoRollClip, fx_index: ?usize, param_id: u32) bool {
+    var target_id_buf: [32]u8 = undefined;
+    const target_id: []const u8 = if (fx_index) |fx|
+        std.fmt.bufPrint(&target_id_buf, "fx{d}", .{fx}) catch return false
+    else
+        "instrument";
+
+    var param_buf: [32]u8 = undefined;
+    const param_str = std.fmt.bufPrint(&param_buf, "{d}", .{param_id}) catch return false;
+
+    var changed = false;
+    var lane_index: usize = 0;
+    while (lane_index < clip.automation.lanes.items.len) {
+        const lane = &clip.automation.lanes.items[lane_index];
+        const lane_param = lane.param_id orelse "";
+        if (lane.target_kind == .parameter and
+            automationTargetIdMatch(lane.target_id, target_id) and
+            std.mem.eql(u8, lane_param, param_str))
+        {
+            var removed = clip.automation.lanes.orderedRemove(lane_index);
+            freeAutomationLane(clip.allocator, &removed);
+            changed = true;
+            continue;
+        }
+        lane_index += 1;
+    }
+    return changed;
+}

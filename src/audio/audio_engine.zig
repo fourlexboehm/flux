@@ -25,6 +25,7 @@ pub const dsp_meter_interval: u8 = 16;
 pub const SharedState = struct {
     processing: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     active_index: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    reader_index: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     process_requested: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     suspend_processing: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     snapshots: []audio_graph.StateSnapshot,
@@ -58,9 +59,8 @@ pub const SharedState = struct {
     }
 
     pub fn init(allocator: std.mem.Allocator) !SharedState {
-        var snapshots = try allocator.alloc(audio_graph.StateSnapshot, 2);
-        initSnapshot(&snapshots[0]);
-        initSnapshot(&snapshots[1]);
+        const snapshots = try allocator.alloc(audio_graph.StateSnapshot, 3);
+        for (snapshots) |*snap| initSnapshot(snap);
         return .{
             .snapshots = snapshots,
         };
@@ -91,12 +91,17 @@ pub const SharedState = struct {
             }
         }
 
-        // Double-buffer publish: write the inactive snapshot while the audio thread
-        // keeps reading the active one. Do NOT suspend/silence here — that caused
-        // buffer-sized dropouts (pops/xruns) every UI frame during continuous sample playback.
+        // Triple-buffer publish. The audio callback records the snapshot index it
+        // is reading in `reader_index` before `processing` becomes non-zero, so the
+        // UI can always write a buffer that is neither the latest published one nor
+        // the one still being read. This removes the old wait-for-idle path for
+        // runtime-only publishes without introducing a reader/writer race.
+        const io = std.Io.Threaded.global_single_threaded.io();
         const current = self.active_index.load(.acquire);
-        const next: u32 = 1 - current;
-        var back = &self.snapshots[next];
+        const reader = self.reader_index.load(.acquire);
+        const processing_active = self.processing.load(.acquire) != 0;
+        const back_index = pickBackIndex(current, reader, processing_active);
+        var back = &self.snapshots[back_index];
         back.playing = view.playing;
         back.metronome_enabled = view.metronome_enabled;
         back.bpm = view.bpm;
@@ -220,32 +225,47 @@ pub const SharedState = struct {
             }
         }
 
-        self.active_index.store(next, .release);
-
         // Retire deferred sample/bake frees only when the document payload
         // changed (or frees are pending). Live-key / transport publishes every
-        // frame must NOT spin-wait on the audio callback — that freezes the UI
-        // (and mouse) whenever notes make process() take a buffer length.
+        // frame must NOT spin-wait on the audio callback. Document changes still
+        // quiesce before old immutable payloads are freed/copied.
         const frees_pending = view.sample_store.deferred_free.items.len > 0 or
             audioClipBakeFreesPending(view);
         if (document_changed or frees_pending) {
-            // Wait until no reader still holds the previous snapshot.
-            // Prefer sleep over a tight spin so the UI can still schedule work.
-            self.waitForIdle(std.Io.Threaded.global_single_threaded.io());
-            if (document_changed) {
-                // Both buffers must carry the same immutable document payload so
-                // subsequent runtime-only publications can safely alternate.
-                self.snapshots[current] = self.snapshots[next];
-                self.published_document_revision = view.document_revision;
-                self.published_document_bpm = view.bpm;
-                self.document_compile_count += 1;
+            self.waitForIdle(io);
+        } else {
+            self.active_index.store(back_index, .release);
+        }
+
+        if (document_changed) {
+            // All three buffers must carry the same immutable document payload so
+            // subsequent runtime-only publications can safely rotate through them.
+            for (self.snapshots, 0..) |*snap, idx| {
+                if (idx != back_index) snap.* = back.*;
             }
+            self.published_document_revision = view.document_revision;
+            self.published_document_bpm = view.bpm;
+            self.document_compile_count += 1;
+            self.active_index.store(back_index, .release);
+        } else if (frees_pending) {
+            self.active_index.store(back_index, .release);
+        }
+
+        if (document_changed or frees_pending) {
             view.sample_store.flushDeferredFrees();
             for (0..max_tracks) |t| {
                 for (0..max_scenes) |s| {
                     if (view.slotAudio(t, s)) |audio| audio.flushDeferredBakeFrees();
                 }
             }
+        }
+
+        // When the audio callback is not active, the latest published buffer is
+        // safe for the UI to read directly. Keep `reader_index` in sync so
+        // snapshot() doesn't keep returning the previous generation between
+        // audio callbacks.
+        if (self.processing.load(.acquire) == 0) {
+            self.reader_index.store(self.active_index.load(.acquire), .release);
         }
     }
 
@@ -260,19 +280,22 @@ pub const SharedState = struct {
 
     pub fn setTrackPlugin(self: *SharedState, track_index: usize, plugin: ?*const clap.Plugin) void {
         self.track_plugins[track_index] = plugin;
-        // Patch both double-buffer slots. Do NOT assign entire StateSnapshot
-        // (~4.6MB of piano clip tables) — that memcpy alone was ~100µs and could
-        // stall the UI next to waitForIdle / document publishes.
-        const current = self.active_index.load(.acquire);
-        self.snapshots[current].track_plugins[track_index] = plugin;
-        self.snapshots[1 - current].track_plugins[track_index] = plugin;
+        const processing_active = self.processing.load(.acquire) != 0;
+        const reader = self.reader_index.load(.acquire);
+        for (self.snapshots, 0..) |*snap, idx| {
+            if (processing_active and idx == reader) continue;
+            snap.track_plugins[track_index] = plugin;
+        }
     }
 
     pub fn setTrackFxPlugin(self: *SharedState, track_index: usize, fx_index: usize, plugin: ?*const clap.Plugin) void {
         self.track_fx_plugins[track_index][fx_index] = plugin;
-        const current = self.active_index.load(.acquire);
-        self.snapshots[current].track_fx_plugins[track_index][fx_index] = plugin;
-        self.snapshots[1 - current].track_fx_plugins[track_index][fx_index] = plugin;
+        const processing_active = self.processing.load(.acquire) != 0;
+        const reader = self.reader_index.load(.acquire);
+        for (self.snapshots, 0..) |*snap, idx| {
+            if (processing_active and idx == reader) continue;
+            snap.track_fx_plugins[track_index][fx_index] = plugin;
+        }
     }
 
     /// Request that startProcessing be called for a track plugin from the audio thread
@@ -321,11 +344,12 @@ pub const SharedState = struct {
     }
 
     pub fn snapshot(self: *SharedState) *const audio_graph.StateSnapshot {
-        const current = self.active_index.load(.acquire);
-        return &self.snapshots[current];
+        const reader = self.reader_index.load(.acquire);
+        return &self.snapshots[reader];
     }
 
     pub fn beginProcess(self: *SharedState) void {
+        self.reader_index.store(self.active_index.load(.acquire), .release);
         _ = self.processing.fetchAdd(1, .monotonic);
     }
 
@@ -366,6 +390,17 @@ fn audioClipBakeFreesPending(view: *EngineUiView) bool {
         }
     }
     return false;
+}
+
+fn pickBackIndex(current: u32, reader: u32, processing_active: bool) u32 {
+    if (!processing_active) return (current + 1) % 3;
+
+    var idx: u32 = 0;
+    while (idx < 3) : (idx += 1) {
+        if (idx != current and idx != reader) return idx;
+    }
+    // Fallback for a transient current==reader state; never pick the reader.
+    return (current + 1) % 3;
 }
 
 pub const AudioEngine = struct {

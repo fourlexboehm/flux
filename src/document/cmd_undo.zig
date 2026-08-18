@@ -650,11 +650,11 @@ fn executeCommand(store: *model.Store, cmd: *const undo_mod.Command, comptime di
             // Owned by chrome transport — not applied from the document layer.
         },
         .plugin_state => |c| {
-            // Blobs live in undo history; restore via plugin host (UI-adjacent).
-            const plugin_host = @import("../ui/plugin_host.zig");
-            if (!plugin_host.ready()) return;
+            // Blobs live in undo history; restore through the layer-installed
+            // hook so `document/` stays UI-neutral.
+            const applier = store.plugin_state_applier orelse return;
             const data = if (direction == .undo) c.old_state else c.new_state;
-            _ = plugin_host.g.applyPluginStateBlob(c.track_index, c.fx_index, data);
+            _ = applier(c.track_index, c.fx_index, data);
         },
         .clip_move => |c| {
             moveClipPayloads(store, c.moves, direction == .undo);
