@@ -319,6 +319,7 @@ fn benchStages(gpa: std.mem.Allocator, frames: u32, iters: u32, tracks: usize, w
         const idx = eng.shared.active_index.load(.acquire);
         eng.shared.snapshots[idx].live_key_states[0][60] = true;
         eng.shared.snapshots[idx].live_key_velocities[0][60] = 0.8;
+        eng.shared.snapshots[idx].live_key_generation +%= 1;
     }
 
     const snap = eng.shared.snapshot();
@@ -432,8 +433,12 @@ fn benchEngineRender(gpa: std.mem.Allocator, frames: u32, iters: u32) !void {
     for (0..200) |_| {
         eng.shared.beginProcess();
         eng.graph.process(snap, &eng.shared, null, frames, 0);
-        if (eng.graph.getMasterOutput()) |outputs| {
-            audio_mix.interleaveStereo(out.ptr, 0, outputs.left, outputs.right, frames);
+        // Mirror AudioEngine.render: the device buffer is pre-zeroed, so a
+        // silent master bus skips the interleave copy.
+        if (eng.graph.masterActive()) {
+            if (eng.graph.getMasterOutput()) |outputs| {
+                audio_mix.interleaveStereo(out.ptr, 0, outputs.left, outputs.right, frames);
+            }
         }
         eng.shared.endProcess();
     }
@@ -446,8 +451,10 @@ fn benchEngineRender(gpa: std.mem.Allocator, frames: u32, iters: u32) !void {
         defer eng.shared.endProcess();
         @memset(out, 0);
         eng.graph.process(snap, &eng.shared, null, frames, steady);
-        if (eng.graph.getMasterOutput()) |outputs| {
-            audio_mix.interleaveStereo(out.ptr, 0, outputs.left, outputs.right, frames);
+        if (eng.graph.masterActive()) {
+            if (eng.graph.getMasterOutput()) |outputs| {
+                audio_mix.interleaveStereo(out.ptr, 0, outputs.left, outputs.right, frames);
+            }
         }
         steady +%= frames;
     }
@@ -573,6 +580,7 @@ fn benchWithPlugins(
         eng.shared.snapshots[idx].live_key_states[t][60] = true;
         eng.shared.snapshots[idx].live_key_velocities[t][60] = 0.8;
     }
+    eng.shared.snapshots[idx].live_key_generation +%= 1;
     const snap = eng.shared.snapshot();
 
     for (0..50) |_| {

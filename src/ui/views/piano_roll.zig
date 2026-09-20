@@ -327,7 +327,7 @@ fn drawGrid(state: *const state_mod.State, area: dvui.Rect.Physical, scale: f32)
         if (show_label and row_h >= 8 * scale) {
             var buf: [8]u8 = undefined;
             const label = notes_mod.pitchToName(&buf, pitch_u);
-            const text_color = if (black or active) theme.text else theme.colorF(0.25, 0.25, 0.28);
+            const text_color = if (black or active) theme.text_on_fill else theme.colorF(0.25, 0.25, 0.28);
             dvui.renderText(.{
                 .font = font,
                 .text = label,
@@ -427,7 +427,7 @@ fn drawBoxSelection(state: *const state_mod.State) void {
         .w = @abs(state.piano_box_current_x - state.piano_box_start_x),
         .h = @abs(state.piano_box_current_y - state.piano_box_start_y),
     };
-    rect.fill(.all(1), .{ .color = theme.colorFA(0.45, 0.70, 0.86, 0.25) });
+    rect.fill(.all(1), .{ .color = theme.alpha(theme.accent, 0.25) });
 }
 
 fn drawClipBoundary(state: *const state_mod.State, clip: *const notes_mod.PianoRollClip, area: dvui.Rect.Physical, scale: f32) void {

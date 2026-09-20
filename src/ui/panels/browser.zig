@@ -7,11 +7,21 @@
 const std = @import("std");
 const dvui = @import("dvui");
 const theme = @import("../theme.zig");
+const icons = @import("../icons.zig");
 const tokens = @import("../tokens.zig");
 const state_mod = @import("../state.zig");
 const plugin_host = @import("../plugin_host.zig");
 const host_mod = @import("../host.zig");
 const media_drop = @import("../media_drop.zig");
+const browser_files = @import("browser_files.zig");
+
+var file_caches: [state_mod.max_browser_folders]browser_files.Cache = @splat(.{});
+var captured_sample_id: ?usize = null;
+
+pub fn deinit() void {
+    for (&file_caches) |*cache| cache.deinit();
+    captured_sample_id = null;
+}
 
 const Category = struct {
     tab: state_mod.BrowserTab,
@@ -32,7 +42,6 @@ const categories = [_]Category{
 
 const browser_drag_name = "browser_item";
 const io: std.Io = std.Io.Threaded.global_single_threaded.io();
-const max_listed_files: usize = 200;
 
 pub fn draw(state: *state_mod.State) void {
     if (!state.browser_open) return;
@@ -40,6 +49,7 @@ pub fn draw(state: *state_mod.State) void {
     // Clear stale drag payload once the gesture ends.
     if (state.browser_drag_kind != .none and !dvui.dragName(browser_drag_name)) {
         state.clearBrowserDrag();
+        captured_sample_id = null;
     }
 
     var side = dvui.box(@src(), .{ .dir = .vertical }, .{
@@ -64,6 +74,7 @@ pub fn draw(state: *state_mod.State) void {
         });
         defer search_row.deinit();
 
+        icons.draw(@src(), .search, .{ .size = tokens.icon_md, .gravity_x = 0 });
         var te = dvui.textEntry(@src(), .{
             .text = .{ .buffer = &state.browser_search },
             .placeholder = "Search…",
@@ -74,6 +85,10 @@ pub fn draw(state: *state_mod.State) void {
         const text = te.getText();
         state.browser_search_len = text.len;
         te.deinit();
+        if (state.browser_search_len > 0 and icons.button(@src(), .close, .{})) {
+            @memset(&state.browser_search, 0);
+            state.browser_search_len = 0;
+        }
     }
 
     var body = dvui.box(@src(), .{ .dir = .horizontal }, .{
@@ -88,7 +103,7 @@ pub fn draw(state: *state_mod.State) void {
 fn drawNav(state: *state_mod.State) void {
     var nav = dvui.box(@src(), .{ .dir = .vertical }, .{
         .background = true,
-        .color_fill = theme.cell,
+        .color_fill = theme.panel,
         .min_size_content = .{ .w = tokens.browser_nav_w },
         .expand = .vertical,
         .padding = dvui.Rect.all(tokens.gap_tight),
@@ -112,7 +127,7 @@ fn drawNav(state: *state_mod.State) void {
         const selected = state.browser_tab == cat.tab;
         const fill = if (selected) theme.accent else theme.panel;
         const text = if (selected) theme.bg else theme.text;
-        if (dvui.button(@src(), cat.label, .{}, .{
+        if (icons.navigation(@src(), if (cat.tab == .audio_effects) .effect else .instrument, cat.label, .{
             .expand = .horizontal,
             .color_fill = fill,
             .color_text = text,
@@ -130,7 +145,7 @@ fn drawNav(state: *state_mod.State) void {
         .margin = .{ .x = 0, .y = tokens.gap_group, .w = 0, .h = tokens.gap_xs },
     });
 
-    if (dvui.button(@src(), "+ Add Folder…", .{}, .{
+    if (icons.navigation(@src(), .plus, "Add folder", .{
         .expand = .horizontal,
         .color_fill = theme.panel,
         .color_text = theme.text,
@@ -194,7 +209,7 @@ fn drawContent(state: *state_mod.State) void {
             .color_text = theme.text,
             .gravity_y = 0.5,
         });
-        if (dvui.button(@src(), if (state.browser_sort_asc) "Name ↑" else "Name ↓", .{}, .{
+        if (icons.navigation(@src(), if (state.browser_sort_asc) .sort_up else .sort_down, "Name", .{
             .min_size_content = .{ .h = tokens.control_h },
             .margin = .{ .x = tokens.gap_group, .y = 0, .w = 0, .h = 0 },
             .padding = .{ .x = 4, .y = 0, .w = 4, .h = 0 },
@@ -213,14 +228,42 @@ fn drawContent(state: *state_mod.State) void {
     }
 
     switch (state.browser_tab) {
-        .instruments => drawPluginList(state, false),
+        .instruments => drawScrollable(state, .instruments),
+        .audio_effects => drawScrollable(state, .audio_effects),
+        else => drawScrollable(state, state.browser_tab),
+    }
+}
+
+/// Single scroll container for the browser lists below the title/filter.
+/// Previously only the plugin/sample lists had their own scrollArea while the
+/// preset list grew unbounded, so Sounds/Drums/Bass/… overflowed with no
+/// scroll or gesture handling. One shared scrollArea keeps the header pinned
+/// and lets every big list scroll together.
+fn drawScrollable(state: *state_mod.State, tab: state_mod.BrowserTab) void {
+    var scroll = dvui.scrollArea(@src(), .{
+        .horizontal_bar = .hide,
+        .vertical_bar = .auto,
+    }, .{
+        .expand = .both,
+        .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
+        .id_extra = @backingInt(tab),
+    });
+    defer scroll.deinit();
+
+    var col = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .expand = .horizontal,
+    });
+    defer col.deinit();
+
+    switch (tab) {
+        .instruments => drawPluginRows(state, false),
         .audio_effects => {
-            drawPresetList(state, "sounds");
-            drawPluginList(state, true);
+            drawPresetRows(state, "sounds");
+            drawPluginRows(state, true);
         },
         else => {
-            drawPresetList(state, categoryKey(state.browser_tab));
-            drawSampleList(state);
+            drawPresetRows(state, categoryKey(tab));
+            drawSampleRows(state);
         },
     }
 }
@@ -238,7 +281,7 @@ fn categoryKey(tab: state_mod.BrowserTab) []const u8 {
     };
 }
 
-fn drawPresetList(state: *state_mod.State, category: []const u8) void {
+fn drawPresetRows(state: *state_mod.State, category: []const u8) void {
     if (!plugin_host.ready()) return;
     const entries = plugin_host.g.queryPresets(state.searchSlice(), category, state.browser_sort_asc);
     if (entries.len == 0) return;
@@ -248,14 +291,8 @@ fn drawPresetList(state: *state_mod.State, category: []const u8) void {
         .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = tokens.gap_xs },
     });
 
-    var list_column = dvui.box(@src(), .{ .dir = .vertical }, .{
-        .min_size_content = .{ .w = tokens.plugin_list_w },
-        .max_size_content = .width(tokens.plugin_list_w),
-    });
-    defer list_column.deinit();
-
-    const max_show: usize = @min(entries.len, 80);
-    for (entries[0..max_show], 0..) |entry, i| {
+    // Show the full result list; the surrounding scrollArea handles overflow.
+    for (entries, 0..) |entry, i| {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .expand = .horizontal,
             .background = true,
@@ -287,14 +324,9 @@ fn drawPresetList(state: *state_mod.State, category: []const u8) void {
             }
         }
     }
-    if (entries.len > max_show) {
-        dvui.label(@src(), "… {d} more (refine search)", .{entries.len - max_show}, .{
-            .color_text = theme.text_dim,
-        });
-    }
 }
 
-fn drawPluginList(state: *state_mod.State, fx: bool) void {
+fn drawPluginRows(state: *state_mod.State, fx: bool) void {
     if (!plugin_host.ready() or !plugin_host.g.catalog_ready) {
         dvui.label(@src(), "Plugin catalog not ready.", .{}, .{
             .color_text = theme.text_soft,
@@ -307,22 +339,6 @@ fn drawPluginList(state: *state_mod.State, fx: bool) void {
     const choices: []const i32 = if (fx) ph.fxChoices() else ph.instrumentChoices();
     const filter = state.searchSlice();
     const track = state.selected_track;
-
-    var list_column = dvui.box(@src(), .{ .dir = .vertical }, .{
-        .min_size_content = .{ .w = tokens.plugin_list_w },
-        .max_size_content = .width(tokens.plugin_list_w),
-        .expand = .both,
-    });
-    defer list_column.deinit();
-
-    var scroll = dvui.scrollArea(@src(), .{
-        .horizontal_bar = .hide,
-        .vertical_bar = .auto,
-    }, .{
-        .expand = .both,
-        .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
-    });
-    defer scroll.deinit();
 
     var shown: usize = 0;
     for (choices, 0..) |choice, i| {
@@ -418,7 +434,7 @@ fn drawPluginRow(
     }
 }
 
-fn drawSampleList(state: *state_mod.State) void {
+fn drawSampleRows(state: *state_mod.State) void {
     if (state.browser_folder_count == 0) {
         dvui.label(@src(), "Add a Places folder to browse samples (wav/aiff/flac/ogg/mp3).", .{}, .{
             .color_text = theme.text_soft,
@@ -431,20 +447,6 @@ fn drawSampleList(state: *state_mod.State) void {
         return;
     }
 
-    var list_column = dvui.box(@src(), .{ .dir = .vertical }, .{
-        .expand = .both,
-    });
-    defer list_column.deinit();
-
-    var scroll = dvui.scrollArea(@src(), .{
-        .horizontal_bar = .hide,
-        .vertical_bar = .auto,
-    }, .{
-        .expand = .both,
-        .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
-    });
-    defer scroll.deinit();
-
     const filter = state.searchSlice();
     var shown: usize = 0;
     var list_id: usize = 0;
@@ -453,7 +455,6 @@ fn drawSampleList(state: *state_mod.State) void {
         shown += listFolder(state, fi, filter, &list_id);
     } else {
         for (0..state.browser_folder_count) |fi| {
-            if (shown >= max_listed_files) break;
             const path = state.browserFolder(fi);
             const base = std.fs.path.basename(path);
             dvui.label(@src(), "{s}", .{base}, .{
@@ -481,41 +482,42 @@ fn listFolder(state: *state_mod.State, folder_index: usize, filter: []const u8, 
     const dir_path = state.browserFolder(folder_index);
     if (dir_path.len == 0) return 0;
 
-    var dir = std.Io.Dir.openDirAbsolute(io, dir_path, .{ .iterate = true }) catch return 0;
-    defer dir.close(io);
-
-    var names: [max_listed_files][256]u8 = undefined;
-    var name_lens: [max_listed_files]usize = undefined;
-    var count: usize = 0;
-
-    var iter = dir.iterateAssumeFirstIteration();
-    while (iter.next(io) catch null) |entry| {
-        if (entry.kind != .file or !hasAudioExt(entry.name)) continue;
-        if (filter.len > 0 and !containsIgnoreCase(entry.name, filter)) continue;
-        if (count >= max_listed_files) break;
-        const n = @min(entry.name.len, names[count].len);
-        @memcpy(names[count][0..n], entry.name[0..n]);
-        name_lens[count] = n;
-        count += 1;
-    }
-
-    sortNames(names[0..count], name_lens[0..count], state.browser_sort_asc);
-
-    var shown: usize = 0;
-    for (0..count) |i| {
-        const name = names[i][0..name_lens[i]];
+    const names = file_caches[folder_index].query(io, dir_path, filter, state.browser_sort_asc) catch return 0;
+    const row_height = tokens.control_h;
+    var list = dvui.box(@src(), .{ .dir = .vertical }, .{
+        .expand = .horizontal,
+        .min_size_content = .{ .h = row_height * @as(f32, @floatFromInt(names.len)) },
+        .id_extra = folder_index,
+    });
+    defer list.deinit();
+    const rs = list.data().contentRectScale();
+    const clip = dvui.clipGet();
+    const physical_height = row_height * rs.s;
+    const first: usize = @intFromFloat(@min(@as(f32, @floatFromInt(names.len)), @max(0, @floor((clip.y - rs.r.y) / physical_height))));
+    const end: usize = @intFromFloat(@min(@as(f32, @floatFromInt(names.len)), @max(0, @ceil((clip.y + clip.h - rs.r.y) / physical_height))));
+    const base_id = list_id.*;
+    list_id.* += names.len;
+    // Keep a captured row alive even after it scrolls outside the viewport.
+    const captured = if (captured_sample_id) |id| if (id >= base_id and id - base_id < names.len) id - base_id else null else null;
+    var i = first;
+    while (i < end) : (i += 1) {
         var path_buf: [state_mod.browser_path_cap]u8 = undefined;
-        const full = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, name }) catch continue;
-        const id = list_id.*;
-        list_id.* += 1;
-        drawSampleRow(state, name, full, id);
-        shown += 1;
+        const full = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, names[i] }) catch continue;
+        drawSampleRow(state, names[i], full, base_id + i, .{ .y = row_height * @as(f32, @floatFromInt(i)), .w = list.data().contentRect().w, .h = row_height });
     }
-    return shown;
+    if (captured) |index| {
+        if (index < first or index >= end) {
+            var path_buf: [state_mod.browser_path_cap]u8 = undefined;
+            const full = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, names[index] }) catch return names.len;
+            drawSampleRow(state, names[index], full, base_id + index, .{ .y = row_height * @as(f32, @floatFromInt(index)), .w = list.data().contentRect().w, .h = row_height });
+        }
+    }
+    return names.len;
 }
 
-fn drawSampleRow(state: *state_mod.State, name: []const u8, abs_path: []const u8, id_extra: usize) void {
+fn drawSampleRow(state: *state_mod.State, name: []const u8, abs_path: []const u8, id_extra: usize, rect: dvui.Rect) void {
     var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
+        .rect = rect,
         .expand = .horizontal,
         .background = true,
         .color_fill = theme.panel,
@@ -544,6 +546,7 @@ fn drawSampleRow(state: *state_mod.State, name: []const u8, abs_path: []const u8
                 if (!me.button.pointer()) continue;
                 e.handle(@src(), wd);
                 state.setBrowserAudioDrag(abs_path);
+                captured_sample_id = id_extra;
                 dvui.captureMouse(wd, e.num);
                 dvui.dragPreStart(me.button, me.p, .{ .name = browser_drag_name });
             },
@@ -566,6 +569,7 @@ fn drawSampleRow(state: *state_mod.State, name: []const u8, abs_path: []const u8
                     if (path.len > 0) _ = media_drop.loadAudioAtSelection(state, path);
                 }
                 state.clearBrowserDrag();
+                captured_sample_id = null;
                 dvui.dragEnd();
             },
             .position => if (wd.borderRectScale().r.contains(me.p)) {
@@ -574,49 +578,6 @@ fn drawSampleRow(state: *state_mod.State, name: []const u8, abs_path: []const u8
             else => {},
         }
     }
-}
-
-
-
-fn sortNames(names: [][256]u8, lens: []usize, ascending: bool) void {
-    var i: usize = 0;
-    while (i + 1 < names.len) : (i += 1) {
-        var j = i + 1;
-        while (j < names.len) : (j += 1) {
-            const a = names[i][0..lens[i]];
-            const b = names[j][0..lens[j]];
-            const cmp = std.ascii.orderIgnoreCase(a, b);
-            const swap = if (ascending) cmp == .gt else cmp == .lt;
-            if (swap) {
-                const tmp_name = names[i];
-                const tmp_len = lens[i];
-                names[i] = names[j];
-                lens[i] = lens[j];
-                names[j] = tmp_name;
-                lens[j] = tmp_len;
-            }
-        }
-    }
-}
-
-fn hasAudioExt(name: []const u8) bool {
-    const ext = std.fs.path.extension(name);
-    inline for (.{
-        ".wav",  ".mp3",  ".ogg",  ".flac", ".aiff", ".aif",
-        ".WAV",  ".MP3",  ".OGG",  ".FLAC", ".AIFF", ".AIF",
-    }) |e| {
-        if (std.mem.eql(u8, ext, e)) return true;
-    }
-    return false;
-}
-
-fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0 or needle.len > haystack.len) return false;
-    var i: usize = 0;
-    while (i + needle.len <= haystack.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
-    }
-    return false;
 }
 
 fn categoryLabel(tab: state_mod.BrowserTab) []const u8 {

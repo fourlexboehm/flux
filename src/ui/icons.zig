@@ -16,6 +16,17 @@ pub const IconKind = enum {
     chevron_right,
     browser,
     metronome,
+    search,
+    sort_up,
+    sort_down,
+    close,
+    remove,
+    instrument,
+    effect,
+    appearance,
+    save,
+    open_editor,
+    bypass,
 };
 
 pub fn tvg(kind: IconKind) []const u8 {
@@ -28,19 +39,32 @@ pub fn tvg(kind: IconKind) []const u8 {
         .chevron_right => entypo.chevron_small_right,
         .browser => entypo.folder,
         .metronome => entypo.clock,
+        .search => entypo.magnifying_glass,
+        .sort_up => entypo.chevron_small_up,
+        .sort_down => entypo.chevron_small_down,
+        .close, .remove => entypo.cross,
+        .instrument => entypo.note,
+        .effect => entypo.sound_mix,
+        .appearance => entypo.light_up,
+        .save => entypo.save,
+        .open_editor => entypo.popup,
+        .bypass => entypo.circle,
     };
 }
 
 pub fn name(kind: IconKind) []const u8 {
     return switch (kind) {
-        .play => "play",
-        .stop => "stop",
-        .pause => "pause",
-        .record => "record",
-        .plus => "plus",
-        .chevron_right => "chevron",
-        .browser => "browser",
-        .metronome => "metronome",
+        .play => "Play (Space)",
+        .stop => "Stop (Space)",
+        .browser => "Show or hide browser (B)",
+        .metronome => "Toggle metronome",
+        .sort_up => "Sort descending",
+        .sort_down => "Sort ascending",
+        .close => "Close or clear",
+        .remove => "Remove device",
+        .open_editor => "Open plugin editor",
+        .bypass => "Toggle device",
+        else => @tagName(kind),
     };
 }
 
@@ -53,7 +77,7 @@ pub fn button(
         fill: ?dvui.Color = null,
         color: ?dvui.Color = null,
         size: f32 = tokens.icon_md,
-        pad: f32 = 2,
+        pad: f32 = 5,
         margin: dvui.Rect = .{},
         gravity_y: f32 = 0.5,
         border: bool = false,
@@ -61,26 +85,34 @@ pub fn button(
 ) bool {
     const fill = opts.fill orelse theme.cell;
     const col = opts.color orelse theme.text;
-    const side = opts.size + opts.pad * 2;
-    return dvui.buttonIcon(
-        src,
-        name(kind),
-        tvg(kind),
-        .{},
-        .{},
-        .{
-            .min_size_content = .{ .w = side, .h = side },
-            .color_fill = fill,
-            .color_text = col,
-            .corners = .round(tokens.radius_sm),
-            .padding = dvui.Rect.all(opts.pad),
-            .margin = opts.margin,
-            .gravity_y = opts.gravity_y,
-            .border = if (opts.border) dvui.Rect.all(1) else .{},
-            .color_border = theme.grid,
-            .id_extra = opts.id_extra,
-        },
-    );
+    var bw: dvui.ButtonWidget = undefined;
+    bw.init(src, .{}, .{
+        .label = .{ .text = name(kind) },
+        .min_size_content = .{ .w = opts.size, .h = opts.size },
+        .color_fill = fill,
+        .color_text = col,
+        .corners = .round(tokens.radius_sm),
+        .padding = dvui.Rect.all(opts.pad),
+        .margin = opts.margin,
+        .gravity_y = opts.gravity_y,
+        .border = if (opts.border) dvui.Rect.all(1) else .{},
+        .color_border = theme.border_light,
+        .id_extra = opts.id_extra,
+    });
+    bw.processEvents();
+    bw.drawBackground();
+    dvui.icon(@src(), name(kind), tvg(kind), .{}, bw.style().override(.{
+        .min_size_content = .{ .w = opts.size, .h = opts.size },
+        .gravity_x = 0.5,
+        .gravity_y = 0.5,
+        .role = .none,
+    }));
+    const clicked = bw.clicked();
+    const rect = bw.data().rectScale().r;
+    bw.drawFocus();
+    bw.deinit();
+    dvui.tooltip(@src(), .{ .active_rect = rect }, "{s}", .{name(kind)}, .{ .id_extra = opts.id_extra });
+    return clicked;
 }
 
 /// Non-interactive icon (e.g. inside a parent button box).
@@ -103,4 +135,27 @@ pub fn draw(
         .gravity_y = opts.gravity_y,
         .id_extra = opts.id_extra,
     });
+}
+
+/// Left-aligned navigation, with a vector icon and a single hit target.
+pub fn navigation(src: std.builtin.SourceLocation, kind: IconKind, label: []const u8, opts: dvui.Options) bool {
+    var bw: dvui.ButtonWidget = undefined;
+    bw.init(src, .{}, opts.override(.{ .label = .{ .text = label } }));
+    bw.processEvents();
+    bw.drawBackground();
+    {
+        var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
+        defer row.deinit();
+        draw(@src(), kind, .{ .color = opts.color_text, .size = tokens.icon_sm, .gravity_x = 0 });
+        dvui.label(@src(), "{s}", .{label}, .{
+            .color_text = opts.color_text,
+            .gravity_y = 0.5,
+            .margin = .{ .x = 8 },
+            .padding = .{},
+        });
+    }
+    const clicked = bw.clicked();
+    bw.drawFocus();
+    bw.deinit();
+    return clicked;
 }

@@ -6,23 +6,23 @@
 //! full-height horizontal rack cards with per-plugin widths (zgui parity).
 
 /// Control / button height (transport, tabs, compact tools).
-pub const control_h: f32 = 16;
+pub const control_h: f32 = 22;
 /// Transport bar content height.
-pub const transport_h: f32 = 22;
+pub const transport_h: f32 = 32;
 /// Icon size inside icon buttons.
-pub const icon_sm: f32 = 11;
-pub const icon_md: f32 = 13;
+pub const icon_sm: f32 = 12;
+pub const icon_md: f32 = 14;
 
 /// Session scene row height.
 pub const session_row_h: f32 = 28;
 /// Session track header height.
-pub const session_header_h: f32 = 20;
+pub const session_header_h: f32 = 28;
 /// Session mixer strip height below the launcher grid.
-pub const session_mixer_h: f32 = 118;
+pub const session_mixer_h: f32 = 208;
 /// Scene name column width.
 pub const scene_col_w: f32 = 80;
 /// Track / clip column width.
-pub const track_col_w: f32 = 88;
+pub const track_col_w: f32 = 112;
 /// Clip-slot play/create button width.
 pub const play_btn_w: f32 = 16;
 /// Scene launch button size.
@@ -46,7 +46,7 @@ pub const arr_mixer_min_body_w: f32 = 520;
 // ── Device rack (zgui card_width table ÷ 2: DVUI already applies content scale) ─
 
 /// Empty instrument slot.
-pub const device_w_empty: f32 = 140;
+pub const device_w_empty: f32 = 184;
 /// External CLAP without embedded UI (compact info + open-window).
 pub const device_w_external: f32 = 240;
 /// Stock equalizer (multi-band layout room).
@@ -60,11 +60,11 @@ pub const device_w_zportafm: f32 = 520;
 /// Fallback width for other plugins with many params.
 pub const device_w_params: f32 = 320;
 /// "+" add-device card.
-pub const device_add_w: f32 = 48;
+pub const device_add_w: f32 = 40;
 /// Card header row height.
 pub const device_header_h: f32 = 34;
 /// Enable LED size.
-pub const device_led: f32 = 9;
+pub const device_led: f32 = 8;
 /// Minimum rack card height (fills remaining bottom pane when larger).
 pub const device_card_min_h: f32 = 120;
 /// Gap between cards / chevrons.
@@ -79,16 +79,16 @@ pub const device_chain_h: f32 = device_card_min_h;
 pub const plugin_list_w: f32 = 320;
 
 /// Browser category column.
-pub const browser_nav_w: f32 = 92;
+pub const browser_nav_w: f32 = 112;
 
 /// Spacing.
-pub const gap_xs: f32 = 1;
-pub const gap_tight: f32 = 3;
-pub const gap_group: f32 = 6;
-pub const pad_panel: f32 = 4;
-pub const pad_content: f32 = 6;
-pub const radius_sm: f32 = 2;
-pub const radius_md: f32 = 3;
+pub const gap_xs: f32 = 2;
+pub const gap_tight: f32 = 4;
+pub const gap_group: f32 = 8;
+pub const pad_panel: f32 = 8;
+pub const pad_content: f32 = 8;
+pub const radius_sm: f32 = 4;
+pub const radius_md: f32 = 6;
 
 /// Default vertical split: more room for device/plugin bottom pane.
 pub const top_split_default: f32 = 0.62;

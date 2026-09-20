@@ -452,13 +452,13 @@ fn drawBoxSelection(state: *const state_mod.State) void {
         .w = @max(1, x1 - x0),
         .h = @max(1, y1 - y0),
     };
-    rect.fill(.all(0), .{ .color = theme.colorFA(0.35, 0.55, 0.95, 0.18) });
+    rect.fill(.all(0), .{ .color = theme.alpha(theme.selected, 0.18) });
     const t = 1.5;
     const top: dvui.Rect.Physical = .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = t };
     const bot: dvui.Rect.Physical = .{ .x = rect.x, .y = rect.y + rect.h - t, .w = rect.w, .h = t };
     const left: dvui.Rect.Physical = .{ .x = rect.x, .y = rect.y, .w = t, .h = rect.h };
     const right: dvui.Rect.Physical = .{ .x = rect.x + rect.w - t, .y = rect.y, .w = t, .h = rect.h };
-    const border = theme.colorFA(0.45, 0.65, 1.0, 0.85);
+    const border = theme.alpha(theme.selected, 0.85);
     top.fill(.all(0), .{ .color = border });
     bot.fill(.all(0), .{ .color = border });
     left.fill(.all(0), .{ .color = border });

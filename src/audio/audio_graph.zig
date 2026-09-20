@@ -98,12 +98,15 @@ pub const StateSnapshot = struct {
     track_fx_enabled: [max_tracks][max_fx_slots]bool,
     live_key_states: [max_tracks][128]bool,
     live_key_velocities: [max_tracks][128]f32,
+    /// Bumped by the UI thread whenever live keys/velocities change. Lets
+    /// NoteSource detect live-input changes without a 128-bool eql per
+    /// quantum (80 sources x ~344 quanta/s at 128 frames was pure idle tax).
+    live_key_generation: u64 = 0,
     controller_param_writes: [max_controller_param_writes]engine_ui.ControllerParamWrite,
     controller_param_write_count: usize,
     track_latency: [max_tracks]u32,
     max_track_latency: u32,
 };
-
 
 const graph_types = @import("audio_graph_types.zig");
 const NodeKind = graph_types.NodeKind;
@@ -233,7 +236,7 @@ pub const Graph = struct {
             .track_index = @intCast(track_index),
             .fx_index = @intCast(fx_index),
             .out = out,
-            .policy = if (track_index == master_track_index) .master_fx_always_consider else .track_fx_fast_skip,
+            .policy = if (track_index == master_track_index) .master_fx_after_mixer else .track_fx_fast_skip,
         });
         return self.appendNodeRef(.{ .kind = .fx, .index = id });
     }
@@ -305,11 +308,18 @@ pub const Graph = struct {
         return self.outputForBuffer(master.out);
     }
 
+    /// True when the master bus holds non-silent audio this quantum. Lets the
+    /// device callback skip the interleave copy (the device buffer is already
+    /// zeroed) when the whole graph rendered silence.
+    pub fn masterActive(self: *const Graph) bool {
+        const master = self.master orelse return false;
+        return self.buffers.items[master.out].active;
+    }
+
     pub fn getAudioOutput(self: *Graph, node_id: NodeId) AudioOutput {
         const buffer_id = self.outputBufferForNode(node_id) orelse return .{ .left = &.{}, .right = &.{} };
         return self.outputForBuffer(buffer_id);
     }
-
 
     const ProcessContext = struct {
         graph: *Graph,
@@ -392,7 +402,7 @@ pub const Graph = struct {
         if (profile) stage_ns.?.synths = nsBetween(t_stage, io);
 
         if (profile) t_stage = std.Io.Clock.awake.now(io);
-        self.processFx(&ctx);
+        self.processFx(&ctx, false);
         if (profile) stage_ns.?.fx = nsBetween(t_stage, io);
 
         if (profile) t_stage = std.Io.Clock.awake.now(io);
@@ -402,6 +412,12 @@ pub const Graph = struct {
         if (profile) t_stage = std.Io.Clock.awake.now(io);
         self.processMixers(&ctx);
         if (profile) stage_ns.?.mixers = nsBetween(t_stage, io);
+
+        // Master FX observe this same quantum's mixer output, keeping the
+        // silence fast-path exact (no stale flags, no blind summing).
+        if (profile) t_stage = std.Io.Clock.awake.now(io);
+        self.processFx(&ctx, true);
+        if (profile) stage_ns.?.fx += nsBetween(t_stage, io);
 
         if (profile) t_stage = std.Io.Clock.awake.now(io);
         self.processMaster(&ctx);
@@ -427,6 +443,17 @@ pub const Graph = struct {
     fn processAudioClipSources(self: *Graph, snapshot: *const StateSnapshot, frame_count: u32) void {
         const zone = tracy.ZoneN(@src(), "Audio clip sources");
         defer zone.End();
+        // Transport stopped: no clip can sound. Update player bookkeeping
+        // without the per-source stereo memset; zeroBufferOnce below is a
+        // no-op once the buffer is already zeroed.
+        if (!snapshot.playing) {
+            for (self.audio_clip_source_order.items) |src_id| {
+                var runtime = &self.audio_clip_sources.items[src_id];
+                runtime.player.markStopped();
+                self.zeroBufferOnce(runtime.out, frame_count);
+            }
+            return;
+        }
         for (self.audio_clip_source_order.items) |src_id| {
             var runtime = &self.audio_clip_sources.items[src_id];
             const out = &self.buffers.items[runtime.out];
@@ -516,10 +543,17 @@ pub const Graph = struct {
         }
     }
 
-    fn processFx(self: *Graph, ctx: *const ProcessContext) void {
+    fn processFx(self: *Graph, ctx: *const ProcessContext, master_pass: bool) void {
         const zone = tracy.ZoneN(@src(), "Audio FX");
         defer zone.End();
+        // Track FX feed gains/the mixer and run before them; master FX run
+        // after the mixer so they observe same-quantum activity flags. A
+        // single pass left the master chain reading the mixer's *previous*
+        // quantum (flags reset each quantum), which made exact silence
+        // skipping impossible there.
         for (self.fx_order.items) |fx_id| {
+            const is_master = self.fx.items[fx_id].policy == .master_fx_after_mixer;
+            if (is_master != master_pass) continue;
             _ = self.processFxNode(ctx, fx_id);
         }
     }
@@ -604,14 +638,21 @@ pub const Graph = struct {
         var fx = &self.fx.items[fx_id];
 
         const allow_fast_skip = fx.policy == .track_fx_fast_skip;
-        const has_active_audio = if (allow_fast_skip) self.hasActiveInput(fx.inputs) else true;
+        // Exact input test on both passes: track FX run after their sources,
+        // master FX after the mixer, so flags are always same-quantum fresh.
+        const has_active_audio = self.hasActiveInput(fx.inputs);
         // Bypassed FX behaves like an empty slot: audio passes straight through.
         const slot_plugin = if (ctx.snapshot.track_fx_enabled[fx.track_index][fx.fx_index])
             ctx.snapshot.track_fx_plugins[fx.track_index][fx.fx_index]
         else
             null;
+        if (fx.last_plugin != slot_plugin) {
+            fx.sleeping = false;
+            fx.last_plugin = slot_plugin;
+        }
         const plugin = slot_plugin orelse {
-            if (allow_fast_skip and !has_active_audio) {
+            // Empty slot: silent in -> silent out, on track and master alike.
+            if (!has_active_audio) {
                 self.zeroBufferOnce(fx.out, ctx.frame_count);
                 fx.sleeping = false;
                 return false;
@@ -621,6 +662,8 @@ pub const Graph = struct {
         };
 
         if (ctx.shared.checkAndClearStartProcessingFx(fx.track_index, fx.fx_index)) {
+            // A new activation may reuse the previous instance's address.
+            fx.sleeping = false;
             if (!ctx.shared.isFxPluginStarted(fx.track_index, fx.fx_index)) {
                 if (plugin.startProcessing(plugin)) {
                     ctx.shared.markFxPluginStarted(fx.track_index, fx.fx_index);
@@ -632,7 +675,10 @@ pub const Graph = struct {
         var empty_input_events = audio_events.emptyInputEvents(&empty_event_list);
         const input_events = self.inputEventsFor(fx.event_source, &empty_input_events);
         const has_input_events = input_events.size(input_events) > 0;
-        if (allow_fast_skip and !has_active_audio and fx.sleeping and !has_input_events) {
+        // A sleeping plugin fed silence with no events outputs silence by CLAP
+        // contract — skip it on master too (track already did). Never skip a
+        // host wake request.
+        if (!ctx.wake_requested and !has_active_audio and fx.sleeping and !has_input_events) {
             self.zeroBufferOnce(fx.out, ctx.frame_count);
             return false;
         }
@@ -1040,4 +1086,3 @@ pub const Graph = struct {
         return true;
     }
 };
-

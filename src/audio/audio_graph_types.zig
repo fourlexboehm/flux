@@ -67,7 +67,9 @@ pub const AudioClipSourceRuntime = struct {
 
 pub const FxPolicy = enum(u8) {
     track_fx_fast_skip,
-    master_fx_always_consider,
+    /// Master-chain FX: processed after the mixer so silence skipping
+    /// observes same-quantum activity flags.
+    master_fx_after_mixer,
 };
 
 pub const FxRuntime = struct {
@@ -78,6 +80,7 @@ pub const FxRuntime = struct {
     event_source: NoteSourceId = invalid_id,
     policy: FxPolicy = .track_fx_fast_skip,
     sleeping: bool = false,
+    last_plugin: ?*const clap.Plugin = null,
 };
 
 pub const GainRuntime = struct {

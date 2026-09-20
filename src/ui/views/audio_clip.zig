@@ -119,7 +119,7 @@ pub fn draw(state: *state_mod.State) void {
         .w = wave.w,
         .h = @max(1.0, rs.s),
     };
-    zero.fill(.all(0), .{ .color = theme.colorFA(1, 1, 1, 0.08) });
+    zero.fill(.all(0), .{ .color = theme.alpha(theme.text, 0.12) });
 
     const frames: u64 = asset.frame_count;
     const f0: u64 = @intFromFloat(@floor(view_state.start * @as(f32, @floatFromInt(frames))));
@@ -127,7 +127,7 @@ pub fn draw(state: *state_mod.State) void {
     const frame_start = @min(f0, frames);
     const frame_end = @min(@max(f1, frame_start + 1), frames);
     const norm = peaks_mod.peakAbs(asset.peaks[0..]);
-    const wave_col = theme.colorFA(0.55, 0.82, 0.78, 0.85);
+    const wave_col = theme.alpha(theme.accent, 0.85);
 
     drawPcmRange(wave, asset, frame_start, frame_end, wave_col, if (norm > 1.0e-8) norm else 0);
 
@@ -536,7 +536,7 @@ fn drawOverview(asset: *const SampleAsset, area: dvui.Rect.Physical, scale: f32)
     if (overview.w <= 0) return;
 
     overview.fill(.all(2), .{ .color = theme.colorFA(0, 0, 0, 0.35) });
-    drawPeaks(overview, asset.peaks[0..], theme.colorFA(1, 1, 1, 0.35), 0.85, 0);
+    drawPeaks(overview, asset.peaks[0..], theme.alpha(theme.text, 0.4), 0.85, 0);
 
     const ow = overview.w;
     const vx0 = overview.x + view_state.start * ow;

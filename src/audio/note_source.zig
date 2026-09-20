@@ -55,7 +55,9 @@ pub const NoteSource = struct {
     target_fx_index: i8 = -1,
     current_beat: f64 = 0.0,
     active_pitches: [128]bool = @splat(false),
-    last_live_should: [128]bool = @splat(false),
+    /// Generation counter from the snapshot (bumped by the UI thread on live
+    /// key/velocity change). Replaces the old per-quantum 128-bool eql/memcpy.
+    last_live_generation: u64 = 0,
     live_cache_valid: bool = false,
     last_playing: bool = false,
     last_scene: ?usize = null,
@@ -82,17 +84,17 @@ pub const NoteSource = struct {
         self.input_events.context = &self.event_list;
         self.processControllerParamWrites(snapshot, 0);
 
-        // FX event ports never emit notes / live keys — skip 128-bool eql/memcpy.
+        // FX event ports never emit notes / live keys — skip generation tracking.
         // (Profile: mem.eql + NoteSource.process dominated the serial IO thread.)
         const live_should = &snapshot.live_key_states[self.track_index];
         const live_velocities = &snapshot.live_key_velocities[self.track_index];
         const live_changed = if (self.emit_notes)
-            !self.live_cache_valid or !std.mem.eql(bool, self.last_live_should[0..], live_should[0..])
+            !self.live_cache_valid or snapshot.live_key_generation != self.last_live_generation
         else
             false;
         defer {
-            if (self.emit_notes) {
-                @memcpy(self.last_live_should[0..], live_should[0..]);
+            if (self.emit_notes and (!self.live_cache_valid or live_changed)) {
+                self.last_live_generation = snapshot.live_key_generation;
                 self.live_cache_valid = true;
             }
             self.last_playing = snapshot.playing;

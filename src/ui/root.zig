@@ -162,6 +162,7 @@ fn preloadDevDevice() void {
 
 pub fn deinit(win: *dvui.Window) void {
     _ = win;
+    browser.deinit();
     // Unload plugins while engine still exists (quiesce RT pointers).
     if (plugin_host.ready() and audio_runtime.ready()) {
         const eng = if (audio_runtime.g.engine != null) &audio_runtime.g.engine.? else null;
@@ -182,6 +183,7 @@ pub fn frame() !dvui.App.Result {
     // Playhead + recording quantize/finalize.
     // Runs before live-key refresh so keyboard edge capture sees last frame's baseline.
     const win = dvui.currentWindow();
+    theme.apply(win);
     const frame_ns = win.frame_time_ns;
     var dt: f64 = 0;
     if (state.playing) {

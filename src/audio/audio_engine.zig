@@ -45,6 +45,12 @@ pub const SharedState = struct {
     published_document_revision: u64 = std.math.maxInt(u64),
     published_document_bpm: f32 = -1,
     document_compile_count: usize = 0,
+    /// Live-key change generation published into snapshots (see
+    /// StateSnapshot.live_key_generation). Compared once per UI frame here
+    /// instead of per note source per audio quantum.
+    live_key_generation: u64 = 0,
+    last_live_states: [max_tracks][128]bool = @splat(@splat(false)),
+    last_live_velocities: [max_tracks][128]f32 = @splat(@splat(0)),
 
     pub fn setTrackPeak(self: *SharedState, track: usize, left: f32, right: f32) void {
         self.track_peak_left[track].store(@bitCast(left), .release);
@@ -124,6 +130,7 @@ pub const SharedState = struct {
         }
         back.live_key_states = view.live_key_states.*;
         back.live_key_velocities = view.live_key_velocities.*;
+        self.publishLiveKeys(view, back);
         const write_count = @min(view.controller_param_writes.len, engine_ui.max_controller_param_writes);
         back.controller_param_write_count = write_count;
         if (write_count > 0) {
@@ -267,6 +274,39 @@ pub const SharedState = struct {
         if (self.processing.load(.acquire) == 0) {
             self.reader_index.store(self.active_index.load(.acquire), .release);
         }
+    }
+
+    /// Diff live keys/velocities once per UI publish (not per audio quantum)
+    /// and stamp the snapshot with a change generation.
+    fn publishLiveKeys(self: *SharedState, view: *EngineUiView, back: *audio_graph.StateSnapshot) void {
+        var changed = false;
+        for (0..max_tracks) |t| {
+            const cur_s = view.live_key_states.*[t][0..];
+            const prev_s = self.last_live_states[t][0..];
+            if (!std.mem.eql(bool, prev_s, cur_s)) {
+                @memcpy(prev_s, cur_s);
+                @memcpy(self.last_live_velocities[t][0..], view.live_key_velocities.*[t][0..]);
+                changed = true;
+            } else {
+                // Velocity-only changes (aftertouch while held) matter too, but
+                // only scan velocities when some key on this track is down.
+                var held = false;
+                for (prev_s) |h| if (h) {
+                    held = true;
+                    break;
+                };
+                if (held) {
+                    const cur_v = view.live_key_velocities.*[t][0..];
+                    const prev_v = self.last_live_velocities[t][0..];
+                    if (!std.mem.eql(f32, prev_v, cur_v)) {
+                        @memcpy(prev_v, cur_v);
+                        changed = true;
+                    }
+                }
+            }
+        }
+        if (changed) self.live_key_generation +%= 1;
+        back.live_key_generation = self.live_key_generation;
     }
 
     pub fn updatePlugins(
@@ -485,6 +525,14 @@ pub const AudioEngine = struct {
         if (self.rebuilding.load(.acquire) != 0) return;
         if (frame_count == 0) return;
         const snapshot = self.shared.snapshot();
+        // Preserve mixMetronome's stopped-transport reset even when the
+        // interleave below is skipped for a silent master bus.
+        if (!snapshot.playing) {
+            self.metronome_beat_phase = 0;
+            self.metronome_click_frames = 0;
+            self.metronome_beat = 0;
+            self.metronome_was_playing = false;
+        }
         var frames_left = frame_count;
         var frame_offset: usize = 0;
         while (frames_left > 0) {
@@ -492,9 +540,14 @@ pub const AudioEngine = struct {
             self.graph.process(snapshot, &self.shared, self.jobs, chunk, self.steady_time);
             self.steady_time += chunk;
 
-            const outputs = self.graph.getMasterOutput() orelse break;
-            audio_mix.interleaveStereo(out_ptr, frame_offset, outputs.left, outputs.right, chunk);
-            self.mixMetronome(out_ptr, frame_offset, chunk, snapshot);
+            // The device buffer was zeroed above: a silent master bus needs no
+            // interleave copy. While playing, always mix (metronome phase
+            // advances even when clicks are disabled).
+            if (snapshot.playing or self.graph.masterActive()) {
+                const outputs = self.graph.getMasterOutput() orelse break;
+                audio_mix.interleaveStereo(out_ptr, frame_offset, outputs.left, outputs.right, chunk);
+                self.mixMetronome(out_ptr, frame_offset, chunk, snapshot);
+            }
             frame_offset += chunk;
             frames_left -= chunk;
         }

@@ -9,6 +9,8 @@ const icons = @import("icons.zig");
 const state_mod = @import("state.zig");
 
 pub fn draw(state: *state_mod.State) void {
+    var toolbar_scroll = dvui.scrollArea(@src(), .{ .horizontal = .auto, .vertical = .none, .horizontal_bar = .auto, .vertical_bar = .hide }, .{ .expand = .horizontal });
+    defer toolbar_scroll.deinit();
     var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .expand = .horizontal,
         .background = true,
@@ -97,18 +99,27 @@ pub fn draw(state: *state_mod.State) void {
         state.setBufferIndex(buf_idx);
     }
 
-    dvui.label(@src(), "DSP {d}%", .{state.dsp_load_pct}, .{
+    dvui.label(@src(), "DSP {d:3}%", .{state.dsp_load_pct}, .{
         .gravity_y = 0.5,
         .color_text = theme.text_dim,
         .margin = .{ .x = tokens.gap_group, .y = 0, .w = 0, .h = 0 },
+        // Fixed-width value (padded to 3) + minimum width for "DSP 100%"
+        // so 9% -> 10% -> 100% never shifts neighbouring chrome.
+        .min_size_content = .{ .w = 58 },
     });
 
     separator(3);
+    var appearance_index: usize = @backingInt(theme.appearance);
+    if (dvui.dropdown(@src(), &.{ "System", "Light", "Dark" }, .{ .choice = &appearance_index }, .{}, .{
+        .min_size_content = .{ .w = 62, .h = tokens.control_h },
+        .gravity_y = 0.5,
+        .label = .{ .text = "Appearance" },
+    })) theme.setAppearance(@fromBackingInt(@intCast(appearance_index)));
 
     // View mode
     const sess_fill = if (state.view_mode == .session) theme.accent else theme.cell;
     const sess_text = if (state.view_mode == .session) theme.bg else theme.text;
-    if (dvui.button(@src(), "Sess", .{}, .{
+    if (dvui.button(@src(), "Session", .{}, .{
         .color_fill = sess_fill,
         .color_text = sess_text,
         .min_size_content = .{ .h = tokens.control_h },
@@ -120,7 +131,7 @@ pub fn draw(state: *state_mod.State) void {
     }
     const arr_fill = if (state.view_mode == .arrangement) theme.accent else theme.cell;
     const arr_text = if (state.view_mode == .arrangement) theme.bg else theme.text;
-    if (dvui.button(@src(), "Arr", .{}, .{
+    if (dvui.button(@src(), "Arrange", .{}, .{
         .color_fill = arr_fill,
         .color_text = arr_text,
         .min_size_content = .{ .h = tokens.control_h },

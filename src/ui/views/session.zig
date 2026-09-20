@@ -5,6 +5,7 @@
 const std = @import("std");
 const dvui = @import("dvui");
 const theme = @import("../theme.zig");
+const mixer_controls = @import("../mixer_controls.zig");
 const tokens = @import("../tokens.zig");
 const icons = @import("../icons.zig");
 const state_mod = @import("../state.zig");
@@ -29,7 +30,10 @@ pub fn draw(state: *state_mod.State) void {
 
     const grid_w = tokens.scene_col_w +
         @as(f32, @floatFromInt(state.track_count)) * tokens.track_col_w + add_track_col_w;
+    const grid_height = @max(40, col.data().contentRect().h - tokens.session_mixer_h - 24);
     var horizontal_scroll = dvui.scrollArea(@src(), .{
+        .horizontal = .auto,
+        .vertical = .none,
         .horizontal_bar = .auto,
         .vertical_bar = .hide,
     }, .{ .expand = .both, .background = false });
@@ -48,7 +52,8 @@ pub fn draw(state: *state_mod.State) void {
         }, .{
             .expand = .both,
             .background = true,
-            .color_fill = theme.cell,
+            .color_fill = theme.panel,
+            .max_size_content = .{ .w = std.math.floatMax(f32), .h = grid_height },
             .corners = .round(tokens.radius_md),
         });
         defer scroll.deinit();
@@ -176,7 +181,7 @@ pub fn draw(state: *state_mod.State) void {
                 if (dvui.button(@src(), sn, .{}, .{
                     .min_size_content = .{ .w = tokens.scene_col_w - tokens.launch_btn - 12, .h = tokens.launch_btn },
                     .color_fill = if (scene_sel) theme.accent_dim else theme.panel,
-                    .color_text = if (scene_sel) theme.text else theme.text_dim,
+                    .color_text = if (scene_sel) theme.text_on_fill else theme.text_dim,
                     .margin = .{ .x = tokens.gap_xs, .y = 0, .w = 0, .h = 0 },
                     .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
                     .corners = .round(tokens.radius_sm),
@@ -262,8 +267,8 @@ fn drawMixerChannel(state: *state_mod.State, track: usize, is_master: bool) void
         .expand = .horizontal,
         .min_size_content = .{ .h = tokens.session_mixer_h - 8 },
         .background = true,
-        .color_fill = if (selected) theme.panel else theme.cell,
-        .border = dvui.Rect.all(if (selected) 1.5 else 1),
+        .color_fill = theme.panel,
+        .border = dvui.Rect.all(1),
         .color_border = if (selected) theme.selected else theme.grid,
         .corners = .round(tokens.radius_sm),
         .padding = dvui.Rect.all(tokens.gap_tight),
@@ -276,11 +281,12 @@ fn drawMixerChannel(state: *state_mod.State, track: usize, is_master: bool) void
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal, .id_extra = id });
         defer row.deinit();
 
-        const button_w: f32 = 16;
+        const button_w: f32 = 24;
         const button_padding = dvui.Rect{ .x = 2, .y = 0, .w = 2, .h = 0 };
         if (dvui.button(@src(), "M", .{}, .{
             .color_fill = if (mute) theme.mute_on else theme.panel,
-            .color_text = theme.text,
+            .color_text = if (mute) theme.text_on_fill else theme.text,
+            .label = .{ .text = "Mute" },
             .expand = if (is_master) .horizontal else .none,
             .min_size_content = .{ .w = button_w, .h = tokens.control_h },
             .margin = .{},
@@ -300,7 +306,8 @@ fn drawMixerChannel(state: *state_mod.State, track: usize, is_master: bool) void
         if (!is_master) {
             if (dvui.button(@src(), "S", .{}, .{
                 .color_fill = if (state.track_solo[track]) theme.solo_on else theme.panel,
-                .color_text = theme.text,
+                .color_text = if (state.track_solo[track]) theme.text_on_fill else theme.text,
+                .label = .{ .text = "Solo" },
                 .min_size_content = .{ .w = button_w, .h = tokens.control_h },
                 .margin = .{ .x = tokens.gap_tight, .y = 0, .w = 0, .h = 0 },
                 .padding = button_padding,
@@ -314,7 +321,8 @@ fn drawMixerChannel(state: *state_mod.State, track: usize, is_master: bool) void
             const armed = state.armed_track == track;
             if (dvui.button(@src(), "R", .{}, .{
                 .color_fill = if (armed) theme.arm_on else theme.panel,
-                .color_text = theme.text,
+                .color_text = if (armed) theme.text_on_fill else theme.text,
+                .label = .{ .text = "Arm recording" },
                 .min_size_content = .{ .w = button_w, .h = tokens.control_h },
                 .margin = .{ .x = tokens.gap_tight, .y = 0, .w = 0, .h = 0 },
                 .padding = button_padding,
@@ -329,21 +337,16 @@ fn drawMixerChannel(state: *state_mod.State, track: usize, is_master: bool) void
                 }
                 state.selectTrack(track);
             }
-
-            drawMeter(levels, id);
         }
     }
 
-    if (dvui.sliderEntry(@src(), "Vol {d:.2}", .{
-        .value = volume_ptr,
-        .min = 0,
-        .max = 1.5,
-        .interval = 0.01,
-    }, .{
+    var volume_changed = mixer_controls.fader(@src(), volume_ptr, levels, id);
+    volume_changed = mixer_controls.volumeEntry(@src(), volume_ptr, .{
         .expand = .horizontal,
         .min_size_content = .{ .h = tokens.control_h },
         .id_extra = id,
-    })) {
+    }) or volume_changed;
+    if (volume_changed) {
         if (document_model.ready()) document_commands.setTrackVolume(&document_model.g, track, volume_ptr.*);
         if (is_master) state.selectMaster() else {
             state.selected_track = track;
@@ -351,12 +354,7 @@ fn drawMixerChannel(state: *state_mod.State, track: usize, is_master: bool) void
         }
     }
 
-    if (dvui.sliderEntry(@src(), "Pan {d:.2}", .{
-        .value = pan_ptr,
-        .min = -1,
-        .max = 1,
-        .interval = 0.01,
-    }, .{
+    if (mixer_controls.panEntry(@src(), pan_ptr, .{
         .expand = .horizontal,
         .min_size_content = .{ .h = tokens.control_h },
         .id_extra = id,
@@ -377,30 +375,6 @@ fn drawMixerChannel(state: *state_mod.State, track: usize, is_master: bool) void
     })) {
         if (is_master) state.selectMaster() else state.selectTrack(track);
     }
-}
-
-fn drawMeter(levels: [2]f32, id_extra: usize) void {
-    var meter = dvui.box(@src(), .{}, .{
-        .expand = .horizontal,
-        .min_size_content = .{ .h = tokens.control_h },
-        .background = true,
-        .color_fill = theme.panel,
-        .margin = .{ .x = tokens.gap_tight, .y = 2, .w = 0, .h = 2 },
-        .id_extra = id_extra,
-    });
-    defer meter.deinit();
-
-    const rs = meter.data().contentRectScale();
-    const area = rs.r;
-    const peak = @max(levels[0], levels[1]);
-    const amount = @max(0, @min(peak, 1));
-    const fill: dvui.Rect.Physical = .{
-        .x = area.x,
-        .y = area.y,
-        .w = area.w * amount,
-        .h = area.h,
-    };
-    fill.fill(.all(0), .{ .color = if (amount > 0.9) theme.mute_on else theme.solo_on });
 }
 
 fn slotSamplePeaks(track: usize, scene: usize) ?[]const peaks_mod.PeakBin {
@@ -723,13 +697,13 @@ fn drawSessionBoxSelection(state: *const state_mod.State) void {
         .w = @max(1, x1 - x0),
         .h = @max(1, y1 - y0),
     };
-    rect.fill(.all(0), .{ .color = theme.colorFA(0.35, 0.55, 0.95, 0.18) });
+    rect.fill(.all(0), .{ .color = theme.alpha(theme.selected, 0.18) });
     const t = 1.5;
     const top: dvui.Rect.Physical = .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = t };
     const bot: dvui.Rect.Physical = .{ .x = rect.x, .y = rect.y + rect.h - t, .w = rect.w, .h = t };
     const left: dvui.Rect.Physical = .{ .x = rect.x, .y = rect.y, .w = t, .h = rect.h };
     const right: dvui.Rect.Physical = .{ .x = rect.x + rect.w - t, .y = rect.y, .w = t, .h = rect.h };
-    const border = theme.colorFA(0.45, 0.65, 1.0, 0.85);
+    const border = theme.alpha(theme.selected, 0.85);
     top.fill(.all(0), .{ .color = border });
     bot.fill(.all(0), .{ .color = border });
     left.fill(.all(0), .{ .color = border });

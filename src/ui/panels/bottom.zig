@@ -238,9 +238,7 @@ const CardDraw = struct {
 
 /// Full-height rack card: header + body with multi-column params or external summary.
 fn drawDeviceCard(state: *state_mod.State, opts: CardDraw) void {
-    const fill = if (opts.selected)
-        theme.accent_dim
-    else if (opts.empty)
+    const fill = if (opts.empty)
         theme.empty_slot_fill
     else
         theme.panel;
@@ -252,9 +250,9 @@ fn drawDeviceCard(state: *state_mod.State, opts: CardDraw) void {
         .color_fill = fill,
         .min_size_content = .{ .w = opts.card_w, .h = tokens.device_card_min_h },
         .max_size_content = .{ .w = opts.card_w, .h = std.math.floatMax(f32) },
-        .expand = .vertical,
+        .expand = if (opts.empty) .none else .vertical,
         .corners = .round(tokens.radius_sm),
-        .border = dvui.Rect.all(if (opts.selected) 1.5 else 1),
+        .border = dvui.Rect.all(1),
         .color_border = border_col,
         .padding = .{ .x = tokens.gap_group, .y = tokens.gap_tight, .w = tokens.gap_group, .h = tokens.gap_tight },
         .margin = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
@@ -273,6 +271,7 @@ fn drawDeviceCard(state: *state_mod.State, opts: CardDraw) void {
 
         if (dvui.button(@src(), " ", .{}, .{
             .min_size_content = .{ .w = tokens.device_led, .h = tokens.device_led },
+            .padding = .{},
             .color_fill = if (opts.enabled) theme.accent else theme.cell,
             .corners = .round(tokens.device_led / 2),
             .border = dvui.Rect.all(1),
@@ -303,25 +302,19 @@ fn drawDeviceCard(state: *state_mod.State, opts: CardDraw) void {
                 }
             }
             if (can_float) {
-                if (dvui.button(@src(), if (gui_open) "✕" else "⧉", .{}, .{
-                    .min_size_content = .{ .w = tokens.device_header_h - 8, .h = tokens.device_header_h - 8 },
-                    .color_fill = if (gui_open) theme.accent else theme.cell,
-                    .color_text = if (gui_open) theme.bg else theme.text,
-                    .corners = .round(tokens.radius_sm),
-                    .gravity_y = 0.5,
+                if (icons.button(@src(), if (gui_open) .close else .open_editor, .{
+                    .fill = if (gui_open) theme.accent else theme.cell,
+                    .color = if (gui_open) theme.bg else theme.text,
                     .id_extra = opts.id_extra,
                 })) {
                     selectDevice(state, opts.id_extra);
                     if (plugin_host.ready()) plugin_host.g.toggleSelectedGui(state);
                 }
             }
-            if (dvui.button(@src(), "×", .{}, .{
-                .min_size_content = .{ .w = tokens.device_header_h - 8, .h = tokens.device_header_h - 8 },
-                .color_fill = theme.cell,
-                .color_text = theme.text_dim,
-                .corners = .round(tokens.radius_sm),
-                .margin = .{ .x = tokens.gap_xs, .y = 0, .w = 0, .h = 0 },
-                .gravity_y = 0.5,
+            if (icons.button(@src(), .remove, .{
+                .fill = theme.cell,
+                .color = theme.text_dim,
+                .margin = .{ .x = tokens.gap_xs },
                 .id_extra = opts.id_extra,
             })) {
                 if (plugin_host.ready()) {
@@ -350,11 +343,11 @@ fn drawDeviceCard(state: *state_mod.State, opts: CardDraw) void {
     defer body.deinit();
 
     if (opts.empty) {
-        dvui.label(@src(), "Instrument", .{}, .{
+        dvui.label(@src(), "No instrument loaded", .{}, .{
             .color_text = theme.text_soft,
             .id_extra = opts.id_extra,
         });
-        if (dvui.button(@src(), "Choose…", .{}, .{
+        if (dvui.button(@src(), "Choose instrument…", .{}, .{
             .expand = .none,
             .min_size_content = .{ .h = tokens.control_h + 4 },
             .color_fill = theme.panel,
@@ -778,9 +771,9 @@ fn drawInstrumentPresetRow(state: *state_mod.State, plugin: *const @import("clap
 fn drawAddCard(state: *state_mod.State) void {
     // Box wraps the + so we have a stable rect to center the picker on.
     var wrap = dvui.box(@src(), .{}, .{
-        .min_size_content = .{ .w = tokens.device_add_w, .h = tokens.device_card_min_h },
-        .max_size_content = .{ .w = tokens.device_add_w, .h = std.math.floatMax(f32) },
-        .expand = .vertical,
+        .min_size_content = .{ .w = tokens.device_add_w, .h = 40 },
+        .max_size_content = .{ .w = tokens.device_add_w, .h = 40 },
+        .expand = .none,
         .id_extra = picker_add_id,
     });
     defer wrap.deinit();

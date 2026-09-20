@@ -3,6 +3,8 @@
 test {
     _ = @import("arrangement/undo.zig");
     _ = @import("audio/audio_clip_source.zig");
+    _ = @import("audio/audio_graph_test.zig");
+    _ = @import("ui/panels/browser_files.zig");
     _ = @import("audio/audio_mix.zig");
     _ = @import("audio/clip_bake.zig");
     _ = @import("audio/latency_compensation.zig");
@@ -10,6 +12,7 @@ test {
     _ = @import("project/io.zig");
     // DVUI host chrome state (pure; no zgui/dvui imports)
     _ = @import("ui/state.zig");
+    _ = @import("ui/gain.zig");
     // Document host (session + arrangement + clip pool projection)
     _ = @import("ui/host.zig");
     _ = @import("document/model.zig");

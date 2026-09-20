@@ -3,6 +3,7 @@
 const std = @import("std");
 const dvui = @import("dvui");
 const theme = @import("../theme.zig");
+const mixer_controls = @import("../mixer_controls.zig");
 const tokens = @import("../tokens.zig");
 const state_mod = @import("../state.zig");
 const host_mod = @import("../host.zig");
@@ -128,7 +129,8 @@ fn drawMixerRow(state: *state_mod.State, track: usize, is_master: bool) void {
 
     if (dvui.button(@src(), "M", .{}, .{
         .color_fill = if (mute) theme.mute_on else theme.panel,
-        .color_text = theme.text,
+        .color_text = if (mute) theme.text_on_fill else theme.text,
+        .label = .{ .text = "Mute" },
         .min_size_content = .{ .w = btn_w, .h = tokens.control_h },
         .padding = btn_pad,
         .corners = .round(tokens.radius_sm),
@@ -143,7 +145,8 @@ fn drawMixerRow(state: *state_mod.State, track: usize, is_master: bool) void {
     if (!is_master) {
         if (dvui.button(@src(), "S", .{}, .{
             .color_fill = if (state.track_solo[track]) theme.solo_on else theme.panel,
-            .color_text = theme.text,
+            .color_text = if (state.track_solo[track]) theme.text_on_fill else theme.text,
+            .label = .{ .text = "Solo" },
             .min_size_content = .{ .w = btn_w, .h = tokens.control_h },
             .margin = .{ .x = 2, .y = 0, .w = 0, .h = 0 },
             .padding = btn_pad,
@@ -157,7 +160,8 @@ fn drawMixerRow(state: *state_mod.State, track: usize, is_master: bool) void {
         const armed = state.armed_track == track;
         if (dvui.button(@src(), "R", .{}, .{
             .color_fill = if (armed) theme.arm_on else theme.panel,
-            .color_text = theme.text,
+            .color_text = if (armed) theme.text_on_fill else theme.text,
+            .label = .{ .text = "Arm recording" },
             .min_size_content = .{ .w = btn_w, .h = tokens.control_h },
             .margin = .{ .x = 2, .y = 0, .w = 0, .h = 0 },
             .padding = btn_pad,
@@ -175,12 +179,7 @@ fn drawMixerRow(state: *state_mod.State, track: usize, is_master: bool) void {
         }
     }
 
-    if (dvui.sliderEntry(@src(), "{d:.2}", .{
-        .value = volume_ptr,
-        .min = 0,
-        .max = 1.5,
-        .interval = 0.01,
-    }, .{
+    if (mixer_controls.volumeEntry(@src(), volume_ptr, .{
         .min_size_content = .{ .w = if (is_master) 90 else 72, .h = tokens.control_h },
         .margin = .{ .x = tokens.gap_tight, .y = 0, .w = 0, .h = 0 },
         .id_extra = id,
@@ -192,12 +191,7 @@ fn drawMixerRow(state: *state_mod.State, track: usize, is_master: bool) void {
         if (is_master) state.selectMaster() else state.selectTrack(track);
     }
 
-    if (dvui.sliderEntry(@src(), "P{d:.1}", .{
-        .value = pan_ptr,
-        .min = -1,
-        .max = 1,
-        .interval = 0.01,
-    }, .{
+    if (mixer_controls.panEntry(@src(), pan_ptr, .{
         .min_size_content = .{ .w = 52, .h = tokens.control_h },
         .margin = .{ .x = 2, .y = 0, .w = 0, .h = 0 },
         .id_extra = id,

@@ -149,6 +149,13 @@ pub const AudioClipSource = struct {
         self.last_scene = null;
     }
 
+    /// Transport-stopped bookkeeping without touching output buffers. Lets the
+    /// graph skip the per-source stereo memset while idle.
+    pub fn markStopped(self: *AudioClipSource) void {
+        if (self.last_playing) self.reset();
+        self.last_playing = false;
+    }
+
     /// Render into left/right. Returns true if any non-silent audio was written.
     pub fn process(
         self: *AudioClipSource,
