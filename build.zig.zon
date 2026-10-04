@@ -75,8 +75,8 @@
             .hash = "N-V-__8AAAzxrQBNeXdRXqDQlfE8r_r9PGiSWKATj50chaqM",
         },
         .dvui = .{
-            .url = "git+https://github.com/fourlexboehm/dvui?ref=zig-0.17#87042ded71cd3f0e8f1e8b71352ddc7c6940cee7",
-            .hash = "dvui-0.6.0-dev-AQFJmbVk_QCuA-71TJ72WV8Er2-aoqSiP4wwtbb20B4u",
+            .url = "git+https://github.com/fourlexboehm/dvui?ref=zig-0.17#ccd01e18be0c9e630ebe7d254ed0699546685a50",
+            .hash = "dvui-0.6.0-dev-AQFJmSlvAwEHS7Ssosjg3dRexYa5yYn3O67GSVXjfEOa",
         },
         // Bundled macOS .tbd stubs for cross-compile (-lobjc etc). Used when
         // --sysroot alone does not populate library search paths.

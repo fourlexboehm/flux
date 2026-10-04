@@ -27,7 +27,7 @@ const automation = @import("piano_roll_automation.zig");
 
 pub fn draw(state: *state_mod.State) void {
     const clip = layout.selectedClip(state) orelse {
-        dvui.label(@src(), "Selected MIDI clip is unavailable.", .{}, .{ .color_text = theme.text_soft });
+        dvui.label(@src(), "Selected MIDI clip is unavailable.", .{}, .{ .color_text = .{ .color = theme.text_soft } });
         return;
     };
     layout.syncSelectionClip(state, clip.notes.items.len);
@@ -88,9 +88,9 @@ pub fn draw(state: *state_mod.State) void {
     var canvas = dvui.box(@src(), .{}, .{
         .expand = .both,
         .background = true,
-        .color_fill = theme.cell,
+        .color_fill = .{ .color = theme.cell },
         .border = dvui.Rect.all(1),
-        .color_border = theme.grid,
+        .color_border = .{ .color = theme.grid },
         .min_size_content = .{ .h = 100 },
     });
     defer canvas.deinit();
@@ -241,7 +241,7 @@ fn drawScrollZoomBar(state: *state_mod.State, clip: *const notes_mod.PianoRollCl
     var widget = dvui.box(@src(), .{}, .{
         .expand = .horizontal,
         .background = true,
-        .color_fill = theme.header,
+        .color_fill = .{ .color = theme.header },
         .min_size_content = .{ .h = 18 },
     });
     defer widget.deinit();
@@ -250,7 +250,7 @@ fn drawScrollZoomBar(state: *state_mod.State, clip: *const notes_mod.PianoRollCl
     const track = scrollZoomTrackRect(rs.r, rs.s);
     layout.clampHorizontalScroll(state, clip, rs.r.w, rs.s);
 
-    track.fill(.all(3 * rs.s), .{ .color = theme.cell });
+    track.fill(.all(3 * rs.s), .{ .color = .{ .color = theme.cell } });
     const metrics = layout.horizontalMetrics(state, clip, rs.r.w, rs.s);
     const thumb_ratio = std.math.clamp(metrics.visible_beats / metrics.max_beats, 0.08, 1);
     const thumb_w = track.w * thumb_ratio;
@@ -261,7 +261,7 @@ fn drawScrollZoomBar(state: *state_mod.State, clip: *const notes_mod.PianoRollCl
         .w = thumb_w,
         .h = @max(2 * rs.s, track.h - 4 * rs.s),
     };
-    thumb.fill(.all(2 * rs.s), .{ .color = theme.accent });
+    thumb.fill(.all(2 * rs.s), .{ .color = .{ .color = theme.accent } });
 
     for (dvui.events()) |*event| {
         if (!dvui.eventMatchSimple(event, widget.data())) continue;
@@ -312,16 +312,16 @@ fn drawGrid(state: *const state_mod.State, area: dvui.Rect.Physical, scale: f32)
         const y = area.y + area.h - (@as(f32, @floatFromInt(pitch)) - bottom_pitch + 1) * row_h;
         const black = layout.isBlackKey(pitch_u);
         const lane: dvui.Rect.Physical = .{ .x = area.x + key_w, .y = y, .w = area.w - key_w, .h = row_h };
-        lane.fill(.all(0), .{ .color = if (black) theme.panel else theme.cell });
+        lane.fill(.all(0), .{ .color = .{ .color = if (black) theme.panel else theme.cell } });
 
         const key: dvui.Rect.Physical = .{ .x = area.x, .y = y, .w = key_w - scale, .h = @max(1, row_h - scale) };
         const key_base = if (black) theme.colorF(0.12, 0.12, 0.13) else theme.colorF(0.82, 0.82, 0.84);
-        key.fill(.all(0), .{ .color = key_base });
+        key.fill(.all(0), .{ .color = .{ .color = key_base } });
         const active = live[pitch_u] or (state.piano_preview_pitch != null and state.piano_preview_pitch.? == pitch_u) or (state.piano_key_held != null and state.piano_key_held.? == pitch_u);
         if (active) {
-            key.fill(.all(0), .{ .color = theme.colorFA(0.45, 0.70, 0.86, if (black) 0.55 else 0.4) });
+            key.fill(.all(0), .{ .color = .{ .color = theme.colorFA(0.45, 0.70, 0.86, if (black) 0.55 else 0.4) } });
             const border: dvui.Rect.Physical = .{ .x = key.x, .y = key.y, .w = key.w, .h = @max(1, scale) };
-            border.fill(.all(0), .{ .color = theme.accent_dim });
+            border.fill(.all(0), .{ .color = .{ .color = theme.accent_dim } });
         }
         const show_label = (pitch_u % 12 == 0) or (state.piano_hover_pitch != null and state.piano_hover_pitch.? == pitch_u);
         if (show_label and row_h >= 8 * scale) {
@@ -337,7 +337,7 @@ fn drawGrid(state: *const state_mod.State, area: dvui.Rect.Physical, scale: f32)
         }
 
         const line: dvui.Rect.Physical = .{ .x = area.x, .y = y, .w = area.w, .h = @max(1, scale) };
-        line.fill(.all(0), .{ .color = theme.grid });
+        line.fill(.all(0), .{ .color = .{ .color = theme.grid } });
     }
 
     const first_beat: i32 = @intFromFloat(@floor(state.piano_scroll_beat));
@@ -347,7 +347,7 @@ fn drawGrid(state: *const state_mod.State, area: dvui.Rect.Physical, scale: f32)
         const x = area.x + key_w + (@as(f32, @floatFromInt(beat)) - state.piano_scroll_beat) * beat_w;
         if (x < area.x + key_w or x > area.x + area.w) continue;
         const line: dvui.Rect.Physical = .{ .x = x, .y = area.y, .w = @max(1, scale), .h = area.h };
-        line.fill(.all(0), .{ .color = if (@mod(beat, 4) == 0) theme.text_soft else theme.grid });
+        line.fill(.all(0), .{ .color = .{ .color = if (@mod(beat, 4) == 0) theme.text_soft else theme.grid } });
     }
 }
 
@@ -359,7 +359,7 @@ fn liveKeysForTrack(track: usize) *const [128]bool {
 }
 
 fn drawRuler(state: *const state_mod.State, _: *const notes_mod.PianoRollClip, area: dvui.Rect.Physical, grid: dvui.Rect.Physical, scale: f32) void {
-    area.fill(.all(0), .{ .color = theme.header });
+    area.fill(.all(0), .{ .color = .{ .color = theme.header } });
     const beat_w = state.piano_pixels_per_beat * scale;
     const first = @floor(state.piano_scroll_beat);
     const count: usize = @as(usize, @intFromFloat(@ceil(grid.w / beat_w))) + 2;
@@ -370,7 +370,7 @@ fn drawRuler(state: *const state_mod.State, _: *const notes_mod.PianoRollClip, a
         const is_bar = @mod(@as(i32, @intFromFloat(beat)), @as(i32, @intFromFloat(state.beatsPerBar()))) == 0;
         const tick_h = if (is_bar) area.h * 0.65 else area.h * 0.32;
         const tick: dvui.Rect.Physical = .{ .x = x, .y = area.y + area.h - tick_h, .w = @max(1, scale), .h = tick_h };
-        tick.fill(.all(0), .{ .color = if (is_bar) theme.text_dim else theme.text_soft });
+        tick.fill(.all(0), .{ .color = .{ .color = if (is_bar) theme.text_dim else theme.text_soft } });
     }
 }
 
@@ -393,27 +393,27 @@ fn drawNotes(state: *const state_mod.State, clip: *const notes_mod.PianoRollClip
         visible += 1;
         const selected = index < state_mod.max_piano_notes and state.piano_note_selected[index];
         const color = if (selected) theme.selected else theme.lighten(theme.clip_stopped, (0.5 - note.velocity) * 0.28);
-        rect.fill(.all(2 * scale), .{ .color = color });
+        rect.fill(.all(2 * scale), .{ .color = .{ .color = color } });
         const handle_w = @min(rect.w * 0.35, 7 * scale);
         const handle: dvui.Rect.Physical = .{ .x = rect.x + rect.w - handle_w, .y = rect.y, .w = handle_w, .h = rect.h };
-        handle.fill(.all(1 * scale), .{ .color = if (selected) theme.text_on_fill else theme.accent_dim });
+        handle.fill(.all(1 * scale), .{ .color = .{ .color = if (selected) theme.text_on_fill else theme.accent_dim } });
     }
     return visible;
 }
 
 fn drawVelocityLane(state: *const state_mod.State, clip: *const notes_mod.PianoRollClip, area: dvui.Rect.Physical, scale: f32) void {
-    area.fill(.all(0), .{ .color = theme.header });
+    area.fill(.all(0), .{ .color = .{ .color = theme.header } });
     const key_w = layout.keyboard_w * scale;
     const beat_w = state.piano_pixels_per_beat * scale;
     const baseline: dvui.Rect.Physical = .{ .x = area.x, .y = area.y, .w = area.w, .h = @max(1, scale) };
-    baseline.fill(.all(0), .{ .color = theme.grid });
+    baseline.fill(.all(0), .{ .color = .{ .color = theme.grid } });
     for (clip.notes.items, 0..) |note, index| {
         const x = area.x + key_w + (note.start - state.piano_scroll_beat) * beat_w;
         if (x < area.x + key_w or x > area.x + area.w) continue;
         const h = std.math.clamp(note.velocity, 0, 1) * (area.h - 4 * scale);
         const bar: dvui.Rect.Physical = .{ .x = x, .y = area.y + area.h - h, .w = @max(2 * scale, 3 * scale), .h = h };
         const selected = index < state_mod.max_piano_notes and state.piano_note_selected[index];
-        bar.fill(.all(1 * scale), .{ .color = if (selected) theme.selected else theme.clip_stopped });
+        bar.fill(.all(1 * scale), .{ .color = .{ .color = if (selected) theme.selected else theme.clip_stopped } });
     }
 }
 
@@ -427,7 +427,7 @@ fn drawBoxSelection(state: *const state_mod.State) void {
         .w = @abs(state.piano_box_current_x - state.piano_box_start_x),
         .h = @abs(state.piano_box_current_y - state.piano_box_start_y),
     };
-    rect.fill(.all(1), .{ .color = theme.alpha(theme.accent, 0.25) });
+    rect.fill(.all(1), .{ .color = .{ .color = theme.alpha(theme.accent, 0.25) } });
 }
 
 fn drawClipBoundary(state: *const state_mod.State, clip: *const notes_mod.PianoRollClip, area: dvui.Rect.Physical, scale: f32) void {
@@ -435,7 +435,7 @@ fn drawClipBoundary(state: *const state_mod.State, clip: *const notes_mod.PianoR
     if (x < area.x + layout.keyboard_w * scale or x > area.x + area.w) return;
     const color = if (state.piano_clip_resize) theme.accent else theme.accent_dim;
     const line: dvui.Rect.Physical = .{ .x = x, .y = area.y, .w = @max(2, 3 * scale), .h = area.h };
-    line.fill(.all(0), .{ .color = color });
+    line.fill(.all(0), .{ .color = .{ .color = color } });
     drawDownFlag(x, area.y, 6 * scale, 10 * scale, color);
 }
 
@@ -445,7 +445,7 @@ fn drawDownFlag(x: f32, y: f32, half_w: f32, height: f32, color: dvui.Color) voi
         .{ .x = x, .y = y + height },
         .{ .x = x + half_w, .y = y },
     } };
-    flag.fillConvex(.{ .color = color });
+    flag.fillConvex(.{ .color = .{ .color = color } });
 }
 
 fn drawRegionMarkers(state: *const state_mod.State, clip: *const notes_mod.PianoRollClip, area: dvui.Rect.Physical, scale: f32) void {
@@ -457,7 +457,7 @@ fn drawRegionMarkers(state: *const state_mod.State, clip: *const notes_mod.Piano
         const left = @max(grid_start, clip_end_x);
         if (left < area.x + area.w) {
             const dim: dvui.Rect.Physical = .{ .x = left, .y = area.y, .w = area.x + area.w - left, .h = area.h };
-            dim.fill(.all(0), .{ .color = theme.colorFA(0.02, 0.02, 0.025, 0.62) });
+            dim.fill(.all(0), .{ .color = .{ .color = theme.colorFA(0.02, 0.02, 0.025, 0.62) } });
         }
     }
     if (has_sub_loop and clip.loop_start_beats > 0.001) {
@@ -465,7 +465,7 @@ fn drawRegionMarkers(state: *const state_mod.State, clip: *const notes_mod.Piano
         const left = @max(grid_start, layout.beatX(state, 0, area, scale));
         if (right > left) {
             const dim: dvui.Rect.Physical = .{ .x = left, .y = area.y, .w = right - left, .h = area.h };
-            dim.fill(.all(0), .{ .color = theme.colorFA(0.02, 0.02, 0.025, 0.38) });
+            dim.fill(.all(0), .{ .color = .{ .color = theme.colorFA(0.02, 0.02, 0.025, 0.38) } });
         }
     }
     if (has_sub_loop and loop_end < clip.length_beats - 0.001) {
@@ -473,7 +473,7 @@ fn drawRegionMarkers(state: *const state_mod.State, clip: *const notes_mod.Piano
         const right = @min(area.x + area.w, clip_end_x);
         if (right > left) {
             const dim: dvui.Rect.Physical = .{ .x = left, .y = area.y, .w = right - left, .h = area.h };
-            dim.fill(.all(0), .{ .color = theme.colorFA(0.02, 0.02, 0.025, 0.38) });
+            dim.fill(.all(0), .{ .color = .{ .color = theme.colorFA(0.02, 0.02, 0.025, 0.38) } });
         }
     }
     const brace_w = 6 * scale;
@@ -481,25 +481,25 @@ fn drawRegionMarkers(state: *const state_mod.State, clip: *const notes_mod.Piano
         const x = layout.beatX(state, clip.loop_start_beats, area, scale);
         if (x >= grid_start and x <= area.x + area.w) {
             const line: dvui.Rect.Physical = .{ .x = x, .y = area.y, .w = @max(1, 1.5 * scale), .h = area.h };
-            line.fill(.all(0), .{ .color = theme.solo_on });
+            line.fill(.all(0), .{ .color = .{ .color = theme.solo_on } });
             const tick: dvui.Rect.Physical = .{ .x = x, .y = area.y, .w = brace_w, .h = @max(1, 1.5 * scale) };
-            tick.fill(.all(0), .{ .color = theme.solo_on });
+            tick.fill(.all(0), .{ .color = .{ .color = theme.solo_on } });
         }
     }
     if (has_sub_loop and loop_end > 0.001 and loop_end < clip.length_beats - 0.001) {
         const x = layout.beatX(state, loop_end, area, scale);
         if (x >= grid_start and x <= area.x + area.w) {
             const line: dvui.Rect.Physical = .{ .x = x, .y = area.y, .w = @max(1, 1.5 * scale), .h = area.h };
-            line.fill(.all(0), .{ .color = theme.solo_on });
+            line.fill(.all(0), .{ .color = .{ .color = theme.solo_on } });
             const tick: dvui.Rect.Physical = .{ .x = x - brace_w, .y = area.y, .w = brace_w, .h = @max(1, 1.5 * scale) };
-            tick.fill(.all(0), .{ .color = theme.solo_on });
+            tick.fill(.all(0), .{ .color = .{ .color = theme.solo_on } });
         }
     }
     if (clip.play_start_beats > 0.001 and clip.play_start_beats < clip.length_beats - 0.001) {
         const x = layout.beatX(state, clip.play_start_beats, area, scale);
         if (x >= grid_start and x <= area.x + area.w) {
             const line: dvui.Rect.Physical = .{ .x = x, .y = area.y, .w = @max(1, 1.5 * scale), .h = area.h };
-            line.fill(.all(0), .{ .color = theme.play });
+            line.fill(.all(0), .{ .color = .{ .color = theme.play } });
             drawDownFlag(x, area.y, 5 * scale, 7 * scale, theme.play);
         }
     }
@@ -509,6 +509,6 @@ fn drawPlayhead(state: *const state_mod.State, area: dvui.Rect.Physical, scale: 
     const x = area.x + layout.keyboard_w * scale + (state.playhead_beat - state.piano_scroll_beat) * state.piano_pixels_per_beat * scale;
     if (x < area.x + layout.keyboard_w * scale or x > area.x + area.w) return;
     const line: dvui.Rect.Physical = .{ .x = x, .y = area.y, .w = @max(1, scale), .h = area.h };
-    line.fill(.all(0), .{ .color = theme.text });
+    line.fill(.all(0), .{ .color = .{ .color = theme.text } });
 }
 

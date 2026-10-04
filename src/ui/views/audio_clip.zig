@@ -53,26 +53,26 @@ var view_state: ViewState = .{};
 pub fn draw(state: *state_mod.State) void {
     const clip = selectedAudioClip(state) orelse {
         dvui.label(@src(), "Selected audio clip is unavailable.", .{}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
         });
         return;
     };
     const store = if (document_model.ready()) &document_model.g.sample_store else {
         dvui.label(@src(), "Document sample store is not ready.", .{}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
         });
         return;
     };
     const sample_id = clip.sample_id orelse {
         dvui.label(@src(), "No sample — this audio clip has no media loaded.", .{}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
             .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
         });
         return;
     };
     const asset = store.get(sample_id) orelse {
         dvui.label(@src(), "Missing sample — asset is no longer in the store.", .{}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
             .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
         });
         return;
@@ -87,10 +87,10 @@ pub fn draw(state: *state_mod.State) void {
     var canvas = dvui.box(@src(), .{}, .{
         .expand = .both,
         .background = true,
-        .color_fill = theme.cell,
+        .color_fill = .{ .color = theme.cell },
         .corners = .round(tokens.radius_md),
         .border = dvui.Rect.all(1),
-        .color_border = theme.grid,
+        .color_border = .{ .color = theme.grid },
         .min_size_content = .{ .h = wave_min_h },
         .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
     });
@@ -119,7 +119,7 @@ pub fn draw(state: *state_mod.State) void {
         .w = wave.w,
         .h = @max(1.0, rs.s),
     };
-    zero.fill(.all(0), .{ .color = theme.alpha(theme.text, 0.12) });
+    zero.fill(.all(0), .{ .color = .{ .color = theme.alpha(theme.text, 0.12) } });
 
     const frames: u64 = asset.frame_count;
     const f0: u64 = @intFromFloat(@floor(view_state.start * @as(f32, @floatFromInt(frames))));
@@ -156,11 +156,11 @@ fn drawHeader(state: *const state_mod.State, clip: *const AudioClip, asset: *con
 
     dvui.label(@src(), "{s}", .{name}, .{
         .font = .theme(.heading),
-        .color_text = theme.text,
+        .color_text = .{ .color = theme.text },
         .gravity_y = 0.5,
     });
     dvui.label(@src(), "  Audio  ·  {d:.2} bars  ·  {d:.2}s file", .{ bars, asset.duration_seconds }, .{
-        .color_text = theme.text_dim,
+        .color_text = .{ .color = theme.text_dim },
         .gravity_y = 0.5,
     });
 
@@ -212,7 +212,7 @@ fn drawMetaRow(clip: *const AudioClip, asset: *const SampleAsset) void {
     }
 
     dvui.label(@src(), "{s}", .{asset.path_in_project}, .{
-        .color_text = theme.text_soft,
+        .color_text = .{ .color = theme.text_soft },
         .margin = .{ .x = 0, .y = 0, .w = 0, .h = tokens.gap_xs },
     });
 
@@ -226,7 +226,7 @@ fn drawMetaRow(clip: *const AudioClip, asset: *const SampleAsset) void {
             asset.sample_rate,
             asset.channels,
         }, .{
-            .color_text = theme.text_dim,
+            .color_text = .{ .color = theme.text_dim },
             .margin = .{ .x = 0, .y = 0, .w = 0, .h = tokens.gap_xs },
         });
     } else {
@@ -236,7 +236,7 @@ fn drawMetaRow(clip: *const AudioClip, asset: *const SampleAsset) void {
             asset.sample_rate,
             asset.channels,
         }, .{
-            .color_text = theme.text_dim,
+            .color_text = .{ .color = theme.text_dim },
             .margin = .{ .x = 0, .y = 0, .w = 0, .h = tokens.gap_xs },
         });
     }
@@ -280,7 +280,7 @@ fn drawZoomToolbar() void {
     }
 
     dvui.label(@src(), "  Scroll = zoom  ·  Drag = pan", .{}, .{
-        .color_text = theme.text_soft,
+        .color_text = .{ .color = theme.text_soft },
         .gravity_y = 0.5,
     });
 }
@@ -421,7 +421,7 @@ pub fn drawPeaks(
             .w = @max(1.0, col_w),
             .h = bot - top,
         };
-        col_rect.fill(.all(0), .{ .color = col });
+        col_rect.fill(.all(0), .{ .color = .{ .color = col } });
     }
 }
 
@@ -464,7 +464,7 @@ fn drawMarkers(
                 .w = flag_half * 2,
                 .h = flag_half * 1.2,
             };
-            flag.fill(.all(0), .{ .color = theme.play });
+            flag.fill(.all(0), .{ .color = .{ .color = theme.play } });
         }
     }
 
@@ -486,7 +486,7 @@ fn verticalLine(x: f32, y: f32, h: f32, w: f32, color: dvui.Color) void {
         .w = w,
         .h = h,
     };
-    line.fill(.all(0), .{ .color = color });
+    line.fill(.all(0), .{ .color = .{ .color = color } });
 }
 
 fn drawTimeRuler(asset: *const SampleAsset, wave: dvui.Rect.Physical, scale: f32) void {
@@ -520,7 +520,7 @@ fn drawTimeRuler(asset: *const SampleAsset, wave: dvui.Rect.Physical, scale: f32
             .w = @max(1.0, scale),
             .h = tick_h,
         };
-        tick.fill(.all(0), .{ .color = theme.text_soft });
+        tick.fill(.all(0), .{ .color = .{ .color = theme.text_soft } });
     }
 }
 
@@ -535,7 +535,7 @@ fn drawOverview(asset: *const SampleAsset, area: dvui.Rect.Physical, scale: f32)
     };
     if (overview.w <= 0) return;
 
-    overview.fill(.all(2), .{ .color = theme.colorFA(0, 0, 0, 0.35) });
+    overview.fill(.all(2), .{ .color = .{ .color = theme.colorFA(0, 0, 0, 0.35) } });
     drawPeaks(overview, asset.peaks[0..], theme.alpha(theme.text, 0.4), 0.85, 0);
 
     const ow = overview.w;
@@ -547,16 +547,16 @@ fn drawOverview(asset: *const SampleAsset, area: dvui.Rect.Physical, scale: f32)
     const bot: dvui.Rect.Physical = .{ .x = vx0, .y = overview.y + overview.h - border_w, .w = vx1 - vx0, .h = border_w };
     const left: dvui.Rect.Physical = .{ .x = vx0, .y = overview.y, .w = border_w, .h = overview.h };
     const right: dvui.Rect.Physical = .{ .x = vx1 - border_w, .y = overview.y, .w = border_w, .h = overview.h };
-    top.fill(.all(0), .{ .color = theme.selected });
-    bot.fill(.all(0), .{ .color = theme.selected });
-    left.fill(.all(0), .{ .color = theme.selected });
-    right.fill(.all(0), .{ .color = theme.selected });
+    top.fill(.all(0), .{ .color = .{ .color = theme.selected } });
+    bot.fill(.all(0), .{ .color = .{ .color = theme.selected } });
+    left.fill(.all(0), .{ .color = .{ .color = theme.selected } });
+    right.fill(.all(0), .{ .color = .{ .color = theme.selected } });
 }
 
 fn statusPill(text: []const u8, id_extra: usize) void {
     var pill = dvui.box(@src(), .{}, .{
         .background = true,
-        .color_fill = theme.panel,
+        .color_fill = .{ .color = theme.panel },
         .margin = .{ .x = 0, .y = 0, .w = tokens.gap_xs, .h = 0 },
         .padding = .{ .x = 4, .y = 1, .w = 4, .h = 1 },
         .corners = .round(tokens.radius_sm),
@@ -564,7 +564,7 @@ fn statusPill(text: []const u8, id_extra: usize) void {
     });
     defer pill.deinit();
     dvui.labelNoFmt(@src(), text, .{}, .{
-        .color_text = theme.text_dim,
+        .color_text = .{ .color = theme.text_dim },
         .id_extra = id_extra,
     });
 }

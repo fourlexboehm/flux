@@ -173,7 +173,7 @@ fn drawCurve(eq: *const eq_dsp.Equalizer, id_extra: usize) void {
     }, .{
         .expand = .horizontal,
         .min_size_content = .{ .h = 120 },
-        .color_fill = theme.bg,
+        .color_fill = .{ .color = theme.bg },
         .background = true,
         .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = tokens.gap_tight },
         .id_extra = id_extra,
@@ -208,8 +208,8 @@ fn drawBandChips(eq: *const eq_dsp.Equalizer, band_count: usize, slot: usize, id
         const label = std.fmt.bufPrint(&label_buf, "B{d}", .{b + 1}) catch "B";
         if (dvui.button(@src(), label, .{}, .{
             .expand = .horizontal,
-            .color_fill = fill,
-            .color_text = if (is_selected or enabled) theme.bg else theme.text_dim,
+            .color_fill = .{ .color = fill },
+            .color_text = .{ .color = if (is_selected or enabled) theme.bg else theme.text_dim },
             .min_size_content = .{ .h = tokens.control_h },
             .corners = .round(tokens.radius_sm),
             .margin = .{ .x = if (b == 0) 0 else tokens.gap_xs, .y = 0, .w = 0, .h = 0 },
@@ -239,7 +239,7 @@ fn drawBandControls(ctx: Ctx, eq: *const eq_dsp.Equalizer, band: usize, id_extra
         sliderById(ctx, base + 2, id_extra + 24, "Boost");
     } else {
         dvui.label(@src(), "Boost n/a for this band type", .{}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
             .id_extra = id_extra + 24,
         });
     }

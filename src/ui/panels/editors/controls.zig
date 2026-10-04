@@ -78,14 +78,14 @@ pub fn paramName(info: *const clap.ext.params.Info) []const u8 {
 /// Section caption with a hairline underneath.
 pub fn section(title: []const u8, id_extra: usize) void {
     dvui.label(@src(), "{s}", .{title}, .{
-        .color_text = theme.text_soft,
+        .color_text = .{ .color = theme.text_soft },
         .margin = .{ .x = 0, .y = tokens.gap_group, .w = 0, .h = 0 },
         .id_extra = id_extra,
     });
     _ = dvui.separator(@src(), .{
         .expand = .horizontal,
         .min_size_content = .{ .h = 1 },
-        .color_fill = theme.grid,
+        .color_fill = .{ .color = theme.grid },
         .margin = .{ .x = 0, .y = 0, .w = 0, .h = tokens.gap_tight },
         .id_extra = id_extra,
     });
@@ -112,7 +112,7 @@ pub fn slider(ctx: Ctx, index: u32, id_extra: usize, label_override: ?[]const u8
         defer header.deinit();
 
         dvui.label(@src(), "{s}", .{label_override orelse paramName(&info)}, .{
-            .color_text = theme.text_dim,
+            .color_text = .{ .color = theme.text_dim },
             .gravity_y = 0.5,
             .id_extra = id_extra,
         });
@@ -121,7 +121,7 @@ pub fn slider(ctx: Ctx, index: u32, id_extra: usize, label_override: ?[]const u8
         const text = ctx.valueText(&info, v, &buf);
         if (text.len > 0) {
             dvui.label(@src(), "{s}", .{text}, .{
-                .color_text = theme.text_soft,
+                .color_text = .{ .color = theme.text_soft },
                 .gravity_x = 1.0,
                 .gravity_y = 0.5,
                 .id_extra = id_extra,
@@ -163,7 +163,7 @@ pub fn toggle(ctx: Ctx, index: u32, id_extra: usize, label_override: ?[]const u8
     defer row.deinit();
 
     if (dvui.checkbox(@src(), &on, label_override orelse paramName(&info), .{
-        .color_text = theme.text_dim,
+        .color_text = .{ .color = theme.text_dim },
         .gravity_y = 0.5,
         .id_extra = id_extra,
     })) {
@@ -196,7 +196,7 @@ pub fn choice(
     defer row.deinit();
 
     dvui.label(@src(), "{s}", .{label_override orelse paramName(&info)}, .{
-        .color_text = theme.text_dim,
+        .color_text = .{ .color = theme.text_dim },
         .gravity_y = 0.5,
         .id_extra = id_extra,
     });
@@ -231,7 +231,7 @@ pub fn steps(
     defer block.deinit();
 
     dvui.label(@src(), "{s}", .{label_override orelse paramName(&info)}, .{
-        .color_text = theme.text_dim,
+        .color_text = .{ .color = theme.text_dim },
         .id_extra = id_extra,
     });
 
@@ -245,8 +245,8 @@ pub fn steps(
         const active = current == @as(i32, @intCast(i));
         if (dvui.button(@src(), item, .{}, .{
             .expand = .horizontal,
-            .color_fill = if (active) theme.accent_dim else theme.cell,
-            .color_text = if (active) theme.text_on_fill else theme.text_dim,
+            .color_fill = .{ .color = if (active) theme.accent_dim else theme.cell },
+            .color_text = .{ .color = if (active) theme.text_on_fill else theme.text_dim },
             .min_size_content = .{ .h = tokens.control_h },
             .corners = .round(tokens.radius_sm),
             .margin = .{ .x = if (i == 0) 0 else tokens.gap_xs, .y = 0, .w = 0, .h = 0 },

@@ -97,7 +97,7 @@ pub fn draw(plugin: *const clap.Plugin, target: controls.Target, id_extra: usize
 
 fn presetHint(id_extra: usize) void {
     dvui.label(@src(), "Preset instrument — switch Mode to Custom Patch to edit.", .{}, .{
-        .color_text = theme.text_soft,
+        .color_text = .{ .color = theme.text_soft },
         .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
         .id_extra = id_extra,
     });

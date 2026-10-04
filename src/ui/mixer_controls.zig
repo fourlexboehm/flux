@@ -32,12 +32,12 @@ fn numberEntry(src: std.builtin.SourceLocation, value: *f32, min: f32, max: f32,
         .min_size_content = .{ .w = 28, .h = tokens.control_h },
         .padding = .{ .x = 4, .w = 4 },
         .label = .{ .text = label },
-        .color_fill = theme.panel,
-        .color_border = theme.grid,
+        .color_fill = .{ .color = theme.panel },
+        .color_border = .{ .color = theme.grid },
     });
     dvui.label(@src(), "{s}", .{unit}, .{
         .gravity_y = 0.5,
-        .color_text = theme.text_dim,
+        .color_text = .{ .color = theme.text_dim },
         .padding = .{},
         .margin = .{ .x = 4 },
     });
@@ -57,8 +57,8 @@ pub fn fader(src: std.builtin.SourceLocation, value: *f32, levels: [2]f32, id: u
     const changed = dvui.slider(@src(), .{ .fraction = &fraction, .dir = .vertical }, .{
         .min_size_content = .{ .w = 18, .h = 76 },
         .label = .{ .text = "Volume fader" },
-        .color_fill = theme.cell,
-        .color_border = theme.border_light,
+        .color_fill = .{ .color = theme.cell },
+        .color_border = .{ .color = theme.border_light },
     });
     if (changed) value.* = gain.fromFraction(fraction);
     meter(levels);
@@ -70,7 +70,7 @@ fn meter(levels: [2]f32) void {
         .min_size_content = .{ .w = 10, .h = 76 },
         .margin = .{ .x = 8 },
         .background = true,
-        .color_fill = theme.bg,
+        .color_fill = .{ .color = theme.bg },
     });
     defer box.deinit();
     const rs = box.data().contentRectScale();
@@ -82,6 +82,6 @@ fn meter(levels: [2]f32) void {
             .w = 4 * rs.s,
             .h = rs.r.h * amount,
         };
-        r.fill(.all(0), .{ .color = if (level >= 1) theme.danger else if (level > 0.7) theme.clip_queued else theme.play });
+        r.fill(.all(0), .{ .color = .{ .color = if (level >= 1) theme.danger else if (level > 0.7) theme.clip_queued else theme.play } });
     }
 }

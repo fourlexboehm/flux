@@ -89,14 +89,14 @@ pub fn button(
     bw.init(src, .{}, .{
         .label = .{ .text = name(kind) },
         .min_size_content = .{ .w = opts.size, .h = opts.size },
-        .color_fill = fill,
-        .color_text = col,
+        .color_fill = .{ .color = fill },
+        .color_text = .{ .color = col },
         .corners = .round(tokens.radius_sm),
         .padding = dvui.Rect.all(opts.pad),
         .margin = opts.margin,
         .gravity_y = opts.gravity_y,
         .border = if (opts.border) dvui.Rect.all(1) else .{},
-        .color_border = theme.border_light,
+        .color_border = .{ .color = theme.border_light },
         .id_extra = opts.id_extra,
     });
     bw.processEvents();
@@ -130,7 +130,7 @@ pub fn draw(
     const col = opts.color orelse theme.text;
     dvui.icon(src, name(kind), tvg(kind), .{}, .{
         .min_size_content = .{ .w = opts.size, .h = opts.size },
-        .color_text = col,
+        .color_text = .{ .color = col },
         .gravity_x = opts.gravity_x,
         .gravity_y = opts.gravity_y,
         .id_extra = opts.id_extra,
@@ -146,7 +146,7 @@ pub fn navigation(src: std.builtin.SourceLocation, kind: IconKind, label: []cons
     {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
         defer row.deinit();
-        draw(@src(), kind, .{ .color = opts.color_text, .size = tokens.icon_sm, .gravity_x = 0 });
+        draw(@src(), kind, .{ .color = if (opts.color_text) |cog| cog.toColor() else null, .size = tokens.icon_sm, .gravity_x = 0 });
         dvui.label(@src(), "{s}", .{label}, .{
             .color_text = opts.color_text,
             .gravity_y = 0.5,

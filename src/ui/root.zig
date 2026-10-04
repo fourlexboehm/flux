@@ -237,7 +237,7 @@ pub fn frame() !dvui.App.Result {
         var root = dvui.box(@src(), .{ .dir = .vertical }, .{
             .expand = .both,
             .background = true,
-            .color_fill = theme.bg,
+            .color_fill = .{ .color = theme.bg },
             .padding = dvui.Rect.all(0),
         });
         defer root.deinit();

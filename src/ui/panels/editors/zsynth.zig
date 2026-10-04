@@ -125,7 +125,7 @@ fn drawWavePreview(ctx: Ctx, id_extra: usize) void {
         .expand = .horizontal,
         .min_size_content = .{ .h = 90 },
         .background = true,
-        .color_fill = theme.bg,
+        .color_fill = .{ .color = theme.bg },
         .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
         .id_extra = id_extra,
     });

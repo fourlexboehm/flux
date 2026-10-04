@@ -52,7 +52,7 @@ pub fn draw(state: *state_mod.State) void {
         }, .{
             .expand = .both,
             .background = true,
-            .color_fill = theme.panel,
+            .color_fill = .{ .color = theme.panel },
             .max_size_content = .{ .w = std.math.floatMax(f32), .h = grid_height },
             .corners = .round(tokens.radius_md),
         });
@@ -71,11 +71,11 @@ pub fn draw(state: *state_mod.State) void {
             var header = dvui.box(@src(), .{ .dir = .horizontal }, .{
                 .expand = .horizontal,
                 .background = true,
-                .color_fill = theme.header,
+                .color_fill = .{ .color = theme.header },
                 .min_size_content = .{ .h = tokens.session_header_h },
                 .padding = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
                 .border = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
-                .color_border = theme.grid,
+                .color_border = .{ .color = theme.grid },
             });
             defer header.deinit();
 
@@ -99,8 +99,8 @@ pub fn draw(state: *state_mod.State) void {
                 if (dvui.button(@src(), name, .{}, .{
                     .expand = .horizontal,
                     .min_size_content = .{ .h = tokens.session_header_h - 6 },
-                    .color_fill = if (selected) theme.accent else theme.panel,
-                    .color_text = if (selected) theme.bg else theme.text_dim,
+                    .color_fill = .{ .color = if (selected) theme.accent else theme.panel },
+                    .color_text = .{ .color = if (selected) theme.bg else theme.text_dim },
                     .corners = .round(tokens.radius_sm),
                     .gravity_y = 0.5,
                     .margin = .{ .x = 1, .y = 0, .w = 1, .h = 0 },
@@ -121,14 +121,14 @@ pub fn draw(state: *state_mod.State) void {
                         .w = stripe_area.w - 4 * stripe_rs.s,
                         .h = bar_h,
                     };
-                    bar.fill(.all(0), .{ .color = theme.trackColor(t) });
+                    bar.fill(.all(0), .{ .color = .{ .color = theme.trackColor(t) } });
                 }
             }
 
             if (dvui.button(@src(), "+ Track", .{}, .{
                 .min_size_content = .{ .w = add_track_col_w - 11, .h = tokens.session_header_h - 4 },
-                .color_fill = theme.cell,
-                .color_text = theme.text_dim,
+                .color_fill = .{ .color = theme.cell },
+                .color_text = .{ .color = theme.text_dim },
                 .corners = .round(tokens.radius_sm),
                 .margin = .{ .x = 3, .y = 1, .w = 2, .h = 1 },
                 .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
@@ -146,11 +146,11 @@ pub fn draw(state: *state_mod.State) void {
             var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
                 .expand = .horizontal,
                 .background = true,
-                .color_fill = if (scene_sel) theme.panel else theme.cell,
+                .color_fill = .{ .color = if (scene_sel) theme.panel else theme.cell },
                 .min_size_content = .{ .h = tokens.session_row_h },
                 .padding = .{ .x = 0, .y = 2, .w = 0, .h = 2 },
                 .border = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
-                .color_border = theme.grid,
+                .color_border = .{ .color = theme.grid },
                 .id_extra = s,
             });
             defer row.deinit();
@@ -180,8 +180,8 @@ pub fn draw(state: *state_mod.State) void {
                 const sn = state.sceneName(s);
                 if (dvui.button(@src(), sn, .{}, .{
                     .min_size_content = .{ .w = tokens.scene_col_w - tokens.launch_btn - 12, .h = tokens.launch_btn },
-                    .color_fill = if (scene_sel) theme.accent_dim else theme.panel,
-                    .color_text = if (scene_sel) theme.text_on_fill else theme.text_dim,
+                    .color_fill = .{ .color = if (scene_sel) theme.accent_dim else theme.panel },
+                    .color_text = .{ .color = if (scene_sel) theme.text_on_fill else theme.text_dim },
                     .margin = .{ .x = tokens.gap_xs, .y = 0, .w = 0, .h = 0 },
                     .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
                     .corners = .round(tokens.radius_sm),
@@ -201,8 +201,8 @@ pub fn draw(state: *state_mod.State) void {
 
         if (dvui.button(@src(), "+ Scene", .{}, .{
             .min_size_content = .{ .w = tokens.scene_col_w - 10, .h = tokens.session_row_h - 8 },
-            .color_fill = theme.panel,
-            .color_text = theme.text_dim,
+            .color_fill = .{ .color = theme.panel },
+            .color_text = .{ .color = theme.text_dim },
             .corners = .round(tokens.radius_sm),
             .margin = .{ .x = 2, .y = 3, .w = 2, .h = 2 },
             .padding = .{ .x = 3, .y = 0, .w = 3, .h = 0 },
@@ -221,12 +221,12 @@ fn drawMixer(state: *state_mod.State) void {
     var strip = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .expand = .horizontal,
         .background = true,
-        .color_fill = theme.header,
+        .color_fill = .{ .color = theme.header },
         .min_size_content = .{ .h = tokens.session_mixer_h },
         .padding = .{ .x = tokens.scene_col_w, .y = 4, .w = 4, .h = 4 },
         .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
         .border = .{ .x = 0, .y = 1, .w = 0, .h = 0 },
-        .color_border = theme.grid,
+        .color_border = .{ .color = theme.grid },
     });
     defer strip.deinit();
 
@@ -267,9 +267,9 @@ fn drawMixerChannel(state: *state_mod.State, track: usize, is_master: bool) void
         .expand = .horizontal,
         .min_size_content = .{ .h = tokens.session_mixer_h - 8 },
         .background = true,
-        .color_fill = theme.panel,
+        .color_fill = .{ .color = theme.panel },
         .border = dvui.Rect.all(1),
-        .color_border = if (selected) theme.selected else theme.grid,
+        .color_border = .{ .color = if (selected) theme.selected else theme.grid },
         .corners = .round(tokens.radius_sm),
         .padding = dvui.Rect.all(tokens.gap_tight),
         .margin = .{ .x = 1, .y = 0, .w = 1, .h = 0 },
@@ -284,8 +284,8 @@ fn drawMixerChannel(state: *state_mod.State, track: usize, is_master: bool) void
         const button_w: f32 = 24;
         const button_padding = dvui.Rect{ .x = 2, .y = 0, .w = 2, .h = 0 };
         if (dvui.button(@src(), "M", .{}, .{
-            .color_fill = if (mute) theme.mute_on else theme.panel,
-            .color_text = if (mute) theme.text_on_fill else theme.text,
+            .color_fill = .{ .color = if (mute) theme.mute_on else theme.panel },
+            .color_text = .{ .color = if (mute) theme.text_on_fill else theme.text },
             .label = .{ .text = "Mute" },
             .expand = if (is_master) .horizontal else .none,
             .min_size_content = .{ .w = button_w, .h = tokens.control_h },
@@ -305,8 +305,8 @@ fn drawMixerChannel(state: *state_mod.State, track: usize, is_master: bool) void
 
         if (!is_master) {
             if (dvui.button(@src(), "S", .{}, .{
-                .color_fill = if (state.track_solo[track]) theme.solo_on else theme.panel,
-                .color_text = if (state.track_solo[track]) theme.text_on_fill else theme.text,
+                .color_fill = .{ .color = if (state.track_solo[track]) theme.solo_on else theme.panel },
+                .color_text = .{ .color = if (state.track_solo[track]) theme.text_on_fill else theme.text },
                 .label = .{ .text = "Solo" },
                 .min_size_content = .{ .w = button_w, .h = tokens.control_h },
                 .margin = .{ .x = tokens.gap_tight, .y = 0, .w = 0, .h = 0 },
@@ -320,8 +320,8 @@ fn drawMixerChannel(state: *state_mod.State, track: usize, is_master: bool) void
 
             const armed = state.armed_track == track;
             if (dvui.button(@src(), "R", .{}, .{
-                .color_fill = if (armed) theme.arm_on else theme.panel,
-                .color_text = if (armed) theme.text_on_fill else theme.text,
+                .color_fill = .{ .color = if (armed) theme.arm_on else theme.panel },
+                .color_text = .{ .color = if (armed) theme.text_on_fill else theme.text },
                 .label = .{ .text = "Arm recording" },
                 .min_size_content = .{ .w = button_w, .h = tokens.control_h },
                 .margin = .{ .x = tokens.gap_tight, .y = 0, .w = 0, .h = 0 },
@@ -368,8 +368,8 @@ fn drawMixerChannel(state: *state_mod.State, track: usize, is_master: bool) void
 
     if (dvui.button(@src(), name, .{}, .{
         .expand = .horizontal,
-        .color_fill = theme.colorFA(0, 0, 0, 0),
-        .color_text = if (selected) theme.text else theme.text_dim,
+        .color_fill = .{ .color = theme.colorFA(0, 0, 0, 0) },
+        .color_text = .{ .color = if (selected) theme.text else theme.text_dim },
         .min_size_content = .{ .h = tokens.control_h },
         .id_extra = id,
     })) {
@@ -444,10 +444,10 @@ fn drawClipSlot(state: *state_mod.State, track: usize, scene: usize) void {
         .expand = .horizontal,
         .min_size_content = .{ .h = slot_h },
         .background = true,
-        .color_fill = if (is_selected and slot.kind != .empty) theme.lighten(fill, 0.08) else fill,
+        .color_fill = .{ .color = if (is_selected and slot.kind != .empty) theme.lighten(fill, 0.08) else fill },
         .corners = .round(tokens.radius_sm),
         .border = dvui.Rect.all(if (is_selected or is_drop_target) 1.5 else 1),
-        .color_border = border_col,
+        .color_border = .{ .color = border_col },
         .margin = .{ .x = 1, .y = 0, .w = 1, .h = 0 },
         .padding = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
         .gravity_y = 0.5,
@@ -470,7 +470,7 @@ fn drawClipSlot(state: *state_mod.State, track: usize, scene: usize) void {
                 .w = strip_w,
                 .h = area.h,
             };
-            strip.fill(.all(0), .{ .color = theme.trackColor(track) });
+            strip.fill(.all(0), .{ .color = .{ .color = theme.trackColor(track) } });
 
             if (slot.kind == .audio) {
                 if (slotSamplePeaks(track, scene)) |peaks| {
@@ -501,7 +501,7 @@ fn drawClipSlot(state: *state_mod.State, track: usize, scene: usize) void {
         });
         dvui.labelNoFmt(@src(), label, .{}, .{
             .expand = .both,
-            .color_text = if (slot.kind == .empty) theme.text_soft else theme.text_on_fill,
+            .color_text = .{ .color = if (slot.kind == .empty) theme.text_soft else theme.text_on_fill },
             .gravity_y = 0.5,
             .margin = .{},
             .padding = .{},
@@ -697,17 +697,17 @@ fn drawSessionBoxSelection(state: *const state_mod.State) void {
         .w = @max(1, x1 - x0),
         .h = @max(1, y1 - y0),
     };
-    rect.fill(.all(0), .{ .color = theme.alpha(theme.selected, 0.18) });
+    rect.fill(.all(0), .{ .color = .{ .color = theme.alpha(theme.selected, 0.18) } });
     const t = 1.5;
     const top: dvui.Rect.Physical = .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = t };
     const bot: dvui.Rect.Physical = .{ .x = rect.x, .y = rect.y + rect.h - t, .w = rect.w, .h = t };
     const left: dvui.Rect.Physical = .{ .x = rect.x, .y = rect.y, .w = t, .h = rect.h };
     const right: dvui.Rect.Physical = .{ .x = rect.x + rect.w - t, .y = rect.y, .w = t, .h = rect.h };
     const border = theme.alpha(theme.selected, 0.85);
-    top.fill(.all(0), .{ .color = border });
-    bot.fill(.all(0), .{ .color = border });
-    left.fill(.all(0), .{ .color = border });
-    right.fill(.all(0), .{ .color = border });
+    top.fill(.all(0), .{ .color = .{ .color = border } });
+    bot.fill(.all(0), .{ .color = .{ .color = border } });
+    left.fill(.all(0), .{ .color = .{ .color = border } });
+    right.fill(.all(0), .{ .color = .{ .color = border } });
 }
 
 fn hitSlot(state: *const state_mod.State, point: dvui.Point.Physical) ?[2]usize {

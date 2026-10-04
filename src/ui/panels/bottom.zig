@@ -40,7 +40,7 @@ pub fn draw(state: *state_mod.State) void {
     var panel = dvui.box(@src(), .{ .dir = .vertical }, .{
         .expand = .both,
         .background = true,
-        .color_fill = theme.panel,
+        .color_fill = .{ .color = theme.panel },
         .padding = dvui.Rect.all(tokens.pad_panel),
         .corners = .round(tokens.radius_md),
     });
@@ -57,8 +57,8 @@ pub fn draw(state: *state_mod.State) void {
         const dev_fill = if (state.bottom_mode == .device) theme.accent else theme.cell;
         const dev_text = if (state.bottom_mode == .device) theme.bg else theme.text;
         if (dvui.button(@src(), "Device", .{}, .{
-            .color_fill = dev_fill,
-            .color_text = dev_text,
+            .color_fill = .{ .color = dev_fill },
+            .color_text = .{ .color = dev_text },
             .min_size_content = .{ .h = tokens.control_h },
             .corners = .round(tokens.radius_sm),
             .padding = .{ .x = 6, .y = 1, .w = 6, .h = 1 },
@@ -70,8 +70,8 @@ pub fn draw(state: *state_mod.State) void {
         const clip_fill = if (state.bottom_mode == .sequencer) theme.accent else theme.cell;
         const clip_text = if (state.bottom_mode == .sequencer) theme.bg else theme.text;
         if (dvui.button(@src(), "Clip", .{}, .{
-            .color_fill = clip_fill,
-            .color_text = clip_text,
+            .color_fill = .{ .color = clip_fill },
+            .color_text = .{ .color = clip_text },
             .min_size_content = .{ .h = tokens.control_h },
             .margin = .{ .x = tokens.gap_xs, .y = 0, .w = 0, .h = 0 },
             .corners = .round(tokens.radius_sm),
@@ -90,7 +90,7 @@ pub fn draw(state: *state_mod.State) void {
             state.selected_scene + 1,
         }, .{
             .gravity_y = 0.5,
-            .color_text = theme.text_dim,
+            .color_text = .{ .color = theme.text_dim },
             .margin = .{ .x = tokens.gap_group, .y = 0, .w = 0, .h = 0 },
         });
     }
@@ -98,7 +98,7 @@ pub fn draw(state: *state_mod.State) void {
     var content = dvui.box(@src(), .{ .dir = .vertical }, .{
         .expand = .both,
         .background = true,
-        .color_fill = theme.cell,
+        .color_fill = .{ .color = theme.cell },
         .padding = dvui.Rect.all(tokens.gap_tight),
         .corners = .round(tokens.radius_sm),
     });
@@ -247,13 +247,13 @@ fn drawDeviceCard(state: *state_mod.State, opts: CardDraw) void {
 
     var card = dvui.box(@src(), .{ .dir = .vertical }, .{
         .background = true,
-        .color_fill = fill,
+        .color_fill = .{ .color = fill },
         .min_size_content = .{ .w = opts.card_w, .h = tokens.device_card_min_h },
         .max_size_content = .{ .w = opts.card_w, .h = std.math.floatMax(f32) },
         .expand = if (opts.empty) .none else .vertical,
         .corners = .round(tokens.radius_sm),
         .border = dvui.Rect.all(1),
-        .color_border = border_col,
+        .color_border = .{ .color = border_col },
         .padding = .{ .x = tokens.gap_group, .y = tokens.gap_tight, .w = tokens.gap_group, .h = tokens.gap_tight },
         .margin = .{ .x = 0, .y = 0, .w = 0, .h = 0 },
         .id_extra = opts.id_extra,
@@ -272,18 +272,18 @@ fn drawDeviceCard(state: *state_mod.State, opts: CardDraw) void {
         if (dvui.button(@src(), " ", .{}, .{
             .min_size_content = .{ .w = tokens.device_led, .h = tokens.device_led },
             .padding = .{},
-            .color_fill = if (opts.enabled) theme.accent else theme.cell,
+            .color_fill = .{ .color = if (opts.enabled) theme.accent else theme.cell },
             .corners = .round(tokens.device_led / 2),
             .border = dvui.Rect.all(1),
-            .color_border = if (opts.enabled) theme.accent_dim else theme.grid,
+            .color_border = .{ .color = if (opts.enabled) theme.accent_dim else theme.grid },
             .gravity_y = 0.5,
             .id_extra = opts.id_extra,
         })) toggleDeviceEnabled(state, opts.id_extra);
 
         if (dvui.button(@src(), opts.title, .{}, .{
             .expand = .horizontal,
-            .color_fill = theme.colorFA(0, 0, 0, 0),
-            .color_text = title_col,
+            .color_fill = .{ .color = theme.colorFA(0, 0, 0, 0) },
+            .color_text = .{ .color = title_col },
             .padding = .{ .x = tokens.gap_tight, .y = 0, .w = 0, .h = 0 },
             .gravity_y = 0.5,
             .id_extra = opts.id_extra,
@@ -333,9 +333,9 @@ fn drawDeviceCard(state: *state_mod.State, opts: CardDraw) void {
     var body = dvui.box(@src(), .{ .dir = .vertical }, .{
         .expand = .both,
         .background = true,
-        .color_fill = theme.cell,
+        .color_fill = .{ .color = theme.cell },
         .border = dvui.Rect.all(1),
-        .color_border = theme.grid,
+        .color_border = .{ .color = theme.grid },
         .corners = .round(tokens.radius_sm),
         .padding = dvui.Rect.all(tokens.gap_group),
         .id_extra = opts.id_extra,
@@ -344,21 +344,21 @@ fn drawDeviceCard(state: *state_mod.State, opts: CardDraw) void {
 
     if (opts.empty) {
         dvui.label(@src(), "No instrument loaded", .{}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
             .id_extra = opts.id_extra,
         });
         if (dvui.button(@src(), "Choose instrument…", .{}, .{
             .expand = .none,
             .min_size_content = .{ .h = tokens.control_h + 4 },
-            .color_fill = theme.panel,
-            .color_text = theme.text,
+            .color_fill = .{ .color = theme.panel },
+            .color_text = .{ .color = theme.text },
             .margin = .{ .x = 0, .y = tokens.gap_group, .w = 0, .h = 0 },
             .corners = .round(tokens.radius_sm),
             .id_extra = opts.id_extra,
         })) openPicker(state, false, opts.id_extra, card.data().rectScale().r);
     } else if (!opts.enabled) {
         dvui.label(@src(), "Bypassed", .{}, .{
-            .color_text = theme.solo_on,
+            .color_text = .{ .color = theme.solo_on },
             .id_extra = opts.id_extra,
         });
         if (opts.plugin) |p| {
@@ -368,7 +368,7 @@ fn drawDeviceCard(state: *state_mod.State, opts: CardDraw) void {
         drawDeviceBody(state, p, opts.id_extra);
     } else {
         dvui.label(@src(), "Loading…", .{}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
             .id_extra = opts.id_extra,
         });
     }
@@ -623,7 +623,7 @@ fn drawInstrumentPresetRow(state: *state_mod.State, plugin: *const @import("clap
     defer row.deinit();
 
     dvui.label(@src(), "Preset", .{}, .{
-        .color_text = theme.text_dim,
+        .color_text = .{ .color = theme.text_dim },
         .gravity_y = 0.5,
         .id_extra = track,
     });
@@ -672,10 +672,10 @@ fn drawInstrumentPresetRow(state: *state_mod.State, plugin: *const @import("clap
     if (dvui.button(@src(), selected_label, .{}, .{
         .expand = .horizontal,
         .min_size_content = .{ .h = tokens.control_h },
-        .color_fill = theme.cell,
-        .color_text = theme.text,
+        .color_fill = .{ .color = theme.cell },
+        .color_text = .{ .color = theme.text },
         .border = dvui.Rect.all(1),
-        .color_border = theme.grid,
+        .color_border = .{ .color = theme.grid },
         .corners = .round(tokens.radius_sm),
         .id_extra = track,
     })) {
@@ -702,9 +702,9 @@ fn drawInstrumentPresetRow(state: *state_mod.State, plugin: *const @import("clap
         .min_size_content = .{ .w = list_w, .h = 100 },
         .max_size_content = .{ .w = list_w, .h = preset_list_max_h },
         .background = true,
-        .color_fill = theme.panel,
+        .color_fill = .{ .color = theme.panel },
         .border = dvui.Rect.all(1),
-        .color_border = theme.accent,
+        .color_border = .{ .color = theme.accent },
         .corners = .round(tokens.radius_sm),
         .padding = dvui.Rect.all(tokens.gap_tight),
         .id_extra = track,
@@ -728,8 +728,8 @@ fn drawInstrumentPresetRow(state: *state_mod.State, plugin: *const @import("clap
     if (dvui.button(@src(), preset_placeholder, .{}, .{
         .expand = .horizontal,
         .min_size_content = .{ .h = tokens.control_h - 2 },
-        .color_fill = theme.cell,
-        .color_text = theme.text_soft,
+        .color_fill = .{ .color = theme.cell },
+        .color_text = .{ .color = theme.text_soft },
         .corners = .round(tokens.radius_sm),
         .margin = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
         .id_extra = track,
@@ -740,7 +740,7 @@ fn drawInstrumentPresetRow(state: *state_mod.State, plugin: *const @import("clap
 
     if (preset_label_count == 0) {
         dvui.label(@src(), "No matching presets", .{}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
             .id_extra = track,
         });
         return;
@@ -751,8 +751,8 @@ fn drawInstrumentPresetRow(state: *state_mod.State, plugin: *const @import("clap
         if (dvui.button(@src(), name, .{}, .{
             .expand = .horizontal,
             .min_size_content = .{ .h = tokens.control_h - 2 },
-            .color_fill = theme.cell,
-            .color_text = theme.text,
+            .color_fill = .{ .color = theme.cell },
+            .color_text = .{ .color = theme.text },
             .corners = .round(tokens.radius_sm),
             .margin = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
             .id_extra = row_i + 1 + track * 1000,
@@ -781,10 +781,10 @@ fn drawAddCard(state: *state_mod.State) void {
 
     if (dvui.button(@src(), "+", .{}, .{
         .expand = .both,
-        .color_fill = theme.panel,
-        .color_text = theme.text_dim,
+        .color_fill = .{ .color = theme.panel },
+        .color_text = .{ .color = theme.text_dim },
         .border = dvui.Rect.all(1),
-        .color_border = theme.grid,
+        .color_border = .{ .color = theme.grid },
         .corners = .round(tokens.radius_sm),
         .id_extra = picker_add_id,
     })) {
@@ -825,9 +825,9 @@ fn drawPluginPicker(state: *state_mod.State) void {
         .min_size_content = .{ .w = tokens.plugin_list_w, .h = 280 },
         .max_size_content = .{ .w = tokens.plugin_list_w, .h = 400 },
         .background = true,
-        .color_fill = theme.panel,
+        .color_fill = .{ .color = theme.panel },
         .border = dvui.Rect.all(1),
-        .color_border = theme.accent,
+        .color_border = .{ .color = theme.accent },
         .corners = .round(tokens.radius_md),
         .padding = dvui.Rect.all(tokens.pad_panel),
     });
@@ -842,8 +842,8 @@ fn drawPluginPicker(state: *state_mod.State) void {
     if (!for_fx) {
         if (dvui.button(@src(), "None (clear)", .{}, .{
             .expand = .horizontal,
-            .color_fill = theme.cell,
-            .color_text = theme.text_soft,
+            .color_fill = .{ .color = theme.cell },
+            .color_text = .{ .color = theme.text_soft },
             .min_size_content = .{ .h = tokens.control_h },
             .corners = .round(tokens.radius_sm),
             .margin = .{ .x = 0, .y = 0, .w = 0, .h = 2 },
@@ -868,7 +868,7 @@ fn drawPluginPicker(state: *state_mod.State) void {
     const choices: []const i32 = if (for_fx) ph.fxChoices() else ph.instrumentChoices();
     if (choices.len == 0) {
         dvui.label(@src(), "Catalog empty — build clap bundles (zig build) or install system CLAPs.", .{}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
         });
         return;
     }
@@ -878,8 +878,8 @@ fn drawPluginPicker(state: *state_mod.State) void {
         if (name.len == 0) continue;
         if (dvui.button(@src(), name, .{}, .{
             .expand = .horizontal,
-            .color_fill = theme.cell,
-            .color_text = theme.text,
+            .color_fill = .{ .color = theme.cell },
+            .color_text = .{ .color = theme.text },
             .min_size_content = .{ .h = tokens.control_h - 2 },
             .max_size_content = .width(tokens.plugin_list_w - 16),
             .corners = .round(tokens.radius_sm),
@@ -904,7 +904,7 @@ fn drawClipEditor(state: *state_mod.State) void {
 
     if (slot.kind == .empty) {
         dvui.label(@src(), "No clip selected — use + on an empty session slot to create one.", .{}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
             .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
         });
         return;
@@ -914,7 +914,7 @@ fn drawClipEditor(state: *state_mod.State) void {
         .empty => {},
         .midi => {
             dvui.label(@src(), "{s} · {d:.0} bars", .{ if (slot.name.len > 0) slot.name else "Untitled MIDI", slot.bars }, .{
-                .color_text = theme.text_dim,
+                .color_text = .{ .color = theme.text_dim },
             });
             piano_roll.draw(state);
         },

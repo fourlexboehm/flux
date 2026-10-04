@@ -14,10 +14,10 @@ pub fn draw(state: *state_mod.State) void {
     var bar = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .expand = .horizontal,
         .background = true,
-        .color_fill = theme.panel,
+        .color_fill = .{ .color = theme.panel },
         .padding = .{ .x = tokens.pad_content, .y = 2, .w = tokens.gap_tight, .h = 2 },
         .border = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
-        .color_border = theme.grid,
+        .color_border = .{ .color = theme.grid },
         .min_size_content = .{ .h = tokens.transport_h },
     });
     defer bar.deinit();
@@ -101,7 +101,7 @@ pub fn draw(state: *state_mod.State) void {
 
     dvui.label(@src(), "DSP {d:3}%", .{state.dsp_load_pct}, .{
         .gravity_y = 0.5,
-        .color_text = theme.text_dim,
+        .color_text = .{ .color = theme.text_dim },
         .margin = .{ .x = tokens.gap_group, .y = 0, .w = 0, .h = 0 },
         // Fixed-width value (padded to 3) + minimum width for "DSP 100%"
         // so 9% -> 10% -> 100% never shifts neighbouring chrome.
@@ -120,8 +120,8 @@ pub fn draw(state: *state_mod.State) void {
     const sess_fill = if (state.view_mode == .session) theme.accent else theme.cell;
     const sess_text = if (state.view_mode == .session) theme.bg else theme.text;
     if (dvui.button(@src(), "Session", .{}, .{
-        .color_fill = sess_fill,
-        .color_text = sess_text,
+        .color_fill = .{ .color = sess_fill },
+        .color_text = .{ .color = sess_text },
         .min_size_content = .{ .h = tokens.control_h },
         .gravity_y = 0.5,
         .corners = .round(tokens.radius_sm),
@@ -132,8 +132,8 @@ pub fn draw(state: *state_mod.State) void {
     const arr_fill = if (state.view_mode == .arrangement) theme.accent else theme.cell;
     const arr_text = if (state.view_mode == .arrangement) theme.bg else theme.text;
     if (dvui.button(@src(), "Arrange", .{}, .{
-        .color_fill = arr_fill,
-        .color_text = arr_text,
+        .color_fill = .{ .color = arr_fill },
+        .color_text = .{ .color = arr_text },
         .min_size_content = .{ .h = tokens.control_h },
         .margin = .{ .x = tokens.gap_xs, .y = 0, .w = 0, .h = 0 },
         .gravity_y = 0.5,
@@ -148,8 +148,8 @@ pub fn draw(state: *state_mod.State) void {
     if (dvui.button(@src(), "Load", .{}, .{
         .min_size_content = .{ .h = tokens.control_h },
         .gravity_y = 0.5,
-        .color_fill = theme.cell,
-        .color_text = theme.text,
+        .color_fill = .{ .color = theme.cell },
+        .color_text = .{ .color = theme.text },
         .corners = .round(tokens.radius_sm),
         .padding = .{ .x = 6, .y = 2, .w = 6, .h = 2 },
     })) {
@@ -159,8 +159,8 @@ pub fn draw(state: *state_mod.State) void {
         .min_size_content = .{ .h = tokens.control_h },
         .margin = .{ .x = tokens.gap_xs, .y = 0, .w = 0, .h = 0 },
         .gravity_y = 0.5,
-        .color_fill = theme.cell,
-        .color_text = theme.text,
+        .color_fill = .{ .color = theme.cell },
+        .color_text = .{ .color = theme.text },
         .corners = .round(tokens.radius_sm),
         .padding = .{ .x = 6, .y = 2, .w = 6, .h = 2 },
     })) {
@@ -170,8 +170,8 @@ pub fn draw(state: *state_mod.State) void {
         .min_size_content = .{ .h = tokens.control_h },
         .margin = .{ .x = tokens.gap_xs, .y = 0, .w = 0, .h = 0 },
         .gravity_y = 0.5,
-        .color_fill = theme.cell,
-        .color_text = theme.text,
+        .color_fill = .{ .color = theme.cell },
+        .color_text = .{ .color = theme.text },
         .corners = .round(tokens.radius_sm),
         .padding = .{ .x = 6, .y = 2, .w = 6, .h = 2 },
     })) {
@@ -182,7 +182,7 @@ pub fn draw(state: *state_mod.State) void {
 fn fieldLabel(text: []const u8, id_extra: usize) void {
     dvui.label(@src(), "{s}", .{text}, .{
         .gravity_y = 0.5,
-        .color_text = theme.text_dim,
+        .color_text = .{ .color = theme.text_dim },
         .margin = .{ .x = tokens.gap_group, .y = 0, .w = tokens.gap_xs, .h = 0 },
         .id_extra = id_extra,
     });
@@ -191,7 +191,7 @@ fn fieldLabel(text: []const u8, id_extra: usize) void {
 fn separator(id_extra: usize) void {
     var sep = dvui.box(@src(), .{}, .{
         .background = true,
-        .color_fill = theme.grid,
+        .color_fill = .{ .color = theme.grid },
         .min_size_content = .{ .w = 1, .h = tokens.control_h - 2 },
         .margin = .{ .x = tokens.gap_group, .y = 0, .w = tokens.gap_group, .h = 0 },
         .gravity_y = 0.5,

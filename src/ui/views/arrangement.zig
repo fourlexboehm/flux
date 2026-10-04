@@ -59,14 +59,14 @@ pub fn draw(state: *state_mod.State) void {
 
         dvui.label(@src(), "Arrangement", .{}, .{
             .font = .theme(.heading),
-            .color_text = theme.text,
+            .color_text = .{ .color = theme.text },
             .gravity_y = 0.5,
         });
 
         var zoom_buf: [24]u8 = undefined;
         const zoom_s = std.fmt.bufPrint(&zoom_buf, "{d:.0} px/beat", .{state.arr_pixels_per_beat}) catch "?";
         dvui.label(@src(), "  {s}  ·  scroll = zoom", .{zoom_s}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
             .gravity_y = 0.5,
         });
 
@@ -102,7 +102,7 @@ pub fn draw(state: *state_mod.State) void {
                 .{ state.arr_clip_count, prev_drawn, prev_us },
             ) catch "";
             dvui.label(@src(), "{s}", .{prof}, .{
-                .color_text = theme.text_dim,
+                .color_text = .{ .color = theme.text_dim },
                 .gravity_y = 0.5,
             });
         }
@@ -111,7 +111,7 @@ pub fn draw(state: *state_mod.State) void {
     var body = dvui.box(@src(), .{ .dir = .vertical }, .{
         .expand = .both,
         .background = true,
-        .color_fill = theme.cell,
+        .color_fill = .{ .color = theme.cell },
         .corners = .round(tokens.radius_md),
     });
     defer body.deinit();
@@ -167,9 +167,9 @@ pub fn draw(state: *state_mod.State) void {
                 .min_size_content = .{ .w = tokens.arr_track_w, .h = tokens.arr_ruler_h },
                 .max_size_content = .{ .w = tokens.arr_track_w, .h = tokens.arr_ruler_h },
                 .background = true,
-                .color_fill = theme.header,
+                .color_fill = .{ .color = theme.header },
                 .border = .{ .x = 0, .y = 0, .w = 1, .h = 1 },
-                .color_border = theme.grid,
+                .color_border = .{ .color = theme.grid },
             });
             defer corner.deinit();
         }
@@ -214,9 +214,9 @@ pub fn draw(state: *state_mod.State) void {
                 .max_size_content = .width(tokens.arr_track_w),
                 .expand = .vertical,
                 .background = true,
-                .color_fill = theme.panel,
+                .color_fill = .{ .color = theme.panel },
                 .border = .{ .x = 0, .y = 0, .w = 1, .h = 0 },
-                .color_border = theme.grid,
+                .color_border = .{ .color = theme.grid },
             });
             defer headers_scroll.deinit();
 
@@ -293,9 +293,9 @@ fn drawTrackHeader(state: *state_mod.State, track: usize) void {
         .min_size_content = .{ .h = tokens.arr_lane_h },
         .max_size_content = .height(tokens.arr_lane_h),
         .background = true,
-        .color_fill = if (selected) theme.cell_hover else if (track % 2 == 0) theme.cell else theme.header,
+        .color_fill = .{ .color = if (selected) theme.cell_hover else if (track % 2 == 0) theme.cell else theme.header },
         .border = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
-        .color_border = theme.grid,
+        .color_border = .{ .color = theme.grid },
         .padding = .{ .x = tokens.gap_xs, .y = 0, .w = tokens.gap_xs, .h = 0 },
         .id_extra = track,
     });
@@ -304,8 +304,8 @@ fn drawTrackHeader(state: *state_mod.State, track: usize) void {
     if (dvui.button(@src(), name, .{}, .{
         .expand = .horizontal,
         .min_size_content = .{ .h = tokens.arr_lane_h - 4 },
-        .color_fill = if (selected) theme.accent else theme.panel,
-        .color_text = if (selected) theme.bg else theme.text,
+        .color_fill = .{ .color = if (selected) theme.accent else theme.panel },
+        .color_text = .{ .color = if (selected) theme.bg else theme.text },
         .corners = .round(tokens.radius_sm),
         .gravity_y = 0.5,
         .id_extra = track,
@@ -333,10 +333,10 @@ fn drawRuler(state: *state_mod.State, timeline_w: f32) void {
     var ruler = dvui.box(@src(), .{}, .{
         .expand = .horizontal,
         .background = true,
-        .color_fill = theme.header,
+        .color_fill = .{ .color = theme.header },
         .min_size_content = .{ .h = tokens.arr_ruler_h, .w = timeline_w },
         .border = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
-        .color_border = theme.grid,
+        .color_border = .{ .color = theme.grid },
     });
     defer ruler.deinit();
 
@@ -356,7 +356,7 @@ fn drawRuler(state: *state_mod.State, timeline_w: f32) void {
             .w = @max(1.0, rs.s),
             .h = area.h,
         };
-        line.fill(.all(0), .{ .color = theme.grid });
+        line.fill(.all(0), .{ .color = .{ .color = theme.grid } });
     }
 
     if (state.playing or state.playhead_beat > 0) {
@@ -368,7 +368,7 @@ fn drawRuler(state: *state_mod.State, timeline_w: f32) void {
                 .w = @max(2.0, rs.s),
                 .h = area.h,
             };
-            ph.fill(.all(0), .{ .color = theme.play });
+            ph.fill(.all(0), .{ .color = .{ .color = theme.play } });
         }
     }
 
@@ -381,11 +381,11 @@ fn drawLane(state: *state_mod.State, track: usize, timeline_w: f32) void {
     var lane = dvui.box(@src(), .{}, .{
         .expand = .horizontal,
         .background = true,
-        .color_fill = if (selected) theme.panel else theme.cell,
+        .color_fill = .{ .color = if (selected) theme.panel else theme.cell },
         .min_size_content = .{ .h = tokens.arr_lane_h, .w = timeline_w },
         .max_size_content = .height(tokens.arr_lane_h),
         .border = .{ .x = 0, .y = 0, .w = 0, .h = 1 },
-        .color_border = theme.grid,
+        .color_border = .{ .color = theme.grid },
         .id_extra = track,
     });
     defer lane.deinit();
@@ -409,7 +409,7 @@ fn drawLane(state: *state_mod.State, track: usize, timeline_w: f32) void {
             .w = @max(1.0, rs.s),
             .h = area.h,
         };
-        line.fill(.all(0), .{ .color = theme.grid });
+        line.fill(.all(0), .{ .color = .{ .color = theme.grid } });
     }
 
     if (track < state_mod.max_tracks) {
@@ -431,7 +431,7 @@ fn drawLane(state: *state_mod.State, track: usize, timeline_w: f32) void {
                 .w = @max(2.0, rs.s),
                 .h = area.h,
             };
-            ph.fill(.all(0), .{ .color = theme.play });
+            ph.fill(.all(0), .{ .color = .{ .color = theme.play } });
         }
     }
 
@@ -452,17 +452,17 @@ fn drawBoxSelection(state: *const state_mod.State) void {
         .w = @max(1, x1 - x0),
         .h = @max(1, y1 - y0),
     };
-    rect.fill(.all(0), .{ .color = theme.alpha(theme.selected, 0.18) });
+    rect.fill(.all(0), .{ .color = .{ .color = theme.alpha(theme.selected, 0.18) } });
     const t = 1.5;
     const top: dvui.Rect.Physical = .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = t };
     const bot: dvui.Rect.Physical = .{ .x = rect.x, .y = rect.y + rect.h - t, .w = rect.w, .h = t };
     const left: dvui.Rect.Physical = .{ .x = rect.x, .y = rect.y, .w = t, .h = rect.h };
     const right: dvui.Rect.Physical = .{ .x = rect.x + rect.w - t, .y = rect.y, .w = t, .h = rect.h };
     const border = theme.alpha(theme.selected, 0.85);
-    top.fill(.all(0), .{ .color = border });
-    bot.fill(.all(0), .{ .color = border });
-    left.fill(.all(0), .{ .color = border });
-    right.fill(.all(0), .{ .color = border });
+    top.fill(.all(0), .{ .color = .{ .color = border } });
+    bot.fill(.all(0), .{ .color = .{ .color = border } });
+    left.fill(.all(0), .{ .color = .{ .color = border } });
+    right.fill(.all(0), .{ .color = .{ .color = border } });
 }
 
 fn handleZoomEvents(state: *state_mod.State, wd: *dvui.WidgetData, area: dvui.Rect.Physical) void {
@@ -587,7 +587,7 @@ fn drawArrClip(
         .w = w,
         .h = h,
     };
-    rect.fill(.all(2), .{ .color = body });
+    rect.fill(.all(2), .{ .color = .{ .color = body } });
 
     const strip_w = @max(2.0, tokens.strip_w * scale);
     const strip: dvui.Rect.Physical = .{
@@ -596,7 +596,7 @@ fn drawArrClip(
         .w = strip_w,
         .h = h,
     };
-    strip.fill(.all(0), .{ .color = theme.trackColor(clip.track) });
+    strip.fill(.all(0), .{ .color = .{ .color = theme.trackColor(clip.track) } });
 
     // Audio waveform thumbnail when peaks are available (revision-cached).
     if (clip.kind == .audio) {
@@ -618,10 +618,10 @@ fn drawArrClip(
         const bot: dvui.Rect.Physical = .{ .x = x0, .y = y + h - t, .w = w, .h = t };
         const left: dvui.Rect.Physical = .{ .x = x0, .y = y, .w = t, .h = h };
         const right: dvui.Rect.Physical = .{ .x = x0 + w - t, .y = y, .w = t, .h = h };
-        top.fill(.all(0), .{ .color = theme.selected });
-        bot.fill(.all(0), .{ .color = theme.selected });
-        left.fill(.all(0), .{ .color = theme.selected });
-        right.fill(.all(0), .{ .color = theme.selected });
+        top.fill(.all(0), .{ .color = .{ .color = theme.selected } });
+        bot.fill(.all(0), .{ .color = .{ .color = theme.selected } });
+        left.fill(.all(0), .{ .color = .{ .color = theme.selected } });
+        right.fill(.all(0), .{ .color = .{ .color = theme.selected } });
     }
 
     // Name label when the clip is wide enough.

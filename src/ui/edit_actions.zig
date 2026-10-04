@@ -74,7 +74,7 @@ pub fn drawMenu(available: Availability) ?Action {
         if (!available.enabled(entry.action)) {
             dvui.labelNoFmt(@src(), entry.label, .{}, .{
                 .expand = .horizontal,
-                .color_text = theme.text_soft,
+                .color_text = .{ .color = theme.text_soft },
                 .padding = dvui.Rect.all(6),
                 .id_extra = i,
             });
@@ -116,7 +116,7 @@ fn separator(id_extra: usize) void {
         .expand = .horizontal,
         .min_size_content = .{ .h = 1 },
         .background = true,
-        .color_fill = theme.grid,
+        .color_fill = .{ .color = theme.grid },
         .margin = .{ .x = 3, .y = 3, .w = 3, .h = 3 },
         .id_extra = id_extra,
     });

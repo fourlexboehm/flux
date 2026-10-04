@@ -29,7 +29,7 @@ pub fn drawAutomationHeader(state: *state_mod.State, clip: *notes_mod.PianoRollC
     var row = dvui.box(@src(), .{ .dir = .horizontal }, .{ .expand = .horizontal });
     defer row.deinit();
 
-    dvui.label(@src(), "Automation:", .{}, .{ .color_text = theme.text_dim, .gravity_y = 0.5 });
+    dvui.label(@src(), "Automation:", .{}, .{ .color_text = .{ .color = theme.text_dim }, .gravity_y = 0.5 });
 
     var label_bufs: [layout.max_automation_lane_ui][160]u8 = undefined;
     var labels: [layout.max_automation_lane_ui][]const u8 = undefined;
@@ -82,9 +82,9 @@ pub fn drawAutomationAddDialog(state: *state_mod.State, clip: *notes_mod.PianoRo
         .min_size_content = .{ .w = 280, .h = 200 },
         .max_size_content = .{ .w = 320, .h = 360 },
         .background = true,
-        .color_fill = theme.panel,
+        .color_fill = .{ .color = theme.panel },
         .border = dvui.Rect.all(1),
-        .color_border = theme.accent,
+        .color_border = .{ .color = theme.accent },
         .padding = dvui.Rect.all(10),
     });
     defer fw.deinit();
@@ -107,7 +107,7 @@ pub fn drawAutomationAddDialog(state: *state_mod.State, clip: *notes_mod.PianoRo
 
     if (state.piano_automation_add_target == .fx_param) {
         if (fx_count == 0) {
-            dvui.label(@src(), "No FX slots on this track.", .{}, .{ .color_text = theme.text_soft });
+            dvui.label(@src(), "No FX slots on this track.", .{}, .{ .color_text = .{ .color = theme.text_soft } });
         } else {
             var fx_labels: [plugin_host.max_fx_slots][]const u8 = undefined;
             var fx_bufs: [plugin_host.max_fx_slots][24]u8 = undefined;
@@ -144,7 +144,7 @@ pub fn drawAutomationAddDialog(state: *state_mod.State, clip: *notes_mod.PianoRo
             state.piano_automation_add_open = false;
         }
     } else {
-        dvui.label(@src(), "Select a parameter to continue.", .{}, .{ .color_text = theme.text_soft });
+        dvui.label(@src(), "Select a parameter to continue.", .{}, .{ .color_text = .{ .color = theme.text_soft } });
     }
 }
 
@@ -155,17 +155,17 @@ pub fn drawParamPicker(state: *state_mod.State) bool {
         else => null,
     };
     if (plugin == null) {
-        dvui.label(@src(), "No plugin loaded.", .{}, .{ .color_text = theme.text_soft });
+        dvui.label(@src(), "No plugin loaded.", .{}, .{ .color_text = .{ .color = theme.text_soft } });
         return false;
     }
     const ext_raw = plugin.?.getExtension(plugin.?, clap.ext.params.id) orelse {
-        dvui.label(@src(), "No parameters exposed.", .{}, .{ .color_text = theme.text_soft });
+        dvui.label(@src(), "No parameters exposed.", .{}, .{ .color_text = .{ .color = theme.text_soft } });
         return false;
     };
     const params: *const clap.ext.params.Plugin = @ptrCast(@alignCast(ext_raw));
     const count = params.count(plugin.?);
     if (count == 0) {
-        dvui.label(@src(), "No parameters exposed.", .{}, .{ .color_text = theme.text_soft });
+        dvui.label(@src(), "No parameters exposed.", .{}, .{ .color_text = .{ .color = theme.text_soft } });
         return false;
     }
 
@@ -183,7 +183,7 @@ pub fn drawParamPicker(state: *state_mod.State) bool {
         n += 1;
     }
     if (n == 0) {
-        dvui.label(@src(), "No automatable parameters.", .{}, .{ .color_text = theme.text_soft });
+        dvui.label(@src(), "No automatable parameters.", .{}, .{ .color_text = .{ .color = theme.text_soft } });
         return false;
     }
 
@@ -289,7 +289,7 @@ pub fn drawAutomationOverlay(
                 .{ .x = x1, .y = y1 },
                 .{ .x = x2, .y = y2 },
             } };
-            path.stroke(.{ .thickness = 2 * scale, .color = theme.accent });
+            path.stroke(.{ .thickness = 2 * scale, .color = .{ .color = theme.accent } });
         }
     }
 
@@ -306,7 +306,7 @@ pub fn drawAutomationOverlay(
             .w = radius * 2,
             .h = radius * 2,
         };
-        rect.fill(.all(radius), .{ .color = color });
+        rect.fill(.all(radius), .{ .color = .{ .color = color } });
     }
 }
 

@@ -73,14 +73,14 @@ pub fn draw(plugin: *const clap.Plugin, target: Target, id_extra: usize) void {
 
 fn drawExternalSummary(plugin: *const clap.Plugin, id_extra: usize) void {
     dvui.label(@src(), "External CLAP", .{}, .{
-        .color_text = theme.text_soft,
+        .color_text = .{ .color = theme.text_soft },
         .id_extra = id_extra,
     });
     if (plugin.descriptor.vendor) |vendor_z| {
         const vendor = std.mem.sliceTo(vendor_z, 0);
         if (vendor.len > 0) {
             dvui.label(@src(), "{s}", .{vendor}, .{
-                .color_text = theme.text_soft,
+                .color_text = .{ .color = theme.text_soft },
                 .id_extra = id_extra + 1,
             });
         }
@@ -88,7 +88,7 @@ fn drawExternalSummary(plugin: *const clap.Plugin, id_extra: usize) void {
     if (plugin.getExtension(plugin, clap.ext.params.id)) |ext_raw| {
         const params: *const clap.ext.params.Plugin = @ptrCast(@alignCast(ext_raw));
         dvui.label(@src(), "{d} parameters", .{params.count(plugin)}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
             .id_extra = id_extra + 2,
         });
     }
@@ -97,7 +97,7 @@ fn drawExternalSummary(plugin: *const clap.Plugin, id_extra: usize) void {
 fn drawParamGrid(plugin: *const clap.Plugin, target: Target, id_extra: usize) void {
     const ext_raw = plugin.getExtension(plugin, clap.ext.params.id) orelse {
         dvui.label(@src(), "No parameters extension", .{}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
             .id_extra = id_extra,
         });
         return;
@@ -106,7 +106,7 @@ fn drawParamGrid(plugin: *const clap.Plugin, target: Target, id_extra: usize) vo
     const total = params.count(plugin);
     if (total == 0) {
         dvui.label(@src(), "No automatable parameters.", .{}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
             .id_extra = id_extra,
         });
         return;
@@ -166,7 +166,7 @@ fn drawParamGrid(plugin: *const clap.Plugin, target: Target, id_extra: usize) vo
 
     if (total > max_drawn_params) {
         dvui.label(@src(), "… +{d} more", .{total - max_drawn_params}, .{
-            .color_text = theme.text_dim,
+            .color_text = .{ .color = theme.text_dim },
             .id_extra = id_extra + 900,
         });
     }
@@ -196,14 +196,14 @@ fn drawOneParam(
         });
         defer row.deinit();
         dvui.label(@src(), "{s}", .{name}, .{
-            .color_text = theme.text_dim,
+            .color_text = .{ .color = theme.text_dim },
             .gravity_y = 0.5,
             .expand = .horizontal,
             .id_extra = id_extra,
         });
         if (dvui.button(@src(), label, .{}, .{
-            .color_fill = if (on) theme.accent_dim else theme.cell,
-            .color_text = theme.text,
+            .color_fill = .{ .color = if (on) theme.accent_dim else theme.cell },
+            .color_text = .{ .color = theme.text },
             .min_size_content = .{ .h = tokens.control_h },
             .corners = .round(tokens.radius_sm),
             .gravity_y = 0.5,
@@ -242,13 +242,13 @@ fn drawOneParam(
         });
         defer header.deinit();
         dvui.label(@src(), "{s}", .{name}, .{
-            .color_text = theme.text_dim,
+            .color_text = .{ .color = theme.text_dim },
             .gravity_y = 0.5,
             .id_extra = id_extra,
         });
         if (value_label.len > 0) {
             dvui.label(@src(), "{s}", .{value_label}, .{
-                .color_text = theme.text_soft,
+                .color_text = .{ .color = theme.text_soft },
                 .gravity_x = 1.0,
                 .gravity_y = 0.5,
                 .id_extra = id_extra + 1,
@@ -258,7 +258,7 @@ fn drawOneParam(
 
     if (read_only) {
         dvui.label(@src(), "{d:.3}", .{val_f}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
             .id_extra = id_extra,
         });
         return;

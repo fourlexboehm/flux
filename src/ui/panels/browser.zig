@@ -54,7 +54,7 @@ pub fn draw(state: *state_mod.State) void {
 
     var side = dvui.box(@src(), .{ .dir = .vertical }, .{
         .background = true,
-        .color_fill = theme.panel,
+        .color_fill = .{ .color = theme.panel },
         .expand = .both,
         .padding = dvui.Rect.all(tokens.pad_panel),
         .corners = .round(tokens.radius_md),
@@ -63,7 +63,7 @@ pub fn draw(state: *state_mod.State) void {
 
     dvui.label(@src(), "Browser", .{}, .{
         .font = .theme(.heading),
-        .color_text = theme.text,
+        .color_text = .{ .color = theme.text },
     });
 
     // Search
@@ -103,7 +103,7 @@ pub fn draw(state: *state_mod.State) void {
 fn drawNav(state: *state_mod.State) void {
     var nav = dvui.box(@src(), .{ .dir = .vertical }, .{
         .background = true,
-        .color_fill = theme.panel,
+        .color_fill = .{ .color = theme.panel },
         .min_size_content = .{ .w = tokens.browser_nav_w },
         .expand = .vertical,
         .padding = dvui.Rect.all(tokens.gap_tight),
@@ -119,7 +119,7 @@ fn drawNav(state: *state_mod.State) void {
     defer nav_scroll.deinit();
 
     dvui.label(@src(), "Categories", .{}, .{
-        .color_text = theme.text_soft,
+        .color_text = .{ .color = theme.text_soft },
         .margin = .{ .x = 0, .y = 0, .w = 0, .h = tokens.gap_xs },
     });
 
@@ -129,8 +129,8 @@ fn drawNav(state: *state_mod.State) void {
         const text = if (selected) theme.bg else theme.text;
         if (icons.navigation(@src(), if (cat.tab == .audio_effects) .effect else .instrument, cat.label, .{
             .expand = .horizontal,
-            .color_fill = fill,
-            .color_text = text,
+            .color_fill = .{ .color = fill },
+            .color_text = .{ .color = text },
             .min_size_content = .{ .h = tokens.control_h - 2 },
             .margin = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
             .corners = .round(tokens.radius_sm),
@@ -141,14 +141,14 @@ fn drawNav(state: *state_mod.State) void {
     }
 
     dvui.label(@src(), "Places", .{}, .{
-        .color_text = theme.text_soft,
+        .color_text = .{ .color = theme.text_soft },
         .margin = .{ .x = 0, .y = tokens.gap_group, .w = 0, .h = tokens.gap_xs },
     });
 
     if (icons.navigation(@src(), .plus, "Add folder", .{
         .expand = .horizontal,
-        .color_fill = theme.panel,
-        .color_text = theme.text,
+        .color_fill = .{ .color = theme.panel },
+        .color_text = .{ .color = theme.text },
         .min_size_content = .{ .h = tokens.control_h - 2 },
         .corners = .round(tokens.radius_sm),
     })) {
@@ -161,8 +161,8 @@ fn drawNav(state: *state_mod.State) void {
         const selected = state.browser_folder_selected == i;
         if (dvui.button(@src(), base, .{}, .{
             .expand = .horizontal,
-            .color_fill = if (selected) theme.accent else theme.panel,
-            .color_text = if (selected) theme.bg else theme.text,
+            .color_fill = .{ .color = if (selected) theme.accent else theme.panel },
+            .color_text = .{ .color = if (selected) theme.bg else theme.text },
             .min_size_content = .{ .h = tokens.control_h - 2 },
             .margin = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
             .corners = .round(tokens.radius_sm),
@@ -193,7 +193,7 @@ fn addFolder(state: *state_mod.State) void {
 fn drawContent(state: *state_mod.State) void {
     var content = dvui.box(@src(), .{ .dir = .vertical }, .{
         .background = true,
-        .color_fill = theme.cell,
+        .color_fill = .{ .color = theme.cell },
         .expand = .both,
         .padding = dvui.Rect.all(tokens.pad_panel),
         .corners = .round(tokens.radius_sm),
@@ -206,7 +206,7 @@ fn drawContent(state: *state_mod.State) void {
         defer title_row.deinit();
         dvui.label(@src(), "{s}", .{tab_name}, .{
             .font = .theme(.heading),
-            .color_text = theme.text,
+            .color_text = .{ .color = theme.text },
             .gravity_y = 0.5,
         });
         if (icons.navigation(@src(), if (state.browser_sort_asc) .sort_up else .sort_down, "Name", .{
@@ -222,7 +222,7 @@ fn drawContent(state: *state_mod.State) void {
 
     if (state.browser_search_len > 0) {
         dvui.label(@src(), "Filter: \"{s}\"", .{state.searchSlice()}, .{
-            .color_text = theme.text_dim,
+            .color_text = .{ .color = theme.text_dim },
             .margin = .{ .x = 0, .y = tokens.gap_xs, .w = 0, .h = 0 },
         });
     }
@@ -287,7 +287,7 @@ fn drawPresetRows(state: *state_mod.State, category: []const u8) void {
     if (entries.len == 0) return;
 
     dvui.label(@src(), "Presets", .{}, .{
-        .color_text = theme.text_soft,
+        .color_text = .{ .color = theme.text_soft },
         .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = tokens.gap_xs },
     });
 
@@ -296,7 +296,7 @@ fn drawPresetRows(state: *state_mod.State, category: []const u8) void {
         var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
             .expand = .horizontal,
             .background = true,
-            .color_fill = theme.panel,
+            .color_fill = .{ .color = theme.panel },
             .min_size_content = .{ .h = tokens.control_h - 2 },
             .corners = .round(tokens.radius_sm),
             .margin = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
@@ -306,7 +306,7 @@ fn drawPresetRows(state: *state_mod.State, category: []const u8) void {
         defer row.deinit();
 
         dvui.label(@src(), "{s}", .{entry.name}, .{
-            .color_text = theme.text,
+            .color_text = .{ .color = theme.text },
             .gravity_y = 0.5,
             .id_extra = i,
         });
@@ -329,7 +329,7 @@ fn drawPresetRows(state: *state_mod.State, category: []const u8) void {
 fn drawPluginRows(state: *state_mod.State, fx: bool) void {
     if (!plugin_host.ready() or !plugin_host.g.catalog_ready) {
         dvui.label(@src(), "Plugin catalog not ready.", .{}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
             .margin = .{ .x = 0, .y = tokens.gap_group, .w = 0, .h = 0 },
         });
         return;
@@ -351,11 +351,11 @@ fn drawPluginRows(state: *state_mod.State, fx: bool) void {
 
     if (shown == 0) {
         dvui.label(@src(), "No matching plugins. Build clap bundles or install system CLAPs.", .{}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
         });
     } else {
         dvui.label(@src(), "{d} plugins — click to load · drag onto tracks", .{shown}, .{
-            .color_text = theme.text_dim,
+            .color_text = .{ .color = theme.text_dim },
             .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
         });
     }
@@ -372,7 +372,7 @@ fn drawPluginRow(
     var row = dvui.box(@src(), .{ .dir = .horizontal }, .{
         .expand = .horizontal,
         .background = true,
-        .color_fill = theme.panel,
+        .color_fill = .{ .color = theme.panel },
         .min_size_content = .{ .h = tokens.control_h - 2 },
         .corners = .round(tokens.radius_sm),
         .margin = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
@@ -382,7 +382,7 @@ fn drawPluginRow(
     defer row.deinit();
 
     dvui.label(@src(), "{s}", .{name}, .{
-        .color_text = theme.text,
+        .color_text = .{ .color = theme.text },
         .gravity_y = 0.5,
         .id_extra = id_extra,
     });
@@ -437,11 +437,11 @@ fn drawPluginRow(
 fn drawSampleRows(state: *state_mod.State) void {
     if (state.browser_folder_count == 0) {
         dvui.label(@src(), "Add a Places folder to browse samples (wav/aiff/flac/ogg/mp3).", .{}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
             .margin = .{ .x = 0, .y = tokens.gap_group, .w = 0, .h = 0 },
         });
         dvui.label(@src(), "Click a file to load into the selected slot · drag onto session or arrangement.", .{}, .{
-            .color_text = theme.text_dim,
+            .color_text = .{ .color = theme.text_dim },
             .margin = .{ .x = 0, .y = tokens.gap_xs, .w = 0, .h = 0 },
         });
         return;
@@ -458,7 +458,7 @@ fn drawSampleRows(state: *state_mod.State) void {
             const path = state.browserFolder(fi);
             const base = std.fs.path.basename(path);
             dvui.label(@src(), "{s}", .{base}, .{
-                .color_text = theme.text_soft,
+                .color_text = .{ .color = theme.text_soft },
                 .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = tokens.gap_xs },
                 .id_extra = fi,
             });
@@ -468,11 +468,11 @@ fn drawSampleRows(state: *state_mod.State) void {
 
     if (shown == 0) {
         dvui.label(@src(), "No matching audio files in Places folders.", .{}, .{
-            .color_text = theme.text_soft,
+            .color_text = .{ .color = theme.text_soft },
         });
     } else {
         dvui.label(@src(), "{d} files — click / drag onto tracks", .{shown}, .{
-            .color_text = theme.text_dim,
+            .color_text = .{ .color = theme.text_dim },
             .margin = .{ .x = 0, .y = tokens.gap_tight, .w = 0, .h = 0 },
         });
     }
@@ -520,7 +520,7 @@ fn drawSampleRow(state: *state_mod.State, name: []const u8, abs_path: []const u8
         .rect = rect,
         .expand = .horizontal,
         .background = true,
-        .color_fill = theme.panel,
+        .color_fill = .{ .color = theme.panel },
         .min_size_content = .{ .h = tokens.control_h - 2 },
         .corners = .round(tokens.radius_sm),
         .margin = .{ .x = 0, .y = 1, .w = 0, .h = 1 },
@@ -530,7 +530,7 @@ fn drawSampleRow(state: *state_mod.State, name: []const u8, abs_path: []const u8
     defer row.deinit();
 
     dvui.label(@src(), "{s}", .{name}, .{
-        .color_text = theme.text,
+        .color_text = .{ .color = theme.text },
         .gravity_y = 0.5,
         .id_extra = id_extra,
     });

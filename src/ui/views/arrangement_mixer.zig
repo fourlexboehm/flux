@@ -15,15 +15,15 @@ pub fn drawHeader() void {
         .min_size_content = .{ .w = tokens.arr_mixer_w, .h = tokens.arr_ruler_h },
         .max_size_content = .{ .w = tokens.arr_mixer_w, .h = tokens.arr_ruler_h },
         .background = true,
-        .color_fill = theme.header,
+        .color_fill = .{ .color = theme.header },
         .border = .{ .x = 1, .y = 0, .w = 0, .h = 1 },
-        .color_border = theme.grid,
+        .color_border = .{ .color = theme.grid },
         .padding = .{ .x = tokens.gap_group, .y = 0, .w = 0, .h = 0 },
         .margin = .{ .x = tokens.gap_xs, .y = 0, .w = 0, .h = 0 },
     });
     defer head.deinit();
     dvui.label(@src(), "Mixer", .{}, .{
-        .color_text = theme.text_dim,
+        .color_text = .{ .color = theme.text_dim },
         .gravity_y = 0.5,
     });
 }
@@ -33,12 +33,12 @@ pub fn drawHeader() void {
 pub fn draw(state: *state_mod.State, si_mixer: *dvui.ScrollInfo, viewport_y: f32, lanes_h: f32) void {
     var strip = dvui.box(@src(), .{ .dir = .vertical }, .{
         .background = true,
-        .color_fill = theme.panel,
+        .color_fill = .{ .color = theme.panel },
         .min_size_content = .{ .w = tokens.arr_mixer_w },
         .max_size_content = .width(tokens.arr_mixer_w),
         .expand = .vertical,
         .border = .{ .x = 1, .y = 0, .w = 0, .h = 0 },
-        .color_border = theme.grid,
+        .color_border = .{ .color = theme.grid },
         .margin = .{ .x = tokens.gap_xs, .y = 0, .w = 0, .h = 0 },
     });
     defer strip.deinit();
@@ -94,9 +94,9 @@ fn drawMixerRow(state: *state_mod.State, track: usize, is_master: bool) void {
         .min_size_content = .{ .h = tokens.arr_lane_h },
         .max_size_content = .height(tokens.arr_lane_h),
         .background = true,
-        .color_fill = if (selected) theme.cell_hover else if (is_master) theme.header else if (track % 2 == 0) theme.cell else theme.header,
+        .color_fill = .{ .color = if (selected) theme.cell_hover else if (is_master) theme.header else if (track % 2 == 0) theme.cell else theme.header },
         .border = .{ .x = 0, .y = if (is_master) 1 else 0, .w = 0, .h = 1 },
-        .color_border = theme.grid,
+        .color_border = .{ .color = theme.grid },
         .padding = .{ .x = tokens.gap_tight, .y = 0, .w = tokens.gap_tight, .h = 0 },
         .id_extra = id,
     });
@@ -113,12 +113,12 @@ fn drawMixerRow(state: *state_mod.State, track: usize, is_master: bool) void {
             .h = area.h,
         };
         const accent = if (is_master) theme.selected else theme.trackColor(track);
-        strip_r.fill(.all(0), .{ .color = accent });
+        strip_r.fill(.all(0), .{ .color = .{ .color = accent } });
     }
 
     if (is_master) {
         dvui.label(@src(), "Master", .{}, .{
-            .color_text = if (selected) theme.text else theme.text_dim,
+            .color_text = .{ .color = if (selected) theme.text else theme.text_dim },
             .gravity_y = 0.5,
             .min_size_content = .{ .w = 40 },
         });
@@ -128,8 +128,8 @@ fn drawMixerRow(state: *state_mod.State, track: usize, is_master: bool) void {
     const btn_pad = dvui.Rect{ .x = 1, .y = 0, .w = 1, .h = 0 };
 
     if (dvui.button(@src(), "M", .{}, .{
-        .color_fill = if (mute) theme.mute_on else theme.panel,
-        .color_text = if (mute) theme.text_on_fill else theme.text,
+        .color_fill = .{ .color = if (mute) theme.mute_on else theme.panel },
+        .color_text = .{ .color = if (mute) theme.text_on_fill else theme.text },
         .label = .{ .text = "Mute" },
         .min_size_content = .{ .w = btn_w, .h = tokens.control_h },
         .padding = btn_pad,
@@ -144,8 +144,8 @@ fn drawMixerRow(state: *state_mod.State, track: usize, is_master: bool) void {
 
     if (!is_master) {
         if (dvui.button(@src(), "S", .{}, .{
-            .color_fill = if (state.track_solo[track]) theme.solo_on else theme.panel,
-            .color_text = if (state.track_solo[track]) theme.text_on_fill else theme.text,
+            .color_fill = .{ .color = if (state.track_solo[track]) theme.solo_on else theme.panel },
+            .color_text = .{ .color = if (state.track_solo[track]) theme.text_on_fill else theme.text },
             .label = .{ .text = "Solo" },
             .min_size_content = .{ .w = btn_w, .h = tokens.control_h },
             .margin = .{ .x = 2, .y = 0, .w = 0, .h = 0 },
@@ -159,8 +159,8 @@ fn drawMixerRow(state: *state_mod.State, track: usize, is_master: bool) void {
         }
         const armed = state.armed_track == track;
         if (dvui.button(@src(), "R", .{}, .{
-            .color_fill = if (armed) theme.arm_on else theme.panel,
-            .color_text = if (armed) theme.text_on_fill else theme.text,
+            .color_fill = .{ .color = if (armed) theme.arm_on else theme.panel },
+            .color_text = .{ .color = if (armed) theme.text_on_fill else theme.text },
             .label = .{ .text = "Arm recording" },
             .min_size_content = .{ .w = btn_w, .h = tokens.control_h },
             .margin = .{ .x = 2, .y = 0, .w = 0, .h = 0 },
@@ -214,8 +214,8 @@ fn drawMixerRow(state: *state_mod.State, track: usize, is_master: bool) void {
             .corners = .round(tokens.radius_sm),
             .id_extra = id,
             .gravity_y = 0.5,
-            .color_fill = if (selected) theme.accent else theme.panel,
-            .color_text = if (selected) theme.bg else theme.text_dim,
+            .color_fill = .{ .color = if (selected) theme.accent else theme.panel },
+            .color_text = .{ .color = if (selected) theme.bg else theme.text_dim },
         })) {
             state.selectMaster();
         }
@@ -226,7 +226,7 @@ fn drawArrMeter(levels: [2]f32, id_extra: usize) void {
     var meter = dvui.box(@src(), .{}, .{
         .min_size_content = .{ .w = 14, .h = tokens.control_h },
         .background = true,
-        .color_fill = theme.panel,
+        .color_fill = .{ .color = theme.panel },
         .margin = .{ .x = tokens.gap_tight, .y = 2, .w = 0, .h = 2 },
         .corners = .round(1),
         .id_extra = id_extra,
@@ -242,7 +242,7 @@ fn drawArrMeter(levels: [2]f32, id_extra: usize) void {
         const amount = std.math.clamp(level, 0, 1);
         const x0 = area.x + @as(f32, @floatFromInt(ch)) * (ch_w + gap);
         const bg: dvui.Rect.Physical = .{ .x = x0, .y = area.y, .w = ch_w, .h = area.h };
-        bg.fill(.all(0), .{ .color = theme.cell });
+        bg.fill(.all(0), .{ .color = .{ .color = theme.cell } });
         const fill_h = area.h * amount;
         const fill: dvui.Rect.Physical = .{
             .x = x0,
@@ -250,6 +250,6 @@ fn drawArrMeter(levels: [2]f32, id_extra: usize) void {
             .w = ch_w,
             .h = fill_h,
         };
-        fill.fill(.all(0), .{ .color = if (amount > 0.9) theme.arm_on else theme.solo_on });
+        fill.fill(.all(0), .{ .color = .{ .color = if (amount > 0.9) theme.arm_on else theme.solo_on } });
     }
 }
