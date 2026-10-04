@@ -16,7 +16,7 @@
     // This field is optional.
     // This is currently advisory only; Zig does not yet do anything
     // with this value.
-    .minimum_zig_version = "0.17.0-dev.1980+e78ea8f2c",
+    .minimum_zig_version = "0.17.0",
 
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
@@ -35,8 +35,8 @@
             .hash = "clap_bindings-1.0.3-9TIcDWVLAQCvN3AaarfWupPtWYgUW6JfBVKy3AYswPSj",
         },
         .zaudio = .{
-            .url = "git+https://github.com/zig-gamedev/zaudio#b9997fc34640d9c80e25b7829b9ad53db8bcf7f2",
-            .hash = "zaudio-0.11.0-dev-_M-91owyQQD3MVQa4F1xkPgwSFWQi4HhhNfDwKI0PBWX",
+            .url = "git+https://github.com/fourlexboehm/zaudio#9e2cd14081e5bceeb7b363418b527e5dfefb14a8",
+            .hash = "zaudio-0.11.0-dev-_M-91gzwPwAKjc6163XpAFnkOVKKw5qHjmnDVB7QVjsq",
         },
         .libz_jobs = .{
             .url = "git+https://github.com/fourlexboehm/LibZ.Jobs#8e7252e7b69fe7bdbff52085d1cf3d85f768112a",
@@ -75,8 +75,8 @@
             .hash = "N-V-__8AAAzxrQBNeXdRXqDQlfE8r_r9PGiSWKATj50chaqM",
         },
         .dvui = .{
-            .url = "git+https://github.com/Yinameah/dvui.git#d6048fb0db3260455f9687d38dea8a14dbaa932d",
-            .hash = "dvui-0.6.0-dev-AQFJmbhj_QBT1jKOSO53G2oVFJXZiDyC71UidZnEoQat",
+            .url = "git+https://github.com/fourlexboehm/dvui?ref=zig-0.17#87042ded71cd3f0e8f1e8b71352ddc7c6940cee7",
+            .hash = "dvui-0.6.0-dev-AQFJmbVk_QCuA-71TJ72WV8Er2-aoqSiP4wwtbb20B4u",
         },
         // Bundled macOS .tbd stubs for cross-compile (-lobjc etc). Used when
         // --sysroot alone does not populate library search paths.
